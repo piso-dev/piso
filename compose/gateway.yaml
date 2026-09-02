@@ -1,0 +1,42 @@
+# piso gateway compose — the shared, one-per-machine service.
+# Project name "piso" ⇒ networks/containers are piso_vpc / piso_gateway.
+# The worker compose (generated per-project by `piso up`) joins piso_vpc as an
+# external network, so the gateway is the ONLY member with egress.
+#
+# Load-bearing: piso_vpc has ip masquerade DISABLED. Without this line the
+# worker can bypass the gateway entirely via NAT — the whole design collapses.
+name: piso
+
+services:
+  gateway:
+    build:
+      context: ..
+      dockerfile: gateway/Dockerfile
+    container_name: piso-gateway
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080" # egress proxy (host can use it too)
+      - "127.0.0.1:8081:8081" # control plane: web UI + API
+      - "127.0.0.1:8082:8082" # ingress: name.piso.local routes
+    volumes:
+      - ../.piso:/data
+    environment:
+      PISO_STATE_FILE: /data/state.json
+      PISO_PATTERNS_FILE: /data/patterns.json
+      PISO_LOG_FILE: /data/requests.jsonl
+      PISO_CA_CERT: /data/ca.crt
+      PISO_CA_KEY: /data/ca.key
+      PISO_PROXY_LISTEN: :8080
+      PISO_CTRL_LISTEN: :8081
+      PISO_INGRESS_LISTEN: :8082
+    networks:
+      - vpc
+      - egress
+
+networks:
+  vpc:
+    driver: bridge
+    driver_opts:
+      com.docker.network.bridge.enable_ip_masquerade: "false"
+  egress:
+    driver: bridge

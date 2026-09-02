@@ -1,0 +1,42 @@
+# piso worker compose — generated per-project by `piso up`.
+# PKG placeholders are substituted by the CLI; do not edit by hand.
+name: piso-PROJ-SLUG
+
+services:
+  worker:
+    build:
+      context: WORKER_BUILD_CONTEXT
+    container_name: piso-worker-PROJ-SLUG
+    restart: unless-stopped
+    stdin_open: true
+    tty: true
+    volumes:
+      - PROJECT_DIR:/workspace          # the only host files the agent sees
+      - piso-agent-PROJ-SLUG:/root/.pi/agent   # pi sessions/settings persist
+      - CA_DIR/ca.crt:/piso-ca.pem:ro   # trust the gateway's MITM CA
+    environment:
+      HTTPS_PROXY: http://gateway:8080
+      HTTP_PROXY: http://gateway:8080
+      NO_PROXY: gateway,localhost,127.0.0.1,*.piso.local
+      GATEWAY_URL: http://gateway:8081
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /run
+      - /root/.cache
+    networks:
+      - vpc
+
+networks:
+  vpc:
+    name: piso_vpc
+    external: true
+
+volumes:
+  piso-agent-PROJ-SLUG:
+    name: piso-agent-PROJ-SLUG

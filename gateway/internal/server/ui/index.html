@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>piso gateway</title>
+<style>
+  :root { --bg:#0f1115; --panel:#171a21; --fg:#e6e8ee; --muted:#8b93a5; --accent:#4f8cff;
+          --ok:#2ecc71; --warn:#f1c40f; --bad:#e74c3c; --border:#262b36; }
+  * { box-sizing:border-box }
+  body { margin:0; font:14px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif; background:var(--bg); color:var(--fg) }
+  header { display:flex; align-items:center; gap:16px; padding:14px 20px; border-bottom:1px solid var(--border) }
+  header h1 { font-size:16px; margin:0; font-weight:600 }
+  header .sub { color:var(--muted); font-size:12px }
+  nav { display:flex; gap:4px; padding:10px 20px; border-bottom:1px solid var(--border); flex-wrap:wrap }
+  nav button { background:transparent; color:var(--muted); border:1px solid transparent; padding:6px 14px; border-radius:6px; cursor:pointer; font-size:13px }
+  nav button.active { background:var(--panel); color:var(--fg); border-color:var(--border) }
+  main { padding:20px; max-width:1400px }
+  .tab { display:none } .tab.active { display:block }
+  table { width:100%; border-collapse:collapse; background:var(--panel); border:1px solid var(--border); border-radius:8px; overflow:hidden }
+  th, td { text-align:left; padding:8px 12px; border-bottom:1px solid var(--border); font-size:13px; vertical-align:top }
+  th { color:var(--muted); font-weight:500; font-size:12px; text-transform:uppercase; letter-spacing:.03em }
+  tr:last-child td { border-bottom:none }
+  .badge { display:inline-block; padding:1px 8px; border-radius:10px; font-size:11px; font-weight:600 }
+  .badge.ok { background:rgba(46,204,113,.15); color:var(--ok) }
+  .badge.block { background:rgba(231,76,60,.15); color:var(--bad) }
+  .badge.sub { background:rgba(79,140,255,.15); color:var(--accent) }
+  .badge.retry { background:rgba(241,196,15,.15); color:var(--warn) }
+  code, .mono { font:12px ui-monospace, SFMono-Regular, Menlo, monospace }
+  .muted { color:var(--muted) }
+  form { display:flex; gap:8px; flex-wrap:wrap; margin:14px 0; align-items:center }
+  form input, form select { background:var(--panel); border:1px solid var(--border); color:var(--fg); padding:7px 10px; border-radius:6px; font-size:13px; min-width:140px }
+  form button, .btn { background:var(--accent); border:0; color:#fff; padding:7px 14px; border-radius:6px; cursor:pointer; font-size:13px }
+  .btn.danger { background:transparent; border:1px solid var(--bad); color:var(--bad) }
+  .btn.small { padding:3px 8px; font-size:12px }
+  .fade { animation: fade .4s }
+  @keyframes fade { from { opacity:0 } to { opacity:1 } }
+  .grid { display:grid; grid-template-columns:1fr 1fr; gap:20px } @media (max-width:900px){ .grid{ grid-template-columns:1fr } }
+  .card { background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:16px }
+  .card h3 { margin:0 0 10px; font-size:13px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em }
+</style>
+</head>
+<body>
+<header>
+  <h1>piso gateway</h1>
+  <span class="sub">secrets · substitution rules · credential detection · request log</span>
+  <span class="sub" id="health"></span>
+</header>
+<nav id="tabs">
+  <button data-tab="log" class="active">Request log</button>
+  <button data-tab="secrets">Secrets</button>
+  <button data-tab="rules">Rules</button>
+  <button data-tab="patterns">Patterns</button>
+  <button data-tab="exceptions">Exceptions</button>
+  <button data-tab="domains">Domains</button>
+  <button data-tab="routes">Routes</button>
+</nav>
+<main>
+  <!-- REQUEST LOG -->
+  <section class="tab active" id="tab-log">
+    <table>
+      <thead><tr><th>Time</th><th>Worker</th><th>Method</th><th>Host / path</th><th>Verdict</th><th>Reason</th><th>Findings</th><th></th></tr></thead>
+      <tbody id="logrows"></tbody>
+    </table>
+  </section>
+
+  <!-- SECRETS -->
+  <section class="tab" id="tab-secrets">
+    <div class="grid">
+      <div class="card">
+        <h3>Add secret</h3>
+        <form id="secretForm">
+          <input name="name" placeholder="name (anthropic)" required>
+          <input name="placeholder" placeholder="piso_anthropic_xyz" required>
+          <input name="value" type="password" placeholder="real value (hidden)" required>
+          <input name="allowedHosts" placeholder="allowed hosts, comma-sep (optional)">
+          <button type="submit">Add</button>
+        </form>
+        <p class="muted" style="margin:6px 0 0; font-size:12px">Real values are stored only in the gateway and never leave it. Placeholders are what the worker uses.</p>
+      </div>
+      <div class="card">
+        <h3>Secrets (summaries only)</h3>
+        <table><thead><tr><th>Name</th><th>Placeholder</th><th>Hosts</th><th></th></tr></thead>
+        <tbody id="secretrows"></tbody></table>
+      </div>
+    </div>
+  </section>
+
+  <!-- RULES -->
+  <section class="tab" id="tab-rules">
+    <div class="card">
+      <h3>Substitution rules — placeholder → real value, on a host</h3>
+      <form id="ruleForm">
+        <input name="placeholder" placeholder="piso_anthropic_xyz" required>
+        <input name="host" placeholder="api.anthropic.com (or *)" required>
+        <input name="secretId" id="ruleSecret" placeholder="secret id" required>
+        <button type="submit">Add rule</button>
+      </form>
+      <p class="muted" style="font-size:12px">A request carrying a placeholder is <b>blocked</b> (407, retryable) until a rule resolves it for that host. Copy the secret's id from the Secrets tab.</p>
+      <table><thead><tr><th>Placeholder</th><th>Host</th><th>Secret</th><th></th></tr></thead>
+      <tbody id="rulerows"></tbody></table>
+    </div>
+  </section>
+
+  <!-- PATTERNS -->
+  <section class="tab" id="tab-patterns">
+    <div class="grid">
+      <div class="card">
+        <h3>Credential-looking patterns</h3>
+        <p class="muted" style="font-size:12px; margin-top:0">Anything matching an enabled pattern is treated as a real credential and <b>blocked + flagged</b>. The library is comprehensive and user-extendable.</p>
+        <form id="patternForm">
+          <input name="name" placeholder="name">
+          <input name="regex" placeholder="regex (RE2)" style="min-width:280px" required>
+          <input name="description" placeholder="description">
+          <button type="submit">Add pattern</button>
+        </form>
+      </div>
+      <div class="card">
+        <table><thead><tr><th>Name</th><th>Regex</th><th>Sev</th><th>On/off</th><th></th></tr></thead>
+        <tbody id="patternrows"></tbody></table>
+      </div>
+    </div>
+  </section>
+
+  <!-- EXCEPTIONS -->
+  <section class="tab" id="tab-exceptions">
+    <div class="card">
+      <h3>Exceptions — allow requests that match credential patterns</h3>
+      <form id="exceptionForm">
+        <input name="hostRegex" placeholder="host regex (optional)">
+        <input name="pathRegex" placeholder="path regex (optional)">
+        <input name="contentRegex" placeholder="content regex (optional)">
+        <input name="placeholder" placeholder="piso_ token (optional)">
+        <input name="note" placeholder="why?">
+        <button type="submit">Add exception</button>
+      </form>
+      <p class="muted" style="font-size:12px">All provided matchers must match. Exceptions never substitute placeholders — they only stop blocks.</p>
+      <table><thead><tr><th>Host</th><th>Path</th><th>Content</th><th>Placeholder</th><th>Note</th><th></th></tr></thead>
+      <tbody id="exceptionrows"></tbody></table>
+    </div>
+  </section>
+
+  <!-- DOMAINS -->
+  <section class="tab" id="tab-domains">
+    <div class="card">
+      <h3>Domain policy — deny list (default is allow-by-default)</h3>
+      <form id="domainForm">
+        <input name="host" placeholder="ads.example.com" required>
+        <label class="muted"><input type="checkbox" name="deny" checked> deny</label>
+        <button type="submit">Save</button>
+      </form>
+      <table><thead><tr><th>Host</th><th>Deny</th><th>Needs rule</th><th></th></tr></thead>
+      <tbody id="domainrows"></tbody></table>
+    </div>
+  </section>
+
+  <!-- ROUTES -->
+  <section class="tab" id="tab-routes">
+    <div class="card">
+      <h3>Ingress routes — name.piso.local → worker:port</h3>
+      <form id="routeForm">
+        <input name="name" placeholder="preview" required>
+        <input name="worker" id="routeWorker" placeholder="worker container name" required>
+        <input name="port" placeholder="5173" required>
+        <button type="submit">Expose</button>
+      </form>
+      <table><thead><tr><th>Name</th><th>URL</th><th>Worker</th><th>Port</th><th></th></tr></thead>
+      <tbody id="routerows"></tbody></table>
+    </div>
+  </section>
+</main>
+<script>
+const $ = s => document.querySelector(s);
+const api = async (u, opt) => { const r = await fetch(u, opt); if (!r.ok) throw new Error((await r.text()) || r.status); return r.status===204? null : r.json(); };
+const esc = s => (s ?? '').toString().replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const el = (tag, cls, html) => { const e = document.createElement(tag); if (cls) e.className=cls; if (html!=null) e.innerHTML=html; return e; };
+
+// tabs
+document.querySelectorAll('#tabs button').forEach(b => b.onclick = () => {
+  document.querySelectorAll('#tabs button').forEach(x => x.classList.remove('active'));
+  document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
+  b.classList.add('active'); $(`#tab-${b.dataset.tab}`).classList.add('active');
+});
+
+const verdict = a => a==='block' ? '<span class="badge block">blocked</span>' : a==='substitute' ? '<span class="badge sub">substituted</span>' : '<span class="badge ok">allowed</span>';
+const reason = a => a==='block' ? '<span class="badge retry">retryable</span>' : '';
+
+// ---- request log (live via SSE) ----
+function logRow(r) {
+  const findings = (r.findings||[]).map(f => `<span class="muted mono">${esc(f.kind)}${f.patternId?':'+esc(f.patternId):''}@${esc(f.location)}</span>`).join(' ');
+  const tr = el('tr', 'fade', `<td class="muted mono">${esc(new Date(r.ts).toLocaleTimeString())}</td>
+    <td class="mono">${esc(r.worker)}</td><td>${esc(r.method)}</td>
+    <td class="mono">${esc(r.scheme)}://${esc(r.host)}${esc(r.path)}</td>
+    <td>${verdict(r.action)}</td><td class="mono">${esc((r.reasons||[]).join(', '))}</td><td>${findings}</td>
+    <td>${r.retryable ? `<button class="btn small" onclick="retry('${r.id}')">retry</button>` : ''}</td>`);
+  const t = $('#logrows'); t.prepend(tr); while (t.children.length > 300) t.lastElementChild.remove();
+}
+async function retry(id) {
+  try { const r = await api(`/api/v1/requests/${id}/retry`, {method:'POST'}); alert('Retry → ' + r.status); }
+  catch (e) { alert('Retry blocked: ' + e.message); }
+  loadLog();
+}
+async function loadLog() { const rs = await api('/api/v1/requests'); $('#logrows').innerHTML=''; rs.forEach(logRow); }
+function streamLog() {
+  const es = new EventSource('/api/v1/requests/stream');
+  es.addEventListener('record', ev => { const r = JSON.parse(ev.data); logRow(r); });
+  es.onerror = () => {}; // reconnect handled by EventSource
+}
+
+// ---- secrets ----
+async function loadSecrets() {
+  const ss = await api('/api/v1/secrets');
+  $('#secretrows').innerHTML = '';
+  ss.forEach(s => $('#secretrows').append(el('tr', '', `<td>${esc(s.name)}</td><td class="mono">${esc(s.placeholder)}</td>
+    <td><span class="mono">${esc((s.allowedHosts||[]).join(', '))}</span></td>
+    <td><button class="btn small danger" onclick="delSecret('${s.id}')">del</button></td>`));
+  const sel = $('#ruleSecret'); sel.placeholder = ss.length ? `secret id: ${ss[0].id}` : 'secret id';
+}
+async function delSecret(id) { await api(`/api/v1/secrets/${id}`, {method:'DELETE'}); loadSecrets(); }
+$('#secretForm').onsubmit = async ev => {
+  ev.preventDefault(); const f = new FormData(ev.target);
+  const allowedHosts = (f.get('allowedHosts')||'').split(',').map(s=>s.trim()).filter(Boolean);
+  const body = { name:f.get('name'), placeholder:f.get('placeholder'), value:f.get('value'), allowedHosts };
+  try { await api('/api/v1/secrets', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)}); ev.target.reset(); loadSecrets(); }
+  catch (e) { alert(e.message); }
+};
+
+// ---- rules ----
+async function loadRules() {
+  const rs = await api('/api/v1/rules'); $('#rulerows').innerHTML='';
+  rs.forEach(r => $('#rulerows').append(el('tr','',`<td class="mono">${esc(r.placeholder)}</td><td class="mono">${esc(r.host)}</td><td class="mono muted">${esc(r.secretId)}</td>
+    <td><button class="btn small danger" onclick="delRule('${r.id}')">del</button></td>`)));
+}
+async function delRule(id) { await api(`/api/v1/rules/${id}`, {method:'DELETE'}); loadRules(); }
+$('#ruleForm').onsubmit = async ev => {
+  ev.preventDefault(); const f = new FormData(ev.target);
+  try { await api('/api/v1/rules', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({placeholder:f.get('placeholder'), host:f.get('host'), secretId:f.get('secretId')})}); ev.target.reset(); loadRules(); }
+  catch (e) { alert(e.message); }
+};
+
+// ---- patterns ----
+async function loadPatterns() {
+  const ps = await api('/api/v1/patterns'); $('#patternrows').innerHTML='';
+  ps.forEach(p => $('#patternrows').append(el('tr','',`<td>${esc(p.name)} <span class="muted">${esc(p.severity)}</span></td>
+    <td class="mono">${esc(p.regex)}</td><td>${p.enabled?'<span class="badge ok">on</span>':'<span class="badge">off</span>'}</td>
+    <td><button class="btn small danger" onclick="delPattern('${p.id}')">del</button></td>`)));
+}
+async function delPattern(id) { await api(`/api/v1/patterns/${id}`, {method:'DELETE'}); loadPatterns(); }
+$('#patternForm').onsubmit = async ev => {
+  ev.preventDefault(); const f = new FormData(ev.target);
+  try { await api('/api/v1/patterns', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({name:f.get('name'), regex:f.get('regex'), description:f.get('description'), enabled:true})}); ev.target.reset(); loadPatterns(); }
+  catch (e) { alert(e.message); }
+};
+
+// ---- exceptions ----
+async function loadExceptions() {
+  const es = await api('/api/v1/exceptions'); $('#exceptionrows').innerHTML='';
+  es.forEach(e => $('#exceptionrows').append(el('tr','',`<td class="mono">${esc(e.hostRegex||'-')}</td><td class="mono">${esc(e.pathRegex||'-')}</td>
+    <td class="mono">${esc(e.contentRegex||'-')}</td><td class="mono">${esc(e.placeholder||'-')}</td><td>${esc(e.note||'')}</td>
+    <td><button class="btn small danger" onclick="delException('${e.id}')">del</button></td>`)));
+}
+async function delException(id) { await api(`/api/v1/exceptions/${id}`, {method:'DELETE'}); loadExceptions(); }
+$('#exceptionForm').onsubmit = async ev => {
+  ev.preventDefault(); const f = new FormData(ev.target);
+  const body = { hostRegex:f.get('hostRegex')||undefined, pathRegex:f.get('pathRegex')||undefined, contentRegex:f.get('contentRegex')||undefined, placeholder:f.get('placeholder')||undefined, note:f.get('note')||undefined, enabled:true };
+  try { await api('/api/v1/exceptions', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)}); ev.target.reset(); loadExceptions(); }
+  catch (e) { alert(e.message); }
+};
+
+// ---- domains ----
+async function loadDomains() {
+  const ds = await api('/api/v1/domains'); $('#domainrows').innerHTML='';
+  ds.forEach(d => $('#domainrows').append(el('tr','',`<td class="mono">${esc(d.host)}</td><td>${d.deny?'<span class="badge block">deny</span>':'-'}</td><td>${d.needsRule?'yes':'-'}</td>
+    <td><button class="btn small danger" onclick="delDomain('${esc(d.host)}')">del</button></td>`)));
+}
+async function delDomain(host) { await api(`/api/v1/domains/${encodeURIComponent(host)}`, {method:'DELETE'}); loadDomains(); }
+$('#domainForm').onsubmit = async ev => {
+  ev.preventDefault(); const f = new FormData(ev.target);
+  try { await api('/api/v1/domains', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({host:f.get('host'), deny: f.get('deny')=== 'on'})}); ev.target.reset(); loadDomains(); }
+  catch (e) { alert(e.message); }
+};
+
+// ---- routes ----
+async function loadRoutes() {
+  const rs = await api('/api/v1/routes'); $('#routerows').innerHTML='';
+  rs.forEach(r => $('#routerows').append(el('tr','',`<td>${esc(r.name)}</td><td class="mono">https://${esc(r.name)}.piso.local</td>
+    <td class="mono">${esc(r.worker)}</td><td>${r.port}</td>
+    <td><button class="btn small danger" onclick="delRoute('${r.id}')">del</button></td>`)));
+}
+async function delRoute(id) { await api(`/api/v1/routes/${id}`, {method:'DELETE'}); loadRoutes(); }
+$('#routeForm').onsubmit = async ev => {
+  ev.preventDefault(); const f = new FormData(ev.target);
+  try { await api('/api/v1/routes', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({name:f.get('name'), worker:f.get('worker'), port: parseInt(f.get('port'))})}); ev.target.reset(); loadRoutes(); }
+  catch (e) { alert(e.message); }
+};
+
+// ---- init ----
+(async () => {
+  api('/api/v1/health').then(h => $('#health').textContent = 'live @ ' + h.time.slice(11,19)).catch(() => $('#health').textContent='offline');
+  await loadSecrets(); await loadRules(); await loadPatterns(); await loadExceptions(); await loadDomains(); await loadRoutes(); await loadLog();
+  streamLog();
+})();
+</script>
+</body>
+</html>
