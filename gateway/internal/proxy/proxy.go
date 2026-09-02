@@ -75,6 +75,12 @@ func (h *Handler) handleConnect(w http.ResponseWriter, r *http.Request) {
 	}
 	// Hard network-level block on internal targets (belt & braces with policy).
 	if ip := net.ParseIP(host); ip != nil && (ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast()) {
+		h.Store.AppendLog(store.Record{
+			ID: recID(), Worker: h.workerID(r), Ts: time.Now().UTC(),
+			Method: http.MethodConnect, Scheme: "https", Host: host, Path: "/",
+			Action: string(model.ActionBlock), Status: http.StatusForbidden,
+			Reasons: []string{string(model.ReasonInternalTarget)},
+		})
 		http.Error(w, "internal target denied", http.StatusForbidden)
 		return
 	}
