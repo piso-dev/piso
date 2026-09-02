@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"piso/cli/internal/dockernet"
 	"piso/cli/internal/pisoconfig"
 )
 
@@ -94,7 +95,11 @@ func cmdUp(args []string) error {
 	}
 	fmt.Printf("piso: project %q (slug %s)\n", proj.Dir, proj.Slug)
 
-	// 1. gateway (shared, one per machine)
+	// 1. gateway (shared, one per machine). Compose will not flip Internal on
+	// an already-created piso_vpc, so tear down a leaky one first.
+	if err := dockernet.EnsureInternal(); err != nil {
+		return err
+	}
 	gatewayFile, err := pisoconfig.GatewayCompose()
 	if err != nil {
 		return err
@@ -102,6 +107,9 @@ func cmdUp(args []string) error {
 	if err := runEnv("docker", []string{"compose", "-f", gatewayFile, "-p", "piso", "up", "-d", "--build", "-t", "0"},
 		map[string]string{"DOCKER_BUILDKIT": "1"}); err != nil {
 		return fmt.Errorf("gateway up: %w", err)
+	}
+	if err := dockernet.AssertInternal(); err != nil {
+		return err
 	}
 	// 2. worker (per-project)
 	workerFile, err := pisoconfig.WriteWorkerCompose(proj)
@@ -164,6 +172,17 @@ func cmdStatus(args []string) error {
 		fmt.Println("gateway: live (" + gw + ")")
 	} else {
 		fmt.Println("gateway: DOWN (run `piso up`)")
+	}
+	exists, internal, err := dockernet.InspectVPC()
+	switch {
+	case err != nil:
+		fmt.Printf("piso_vpc: inspect failed: %v\n", err)
+	case !exists:
+		fmt.Println("piso_vpc: missing")
+	case internal:
+		fmt.Println("piso_vpc: internal")
+	default:
+		fmt.Println("piso_vpc: NOT internal (workers can bypass the gateway)")
 	}
 	out, _ := exec.Command("docker", "ps", "--format", "{{.Names}}\t{{.Status}}").Output()
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {

@@ -1,5 +1,9 @@
 # piso worker compose — generated per-project by `piso up`.
 # PKG placeholders are substituted by the CLI; do not edit by hand.
+#
+# The worker joins piso_vpc only (external, created by the gateway compose).
+# That network is internal: the worker cannot be forwarded off the bridge.
+# Do not attach this service to piso_egress — that is the gateway's NAT path.
 name: piso-PROJ-SLUG
 
 services:

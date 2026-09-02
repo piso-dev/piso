@@ -3,8 +3,11 @@
 # The worker compose (generated per-project by `piso up`) joins piso_vpc as an
 # external network, so the gateway is the ONLY member with egress.
 #
-# Load-bearing: piso_vpc has ip masquerade DISABLED. Without this line the
-# worker can bypass the gateway entirely via NAT — the whole design collapses.
+# Load-bearing: piso_vpc is an *internal* network. Docker drops any packet
+# forwarded off that bridge, so the worker has no path to the internet except
+# the gateway (which is also on the egress network). Masquerade-off is extra.
+# Compose will not flip Internal on an already-created piso_vpc — `piso up`
+# tears it down and recreates it when the existing one is leaky.
 name: piso
 
 services:
@@ -35,8 +38,12 @@ services:
 
 networks:
   vpc:
+    name: piso_vpc
     driver: bridge
+    internal: true
+    enable_ipv6: false
     driver_opts:
       com.docker.network.bridge.enable_ip_masquerade: "false"
   egress:
+    name: piso_egress
     driver: bridge

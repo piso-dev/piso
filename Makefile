@@ -1,4 +1,4 @@
-.PHONY: build test gw-run smoke
+.PHONY: build test gw-run smoke isolation
 
 BIN ?= bin
 
@@ -18,6 +18,10 @@ gw-run:
 
 smoke:
 	./scripts/smoke.sh
+
+# Docker-level: worker noproxy must fail; proxy + gateway egress must work.
+isolation:
+	./scripts/isolation.sh
 
 clean:
 	rm -rf $(BIN) .piso

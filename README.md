@@ -13,7 +13,7 @@ GATEWAY  ── control plane (UI: secrets, patterns, log; API: expose, retry)
    │  ingress  (name.piso.local → worker:port)
    ▼
 WORKER (pi, Bun)  ── named volume ~/.pi/agent (sessions persist)
-   └─ mount: project dir (rw)     masquerade OFF ⇒ gateway is the only egress
+   └─ mount: project dir (rw)     piso_vpc is internal ⇒ gateway is the only egress
 ```
 
 ## Core guarantees
@@ -26,9 +26,9 @@ WORKER (pi, Bun)  ── named volume ~/.pi/agent (sessions persist)
   can't ride out even if the worker never saw it in the vault.
 - **Blocked requests are first-class objects** with an id, a captured request,
   and a retry button: add a secret/exception, retry, done.
-- **Everything is gated**: the worker's only egress is the gateway (Docker
-  masquerade disabled on the internal network), and its only ingress is the
-  gateway's reverse proxy.
+- **Everything is gated**: the worker's only egress is the gateway (`piso_vpc`
+  is a Docker internal network — off-bridge forwarding is dropped), and its
+  only ingress is the gateway's reverse proxy.
 
 ## Layout
 
@@ -36,7 +36,7 @@ WORKER (pi, Bun)  ── named volume ~/.pi/agent (sessions persist)
 cli/     Go CLI: piso          (up, attach, expose, logs, secrets, dashboard)
 gateway/ Go MITM proxy + control plane + request log + web UI
 worker/  Docker image: pi/Bun + CA trust + hardening
-compose/ docker-compose (worker + gateway, masquerade off)
+compose/ docker-compose (worker + gateway, piso_vpc internal)
 ```
 
 ## Quick start

@@ -1,5 +1,5 @@
 # piso worker — the AI agent's home. Runs pi (on Bun) with egress ONLY through
-# the gateway (compose sets HTTPS_PROXY + no masquerade on the internal net).
+# the gateway (compose sets HTTPS_PROXY; piso_vpc is a Docker internal network).
 # The gateway's CA is injected read-only by compose and installed into the
 # system trust store by entrypoint.sh so everything (curl/git/node/bun) accepts
 # the MITM cert.
