@@ -22,7 +22,9 @@ services:
       - "127.0.0.1:8081:8081" # control plane: web UI + API
       - "127.0.0.1:8082:8082" # ingress: name.piso.local routes
     volumes:
-      - ../.piso:/data
+      # Machine-level state (secrets, CA, log). The CLI sets PISO_DATA
+      # (default ~/.piso) so an installed binary does not need a writable repo.
+      - ${PISO_DATA}:/data
     environment:
       PISO_STATE_FILE: /data/state.json
       PISO_PATTERNS_FILE: /data/patterns.json

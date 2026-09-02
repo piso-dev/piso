@@ -42,12 +42,16 @@ compose/ docker-compose (worker + gateway, piso_vpc internal)
 ## Quick start
 
 ```bash
-make build
-# edit compose/.env: PISO_* settings, add real secrets via the dashboard
+git clone <this-repo> && cd piso
+make install                 # sudo if PREFIX=/usr/local is not writable
+# or: make install PREFIX=$HOME/.local   # then ensure ~/.local/bin is on PATH
+cd /path/to/your/project
 piso up          # ensure gateway + worker for the current dir
 piso attach      # enter the worker, run pi
 piso dashboard   # open the gateway web UI (secrets, patterns, request log)
 piso expose 5173 --name preview   # reverse-proxy a worker dev server
 ```
+
+`make install` puts `piso` on `$(PREFIX)/bin` (default `/usr/local`) and copies the Docker build context to `$(PREFIX)/share/piso`. The CLI finds that tree from the binary path, so you can run `piso` from any directory. Gateway secrets/CA/logs live in `~/.piso` (`PISO_DATA` overrides). Override the share tree with `PISO_HOME`.
 
 See `docs/design.md` for the threat model and the decision pipeline.

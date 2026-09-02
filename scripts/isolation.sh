@@ -9,6 +9,8 @@
 #   5. Direct HTTP from piso_egress must succeed (gateway still has a NAT path).
 set -euo pipefail
 cd "$(dirname "$0")/.."
+export PISO_DATA="${PISO_DATA:-$HOME/.piso}"
+mkdir -p "$PISO_DATA"
 
 PROBE_IMAGE=${PROBE_IMAGE:-piso-isolation-probe}
 VPC=piso_vpc

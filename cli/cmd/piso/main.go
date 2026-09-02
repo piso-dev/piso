@@ -104,8 +104,12 @@ func cmdUp(args []string) error {
 	if err != nil {
 		return err
 	}
+	composeEnv, err := dockerComposeEnv()
+	if err != nil {
+		return err
+	}
 	if err := runEnv("docker", []string{"compose", "-f", gatewayFile, "-p", "piso", "up", "-d", "--build", "-t", "0"},
-		map[string]string{"DOCKER_BUILDKIT": "1"}); err != nil {
+		composeEnv); err != nil {
 		return fmt.Errorf("gateway up: %w", err)
 	}
 	if err := dockernet.AssertInternal(); err != nil {
@@ -116,7 +120,7 @@ func cmdUp(args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := runEnv("docker", []string{"compose", "-f", workerFile, "-p", "piso-" + proj.Slug, "up", "-d", "--build", "-t", "0"}, nil); err != nil {
+	if err := runEnv("docker", []string{"compose", "-f", workerFile, "-p", "piso-" + proj.Slug, "up", "-d", "--build", "-t", "0"}, composeEnv); err != nil {
 		return fmt.Errorf("worker up: %w", err)
 	}
 	// 3. wait for the gateway control plane
@@ -141,10 +145,14 @@ func cmdDown(args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := run("docker", "compose", "-f", workerFile, "-p", "piso-"+proj.Slug, "down"); err != nil {
+	composeEnv, err := dockerComposeEnv()
+	if err != nil {
 		return err
 	}
-	fmt.Println("piso: worker stopped (gateway left running — stop it with docker compose -f compose/gateway.yaml down)")
+	if err := runEnv("docker", []string{"compose", "-f", workerFile, "-p", "piso-" + proj.Slug, "down"}, composeEnv); err != nil {
+		return err
+	}
+	fmt.Println("piso: worker stopped (gateway left running)")
 	return nil
 }
 
@@ -342,6 +350,19 @@ func cmdDashboard(args []string) error {
 }
 
 // ---- shared helpers ----
+
+// dockerComposeEnv is required for compose interpolation of ${PISO_DATA}
+// (gateway bind-mount) and for BuildKit on image builds.
+func dockerComposeEnv() (map[string]string, error) {
+	data, err := pisoconfig.DataDir()
+	if err != nil {
+		return nil, err
+	}
+	return map[string]string{
+		"DOCKER_BUILDKIT": "1",
+		"PISO_DATA":       data,
+	}, nil
+}
 
 func healthy(gw string) bool {
 	resp, err := http.Get(gw + "/api/v1/health")
