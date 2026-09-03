@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -39,6 +40,14 @@ type Handler struct {
 // hop is re-scanned and re-policed by the gateway.
 func New(ca *CA, st *store.Store, pat *patterns.Compiled, workerFn func(*http.Request) string) *Handler {
 	tr := http.DefaultTransport.(*http.Transport).Clone()
+	// Never inherit HTTP_PROXY: the gateway is the proxy. DisableCompression
+	// keeps upstream Content-Encoding intact so we do not rewrite lengths.
+	// Keep HTTP/2 to origin (registry.npmjs.org ALPN is h2-only-enough that
+	// ForceAttemptHTTP2=false reads SETTINGS as HTTP/1.1 and 502s). Rewrite
+	// the response to HTTP/1.1 before writing it onto the MITM tunnel.
+	tr.Proxy = nil
+	tr.DisableCompression = true
+	tr.ResponseHeaderTimeout = 30 * time.Second
 	return &Handler{
 		CA:       ca,
 		Store:    st,
@@ -127,7 +136,13 @@ func (h *Handler) handleConnect(w http.ResponseWriter, r *http.Request) {
 		log.Printf("proxy: leaf for %s: %v", host, err)
 		return
 	}
-	tlsConn := tls.Server(conn, &tls.Config{Certificates: []tls.Certificate{leaf.toTLS()}, MinVersion: tls.VersionTLS12})
+	// The HTTP server's bufio.Reader may already hold the TLS ClientHello.
+	// Handshake on the raw conn drops those bytes (bad record MAC / hang).
+	tlsConn := tls.Server(&hijackedConn{Conn: conn, br: brw.Reader}, &tls.Config{
+		Certificates: []tls.Certificate{leaf.toTLS()},
+		MinVersion:   tls.VersionTLS12,
+		NextProtos:   []string{"http/1.1"},
+	})
 	if err := tlsConn.Handshake(); err != nil {
 		log.Printf("proxy: tls handshake for %s: %v", host, err)
 		return
@@ -135,6 +150,7 @@ func (h *Handler) handleConnect(w http.ResponseWriter, r *http.Request) {
 	defer tlsConn.Close()
 
 	// Serve decrypted HTTP/1.1 from the client over the tunnel.
+	// Do not use the CONNECT request context: it can be canceled after hijack.
 	br := bufio.NewReader(tlsConn)
 	for {
 		req, err := http.ReadRequest(br)
@@ -146,14 +162,30 @@ func (h *Handler) handleConnect(w http.ResponseWriter, r *http.Request) {
 		if req.Host == "" {
 			req.Host = host
 		}
-		resp, keepAlive := h.process(r.Context(), req, "https")
-		if err := resp.Write(tlsConn); err != nil {
+		fwdCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		resp, keepAlive := h.process(fwdCtx, req, "https")
+		writeErr := writeTunnelResponse(tlsConn, resp)
+		_ = resp.Body.Close()
+		cancel()
+		if writeErr != nil {
 			return
 		}
 		if resp.Close || !keepAlive {
 			return
 		}
 	}
+}
+
+// hijackedConn reads leftover bytes from Hijack's bufio.Reader before the
+// underlying connection. After CONNECT 200, the client often sends the TLS
+// ClientHello before we call Handshake; those bytes sit in br, not conn.
+type hijackedConn struct {
+	net.Conn
+	br *bufio.Reader
+}
+
+func (c *hijackedConn) Read(p []byte) (int, error) {
+	return c.br.Read(p)
 }
 
 // handlePlainHTTP forwards absolute-URI HTTP proxy requests.
@@ -165,6 +197,7 @@ func (h *Handler) handlePlainHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	r.URL = target
 	out, keepAlive := h.process(r.Context(), r, "http")
+	defer out.Body.Close()
 	if out.StatusCode == 0 {
 		out.StatusCode = http.StatusOK
 	}
@@ -183,14 +216,14 @@ func (h *Handler) handlePlainHTTP(w http.ResponseWriter, r *http.Request) {
 // Replay re-runs the full policy on a captured request and forwards it. This
 // is the "add a secret, then retry" path — the policy is re-evaluated fresh;
 // a rule added while the request sat blocked is never trusted blindly.
-func (h *Handler) Replay(ctx context.Context, rec store.Record) (*http.Response, error) {
+func (h *Handler) Replay(ctx context.Context, rec store.Record) (*http.Response, model.Decision, error) {
 	if rec.Capture == nil {
-		return nil, fmt.Errorf("no capture")
+		return nil, model.Decision{}, fmt.Errorf("no capture")
 	}
 	c := rec.Capture
 	req, err := http.NewRequestWithContext(ctx, c.Method, c.URL, bytes.NewReader(c.Body))
 	if err != nil {
-		return nil, err
+		return nil, model.Decision{}, err
 	}
 	for k, vv := range c.Headers {
 		if strings.EqualFold(k, "Host") {
@@ -206,14 +239,15 @@ func (h *Handler) Replay(ctx context.Context, rec store.Record) (*http.Response,
 
 	dec := h.decide(req, rec.Scheme, body)
 	if dec.Action != model.ActionAllow && dec.Action != model.ActionSubstitute {
-		return nil, fmt.Errorf("still blocked: %v", dec.Reasons)
+		return nil, dec, fmt.Errorf("still blocked: %v", dec.Reasons)
 	}
 	if dec.Action == model.ActionSubstitute {
 		applySubstitution(req, body, dec, h.Store, scanner.ScanRequest(req, scanner.Options{
 			Worker: h.workerID(req), Secrets: knownSecrets(h.Store), Patterns: h.Patterns,
 		}))
 	}
-	return h.forward(ctx, req, rec.Scheme)
+	out, err := h.forward(ctx, req, rec.Scheme)
+	return out, dec, err
 }
 
 // decide is the scan + policy step shared by process and Replay.
@@ -308,10 +342,82 @@ func (h *Handler) process(ctx context.Context, req *http.Request, scheme string)
 			Close:      true,
 		}, false
 	}
+	prepareTunnelResponse(out)
 	out.Request = req
 	rec.Retryable = false
 	h.Store.AppendLog(rec)
 	return out, true
+}
+
+// prepareTunnelResponse rewrites an upstream response so it is valid HTTP/1.1
+// on the MITM tunnel. HTTP/2 origins set ProtoMajor=2; Alt-Svc tells the
+// client to switch to h2/h3 on the next request — both break this proxy.
+func prepareTunnelResponse(resp *http.Response) {
+	if resp == nil {
+		return
+	}
+	resp.Proto = "HTTP/1.1"
+	resp.ProtoMajor = 1
+	resp.ProtoMinor = 1
+	if resp.Header == nil {
+		resp.Header = make(http.Header)
+	}
+	for _, h := range []string{
+		"Alt-Svc",
+		"Alt-Used",
+		"HTTP2-Settings",
+		"Upgrade",
+		"Keep-Alive",
+		"Proxy-Connection",
+	} {
+		resp.Header.Del(h)
+	}
+}
+
+// writeTunnelResponse writes a clean HTTP/1.1 response. It buffers the body
+// so Content-Length matches bytes on the wire; resp.Write on an HTTP/2
+// origin response can advertise the wrong length and hang the client.
+// The caller still closes the body.
+func writeTunnelResponse(w io.Writer, resp *http.Response) error {
+	if resp == nil {
+		return fmt.Errorf("nil response")
+	}
+	prepareTunnelResponse(resp)
+	var body []byte
+	if resp.Body != nil {
+		b, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return err
+		}
+		body = b
+	}
+	status := resp.StatusCode
+	if status == 0 {
+		status = http.StatusOK
+	}
+	text := http.StatusText(status)
+	if text == "" {
+		text = "OK"
+	}
+	hdr := resp.Header.Clone()
+	if hdr == nil {
+		hdr = make(http.Header)
+	}
+	for _, h := range []string{"Content-Length", "Transfer-Encoding"} {
+		hdr.Del(h)
+	}
+	hdr.Set("Content-Length", strconv.Itoa(len(body)))
+	if _, err := fmt.Fprintf(w, "HTTP/1.1 %03d %s\r\n", status, text); err != nil {
+		return err
+	}
+	if err := hdr.Write(w); err != nil {
+		return err
+	}
+	if _, err := io.WriteString(w, "\r\n"); err != nil {
+		return err
+	}
+	_, err := w.Write(body)
+	return err
 }
 
 // forward replays the (possibly substituted) request upstream.
@@ -412,7 +518,8 @@ func recExceptions(st *store.Store) []model.Exception {
 	for _, e := range es {
 		out = append(out, model.Exception{
 			ID: e.ID, Note: e.Note, HostRegex: e.HostRegex, PathRegex: e.PathRegex,
-			ContentRegex: e.ContentRegex, Placeholder: e.Placeholder, Enabled: e.Enabled,
+			ContentRegex: e.ContentRegex, Placeholder: e.Placeholder,
+			PatternID: e.PatternID, Enabled: e.Enabled,
 		})
 	}
 	return out

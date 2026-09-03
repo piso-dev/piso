@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 )
 
 // Default host-published ports. Control defaults to 80 so the dashboard is
@@ -120,11 +121,34 @@ func CheckHostPortsFree(p HostPorts) error {
 }
 
 func probePort(port int) error {
-	ln, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+	if err := tryListen("tcp4", net.JoinHostPort("127.0.0.1", strconv.Itoa(port))); err != nil {
+		return err
+	}
+	err := tryListen("tcp6", net.JoinHostPort("::1", strconv.Itoa(port)))
+	if err == nil || isUnusableIPv6(err) {
+		return nil
+	}
+	return err
+}
+
+func tryListen(network, addr string) error {
+	ln, err := net.Listen(network, addr)
 	if err != nil {
 		return err
 	}
 	return ln.Close()
+}
+
+// isUnusableIPv6 reports a machine that cannot bind ::1 at all (not "in use").
+func isUnusableIPv6(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "cannot assign") ||
+		strings.Contains(s, "protocol not available") ||
+		strings.Contains(s, "address family") ||
+		strings.Contains(s, "family not supported")
 }
 
 func mergePorts(base, over HostPorts) HostPorts {

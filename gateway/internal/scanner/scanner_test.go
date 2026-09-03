@@ -43,6 +43,40 @@ func TestDetectsPlaceholderInAuthAndBody(t *testing.T) {
 	}
 }
 
+func TestLongBearerPlaceholderIsNotGenericBearer(t *testing.T) {
+	// Imported keys are piso_<provider>_<12 hex> (≥24 chars) so generic-bearer
+	// matches "Bearer " + the placeholder unless the scanner drops it.
+	req := newReq(t, "POST", "https://routstr.ft.hn/v1/chat/completions", `{}`, map[string]string{
+		"Authorization": "Bearer piso_routstr_5ef1739b3cf1",
+	})
+	res := ScanRequest(req, Options{Patterns: testPatterns(t)})
+	if len(res.Placeholders) != 1 || res.Placeholders[0].Token != "piso_routstr_5ef1739b3cf1" {
+		t.Fatalf("want the routstr placeholder, got %+v", res.Placeholders)
+	}
+	if res.LooksCredential() {
+		t.Fatalf("Bearer piso_… must not be generic-bearer: %+v", res.PatternHits)
+	}
+}
+
+func TestRealBearerStillFlags(t *testing.T) {
+	req := newReq(t, "POST", "https://api.example.com/v1", `{}`, map[string]string{
+		"Authorization": "Bearer sk-live-not-a-placeholder-token",
+	})
+	res := ScanRequest(req, Options{Patterns: testPatterns(t)})
+	if !res.LooksCredential() {
+		t.Fatalf("real bearer must flag LooksCredential")
+	}
+	found := false
+	for _, f := range res.PatternHits {
+		if f.PatternID == "generic-bearer" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("want generic-bearer, got %+v", res.PatternHits)
+	}
+}
+
 func TestDetectsRealSecretExactMatch(t *testing.T) {
 	req := newReq(t, "GET", "https://api.example.com/data", "", map[string]string{
 		"X-Api-Key": "sk-SUPER-SECRET-REAL-KEY-123456",

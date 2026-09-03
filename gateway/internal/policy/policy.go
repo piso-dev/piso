@@ -23,16 +23,16 @@ const (
 
 // Input is everything the policy needs about a request + configured state.
 type Input struct {
-	Method  string
-	Schema  string // "http" | "https"
-	Host    string // hostname excluding port
-	Path    string
-	Body    string // raw body (for exception content matching)
-	Scan    scanner.Result
+	Method              string
+	Schema              string // "http" | "https"
+	Host                string // hostname excluding port
+	Path                string
+	Body                string // raw body (for exception content matching)
+	Scan                scanner.Result
 	SecretByPlaceholder map[string]model.Secret // placeholder -> secret (enabled only)
-	Rules   []model.Rule
-	Domains map[string]model.DomainPolicy // keyed by lowercase host
-	Exceptions []model.Exception
+	Rules               []model.Rule
+	Domains             map[string]model.DomainPolicy // keyed by lowercase host
+	Exceptions          []model.Exception
 }
 
 // Decide runs the pipeline and returns the action plus reasons.
@@ -57,26 +57,43 @@ func Decide(in Input) model.Decision {
 		return model.Decision{Action: model.ActionBlock, Reasons: reasons}
 	}
 
-	// 3. Credential-looking content (real secrets + patterns).
-	if in.Scan.LooksCredential() {
-		if exceptionApplies(in, in.Scan) {
+	// 3. Exact known real secrets always block (unless a host-wide exception).
+	// Pattern-scoped exceptions never waive an exact real secret.
+	if len(in.Scan.RealSecrets) > 0 {
+		if hostWideExceptionApplies(in, in.Scan) {
 			appendReason(model.ReasonAllowedException)
 			return model.Decision{Action: model.ActionAllow, Reasons: reasons}
 		}
-		for _, f := range in.Scan.RealSecrets {
-			_ = f
-			appendReason(model.ReasonRealSecret)
-			break
-		}
+		appendReason(model.ReasonRealSecret)
 		if len(in.Scan.PatternHits) > 0 {
 			appendReason(model.ReasonSecretPattern)
 		}
 		return model.Decision{Action: model.ActionBlock, Reasons: reasons}
 	}
 
-	// 4. Placeholders: substitute only with a matching rule; else block.
+	// 4. Credential-looking patterns. Hits that are just a piso_ placeholder
+	// (e.g. Authorization: Bearer piso_routstr_…) are not secrets — they fall
+	// through to substitution. A leftover real-looking hit still blocks
+	// unless every such hit is covered by an exception.
+	leftover := nonPlaceholderPatternHits(in.Scan)
+	if len(leftover) > 0 {
+		if allHitsCovered(in, leftover) {
+			if !in.Scan.HasPlaceholder() {
+				appendReason(model.ReasonAllowedException)
+				return model.Decision{Action: model.ActionAllow, Reasons: reasons}
+			}
+			// Excepted patterns plus placeholders: keep going so the
+			// placeholder still substitutes.
+		} else {
+			appendReason(model.ReasonSecretPattern)
+			return model.Decision{Action: model.ActionBlock, Reasons: reasons}
+		}
+	}
+
+	// 5. Placeholders: substitute only with a matching rule; else block.
+	// Pattern-scoped exceptions do not skip substitution.
 	if in.Scan.HasPlaceholder() {
-		if exceptionApplies(in, in.Scan) {
+		if hostWideExceptionApplies(in, in.Scan) {
 			appendReason(model.ReasonAllowedException)
 			return model.Decision{Action: model.ActionAllow, Reasons: reasons}
 		}
@@ -89,7 +106,7 @@ func Decide(in Input) model.Decision {
 		return model.Decision{Action: model.ActionBlock, Reasons: reasons}
 	}
 
-	// 5. Plain request: allow by default.
+	// 6. Plain request: allow by default.
 	appendReason(model.ReasonAllowedDomain)
 	return model.Decision{Action: model.ActionAllow, Reasons: reasons}
 }
@@ -128,39 +145,103 @@ func lookupRule(in Input, placeholder string) (model.Rule, bool) {
 	return model.Rule{}, false
 }
 
-// exceptionApplies returns true when any enabled exception matches the
-// request host/path and covers its credential findings.
-func exceptionApplies(in Input, s scanner.Result) bool {
+// hostWideExceptionApplies reports whether any enabled exception without a
+// PatternID matches the request. Used to waive real secrets and placeholders.
+func hostWideExceptionApplies(in Input, s scanner.Result) bool {
 	for _, e := range in.Exceptions {
-		if !e.Enabled {
+		if e.PatternID != "" {
 			continue
 		}
-		if e.HostRegex != "" && !regexMatch(e.HostRegex, in.Host) {
-			continue
+		if exceptionRequestMatch(e, in, s) {
+			return true
 		}
-		if e.PathRegex != "" && !regexMatch(e.PathRegex, in.Path) {
-			continue
-		}
-		if e.ContentRegex != "" {
-			if !regexMatch(e.ContentRegex, in.Body) {
-				continue
-			}
-		}
-		if e.Placeholder != "" {
-			has := false
-			for _, f := range s.Placeholders {
-				if f.Token == e.Placeholder {
-					has = true
-					break
-				}
-			}
-			if !has {
-				continue
-			}
-		}
-		return true
 	}
 	return false
+}
+
+// nonPlaceholderPatternHits drops pattern findings that are the piso_
+// placeholder itself (Authorization: Bearer piso_…). Sample tokens are
+// truncated, so a hit that shares location+field with a scanned placeholder
+// is treated the same way.
+func nonPlaceholderPatternHits(s scanner.Result) []model.Finding {
+	var out []model.Finding
+	for _, hit := range s.PatternHits {
+		if patternHitIsPlaceholder(hit, s.Placeholders) {
+			continue
+		}
+		out = append(out, hit)
+	}
+	return out
+}
+
+// patternHitIsPlaceholder reports whether a pattern finding is just a
+// wrapped piso_ token, not a separate leaked credential.
+func patternHitIsPlaceholder(hit model.Finding, phs []model.Finding) bool {
+	for _, p := range phs {
+		if p.Token != "" && strings.Contains(hit.Token, p.Token) {
+			return true
+		}
+		if hit.Location != "" && hit.Location == p.Location && strings.EqualFold(hit.Field, p.Field) {
+			return true
+		}
+	}
+	return false
+}
+
+// allHitsCovered reports whether every given pattern finding is covered by
+// some matching exception (host-wide or that PatternID).
+func allHitsCovered(in Input, hits []model.Finding) bool {
+	if len(hits) == 0 {
+		return false
+	}
+	for _, hit := range hits {
+		if !patternHitCovered(in, in.Scan, hit.PatternID) {
+			return false
+		}
+	}
+	return true
+}
+
+// patternHitCovered reports whether any enabled exception covers patternID.
+func patternHitCovered(in Input, s scanner.Result, patternID string) bool {
+	for _, e := range in.Exceptions {
+		if e.PatternID != "" && e.PatternID != patternID {
+			continue
+		}
+		if exceptionRequestMatch(e, in, s) {
+			return true
+		}
+	}
+	return false
+}
+
+// exceptionRequestMatch checks Enabled plus host/path/content/placeholder.
+func exceptionRequestMatch(e model.Exception, in Input, s scanner.Result) bool {
+	if !e.Enabled {
+		return false
+	}
+	if e.HostRegex != "" && !regexMatch(e.HostRegex, in.Host) {
+		return false
+	}
+	if e.PathRegex != "" && !regexMatch(e.PathRegex, in.Path) {
+		return false
+	}
+	if e.ContentRegex != "" && !regexMatch(e.ContentRegex, in.Body) {
+		return false
+	}
+	if e.Placeholder != "" {
+		has := false
+		for _, f := range s.Placeholders {
+			if f.Token == e.Placeholder {
+				has = true
+				break
+			}
+		}
+		if !has {
+			return false
+		}
+	}
+	return true
 }
 
 // regexMatch applies a RE2 pattern via a small sync.Map cache (exception

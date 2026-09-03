@@ -20,7 +20,10 @@ import (
 	"time"
 
 	"piso/cli/internal/dockernet"
+	"piso/cli/internal/piprofile"
 	"piso/cli/internal/pisoconfig"
+	"piso/cli/internal/pkgstamp"
+	"piso/cli/internal/workerhash"
 )
 
 var version = "dev"
@@ -104,6 +107,9 @@ func cmdUp(args []string) error {
 	if err != nil {
 		return err
 	}
+	if home, err := pisoconfig.Home(); err == nil {
+		fmt.Printf("piso: using %s\n", home)
+	}
 	fmt.Printf("piso: project %q (slug %s)\n", proj.Dir, proj.Slug)
 
 	ports, err := pisoconfig.ResolveHostPorts(cliPorts)
@@ -111,6 +117,12 @@ func cmdUp(args []string) error {
 		return err
 	}
 	if err := pisoconfig.EnsurePisoLocal(); err != nil {
+		return err
+	}
+	if err := pisoconfig.EnsureWorkerPlaceholdersEnv(proj.Slug); err != nil {
+		return err
+	}
+	if err := pisoconfig.EnsurePiProfileFiles(); err != nil {
 		return err
 	}
 	// If our control plane is already healthy, the host ports are ours.
@@ -126,7 +138,19 @@ func cmdUp(args []string) error {
 	if err := startGateway(false); err != nil {
 		return err
 	}
-	// 2. worker (per-project)
+	if err := waitGatewayHealthy(); err != nil {
+		return err
+	}
+	if err := syncPiProfile(); err != nil {
+		return err
+	}
+	// 2. worker (per-project). Stage host extensions into the image build
+	// context, then rebuild only when that context hash changes.
+	if n, err := prepareWorkerBuild(); err != nil {
+		return err
+	} else if n > 0 {
+		fmt.Printf("piso: baking %d host extensions into the worker image\n", n)
+	}
 	composeEnv, err := dockerComposeEnv()
 	if err != nil {
 		return err
@@ -135,12 +159,12 @@ func cmdUp(args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := runEnv("docker", []string{"compose", "-f", workerFile, "-p", "piso-" + proj.Slug, "up", "-d", "--build", "-t", "0"}, composeEnv); err != nil {
-		return fmt.Errorf("worker up: %w", err)
+	upArgs := []string{"compose", "-f", workerFile, "-p", "piso-" + proj.Slug, "up", "-d", "-t", "0"}
+	if workerNeedsBuild(proj) {
+		upArgs = append(upArgs, "--build")
 	}
-	// 3. wait for the gateway control plane
-	if err := waitGatewayHealthy(); err != nil {
-		return err
+	if err := runEnv("docker", upArgs, composeEnv); err != nil {
+		return fmt.Errorf("worker up: %w", err)
 	}
 	fmt.Printf("piso: worker %s ready. Run `piso attach`.\n", proj.WorkerName())
 	return nil
@@ -163,6 +187,145 @@ func parseUpArgs(args []string) (string, pisoconfig.HostPorts, error) {
 		dir = rest[0]
 	}
 	return dir, ports, nil
+}
+
+func workerNeedsBuild(proj pisoconfig.Project) bool {
+	buildDir, err := pisoconfig.WorkerBuildDir()
+	if err != nil {
+		return true
+	}
+	want, err := workerhash.ContextHash(buildDir)
+	if err != nil {
+		return true
+	}
+	got, ok := containerLabel(proj.WorkerName(), "piso.worker.hash")
+	if !ok {
+		return true
+	}
+	return got != want
+}
+
+func containerLabel(name, label string) (string, bool) {
+	out, err := exec.Command("docker", "inspect", "-f", "{{index .Config.Labels \""+label+"\"}}", name).Output()
+	if err != nil {
+		return "", false
+	}
+	v := strings.TrimSpace(string(out))
+	if v == "" || v == "<no value>" {
+		return "", false
+	}
+	return v, true
+}
+
+func syncPiProfile() error {
+	dataDir, err := pisoconfig.DataDir()
+	if err != nil {
+		return err
+	}
+	agent, err := piprofile.AgentDir()
+	if err != nil {
+		return err
+	}
+	dest := piprofile.ProfileDir(dataDir)
+	settings, _ := os.ReadFile(piprofile.SettingsPath(agent))
+	rawModels, modelsErr := os.ReadFile(piprofile.ModelsPath(agent))
+	placeholders := map[string]string{}
+	if modelsErr == nil {
+		keys, err := piprofile.ExtractProviderKeys(rawModels)
+		if err != nil {
+			return err
+		}
+		imported, err := importPiKeys(keys)
+		if err != nil {
+			return err
+		}
+		for _, r := range imported {
+			placeholders[r.Name] = r.Placeholder
+			fmt.Printf("piso: imported %s → %s on %s\n", r.Name, r.Placeholder, r.Host)
+		}
+	}
+	var models []byte
+	if modelsErr == nil {
+		models, err = piprofile.SanitizeModelsJSON(rawModels, placeholders)
+		if err != nil {
+			return err
+		}
+		extracted, _ := piprofile.ExtractProviderKeys(rawModels)
+		for _, k := range extracted {
+			if k.APIKey != "" && strings.Contains(string(models), k.APIKey) {
+				return fmt.Errorf("refusing to write profile: real key would leak")
+			}
+		}
+	}
+	return piprofile.WriteProfile(dest, settings, models)
+}
+
+type piKeyImportResult struct {
+	Name        string `json:"name"`
+	Placeholder string `json:"placeholder"`
+	EnvKey      string `json:"envKey"`
+	Host        string `json:"host"`
+}
+
+func importPiKeys(keys []piprofile.ProviderKey) ([]piKeyImportResult, error) {
+	if len(keys) == 0 {
+		return nil, nil
+	}
+	body := map[string]any{"providers": keys}
+	raw, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	gw := pisoconfig.ControlAPIURL()
+	resp, err := http.Post(gw+"/api/v1/imports/pi-keys", "application/json", bytes.NewReader(raw))
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		b, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("import keys: %s", strings.TrimSpace(string(b)))
+	}
+	var out struct {
+		Providers []piKeyImportResult `json:"providers"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, err
+	}
+	return out.Providers, nil
+}
+
+func prepareWorkerBuild() (int, error) {
+	agent, err := piprofile.AgentDir()
+	if err != nil {
+		return 0, err
+	}
+	settings, _ := os.ReadFile(piprofile.SettingsPath(agent))
+	pkgs, err := piprofile.ReadSettingsPackages(settings)
+	if err != nil {
+		return 0, err
+	}
+	hostRaw, _ := os.ReadFile(piprofile.HostPackageJSON(agent))
+	hostDeps, err := pkgstamp.DepsFromHostPackageJSON(hostRaw)
+	if err != nil {
+		return 0, err
+	}
+	deps := pkgstamp.MergeDeps(hostDeps, pkgstamp.DepsFromPackages(pkgs))
+	pkgJSON, err := pkgstamp.PackageJSON(deps)
+	if err != nil {
+		return 0, err
+	}
+	dest, err := pisoconfig.WorkerBuildDir()
+	if err != nil {
+		return 0, err
+	}
+	if err := pisoconfig.CopyWorkerSkeleton(dest); err != nil {
+		return 0, err
+	}
+	if err := os.WriteFile(filepath.Join(dest, "package.json"), pkgJSON, 0o600); err != nil {
+		return 0, fmt.Errorf("stage package.json: %w", err)
+	}
+	return len(deps), nil
 }
 
 func cmdDown(args []string) error {
@@ -190,12 +353,13 @@ func cmdAttach(args []string) error {
 	if err != nil {
 		return err
 	}
-	cmdArgs := []string{"exec", "-it", proj.WorkerName()}
+	inner := "set -a; if [ -f /etc/piso/placeholders.env ]; then . /etc/piso/placeholders.env; fi; set +a; "
 	if len(args) > 0 && args[0] == "--shell" {
-		cmdArgs = append(cmdArgs, "/bin/bash")
+		inner += "exec /bin/bash"
 	} else {
-		cmdArgs = append(cmdArgs, "pi", "-r") // resume the pi session browser
+		inner += "exec pi -r"
 	}
+	cmdArgs := []string{"exec", "-it", proj.WorkerName(), "bash", "-lc", inner}
 	c := exec.Command("docker", cmdArgs...)
 	c.Stdin, c.Stdout, c.Stderr = os.Stdin, os.Stdout, os.Stderr
 	return c.Run()
@@ -391,6 +555,9 @@ func cmdSetup(args []string) error {
 
 	dst, err := pisoconfig.DataDir()
 	if err != nil {
+		return err
+	}
+	if err := pisoconfig.EnsurePlaceholdersEnv(); err != nil {
 		return err
 	}
 	if from := strings.TrimSpace(os.Getenv("PISO_MIGRATE_FROM")); from != "" {

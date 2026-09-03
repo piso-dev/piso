@@ -103,12 +103,27 @@ func scanTextInto(res *Result, text string, opts Options, loc, field string) {
 		}
 	}
 	if opts.Patterns != nil {
-		for _, m := range opts.Patterns.Match([]byte(text)) {
+		raw := []byte(text)
+		for _, m := range opts.Patterns.Match(raw) {
+			// generic-bearer and similar wrap the token ("Bearer piso_…").
+			// That is still a placeholder, not a leaked credential.
+			if patternMatchContainsPlaceholder(raw, m) {
+				continue
+			}
 			res.PatternHits = append(res.PatternHits, model.Finding{
 				Kind: model.FindingPatternSecret, PatternID: m.PatternID, Token: m.Sample, Location: loc, Field: field,
 			})
 		}
 	}
+}
+
+// patternMatchContainsPlaceholder reports whether the regex hit's matched
+// bytes include a piso_ token (Bearer piso_routstr_… is not a credential).
+func patternMatchContainsPlaceholder(raw []byte, m patterns.Match) bool {
+	if m.Start < 0 || m.End > len(raw) || m.Start >= m.End {
+		return false
+	}
+	return PlaceholderRegex.Match(raw[m.Start:m.End])
 }
 
 // scanJSON scans JSON bodies with field paths; returns true if the body was

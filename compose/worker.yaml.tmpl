@@ -10,19 +10,28 @@ services:
   worker:
     build:
       context: WORKER_BUILD_CONTEXT
+      network: host
+      args:
+        PISO_WORKER_HASH: __WORKER_HASH__
+    labels:
+      piso.worker.hash: __WORKER_HASH__
     container_name: piso-worker-PROJ-SLUG
     restart: unless-stopped
     stdin_open: true
     tty: true
     volumes:
       - PROJECT_DIR:/workspace          # the only host files the agent sees
-      - piso-agent-PROJ-SLUG:/root/.pi/agent   # pi sessions/settings persist
+      - piso-agent-PROJ-SLUG:/root/.pi/agent   # pi sessions/npm persist
       - CA_DIR/ca.crt:/piso-ca.pem:ro   # trust the gateway's MITM CA
+      - CA_DIR/workers/PROJ-SLUG/placeholders.env:/etc/piso/placeholders.env:ro
+      - CA_DIR/pi-profile/settings.json:/root/.pi/agent/settings.json:ro
+      - CA_DIR/pi-profile/models.json:/root/.pi/agent/models.json:ro
     environment:
       HTTPS_PROXY: http://gateway:8080
       HTTP_PROXY: http://gateway:8080
       NO_PROXY: gateway,localhost,127.0.0.1,*.piso.local
       GATEWAY_URL: http://gateway:8081
+      NPM_CONFIG_CACHE: /root/.pi/agent/.npm-cache
     cap_drop:
       - ALL
     security_opt:
@@ -33,6 +42,7 @@ services:
       - /tmp
       - /run
       - /root/.cache
+      - /root/.npm
     networks:
       - vpc
 

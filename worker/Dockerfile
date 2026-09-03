@@ -12,8 +12,12 @@
 # in compose, not here.
 FROM node:24-bookworm-slim
 
+# fd-find is baked in: pi's runtime download uses tar --same-owner, which
+# fails under cap_drop ALL. PISO_WORKER_HASH is applied after the install
+# layers so a hash-only change does not bust the apt/bun/npm cache.
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends bash ca-certificates git ripgrep curl unzip \
+  && apt-get install -y --no-install-recommends bash ca-certificates git ripgrep curl unzip fd-find python3 make g++ \
+  && ln -sf /usr/bin/fdfind /usr/local/bin/fd \
   && rm -rf /var/lib/apt/lists/*
 
 # Bun (pi's networking runtime)
@@ -22,6 +26,23 @@ RUN curl -fsSL https://bun.sh/install | bash -s "bun-v1.2.11" \
 
 # pi CLI (same install the pi docs use; we invoke it via bun)
 RUN npm install -g --ignore-scripts @earendil-works/pi-coding-agent
+
+# Host pi extensions. Installed here (Docker build has real network) into
+# /opt/piso/npm — NOT /root/.pi/agent, which a volume hides at runtime.
+# entrypoint.sh copies this tree into the agent volume when the stamp differs.
+# Must run BEFORE HTTPS_PROXY=gateway or `docker build` npm would target
+# a proxy that does not exist yet.
+COPY package.json /opt/piso/npm/package.json
+# --ignore-scripts skips postinstall downloads (pi-browser Chromium, etc.)
+# that hang `docker build`. node-pty still needs a compile.
+RUN cd /opt/piso/npm \
+  && npm install --omit=dev --ignore-scripts --no-audit --no-fund \
+       --fetch-retries=5 --fetch-retry-mintimeout=20000 \
+  && npm rebuild node-pty \
+  && if grep -qE '"dependencies"[[:space:]]*:[[:space:]]*\{[[:space:]]*"' package.json && [ ! -d node_modules ]; then \
+       echo "piso: npm install produced no node_modules" >&2; exit 1; \
+     fi \
+  && sha256sum package.json | awk '{print substr($1,1,16)}' > .piso-pkg-hash
 
 # Egress: only via the gateway. NO_PROXY keeps internal services direct.
 ENV HTTPS_PROXY=http://gateway:8080 \
@@ -33,6 +54,10 @@ WORKDIR /workspace
 
 COPY entrypoint.sh /usr/local/bin/piso-entrypoint
 RUN chmod +x /usr/local/bin/piso-entrypoint
+
+# Declared last so changing the hash only rewrites this label layer.
+ARG PISO_WORKER_HASH=dev
+LABEL piso.worker.hash=$PISO_WORKER_HASH
 
 ENTRYPOINT ["/usr/local/bin/piso-entrypoint"]
 CMD ["sleep", "infinity"]

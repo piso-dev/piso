@@ -81,6 +81,7 @@ func appendPisoLocal(path string) error {
 	}
 	if !haveV6 {
 		// macOS treats .local as mDNS; without ::1, IPv6 lookups hang for seconds.
+		// The gateway must also publish [::1] or browsers stall on piso.local.
 		bld.WriteString(hostsLineV6 + " " + hostsMarker + "\n")
 	}
 	if bld.Len() == 0 {

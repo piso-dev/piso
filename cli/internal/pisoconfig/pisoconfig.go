@@ -4,11 +4,14 @@ package pisoconfig
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
+
+	"piso/cli/internal/workerhash"
 )
 
 // Project is a resolved piso workspace: the host dir mounted into the worker.
@@ -60,11 +63,25 @@ func slug(dir string) string {
 func (p Project) WorkerName() string { return "piso-worker-" + p.Slug }
 
 // Home is the piso share/repo root: compose/, worker/, gateway/.
-// Resolution order: PISO_HOME, PREFIX/share/piso next to the binary
-// (make install), then a checkout containing compose/gateway.yaml
-// walked from the executable or the cwd.
+// Resolution order: PISO_HOME, a checkout walked from the cwd (so `piso up`
+// inside this repo uses the local Dockerfile, not a stale make-install copy),
+// then PREFIX/share/piso next to the binary, then a checkout walked from the
+// executable.
 func Home() (string, error) {
-	if v := strings.TrimSpace(os.Getenv("PISO_HOME")); v != "" {
+	exe, err := os.Executable()
+	if err != nil {
+		exe = ""
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		cwd = ""
+	}
+	return resolveHome(os.Getenv("PISO_HOME"), exe, cwd)
+}
+
+// resolveHome is Home() with injectable paths so tests can cover prefix vs cwd.
+func resolveHome(pisoHome, exe, cwd string) (string, error) {
+	if v := strings.TrimSpace(pisoHome); v != "" {
 		abs, err := filepath.Abs(v)
 		if err != nil {
 			return "", fmt.Errorf("PISO_HOME: %w", err)
@@ -74,16 +91,16 @@ func Home() (string, error) {
 		}
 		return abs, nil
 	}
-	if exe, err := os.Executable(); err == nil {
+	if cwd != "" {
+		if h := findTreeRoot(cwd); h != "" {
+			return h, nil
+		}
+	}
+	if exe != "" {
 		if h := homeFromPrefix(exe); h != "" {
 			return h, nil
 		}
 		if h := findTreeRoot(filepath.Dir(exe)); h != "" {
-			return h, nil
-		}
-	}
-	if cwd, err := os.Getwd(); err == nil {
-		if h := findTreeRoot(cwd); h != "" {
 			return h, nil
 		}
 	}
@@ -135,7 +152,20 @@ func WriteWorkerCompose(p Project) (string, error) {
 	out := string(raw)
 	out = strings.ReplaceAll(out, "PROJ-SLUG", p.Slug)
 	out = strings.ReplaceAll(out, "PROJECT_DIR", p.Dir)
-	out = strings.ReplaceAll(out, "WORKER_BUILD_CONTEXT", filepath.Join(home, "worker"))
+	// Staged under PISO_DATA so host extension package.json is not written
+	// into the repo / make-install share tree.
+	workerDir, err := WorkerBuildDir()
+	if err != nil {
+		return "", err
+	}
+	hash, err := workerhash.ContextHash(workerDir)
+	if err != nil {
+		return "", fmt.Errorf("worker context hash: %w (run piso up so the build context is staged)", err)
+	}
+	out = strings.ReplaceAll(out, "WORKER_BUILD_CONTEXT", workerDir)
+	// __WORKER_HASH__ must not be a substring of PISO_WORKER_HASH (ReplaceAll
+	// of WORKER_HASH previously rewrote the ARG name and the label stayed "dev").
+	out = strings.ReplaceAll(out, "__WORKER_HASH__", hash)
 	// CA is written by the gateway into the machine-level data dir, not the project.
 	out = strings.ReplaceAll(out, "CA_DIR", dataDir)
 	out = strings.ReplaceAll(out, "GATEWAY_CONTROL", GatewayURL())
@@ -149,6 +179,53 @@ func WriteWorkerCompose(p Project) (string, error) {
 		return "", err
 	}
 	return dest, nil
+}
+
+// WorkerBuildDir is ~/.piso/worker-build: Dockerfile + entrypoint + the host
+// extension package.json staged for `docker build`.
+func WorkerBuildDir() (string, error) {
+	dir, err := DataDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "worker-build"), nil
+}
+
+// CopyWorkerSkeleton copies Dockerfile and entrypoint.sh from the piso home
+// worker tree into dest (the staged build context).
+func CopyWorkerSkeleton(dest string) error {
+	home, err := Home()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(dest, 0o700); err != nil {
+		return err
+	}
+	src := filepath.Join(home, "worker")
+	for _, name := range []string{"Dockerfile", "entrypoint.sh"} {
+		if err := copyFile(filepath.Join(src, name), filepath.Join(dest, name)); err != nil {
+			return fmt.Errorf("stage %s: %w", name, err)
+		}
+	}
+	return nil
+}
+
+func copyFile(src, dest string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dest, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		return err
+	}
+	_, copyErr := io.Copy(out, in)
+	closeErr := out.Close()
+	if copyErr != nil {
+		return copyErr
+	}
+	return closeErr
 }
 
 // homeFromPrefix implements the make-install layout:
@@ -198,6 +275,93 @@ func ensureDir(dir string) (string, error) {
 		return "", err
 	}
 	return abs, nil
+}
+
+// PlaceholdersEnvName is the worker-safe file (KEY=piso_… only) in the data dir.
+const PlaceholdersEnvName = "placeholders.env"
+
+// PlaceholdersEnvPath is ~/.piso/placeholders.env (legacy global file).
+func PlaceholdersEnvPath() (string, error) {
+	dir, err := DataDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, PlaceholdersEnvName), nil
+}
+
+// WorkerPlaceholdersEnvPath is ~/.piso/workers/<slug>/placeholders.env.
+func WorkerPlaceholdersEnvPath(slug string) (string, error) {
+	dir, err := DataDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "workers", slug, PlaceholdersEnvName), nil
+}
+
+// EnsureWorkerPlaceholdersEnv creates workers/<slug>/placeholders.env so Docker
+// bind-mounts a file, not a directory.
+func EnsureWorkerPlaceholdersEnv(slug string) error {
+	path, err := WorkerPlaceholdersEnvPath(slug)
+	if err != nil {
+		return err
+	}
+	return ensurePlaceholderFile(path)
+}
+
+// EnsurePiProfileFiles creates empty profile files so Docker bind-mounts files.
+func EnsurePiProfileFiles() error {
+	dir, err := DataDir()
+	if err != nil {
+		return err
+	}
+	prof := filepath.Join(dir, "pi-profile")
+	if err := os.MkdirAll(prof, 0o700); err != nil {
+		return err
+	}
+	if err := writeFileIfMissing(filepath.Join(prof, "settings.json"), []byte("{}\n")); err != nil {
+		return err
+	}
+	return writeFileIfMissing(filepath.Join(prof, "models.json"), []byte("{\n  \"providers\": {}\n}\n"))
+}
+
+func writeFileIfMissing(path string, body []byte) error {
+	st, err := os.Stat(path)
+	if err == nil {
+		if st.IsDir() {
+			return fmt.Errorf("%s is a directory; remove it so piso can mount a file", path)
+		}
+		return nil
+	}
+	if !os.IsNotExist(err) {
+		return err
+	}
+	return os.WriteFile(path, body, 0o600)
+}
+
+// EnsurePlaceholdersEnv creates the legacy global file if missing.
+func EnsurePlaceholdersEnv() error {
+	path, err := PlaceholdersEnvPath()
+	if err != nil {
+		return err
+	}
+	return ensurePlaceholderFile(path)
+}
+
+func ensurePlaceholderFile(path string) error {
+	st, err := os.Stat(path)
+	if err == nil {
+		if st.IsDir() {
+			return fmt.Errorf("%s is a directory; remove it so piso can mount a file", path)
+		}
+		return nil
+	}
+	if !os.IsNotExist(err) {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte("# piso placeholders only — never real secrets.\n"), 0o600)
 }
 
 // API shapes mirror the gateway's model (safe on the client side; the

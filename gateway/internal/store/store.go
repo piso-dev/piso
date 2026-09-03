@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -36,7 +37,9 @@ type SecretRec struct {
 	Name         string    `json:"name"`
 	Placeholder  string    `json:"placeholder"`
 	Value        string    `json:"value"`
+	EnvKey       string    `json:"envKey,omitempty"`
 	AllowedHosts []string  `json:"allowedHosts,omitempty"`
+	Workers      []string  `json:"workers,omitempty"` // empty or "*" = all workers
 	CreatedAt    time.Time `json:"createdAt"`
 }
 
@@ -62,6 +65,7 @@ type ExceptionRec struct {
 	PathRegex    string `json:"pathRegex,omitempty"`
 	ContentRegex string `json:"contentRegex,omitempty"`
 	Placeholder  string `json:"placeholder,omitempty"`
+	PatternID    string `json:"patternId,omitempty"`
 	Enabled      bool   `json:"enabled"`
 }
 
@@ -226,7 +230,10 @@ func (s *Store) AddSecret(rec SecretRec) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.state.Secrets = append(s.state.Secrets, rec)
-	return s.save()
+	if err := s.save(); err != nil {
+		return err
+	}
+	return s.writePlaceholdersEnvLocked()
 }
 
 func (s *Store) DeleteSecret(id string) error {
@@ -241,7 +248,80 @@ func (s *Store) DeleteSecret(id string) error {
 	s.state.Secrets = out
 	// drop rules referencing it
 	s.state.Rules = filterRules(s.state.Rules, func(r RuleRec) bool { return r.SecretID != id })
-	return s.save()
+	if err := s.save(); err != nil {
+		return err
+	}
+	return s.writePlaceholdersEnvLocked()
+}
+
+// SecretByEnvKey returns the first secret with this env key.
+func (s *Store) SecretByEnvKey(envKey string) (SecretRec, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, rec := range s.state.Secrets {
+		if rec.EnvKey != "" && rec.EnvKey == envKey {
+			return rec, true
+		}
+	}
+	return SecretRec{}, false
+}
+
+// SecretByPlaceholder returns the first secret with this placeholder.
+func (s *Store) SecretByPlaceholder(placeholder string) (SecretRec, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, rec := range s.state.Secrets {
+		if rec.Placeholder == placeholder {
+			return rec, true
+		}
+	}
+	return SecretRec{}, false
+}
+
+// SetEnvKey updates the worker env name for a secret and rewrites placeholders.env.
+func (s *Store) SetEnvKey(id, envKey string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, rec := range s.state.Secrets {
+		if rec.ID != id {
+			continue
+		}
+		s.state.Secrets[i].EnvKey = envKey
+		if err := s.save(); err != nil {
+			return err
+		}
+		return s.writePlaceholdersEnvLocked()
+	}
+	return fmt.Errorf("secret %s not found", id)
+}
+
+// ReplaceSecret overwrites a secret by ID and rewrites worker env files.
+func (s *Store) ReplaceSecret(rec SecretRec) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, existing := range s.state.Secrets {
+		if existing.ID != rec.ID {
+			continue
+		}
+		s.state.Secrets[i] = rec
+		if err := s.save(); err != nil {
+			return err
+		}
+		return s.writePlaceholdersEnvLocked()
+	}
+	return fmt.Errorf("secret %s not found", rec.ID)
+}
+
+// HasRule reports whether placeholder already has a rule for host or "*".
+func (s *Store) HasRule(placeholder, host string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, r := range s.state.Rules {
+		if r.Placeholder == placeholder && (r.Host == host || r.Host == "*") {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Store) AddRule(rec RuleRec) error {
@@ -421,7 +501,10 @@ func (s *Store) AppendLog(rec Record) {
 		}
 		f.Close()
 	}
-	// broadcast (non-blocking; drop if no subscriber is reading)
+	s.broadcast(rec)
+}
+
+func (s *Store) broadcast(rec Record) {
 	select {
 	case s.onRecord <- rec:
 	default:
@@ -458,17 +541,73 @@ func (s *Store) ReplayGet(id string) (Record, bool) {
 // ReplayUpdate replaces the record after a replay with the new outcome.
 func (s *Store) ReplayUpdate(rec Record) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	found := false
 	for i, r := range s.records {
 		if r.ID == rec.ID {
 			s.records[i] = rec
-			return
+			found = true
+			break
 		}
 	}
-	s.records = append([]Record{rec}, s.records...)
-	if len(s.records) > s.maxLog {
-		s.records = s.records[:s.maxLog]
+	if !found {
+		s.records = append([]Record{rec}, s.records...)
+		if len(s.records) > s.maxLog {
+			s.records = s.records[:s.maxLog]
+		}
 	}
+	s.mu.Unlock()
+	s.broadcast(rec)
+}
+
+// ApplyAllowedException marks every blocked log row for patternID on host as
+// allowed. host "" or "*" matches any host. Rows with another pattern hit or
+// a real-secret finding are left blocked. Updated records are broadcast so
+// the live log can replace the old blocked rows.
+func (s *Store) ApplyAllowedException(patternID, host string) []Record {
+	if patternID == "" {
+		return nil
+	}
+	anyHost := host == "" || host == "*"
+	s.mu.Lock()
+	var updated []Record
+	for i, r := range s.records {
+		if r.Action != "block" {
+			continue
+		}
+		if !anyHost && !strings.EqualFold(r.Host, host) {
+			continue
+		}
+		if !recordOnlyPattern(r, patternID) {
+			continue
+		}
+		r.Action = "allow"
+		r.Reasons = []string{"allowed-exception"}
+		r.Retryable = false
+		s.records[i] = r
+		updated = append(updated, r)
+	}
+	s.mu.Unlock()
+	for _, rec := range updated {
+		s.broadcast(rec)
+	}
+	return updated
+}
+
+func recordOnlyPattern(r Record, patternID string) bool {
+	saw := false
+	for _, f := range r.Findings {
+		if f.Kind == "real-secret" {
+			return false
+		}
+		if f.Kind != "pattern" {
+			continue
+		}
+		if f.PatternID != patternID {
+			return false
+		}
+		saw = true
+	}
+	return saw
 }
 
 // ---- copy helpers (defensive: callers can't mutate store state) ----

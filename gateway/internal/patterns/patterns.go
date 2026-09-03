@@ -143,6 +143,8 @@ func (c *Compiled) Match(data []byte) []Match {
 			Name:      p.Name,
 			Severity:  p.Severity,
 			Sample:    capSample(string(data[loc[0]:loc[1]])),
+			Start:     loc[0],
+			End:       loc[1],
 		})
 	}
 	return out
@@ -165,6 +167,8 @@ type Match struct {
 	Name      string `json:"name"`
 	Severity  string `json:"severity"`
 	Sample    string `json:"sample"` // truncated — never full credential
+	Start     int    `json:"-"`     // byte offset in the scanned buffer
+	End       int    `json:"-"`     // exclusive byte offset
 }
 
 // capSample truncates a matched sample so it can't be a full credential leak

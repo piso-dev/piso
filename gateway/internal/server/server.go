@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"crypto/rand"
 	"embed"
 	"encoding/hex"
@@ -89,7 +90,9 @@ func (s *Server) routes(mux *http.ServeMux) {
 			Name         string   `json:"name"`
 			Placeholder  string   `json:"placeholder"`
 			Value        string   `json:"value"`
+			EnvKey       string   `json:"envKey"`
 			AllowedHosts []string `json:"allowedHosts"`
+			Workers      []string `json:"workers"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 			writeJSON(w, 400, map[string]string{"error": "bad json"})
@@ -103,9 +106,14 @@ func (s *Server) routes(mux *http.ServeMux) {
 			writeJSON(w, 400, map[string]string{"error": "placeholder must start with " + model.PlaceholderPrefix})
 			return
 		}
+		if in.EnvKey != "" && !store.ValidEnvKey(in.EnvKey) {
+			writeJSON(w, 400, map[string]string{"error": "invalid envKey"})
+			return
+		}
 		rec := store.SecretRec{
 			ID: "sec_" + randID(), Name: in.Name, Placeholder: in.Placeholder,
-			Value: in.Value, AllowedHosts: in.AllowedHosts, CreatedAt: time.Now().UTC(),
+			Value: in.Value, EnvKey: in.EnvKey, AllowedHosts: in.AllowedHosts,
+			Workers: in.Workers, CreatedAt: time.Now().UTC(),
 		}
 		if err := s.Store.AddSecret(rec); err != nil {
 			writeJSON(w, 500, map[string]string{"error": err.Error()})
@@ -189,7 +197,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 		if in.ID == "" {
 			in.ID = "exc_" + randID()
 		}
-		if in.HostRegex == "" && in.PathRegex == "" && in.ContentRegex == "" && in.Placeholder == "" {
+		if in.HostRegex == "" && in.PathRegex == "" && in.ContentRegex == "" && in.Placeholder == "" && in.PatternID == "" {
 			writeJSON(w, 400, map[string]string{"error": "at least one matcher required"})
 			return
 		}
@@ -267,15 +275,40 @@ func (s *Server) routes(mux *http.ServeMux) {
 			writeJSON(w, 404, map[string]string{"error": "no captured request"})
 			return
 		}
-		out, err := s.Proxy.Replay(r.Context(), rec)
-		if err != nil {
-			writeJSON(w, 409, map[string]string{"error": err.Error()})
+		res := s.replayOne(r.Context(), rec)
+		if res.Error != "" {
+			writeJSON(w, 409, map[string]string{"error": res.Error})
 			return
 		}
-		defer out.Body.Close()
-		io.Copy(io.Discard, out.Body)
-		writeJSON(w, 200, map[string]any{"status": out.StatusCode})
+		writeJSON(w, 200, res)
 	})
+	// Sequential replay of every captured block that shares a placeholder
+	// (and host, unless host is "*"). Oldest first.
+	mux.HandleFunc("POST /api/v1/requests/retry-matching", func(w http.ResponseWriter, r *http.Request) {
+		var in RetryMatch
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			writeJSON(w, 400, map[string]string{"error": "bad json"})
+			return
+		}
+		if in.Placeholder == "" {
+			writeJSON(w, 400, map[string]string{"error": "placeholder required"})
+			return
+		}
+		matches := matchingRetryable(s.Store.Records(0), in.Placeholder, in.Host)
+		out := make([]RetryResult, 0, len(matches))
+		for _, rec := range matches {
+			fresh, ok := s.Store.ReplayGet(rec.ID)
+			if !ok {
+				out = append(out, RetryResult{ID: rec.ID, Error: "gone"})
+				continue
+			}
+			out = append(out, s.replayOne(r.Context(), fresh))
+		}
+		writeJSON(w, 200, map[string][]RetryResult{"results": out})
+	})
+	mux.HandleFunc("POST /api/v1/failures/resolve", s.handleResolveFailures)
+	mux.HandleFunc("POST /api/v1/failures/except", s.handleExceptFailures)
+	mux.HandleFunc("POST /api/v1/imports/pi-keys", s.handleImportPiKeys)
 
 	// SSE request stream
 	mux.HandleFunc("GET /api/v1/requests/stream", s.stream)
@@ -385,6 +418,23 @@ func (s *Server) ingress(w http.ResponseWriter, r *http.Request) {
 	rp.ServeHTTP(w, r)
 }
 
+// replayOne re-runs policy on a captured row, updates the in-memory log, and
+// returns the upstream status (or a still-blocked error).
+func (s *Server) replayOne(ctx context.Context, rec store.Record) RetryResult {
+	out, dec, err := s.Proxy.Replay(ctx, rec)
+	if err != nil {
+		return RetryResult{ID: rec.ID, Error: err.Error()}
+	}
+	defer out.Body.Close()
+	io.Copy(io.Discard, out.Body)
+	rec.Action = string(dec.Action)
+	rec.Reasons = reasonStrings(dec.Reasons)
+	rec.Status = out.StatusCode
+	rec.Retryable = false
+	s.Store.ReplayUpdate(rec)
+	return RetryResult{ID: rec.ID, Status: out.StatusCode}
+}
+
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
@@ -393,8 +443,8 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func storeRecToSummary(rc store.SecretRec) model.SecretSummary {
 	return model.SecretSummary{
-		ID: rc.ID, Name: rc.Name, Placeholder: rc.Placeholder,
-		AllowedHosts: rc.AllowedHosts, CreatedAt: rc.CreatedAt,
+		ID: rc.ID, Name: rc.Name, Placeholder: rc.Placeholder, EnvKey: rc.EnvKey,
+		AllowedHosts: rc.AllowedHosts, Workers: rc.Workers, CreatedAt: rc.CreatedAt,
 	}
 }
 

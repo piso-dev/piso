@@ -3,6 +3,7 @@ package pisoconfig
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -55,6 +56,42 @@ func TestHomeFromPrefixLayout(t *testing.T) {
 	}
 }
 
+func TestResolveHomePrefersCwdCheckoutOverPrefix(t *testing.T) {
+	checkout := t.TempDir()
+	writeTree(t, checkout)
+	prefix := t.TempDir()
+	share := filepath.Join(prefix, "share", "piso")
+	writeTree(t, share)
+	exe := filepath.Join(prefix, "bin", "piso")
+	if err := os.MkdirAll(filepath.Dir(exe), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	got, err := resolveHome("", exe, checkout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != checkout {
+		t.Fatalf("resolveHome = %q, want checkout %q", got, checkout)
+	}
+}
+
+func TestResolveHomeUsesPrefixWhenCwdIsNotACheckout(t *testing.T) {
+	prefix := t.TempDir()
+	share := filepath.Join(prefix, "share", "piso")
+	writeTree(t, share)
+	exe := filepath.Join(prefix, "bin", "piso")
+	if err := os.MkdirAll(filepath.Dir(exe), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	got, err := resolveHome("", exe, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != share {
+		t.Fatalf("resolveHome = %q, want prefix share %q", got, share)
+	}
+}
+
 func TestDataDirUsesPISO_DATA(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "data")
 	t.Setenv("PISO_DATA", dir)
@@ -72,6 +109,88 @@ func TestDataDirUsesPISO_DATA(t *testing.T) {
 	st, err := os.Stat(got)
 	if err != nil || !st.IsDir() {
 		t.Fatalf("DataDir was not created: %v", err)
+	}
+}
+
+func TestWriteWorkerComposeRendersPerWorkerEnv(t *testing.T) {
+	root := t.TempDir()
+	writeTree(t, root)
+	if err := os.MkdirAll(filepath.Join(root, "worker"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "worker", "Dockerfile"), []byte("FROM scratch\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "worker", "entrypoint.sh"), []byte("#!/bin/sh\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tmpl := []byte("PISO_WORKER_HASH: __WORKER_HASH__ CA_DIR/workers/PROJ-SLUG/placeholders.env WORKER_BUILD_CONTEXT\n")
+	if err := os.WriteFile(filepath.Join(root, "compose", "worker.yaml.tmpl"), tmpl, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	data := t.TempDir()
+	t.Setenv("PISO_HOME", root)
+	t.Setenv("PISO_DATA", data)
+	build := filepath.Join(data, "worker-build")
+	if err := os.MkdirAll(build, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"Dockerfile", "entrypoint.sh", "package.json"} {
+		if err := os.WriteFile(filepath.Join(build, name), []byte("x\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	proj := Project{Dir: t.TempDir(), Slug: "demo"}
+	path, err := WriteWorkerCompose(proj)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(b)
+	if !strings.Contains(got, "workers/demo/placeholders.env") {
+		t.Fatalf("compose missing per-worker env mount:\n%s", got)
+	}
+	if strings.Contains(got, "__WORKER_HASH__") {
+		t.Fatalf("hash placeholder not replaced:\n%s", got)
+	}
+	if !strings.Contains(got, "PISO_WORKER_HASH:") {
+		t.Fatalf("PISO_WORKER_HASH arg name was rewritten:\n%s", got)
+	}
+	if !strings.Contains(got, build) {
+		t.Fatalf("compose must use staged worker-build, not repo worker/:\n%s", got)
+	}
+	if strings.Contains(got, filepath.Join(root, "worker")) {
+		t.Fatalf("compose still pointed at repo worker/:\n%s", got)
+	}
+}
+
+func TestEnsureWorkerPlaceholdersEnvCreatesFile(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("PISO_DATA", dir)
+	if err := EnsureWorkerPlaceholdersEnv("myproj"); err != nil {
+		t.Fatal(err)
+	}
+	st, err := os.Stat(filepath.Join(dir, "workers", "myproj", PlaceholdersEnvName))
+	if err != nil || st.IsDir() {
+		t.Fatalf("expected file: %v", err)
+	}
+}
+
+func TestEnsurePlaceholdersEnvCreatesFile(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("PISO_DATA", dir)
+	if err := EnsurePlaceholdersEnv(); err != nil {
+		t.Fatal(err)
+	}
+	st, err := os.Stat(filepath.Join(dir, PlaceholdersEnvName))
+	if err != nil || st.IsDir() {
+		t.Fatalf("expected file: %v", err)
+	}
+	if err := EnsurePlaceholdersEnv(); err != nil {
+		t.Fatal(err)
 	}
 }
 

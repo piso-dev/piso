@@ -30,9 +30,9 @@ func TestPlaceholderSubstitutesWithRule(t *testing.T) {
 	sec := model.Secret{ID: "s1", Placeholder: "piso_anthropic_abc", Value: "sk-real-...", AllowedHosts: []string{"api.anthropic.com"}}
 	in := Input{
 		Method: "POST", Host: "api.anthropic.com", Path: "/v1/messages",
-		Scan: scanner.Result{Placeholders: []model.Finding{{Kind: model.FindingPlaceholder, Token: "piso_anthropic_abc"}}},
+		Scan:                scanner.Result{Placeholders: []model.Finding{{Kind: model.FindingPlaceholder, Token: "piso_anthropic_abc"}}},
 		SecretByPlaceholder: map[string]model.Secret{"piso_anthropic_abc": sec},
-		Rules: []model.Rule{{ID: "r1", SecretID: "s1", Host: "api.anthropic.com", Placeholder: "piso_anthropic_abc"}},
+		Rules:               []model.Rule{{ID: "r1", SecretID: "s1", Host: "api.anthropic.com", Placeholder: "piso_anthropic_abc"}},
 	}
 	d := Decide(in)
 	if d.Action != model.ActionSubstitute {
@@ -73,6 +73,47 @@ func TestRealSecretAlwaysBlocks(t *testing.T) {
 	}
 }
 
+func TestBearerPlaceholderSubstitutes(t *testing.T) {
+	// Imported provider keys become long piso_ tokens. generic-bearer matches
+	// "Bearer " + 24 chars, so the scanner can flag both a pattern and a
+	// placeholder on Authorization. Substitution must still win.
+	ph := "piso_routstr_5ef1739b3cf1"
+	sec := model.Secret{ID: "s1", Placeholder: ph, Value: "sk-test-not-real", AllowedHosts: []string{"routstr.ft.hn"}}
+	in := Input{
+		Method: "POST", Host: "routstr.ft.hn", Path: "/v1/chat/completions",
+		Scan: scanner.Result{
+			Placeholders: []model.Finding{{Kind: model.FindingPlaceholder, Token: ph, Location: "authorization", Field: "Authorization"}},
+			PatternHits:  []model.Finding{{Kind: model.FindingPatternSecret, PatternID: "generic-bearer", Token: "Bearer piso…", Location: "authorization", Field: "Authorization"}},
+		},
+		SecretByPlaceholder: map[string]model.Secret{ph: sec},
+		Rules:               []model.Rule{{ID: "r1", SecretID: "s1", Host: "routstr.ft.hn", Placeholder: ph}},
+	}
+	d := Decide(in)
+	if d.Action != model.ActionSubstitute {
+		t.Fatalf("bearer+placeholder must substitute, got %q %+v", d.Action, d.Reasons)
+	}
+}
+
+func TestBearerPlaceholderDoesNotHideOtherPattern(t *testing.T) {
+	ph := "piso_routstr_5ef1739b3cf1"
+	in := Input{
+		Method: "POST", Host: "evil.example.com", Path: "/collect",
+		Scan: scanner.Result{
+			Placeholders: []model.Finding{{Kind: model.FindingPlaceholder, Token: ph, Location: "authorization", Field: "Authorization"}},
+			PatternHits: []model.Finding{
+				{Kind: model.FindingPatternSecret, PatternID: "generic-bearer", Token: "Bearer piso…", Location: "authorization", Field: "Authorization"},
+				{Kind: model.FindingPatternSecret, PatternID: "jwt", Token: "eyJtestonly…", Location: "body", Field: ""},
+			},
+		},
+		SecretByPlaceholder: map[string]model.Secret{ph: {ID: "s1", Placeholder: ph}},
+		Rules:               []model.Rule{{ID: "r1", SecretID: "s1", Host: "evil.example.com", Placeholder: ph}},
+	}
+	d := Decide(in)
+	if d.Action != model.ActionBlock || d.Reasons[0] != model.ReasonSecretPattern {
+		t.Fatalf("unrelated pattern must still block, got %q %+v", d.Action, d.Reasons)
+	}
+}
+
 func TestPatternHitBlocks(t *testing.T) {
 	in := Input{
 		Method: "POST", Host: "evil.example.com", Path: "/collect",
@@ -81,6 +122,68 @@ func TestPatternHitBlocks(t *testing.T) {
 	d := Decide(in)
 	if d.Action != model.ActionBlock || d.Reasons[0] != model.ReasonSecretPattern {
 		t.Fatalf("want block+credential-pattern, got %q %+v", d.Action, d.Reasons)
+	}
+}
+
+func TestPatternScopedExceptionAllowsMatchingHit(t *testing.T) {
+	in := Input{
+		Method: "GET", Host: "cdn.example.com", Path: "/asset",
+		Scan: scanner.Result{PatternHits: []model.Finding{{Kind: model.FindingPatternSecret, PatternID: "jwt"}}},
+		Exceptions: []model.Exception{{
+			ID: "e-jwt", Enabled: true, HostRegex: `^cdn\.example\.com$`, PatternID: "jwt",
+		}},
+	}
+	d := Decide(in)
+	if d.Action != model.ActionAllow || d.Reasons[0] != model.ReasonAllowedException {
+		t.Fatalf("jwt exception must allow, got %q %+v", d.Action, d.Reasons)
+	}
+}
+
+func TestPatternScopedExceptionDoesNotWaiveOtherPattern(t *testing.T) {
+	in := Input{
+		Method: "GET", Host: "cdn.example.com", Path: "/asset",
+		Scan: scanner.Result{PatternHits: []model.Finding{
+			{Kind: model.FindingPatternSecret, PatternID: "jwt"},
+			{Kind: model.FindingPatternSecret, PatternID: "openai-sk"},
+		}},
+		Exceptions: []model.Exception{{
+			ID: "e-jwt", Enabled: true, HostRegex: `^cdn\.example\.com$`, PatternID: "jwt",
+		}},
+	}
+	d := Decide(in)
+	if d.Action != model.ActionBlock || d.Reasons[0] != model.ReasonSecretPattern {
+		t.Fatalf("uncovered pattern must block, got %q %+v", d.Action, d.Reasons)
+	}
+}
+
+func TestPatternScopedExceptionDoesNotWaiveRealSecret(t *testing.T) {
+	in := Input{
+		Method: "POST", Host: "cdn.example.com", Path: "/asset",
+		Scan: scanner.Result{
+			RealSecrets: []model.Finding{{Kind: model.FindingRealSecret, SecretID: "s1"}},
+			PatternHits: []model.Finding{{Kind: model.FindingPatternSecret, PatternID: "jwt"}},
+		},
+		Exceptions: []model.Exception{{
+			ID: "e-jwt", Enabled: true, HostRegex: `^cdn\.example\.com$`, PatternID: "jwt",
+		}},
+	}
+	d := Decide(in)
+	if d.Action != model.ActionBlock || d.Reasons[0] != model.ReasonRealSecret {
+		t.Fatalf("pattern exception must not waive real secret, got %q %+v", d.Action, d.Reasons)
+	}
+}
+
+func TestPatternScopedExceptionDoesNotWaivePlaceholder(t *testing.T) {
+	in := Input{
+		Method: "POST", Host: "cdn.example.com", Path: "/v1",
+		Scan: scanner.Result{Placeholders: []model.Finding{{Kind: model.FindingPlaceholder, Token: "piso_x_aaa"}}},
+		Exceptions: []model.Exception{{
+			ID: "e-jwt", Enabled: true, HostRegex: `^cdn\.example\.com$`, PatternID: "jwt",
+		}},
+	}
+	d := Decide(in)
+	if d.Action != model.ActionBlock || d.Reasons[0] != model.ReasonNoSecretRule {
+		t.Fatalf("pattern exception must not skip substitution, got %q %+v", d.Action, d.Reasons)
 	}
 }
 

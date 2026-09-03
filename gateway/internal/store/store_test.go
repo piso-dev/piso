@@ -50,6 +50,39 @@ func TestPatternPersistenceAndReload(t *testing.T) {
 	}
 }
 
+func TestApplyAllowedExceptionUpdatesMatchingRows(t *testing.T) {
+	dir := t.TempDir()
+	st, err := New(filepath.Join(dir, "state.json"), filepath.Join(dir, "req.jsonl"), filepath.Join(dir, "patterns.json"), 100)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	st.AppendLog(Record{ID: "jwt-a", Action: "block", Host: "cdn.example.com",
+		Findings: []Finding{{Kind: "pattern", PatternID: "jwt"}}})
+	st.AppendLog(Record{ID: "jwt-b", Action: "block", Host: "other.test",
+		Findings: []Finding{{Kind: "pattern", PatternID: "jwt"}}})
+	st.AppendLog(Record{ID: "sk-a", Action: "block", Host: "cdn.example.com",
+		Findings: []Finding{{Kind: "pattern", PatternID: "openai-sk"}}})
+	st.AppendLog(Record{ID: "mix-a", Action: "block", Host: "cdn.example.com",
+		Findings: []Finding{
+			{Kind: "pattern", PatternID: "jwt"},
+			{Kind: "pattern", PatternID: "openai-sk"},
+		}})
+	updated := st.ApplyAllowedException("jwt", "cdn.example.com")
+	if len(updated) != 1 || updated[0].ID != "jwt-a" {
+		t.Fatalf("updated %+v", updated)
+	}
+	byID := map[string]Record{}
+	for _, r := range st.Records(0) {
+		byID[r.ID] = r
+	}
+	if byID["jwt-a"].Action != "allow" || byID["jwt-a"].Reasons[0] != "allowed-exception" {
+		t.Fatalf("jwt-a: %+v", byID["jwt-a"])
+	}
+	if byID["jwt-b"].Action != "block" || byID["sk-a"].Action != "block" || byID["mix-a"].Action != "block" {
+		t.Fatalf("other rows must stay blocked")
+	}
+}
+
 func TestSecretRoundTripWithoutValueLeakOnSummary(t *testing.T) {
 	dir := t.TempDir()
 	st, _ := New(filepath.Join(dir, "state.json"), filepath.Join(dir, "req.jsonl"), filepath.Join(dir, "patterns.json"), 100)

@@ -20,9 +20,15 @@ services:
     ports:
       # Host ports are set by `piso up --*-port` (PISO_*_PORT). In-container
       # listen ports stay 8080/8081/8082 so the worker proxy env does not change.
-      - "127.0.0.1:${PISO_PROXY_PORT:-8080}:8080" # egress proxy
-      - "127.0.0.1:${PISO_CTRL_PORT:-80}:8081" # control plane: http://piso.local
-      - "127.0.0.1:${PISO_INGRESS_PORT:-8082}:8082" # ingress: name.piso.local
+      # Bind both 127.0.0.1 and ::1: /etc/hosts maps piso.local to both (macOS
+      # .local is mDNS; without ::1, IPv6 lookups hang). IPv4-only publish
+      # leaves ::1:80 dead, so browsers stall and the dashboard looks empty.
+      - "127.0.0.1:${PISO_PROXY_PORT:-8080}:8080"
+      - "[::1]:${PISO_PROXY_PORT:-8080}:8080"
+      - "127.0.0.1:${PISO_CTRL_PORT:-80}:8081"
+      - "[::1]:${PISO_CTRL_PORT:-80}:8081"
+      - "127.0.0.1:${PISO_INGRESS_PORT:-8082}:8082"
+      - "[::1]:${PISO_INGRESS_PORT:-8082}:8082"
     volumes:
       # Machine-level state (secrets, CA, log). The CLI sets PISO_DATA
       # (default ~/.piso) so an installed binary does not need a writable repo.

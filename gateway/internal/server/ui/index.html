@@ -10,15 +10,42 @@
   * { box-sizing:border-box }
   body { margin:0; font:14px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif; background:var(--bg); color:var(--fg) }
   header { display:flex; align-items:center; gap:16px; padding:14px 20px; border-bottom:1px solid var(--border) }
+  #errbar { display:none; background:#3a1d1d; color:#ffb4b4; padding:8px 20px; font-size:13px }
   header h1 { font-size:16px; margin:0; font-weight:600 }
   header .sub { color:var(--muted); font-size:12px }
   nav { display:flex; gap:4px; padding:10px 20px; border-bottom:1px solid var(--border); flex-wrap:wrap }
   nav button { background:transparent; color:var(--muted); border:1px solid transparent; padding:6px 14px; border-radius:6px; cursor:pointer; font-size:13px }
   nav button.active { background:var(--panel); color:var(--fg); border-color:var(--border) }
-  main { padding:20px; max-width:1400px }
+  main { padding:20px; max-width:100%; }
   .tab { display:none } .tab.active { display:block }
   table { width:100%; border-collapse:collapse; background:var(--panel); border:1px solid var(--border); border-radius:8px; overflow:hidden }
-  th, td { text-align:left; padding:8px 12px; border-bottom:1px solid var(--border); font-size:13px; vertical-align:top }
+  th, td { text-align:left; padding:8px 12px; border-bottom:1px solid var(--border); font-size:13px; vertical-align:top; overflow-wrap:anywhere; word-break:break-word }
+  #tab-log table { table-layout:fixed }
+  #tab-log th:nth-child(1), #tab-log td:nth-child(1) { width:7.5rem }
+  #tab-log th:nth-child(2), #tab-log td:nth-child(2) { width:5rem }
+  #tab-log th:nth-child(3), #tab-log td:nth-child(3) { width:auto }
+  #tab-log th:nth-child(4), #tab-log td:nth-child(4) { width:7.5rem }
+  #tab-log .log-url { display:block; overflow-wrap:anywhere; word-break:break-word }
+  #tab-log .log-detail { display:block; margin-top:4px; color:var(--muted); font-size:12px }
+  .logbar { display:flex; align-items:center; gap:12px; margin-bottom:12px; flex-wrap:wrap }
+  .logbar .muted { font-size:12px }
+  .modal { display:none; position:fixed; inset:0; background:rgba(0,0,0,.55); z-index:20; align-items:center; justify-content:center; padding:16px }
+  .modal.open { display:flex }
+  .modal-card { background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:20px; width:100%; max-width:100%; max-height:90vh; overflow-x:hidden; overflow-y:auto }
+  .fail-group { border:1px solid var(--border); border-radius:8px; padding:12px; margin:10px 0; width:100%; display:flex; flex-direction:column; gap:8px }
+  .fail-group .meta { font-size:12px; color:var(--muted); margin:0; overflow-wrap:anywhere; word-break:break-word }
+  .modal-card h3 { margin:0 0 8px; font-size:15px }
+  #failForm { display:flex; flex-direction:column; flex-wrap:nowrap; align-items:stretch; width:100%; margin:12px 0 0; gap:0 }
+  #failGroups { width:100%; min-width:0 }
+  #failForm input:not([type="checkbox"]):not([type="hidden"]) { width:100%; min-width:0; max-width:100% }
+  #failForm input[type="checkbox"] { width:auto; min-width:0; flex:0 0 auto }
+  .fail-actions { display:flex; gap:8px; flex-wrap:wrap; width:100% }
+  .fail-actions .btn { flex:1 1 10rem; min-width:0 }
+  .fail-secret { display:none; flex-direction:column; gap:8px; width:100% }
+  .fail-group.is-secret .fail-secret { display:flex }
+  #failModalHint, #failModalIdle, #failStatus { overflow-wrap:anywhere; word-break:break-word }
+  .modal-card label.chk { color:var(--muted); font-size:13px; display:flex; gap:8px; align-items:center }
+  .modal-actions { display:flex; gap:8px; justify-content:flex-end; margin-top:8px; flex-wrap:wrap; width:100% }
   th { color:var(--muted); font-weight:500; font-size:12px; text-transform:uppercase; letter-spacing:.03em }
   tr:last-child td { border-bottom:none }
   .badge { display:inline-block; padding:1px 8px; border-radius:10px; font-size:11px; font-weight:600 }
@@ -46,6 +73,7 @@
   <span class="sub">secrets · substitution rules · credential detection · request log</span>
   <span class="sub" id="health"></span>
 </header>
+<div id="errbar"></div>
 <nav id="tabs">
   <button data-tab="log" class="active">Request log</button>
   <button data-tab="secrets">Secrets</button>
@@ -58,8 +86,12 @@
 <main>
   <!-- REQUEST LOG -->
   <section class="tab active" id="tab-log">
+    <div class="logbar">
+      <button type="button" class="btn" id="openFailModal">Blocked secrets (<span id="failCount">0</span>)</button>
+      <span class="muted" id="failIdle"></span>
+    </div>
     <table>
-      <thead><tr><th>Time</th><th>Worker</th><th>Method</th><th>Host / path</th><th>Verdict</th><th>Reason</th><th>Findings</th><th></th></tr></thead>
+      <thead><tr><th>When</th><th>Method</th><th>Request</th><th>Verdict</th></tr></thead>
       <tbody id="logrows"></tbody>
     </table>
   </section>
@@ -72,7 +104,8 @@
         <form id="secretForm">
           <input name="name" placeholder="name (anthropic)" required>
           <input name="placeholder" placeholder="piso_anthropic_xyz" required>
-          <input name="value" type="password" placeholder="real value (hidden)" required>
+          <input name="envKey" placeholder="ANTHROPIC_API_KEY (optional)">
+          <input name="value" type="password" autocomplete="new-password" placeholder="real value (hidden)" required>
           <input name="allowedHosts" placeholder="allowed hosts, comma-sep (optional)">
           <button type="submit">Add</button>
         </form>
@@ -80,7 +113,7 @@
       </div>
       <div class="card">
         <h3>Secrets (summaries only)</h3>
-        <table><thead><tr><th>Name</th><th>Placeholder</th><th>Hosts</th><th></th></tr></thead>
+        <table><thead><tr><th>Name</th><th>Env</th><th>Placeholder</th><th>Hosts</th><th></th></tr></thead>
         <tbody id="secretrows"></tbody></table>
       </div>
     </div>
@@ -130,12 +163,13 @@
         <input name="hostRegex" placeholder="host regex (optional)">
         <input name="pathRegex" placeholder="path regex (optional)">
         <input name="contentRegex" placeholder="content regex (optional)">
+        <input name="patternId" placeholder="pattern id (optional)">
         <input name="placeholder" placeholder="piso_ token (optional)">
         <input name="note" placeholder="why?">
         <button type="submit">Add exception</button>
       </form>
-      <p class="muted" style="font-size:12px">All provided matchers must match. Exceptions never substitute placeholders — they only stop blocks.</p>
-      <table><thead><tr><th>Host</th><th>Path</th><th>Content</th><th>Placeholder</th><th>Note</th><th></th></tr></thead>
+      <p class="muted" style="font-size:12px">All provided matchers must match. A pattern id covers only that pattern. Exceptions never substitute placeholders — they only stop the block.</p>
+      <table><thead><tr><th>Host</th><th>Path</th><th>Content</th><th>Pattern</th><th>Placeholder</th><th>Note</th><th></th></tr></thead>
       <tbody id="exceptionrows"></tbody></table>
     </div>
   </section>
@@ -169,11 +203,38 @@
     </div>
   </section>
 </main>
+<div id="failModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="failModalTitle">
+  <div class="modal-card">
+    <h3 id="failModalTitle">Blocked secrets</h3>
+    <p class="muted" id="failModalHint">Leave a pattern blocked, allow it on that host, or set an env var. Empty secret values are skipped. Allow does not waive other patterns or real secrets.</p>
+    <p class="muted" id="failModalIdle"></p>
+    <form id="failForm">
+      <div id="failGroups"></div>
+      <p class="muted" id="failStatus"></p>
+      <div class="modal-actions">
+        <button type="button" class="btn danger" id="failCancel">Cancel</button>
+        <button type="submit">Save and write worker env</button>
+      </div>
+    </form>
+  </div>
+</div>
 <script>
 const $ = s => document.querySelector(s);
-const api = async (u, opt) => { const r = await fetch(u, opt); if (!r.ok) throw new Error((await r.text()) || r.status); return r.status===204? null : r.json(); };
+const api = async (u, opt) => {
+  const ctrl = opt && opt.signal ? opt.signal : AbortSignal.timeout(8000);
+  const r = await fetch(u, Object.assign({}, opt, {signal: ctrl}));
+  if (!r.ok) {
+    throw new Error((await r.text()) || r.status);
+  }
+  return r.status === 204 ? null : r.json();
+};
 const esc = s => (s ?? '').toString().replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const el = (tag, cls, html) => { const e = document.createElement(tag); if (cls) e.className=cls; if (html!=null) e.innerHTML=html; return e; };
+function showErr(msg) {
+  const b = $('#errbar');
+  b.style.display = 'block';
+  b.textContent = msg;
+}
 
 // tabs
 document.querySelectorAll('#tabs button').forEach(b => b.onclick = () => {
@@ -185,42 +246,414 @@ document.querySelectorAll('#tabs button').forEach(b => b.onclick = () => {
 const verdict = a => a==='block' ? '<span class="badge block">blocked</span>' : a==='substitute' ? '<span class="badge sub">substituted</span>' : '<span class="badge ok">allowed</span>';
 const reason = a => a==='block' ? '<span class="badge retry">retryable</span>' : '';
 
-// ---- request log (live via SSE) ----
-function logRow(r) {
-  const findings = (r.findings||[]).map(f => `<span class="muted mono">${esc(f.kind)}${f.patternId?':'+esc(f.patternId):''}@${esc(f.location)}</span>`).join(' ');
-  const tr = el('tr', 'fade', `<td class="muted mono">${esc(new Date(r.ts).toLocaleTimeString())}</td>
-    <td class="mono">${esc(r.worker)}</td><td>${esc(r.method)}</td>
-    <td class="mono">${esc(r.scheme)}://${esc(r.host)}${esc(r.path)}</td>
-    <td>${verdict(r.action)}</td><td class="mono">${esc((r.reasons||[]).join(', '))}</td><td>${findings}</td>
-    <td>${r.retryable ? `<button class="btn small" onclick="retry('${r.id}')">retry</button>` : ''}</td>`);
-  const t = $('#logrows'); t.prepend(tr); while (t.children.length > 300) t.lastElementChild.remove();
+// ---- request log (live via SSE) + failure aggregator ----
+const logById = {};
+const IDLE_MS = 5000;
+
+function placeholderTokens(r) {
+  return (r.findings || []).filter(f => f.kind === 'placeholder' && f.token).map(f => f.token);
 }
-async function retry(id) {
-  try { const r = await api(`/api/v1/requests/${id}/retry`, {method:'POST'}); alert('Retry → ' + r.status); }
-  catch (e) { alert('Retry blocked: ' + e.message); }
-  loadLog();
+
+function clearLogIndex() {
+  Object.keys(logById).forEach(k => { delete logById[k]; });
 }
-async function loadLog() { const rs = await api('/api/v1/requests'); $('#logrows').innerHTML=''; rs.forEach(logRow); }
+
+/**
+ * Table cells for one request-log row.
+ * @param {object} r
+ * @returns {string}
+ */
+function logRowCells(r) {
+  const findings = (r.findings||[]).map(f => `${esc(f.kind)}${f.patternId?':'+esc(f.patternId):''}@${esc(f.location)}`).join(' · ');
+  const reasons = esc((r.reasons||[]).join(', '));
+  const extra = [r.worker ? 'worker '+esc(r.worker) : '', reasons, findings].filter(Boolean).join(' · ');
+  return `<td class="muted mono">${esc(new Date(r.ts).toLocaleTimeString())}</td>
+    <td>${esc(r.method)}</td>
+    <td class="mono"><span class="log-url">${esc(r.scheme)}://${esc(r.host)}${esc(r.path)}</span>
+      ${extra ? `<span class="log-detail">${extra}</span>` : ''}</td>
+    <td>${verdict(r.action)}</td>`;
+}
+
+function logRow(r, atTop) {
+  logById[r.id] = r;
+  const existing = document.querySelector('#logrows tr[data-id="' + CSS.escape(r.id) + '"]');
+  if (existing) {
+    existing.innerHTML = logRowCells(r);
+    existing.className = 'fade';
+    refreshFailBar();
+    return;
+  }
+  const tr = el('tr', 'fade', logRowCells(r));
+  tr.dataset.id = r.id;
+  const t = $('#logrows');
+  if (atTop === false) {
+    t.append(tr);
+  } else {
+    t.prepend(tr);
+  }
+  while (t.children.length > 300) {
+    t.lastElementChild.remove();
+  }
+  refreshFailBar();
+}
+
+function blockedRecords() {
+  return Object.keys(logById).map(k => logById[k]).filter(r => r.action === 'block');
+}
+
+function newestBlockedTs() {
+  let max = 0;
+  blockedRecords().forEach(r => {
+    const t = Date.parse(r.ts);
+    if (!isNaN(t) && t > max) {
+      max = t;
+    }
+  });
+  return max;
+}
+
+function idleLabel() {
+  const n = blockedRecords().length;
+  if (n === 0) {
+    return 'no blocked requests';
+  }
+  const last = newestBlockedTs();
+  if (!last) {
+    return n + ' blocked';
+  }
+  const ago = Date.now() - last;
+  if (ago < IDLE_MS) {
+    return 'still receiving';
+  }
+  return 'quiet for ' + Math.floor(ago / 1000) + 's';
+}
+
+function refreshFailBar() {
+  const n = blockedRecords().length;
+  const count = $('#failCount');
+  const idle = $('#failIdle');
+  if (count) {
+    count.textContent = String(n);
+  }
+  if (idle) {
+    idle.textContent = idleLabel();
+  }
+  const modalIdle = $('#failModalIdle');
+  if (modalIdle && $('#failModal').classList.contains('open')) {
+    modalIdle.textContent = idleLabel();
+  }
+}
+
+function groupKey(r) {
+  const reasons = r.reasons || [];
+  const tokens = placeholderTokens(r);
+  if (reasons.indexOf('no-secret-rule') >= 0 && tokens[0]) {
+    return 'ph|' + tokens[0] + '|' + (r.host || '');
+  }
+  const pat = (r.findings || []).find(f => f.kind === 'pattern');
+  if (pat) {
+    return 'pat|' + (pat.patternId || '') + '|' + (r.host || '');
+  }
+  return 'other|' + (reasons[0] || 'block') + '|' + (r.host || '');
+}
+
+function guessEnv(host) {
+  const h = String(host || '').toLowerCase();
+  if (h.indexOf('anthropic') >= 0) {
+    return 'ANTHROPIC_API_KEY';
+  }
+  if (h.indexOf('openai') >= 0) {
+    return 'OPENAI_API_KEY';
+  }
+  if (h.indexOf('github') >= 0) {
+    return 'GITHUB_TOKEN';
+  }
+  return '';
+}
+
+function nameFromPlaceholder(p) {
+  const rest = String(p || '').replace(/^piso_/, '');
+  const parts = rest.split('_').filter(Boolean);
+  if (parts.length > 1) {
+    return parts.slice(0, -1).join('_');
+  }
+  return rest || 'secret';
+}
+
+function failGroups() {
+  const map = {};
+  blockedRecords().forEach(r => {
+    const k = groupKey(r);
+    if (!map[k]) {
+      const tokens = placeholderTokens(r);
+      const pat = (r.findings || []).find(f => f.kind === 'pattern');
+      map[k] = {
+        key: k,
+        kind: k.indexOf('ph|') === 0 ? 'placeholder' : (k.indexOf('pat|') === 0 ? 'pattern' : 'other'),
+        host: r.host || '',
+        placeholder: tokens[0] || '',
+        patternId: pat ? pat.patternId : '',
+        count: 0,
+        lastTs: r.ts,
+        sample: (r.scheme || 'https') + '://' + (r.host || '') + (r.path || '')
+      };
+    }
+    map[k].count += 1;
+    if (Date.parse(r.ts) > Date.parse(map[k].lastTs)) {
+      map[k].lastTs = r.ts;
+      map[k].sample = (r.scheme || 'https') + '://' + (r.host || '') + (r.path || '');
+    }
+  });
+  return Object.keys(map).map(k => map[k]);
+}
+
+/**
+ * Show or hide the resolve submit button when any group can write an env var.
+ * @returns {void}
+ */
+function syncFailSaveButton() {
+  const saveBtn = $('#failForm button[type="submit"]');
+  if (!saveBtn) {
+    return;
+  }
+  const hasPlaceholder = $('#failGroups [data-kind="placeholder"]');
+  const hasSecret = $('#failGroups .fail-group.is-secret');
+  saveBtn.style.display = (hasPlaceholder || hasSecret) ? '' : 'none';
+}
+
+/**
+ * Env/name/value fields shared by placeholder groups and Set env var.
+ * @param {number} i
+ * @param {string} env
+ * @param {string} name
+ * @param {string} host
+ * @param {string} placeholder
+ * @returns {string}
+ */
+function secretFieldsHtml(i, env, name, host, placeholder) {
+  return `<input name="envKey_${i}" placeholder="ENV_VAR" value="${esc(env)}">
+    <input name="name_${i}" placeholder="name" value="${esc(name)}">
+    <input name="value_${i}" type="password" autocomplete="new-password" placeholder="real value (skip to ignore)">
+    <input name="host_${i}" placeholder="host" value="${esc(host)}">
+    <input type="hidden" name="placeholder_${i}" value="${esc(placeholder)}">
+    <label class="chk"><input type="checkbox" name="allHosts_${i}"> all hosts (*)</label>`;
+}
+
+function renderFailGroups() {
+  const box = $('#failGroups');
+  box.innerHTML = '';
+  const groups = failGroups();
+  if (groups.length === 0) {
+    box.append(el('p', 'muted', 'No blocked requests to fill.'));
+    box.dataset.count = '0';
+    syncFailSaveButton();
+    return;
+  }
+  let idx = 0;
+  groups.forEach((g) => {
+    if (g.kind === 'placeholder') {
+      const env = guessEnv(g.host);
+      const name = nameFromPlaceholder(g.placeholder) || env || g.host || 'secret';
+      const wrap = el('div', 'fail-group', `<p class="meta">${esc(g.count + '× placeholder ' + g.placeholder + ' on ' + (g.host || '*') + ' — ' + g.sample)}</p>
+        ${secretFieldsHtml(idx, env, name, g.host, g.placeholder)}`);
+      wrap.dataset.kind = 'placeholder';
+      wrap.dataset.idx = String(idx);
+      box.append(wrap);
+      idx += 1;
+      return;
+    }
+    if (g.kind === 'pattern' && g.patternId && g.host) {
+      const env = guessEnv(g.host);
+      const name = g.patternId || env || g.host || 'secret';
+      const i = idx;
+      const wrap = el('div', 'fail-group', `<p class="meta">${esc(g.count + '× pattern ' + g.patternId + ' on ' + g.host + ' — ' + g.sample)}</p>
+        <div class="fail-actions">
+          <button type="button" class="btn" data-act="allow">Allow ${esc(g.patternId)} on ${esc(g.host)}</button>
+          <button type="button" class="btn" data-act="secret">Set env var</button>
+        </div>
+        <div class="fail-secret">${secretFieldsHtml(i, env, name, g.host, '')}</div>`);
+      wrap.dataset.kind = 'pattern';
+      wrap.dataset.idx = String(i);
+      const allowBtn = wrap.querySelector('[data-act="allow"]');
+      const secretBtn = wrap.querySelector('[data-act="secret"]');
+      if (allowBtn) {
+        allowBtn.addEventListener('click', () => {
+          exceptPatternGroup(g.host, g.patternId, allowBtn);
+        });
+      }
+      if (secretBtn) {
+        secretBtn.addEventListener('click', () => {
+          wrap.classList.toggle('is-secret');
+          secretBtn.textContent = wrap.classList.contains('is-secret') ? 'Hide env var' : 'Set env var';
+          syncFailSaveButton();
+        });
+      }
+      box.append(wrap);
+      idx += 1;
+      return;
+    }
+    box.append(el('div', 'fail-group', `<p class="meta">${esc(g.count + '× ' + (g.patternId || 'blocked') + ' on ' + (g.host || '*') + ' — ' + g.sample)}</p>
+      <p class="muted">Leave blocked — this kind of block cannot be excepted or stored as an env var.</p>`));
+  });
+  box.dataset.count = String(idx);
+  syncFailSaveButton();
+}
+
+/**
+ * Persist a host+pattern exception and replay matching captured blocks.
+ * @param {string} host
+ * @param {string} patternId
+ * @param {HTMLButtonElement} btn
+ */
+async function exceptPatternGroup(host, patternId, btn) {
+  const status = $('#failStatus');
+  if (!btn) {
+    return;
+  }
+  btn.disabled = true;
+  try {
+    status.textContent = 'allowing…';
+    const out = await api('/api/v1/failures/except', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({host, patternId}),
+      signal: AbortSignal.timeout(120000)
+    });
+    const results = out.results || [];
+    const ok = results.filter(x => !x.error).length;
+    const bad = results.filter(x => x.error);
+    const updated = typeof out.updated === 'number' ? out.updated : 0;
+    status.textContent = (out.created ? 'added exception' : 'reused exception') +
+      (updated ? ('; updated ' + updated + ' log rows') : '') +
+      (results.length ? ('; retried ' + ok + '/' + results.length) : '') +
+      (bad.length ? ('. failed: ' + bad.map(x => x.id + ' ' + x.error).join('; ')) : '');
+    await loadExceptions();
+    await loadLog();
+    renderFailGroups();
+    $('#failModalIdle').textContent = idleLabel();
+    if (bad.length === 0 && failGroups().length === 0) {
+      closeFailModal();
+    }
+  } catch (e) {
+    status.textContent = e.message;
+  } finally {
+    if (btn.isConnected) {
+      btn.disabled = false;
+    }
+  }
+}
+
+function closeFailModal() {
+  $('#failModal').classList.remove('open');
+}
+
+function openFailModal() {
+  renderFailGroups();
+  $('#failStatus').textContent = '';
+  $('#failModalIdle').textContent = idleLabel();
+  $('#failModal').classList.add('open');
+}
+
+$('#openFailModal').onclick = () => { openFailModal(); };
+$('#failCancel').onclick = () => { closeFailModal(); };
+$('#failModal').addEventListener('click', ev => {
+  if (ev.target === $('#failModal')) {
+    closeFailModal();
+  }
+});
+document.addEventListener('keydown', ev => {
+  if (ev.key === 'Escape') {
+    closeFailModal();
+  }
+});
+setInterval(refreshFailBar, 1000);
+
+$('#failForm').onsubmit = async ev => {
+  ev.preventDefault();
+  const form = ev.target;
+  const n = parseInt($('#failGroups').dataset.count || '0', 10);
+  const entries = [];
+  for (let i = 0; i < n; i++) {
+    const wrap = $('#failGroups [data-idx="' + i + '"]');
+    if (wrap && wrap.dataset.kind === 'pattern' && !wrap.classList.contains('is-secret')) {
+      continue;
+    }
+    const value = String((form.elements['value_' + i] && form.elements['value_' + i].value) || '').trim();
+    if (!value) {
+      continue;
+    }
+    const allHosts = form.elements['allHosts_' + i] && form.elements['allHosts_' + i].checked;
+    entries.push({
+      envKey: String(form.elements['envKey_' + i].value || '').trim(),
+      name: String(form.elements['name_' + i].value || '').trim(),
+      value,
+      placeholder: String(form.elements['placeholder_' + i].value || '').trim(),
+      host: allHosts ? '*' : String(form.elements['host_' + i].value || '').trim()
+    });
+  }
+  const status = $('#failStatus');
+  if (entries.length === 0) {
+    status.textContent = 'enter at least one real value';
+    return;
+  }
+  const btn = form.querySelector('button[type="submit"]');
+  btn.disabled = true;
+  try {
+    status.textContent = 'saving…';
+    const out = await api('/api/v1/failures/resolve', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({entries}),
+      signal: AbortSignal.timeout(120000)
+    });
+    const results = out.results || [];
+    const ok = results.filter(x => !x.error).length;
+    const bad = results.filter(x => x.error);
+    const keys = (out.envKeys || []).join(', ');
+    status.textContent = 'wrote ' + (keys || 'placeholders.env') +
+      (results.length ? ('; retried ' + ok + '/' + results.length) : '') +
+      (bad.length ? ('. failed: ' + bad.map(x => x.id + ' ' + x.error).join('; ')) : '') +
+      '. Next piso attach exports placeholders.';
+    await loadSecrets();
+    await loadRules();
+    await loadLog();
+    if (bad.length === 0) {
+      closeFailModal();
+    }
+  } catch (e) {
+    status.textContent = e.message;
+  } finally {
+    btn.disabled = false;
+  }
+};
+
+async function loadLog() {
+  const rs = await api('/api/v1/requests');
+  $('#logrows').innerHTML = '';
+  clearLogIndex();
+  rs.forEach(r => { logRow(r, false); });
+}
 function streamLog() {
   const es = new EventSource('/api/v1/requests/stream');
   es.addEventListener('record', ev => { const r = JSON.parse(ev.data); logRow(r); });
-  es.onerror = () => {}; // reconnect handled by EventSource
+  es.onerror = () => {};
 }
 
 // ---- secrets ----
 async function loadSecrets() {
   const ss = await api('/api/v1/secrets');
   $('#secretrows').innerHTML = '';
-  ss.forEach(s => $('#secretrows').append(el('tr', '', `<td>${esc(s.name)}</td><td class="mono">${esc(s.placeholder)}</td>
+  ss.forEach(s => $('#secretrows').append(el('tr', '', `<td>${esc(s.name)}</td><td class="mono">${esc(s.envKey||'')}</td>
+    <td class="mono">${esc(s.placeholder)}</td>
     <td><span class="mono">${esc((s.allowedHosts||[]).join(', '))}</span></td>
-    <td><button class="btn small danger" onclick="delSecret('${s.id}')">del</button></td>`));
+    <td><button class="btn small danger" onclick="delSecret('${s.id}')">del</button></td>`)));
   const sel = $('#ruleSecret'); sel.placeholder = ss.length ? `secret id: ${ss[0].id}` : 'secret id';
 }
 async function delSecret(id) { await api(`/api/v1/secrets/${id}`, {method:'DELETE'}); loadSecrets(); }
 $('#secretForm').onsubmit = async ev => {
   ev.preventDefault(); const f = new FormData(ev.target);
   const allowedHosts = (f.get('allowedHosts')||'').split(',').map(s=>s.trim()).filter(Boolean);
-  const body = { name:f.get('name'), placeholder:f.get('placeholder'), value:f.get('value'), allowedHosts };
+  const body = { name:f.get('name'), placeholder:f.get('placeholder'), envKey:f.get('envKey'), value:f.get('value'), allowedHosts };
   try { await api('/api/v1/secrets', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)}); ev.target.reset(); loadSecrets(); }
   catch (e) { alert(e.message); }
 };
@@ -256,13 +689,13 @@ $('#patternForm').onsubmit = async ev => {
 async function loadExceptions() {
   const es = await api('/api/v1/exceptions'); $('#exceptionrows').innerHTML='';
   es.forEach(e => $('#exceptionrows').append(el('tr','',`<td class="mono">${esc(e.hostRegex||'-')}</td><td class="mono">${esc(e.pathRegex||'-')}</td>
-    <td class="mono">${esc(e.contentRegex||'-')}</td><td class="mono">${esc(e.placeholder||'-')}</td><td>${esc(e.note||'')}</td>
+    <td class="mono">${esc(e.contentRegex||'-')}</td><td class="mono">${esc(e.patternId||'-')}</td><td class="mono">${esc(e.placeholder||'-')}</td><td>${esc(e.note||'')}</td>
     <td><button class="btn small danger" onclick="delException('${e.id}')">del</button></td>`)));
 }
 async function delException(id) { await api(`/api/v1/exceptions/${id}`, {method:'DELETE'}); loadExceptions(); }
 $('#exceptionForm').onsubmit = async ev => {
   ev.preventDefault(); const f = new FormData(ev.target);
-  const body = { hostRegex:f.get('hostRegex')||undefined, pathRegex:f.get('pathRegex')||undefined, contentRegex:f.get('contentRegex')||undefined, placeholder:f.get('placeholder')||undefined, note:f.get('note')||undefined, enabled:true };
+  const body = { hostRegex:f.get('hostRegex')||undefined, pathRegex:f.get('pathRegex')||undefined, contentRegex:f.get('contentRegex')||undefined, patternId:f.get('patternId')||undefined, placeholder:f.get('placeholder')||undefined, note:f.get('note')||undefined, enabled:true };
   try { await api('/api/v1/exceptions', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)}); ev.target.reset(); loadExceptions(); }
   catch (e) { alert(e.message); }
 };
@@ -296,8 +729,22 @@ $('#routeForm').onsubmit = async ev => {
 
 // ---- init ----
 (async () => {
-  api('/api/v1/health').then(h => $('#health').textContent = 'live @ ' + h.time.slice(11,19)).catch(() => $('#health').textContent='offline');
-  await loadSecrets(); await loadRules(); await loadPatterns(); await loadExceptions(); await loadDomains(); await loadRoutes(); await loadLog();
+  try {
+    const h = await api('/api/v1/health');
+    $('#health').textContent = 'live @ ' + String(h.time).slice(11, 19);
+  } catch (e) {
+    $('#health').textContent = 'offline';
+    showErr('control API unreachable at ' + location.origin + ' — try http://127.0.0.1 (piso.local IPv6 needs ::1 published)');
+    return;
+  }
+  const loaders = [loadSecrets, loadRules, loadPatterns, loadExceptions, loadDomains, loadRoutes, loadLog];
+  for (const fn of loaders) {
+    try {
+      await fn();
+    } catch (e) {
+      showErr(fn.name + ': ' + e.message);
+    }
+  }
   streamLog();
 })();
 </script>
