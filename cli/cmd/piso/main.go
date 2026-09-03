@@ -76,7 +76,7 @@ Usage:
   piso up [dir] [--proxy-port N] [--ctrl-port N] [--ingress-port N]
                          ensure gateway + worker for [dir] (default: cwd)
   piso down              stop this project's worker (gateway stays up)
-  piso attach            enter the worker and run pi (resume last session)
+  piso attach            enter the worker and run pi (new session if none exist)
   piso status            show gateway + worker state
   piso secrets list|add|rm   manage gateway secrets (real values never leave it)
   piso expose <port> [--name n]  reverse-proxy a worker port as https://n.piso.local
@@ -385,7 +385,9 @@ func cmdAttach(args []string) error {
 	if len(args) > 0 && args[0] == "--shell" {
 		inner += "exec /bin/bash"
 	} else {
-		inner += "exec pi -r"
+		// pi -r is the session picker; with zero jsonl files it shows
+		// "No sessions found" and waits. Start a new session instead.
+		inner += `if find /root/.pi/agent/sessions -name '*.jsonl' -print -quit 2>/dev/null | grep -q .; then exec pi -r; else exec pi; fi`
 	}
 	cmdArgs := []string{"exec", "-it", proj.WorkerName(), "bash", "-lc", inner}
 	c := exec.Command("docker", cmdArgs...)
