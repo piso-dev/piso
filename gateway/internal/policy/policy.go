@@ -75,7 +75,7 @@ func Decide(in Input) model.Decision {
 	// (e.g. Authorization: Bearer piso_routstr_…) are not secrets — they fall
 	// through to substitution. A leftover real-looking hit still blocks
 	// unless every such hit is covered by an exception.
-	leftover := nonPlaceholderPatternHits(in.Scan)
+	leftover := egressPatternHits(in.Scan)
 	if len(leftover) > 0 {
 		if allHitsCovered(in, leftover) {
 			if !in.Scan.HasPlaceholder() {
@@ -170,19 +170,32 @@ func hostWideExceptionApplies(in Input, s scanner.Result) bool {
 	return false
 }
 
-// nonPlaceholderPatternHits drops pattern findings that are the piso_
-// placeholder itself (Authorization: Bearer piso_…). Sample tokens are
-// truncated, so a hit that shares location+field with a scanned placeholder
-// is treated the same way.
-func nonPlaceholderPatternHits(s scanner.Result) []model.Finding {
+// egressPatternHits are pattern findings that are actually leaving as
+// credentials: not a wrapped piso_ token, and not chat/message text.
+// A JWT or sk- example inside messages[n].content is conversation, not
+// an Authorization header.
+func egressPatternHits(s scanner.Result) []model.Finding {
 	var out []model.Finding
 	for _, hit := range s.PatternHits {
 		if patternHitIsPlaceholder(hit, s.Placeholders) {
 			continue
 		}
+		if patternHitIsChatContent(hit) {
+			continue
+		}
 		out = append(out, hit)
 	}
 	return out
+}
+
+// patternHitIsChatContent reports whether the hit is inside the LLM
+// messages[] transcript (content, tool_calls, function.arguments, …),
+// not a request-level credential field.
+func patternHitIsChatContent(hit model.Finding) bool {
+	if hit.Location != "json-body" && hit.Location != "body" {
+		return false
+	}
+	return strings.HasPrefix(hit.Field, "messages[")
 }
 
 // patternHitIsPlaceholder reports whether a pattern finding is just a

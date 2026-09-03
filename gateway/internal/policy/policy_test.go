@@ -174,6 +174,41 @@ func TestPatternScopedExceptionDoesNotWaiveRealSecret(t *testing.T) {
 	}
 }
 
+func TestJWTInChatContentDoesNotBlockVaultSubstitute(t *testing.T) {
+	ph := "piso_routstr_5ef1739b3cf1"
+	sec := model.Secret{ID: "s1", Placeholder: ph, Value: "sk-test-not-real"}
+	in := Input{
+		Method: "POST", Host: "routstr.ft.hn", Path: "/v1/chat/completions",
+		Scan: scanner.Result{
+			Placeholders: []model.Finding{{Kind: model.FindingPlaceholder, Token: ph, Location: "authorization", Field: "Authorization"}},
+			PatternHits: []model.Finding{
+				{Kind: model.FindingPatternSecret, PatternID: "jwt", Token: "eyJ0eXAiOiJK…", Location: "json-body", Field: "messages[93].content"},
+				{Kind: model.FindingPatternSecret, PatternID: "jwt", Token: "eyJ0eXAiOiJK…", Location: "json-body", Field: "messages[97].tool_calls[0].function.arguments"},
+			},
+		},
+		SecretByPlaceholder: map[string]model.Secret{ph: sec},
+		Rules:               []model.Rule{{ID: "r1", SecretID: "s1", Host: "routstr.ft.hn", Placeholder: ph}},
+	}
+	d := Decide(in)
+	if d.Action != model.ActionSubstitute {
+		t.Fatalf("jwt in chat content must not block, got %q %+v", d.Action, d.Reasons)
+	}
+}
+
+func TestJWTInRequestFieldStillBlocks(t *testing.T) {
+	in := Input{
+		Method: "POST", Host: "evil.example.com", Path: "/collect",
+		Scan: scanner.Result{PatternHits: []model.Finding{{
+			Kind: model.FindingPatternSecret, PatternID: "jwt", Token: "eyJ0eXAiOiJK…",
+			Location: "json-body", Field: "api_key",
+		}}},
+	}
+	d := Decide(in)
+	if d.Action != model.ActionBlock || d.Reasons[0] != model.ReasonSecretPattern {
+		t.Fatalf("jwt in api_key must block, got %q %+v", d.Action, d.Reasons)
+	}
+}
+
 func TestUnknownPisoTokenInBodyDoesNotBlockVaultSubstitute(t *testing.T) {
 	// Chat/code mentioning piso_egress (the Docker network) is not a vault
 	// token. The Authorization placeholder must still substitute.
