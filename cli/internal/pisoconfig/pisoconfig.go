@@ -200,14 +200,6 @@ func ensureDir(dir string) (string, error) {
 	return abs, nil
 }
 
-// GatewayURL is the control-plane base URL (override with PISO_GATEWAY).
-func GatewayURL() string {
-	if v := os.Getenv("PISO_GATEWAY"); v != "" {
-		return strings.TrimRight(v, "/")
-	}
-	return "http://127.0.0.1:8081"
-}
-
 // API shapes mirror the gateway's model (safe on the client side; the
 // gateway never sends real secret values over GET).
 type SecretSummary struct {

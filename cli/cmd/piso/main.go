@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"net/http"
@@ -49,6 +50,8 @@ func main() {
 		err = cmdLogs(args)
 	case "dashboard":
 		err = cmdDashboard(args)
+	case "setup":
+		err = cmdSetup(args)
 	case "version":
 		fmt.Println("piso", version)
 	case "help", "-h", "--help":
@@ -67,23 +70,31 @@ func usage() {
 	fmt.Print(`piso — isolate an AI agent in a Docker worker behind a MITM gateway
 
 Usage:
-  piso up [dir]          ensure gateway + worker for [dir] (default: cwd)
+  piso up [dir] [--proxy-port N] [--ctrl-port N] [--ingress-port N]
+                         ensure gateway + worker for [dir] (default: cwd)
   piso down              stop this project's worker (gateway stays up)
   piso attach            enter the worker and run pi (resume last session)
   piso status            show gateway + worker state
   piso secrets list|add|rm   manage gateway secrets (real values never leave it)
   piso expose <port> [--name n]  reverse-proxy a worker port as https://n.piso.local
   piso logs [--follow]   tail the gateway request log (SSE when --follow)
-  piso dashboard         open the gateway web UI in the browser
+  piso dashboard         open the gateway web UI (http://piso.local)
+  piso setup [--rebuild] import leftover data and (with --rebuild) recreate the gateway
+
+Host ports default to 8080 (proxy), 80 (control / http://piso.local), 8082 (ingress).
+If a port is taken, piso up exits with the flag to override
+(--proxy-port, --ctrl-port, --ingress-port). Env: PISO_*_PORT.
+make install runs piso setup --rebuild so an existing install is replaced
+in place (binaries, share tree, gateway image, and state.json schema).
 `)
 }
 
 // ---- up / down ----
 
 func cmdUp(args []string) error {
-	dir := "."
-	if len(args) > 0 {
-		dir = args[0]
+	dir, cliPorts, err := parseUpArgs(args)
+	if err != nil {
+		return err
 	}
 	abs, err := filepath.Abs(dir)
 	if err != nil {
@@ -95,27 +106,31 @@ func cmdUp(args []string) error {
 	}
 	fmt.Printf("piso: project %q (slug %s)\n", proj.Dir, proj.Slug)
 
-	// 1. gateway (shared, one per machine). Compose will not flip Internal on
-	// an already-created piso_vpc, so tear down a leaky one first.
-	if err := dockernet.EnsureInternal(); err != nil {
-		return err
-	}
-	gatewayFile, err := pisoconfig.GatewayCompose()
+	ports, err := pisoconfig.ResolveHostPorts(cliPorts)
 	if err != nil {
 		return err
 	}
+	if err := pisoconfig.EnsurePisoLocal(); err != nil {
+		return err
+	}
+	// If our control plane is already healthy, the host ports are ours.
+	// Otherwise fail before compose if something else owns them.
+	if !healthy(pisoconfig.ControlAPIURL()) {
+		if err := pisoconfig.CheckHostPortsFree(ports); err != nil {
+			return err
+		}
+	}
+
+	// 1. gateway (shared, one per machine). Compose will not flip Internal on
+	// an already-created piso_vpc, so tear down a leaky one first.
+	if err := startGateway(false); err != nil {
+		return err
+	}
+	// 2. worker (per-project)
 	composeEnv, err := dockerComposeEnv()
 	if err != nil {
 		return err
 	}
-	if err := runEnv("docker", []string{"compose", "-f", gatewayFile, "-p", "piso", "up", "-d", "--build", "-t", "0"},
-		composeEnv); err != nil {
-		return fmt.Errorf("gateway up: %w", err)
-	}
-	if err := dockernet.AssertInternal(); err != nil {
-		return err
-	}
-	// 2. worker (per-project)
 	workerFile, err := pisoconfig.WriteWorkerCompose(proj)
 	if err != nil {
 		return err
@@ -124,16 +139,30 @@ func cmdUp(args []string) error {
 		return fmt.Errorf("worker up: %w", err)
 	}
 	// 3. wait for the gateway control plane
-	gw := pisoconfig.GatewayURL()
-	for i := 0; i < 30; i++ {
-		if healthy(gw) {
-			fmt.Printf("piso: gateway live at %s — dashboard: %s\n", gw, gw)
-			fmt.Printf("piso: worker %s ready. Run `piso attach`.\n", proj.WorkerName())
-			return nil
-		}
-		time.Sleep(time.Second)
+	if err := waitGatewayHealthy(); err != nil {
+		return err
 	}
-	return fmt.Errorf("gateway did not become healthy within 30s (log: %s)", gatewayFile)
+	fmt.Printf("piso: worker %s ready. Run `piso attach`.\n", proj.WorkerName())
+	return nil
+}
+
+// parseUpArgs reads `piso up [dir] [--proxy-port N] [--ctrl-port N] [--ingress-port N]`.
+// Port flags of 0 mean "keep saved / default".
+func parseUpArgs(args []string) (string, pisoconfig.HostPorts, error) {
+	fs := flag.NewFlagSet("up", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	var ports pisoconfig.HostPorts
+	fs.IntVar(&ports.Proxy, "proxy-port", 0, "host port for the egress proxy")
+	fs.IntVar(&ports.Control, "ctrl-port", 0, "host port for the dashboard / control API")
+	fs.IntVar(&ports.Ingress, "ingress-port", 0, "host port for name.piso.local ingress")
+	if err := fs.Parse(args); err != nil {
+		return "", pisoconfig.HostPorts{}, err
+	}
+	dir := "."
+	if rest := fs.Args(); len(rest) > 0 {
+		dir = rest[0]
+	}
+	return dir, ports, nil
 }
 
 func cmdDown(args []string) error {
@@ -177,7 +206,7 @@ func cmdAttach(args []string) error {
 func cmdStatus(args []string) error {
 	gw := pisoconfig.GatewayURL()
 	if healthy(gw) {
-		fmt.Println("gateway: live (" + gw + ")")
+		fmt.Printf("gateway: live (%s)  dashboard: %s\n", gw, pisoconfig.DashboardURL())
 	} else {
 		fmt.Println("gateway: DOWN (run `piso up`)")
 	}
@@ -335,7 +364,7 @@ func cmdLogs(args []string) error {
 }
 
 func cmdDashboard(args []string) error {
-	gw := pisoconfig.GatewayURL()
+	gw := pisoconfig.DashboardURL()
 	fmt.Println("opening", gw)
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
@@ -349,7 +378,109 @@ func cmdDashboard(args []string) error {
 	return cmd.Start()
 }
 
+// cmdSetup is the post-install hook. `make install` calls it as the login
+// user (never as root) so ~/.piso stays owned by that user and Docker
+// Desktop / OrbStack sockets remain reachable.
+func cmdSetup(args []string) error {
+	fs := flag.NewFlagSet("setup", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	rebuild := fs.Bool("rebuild", false, "rebuild and recreate the gateway container")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	dst, err := pisoconfig.DataDir()
+	if err != nil {
+		return err
+	}
+	if from := strings.TrimSpace(os.Getenv("PISO_MIGRATE_FROM")); from != "" {
+		copied, migErr := pisoconfig.ImportLegacyData(from, dst)
+		if migErr != nil {
+			return fmt.Errorf("migrate data: %w", migErr)
+		}
+		if len(copied) > 0 {
+			fmt.Printf("piso: imported %s from %s\n", strings.Join(copied, ", "), from)
+		} else {
+			fmt.Printf("piso: data dir %s already present (no files imported)\n", dst)
+		}
+	}
+
+	// Persist defaults if ports.json is missing so compose interpolation
+	// matches the next gateway recreate.
+	if _, err := pisoconfig.ResolveHostPorts(pisoconfig.HostPorts{}); err != nil {
+		return err
+	}
+
+	if err := pisoconfig.EnsurePisoLocal(); err != nil {
+		fmt.Fprintf(os.Stderr, "piso: warning: %v\n", err)
+	}
+
+	if !*rebuild {
+		return nil
+	}
+	return rebuildGateway()
+}
+
+// rebuildGateway force-rebuilds the gateway image and recreates its
+// container. The gateway store migrates state.json on startup. Workers
+// are left running.
+func rebuildGateway() error {
+	ports := pisoconfig.LoadHostPorts()
+	if !healthy(pisoconfig.ControlAPIURL()) {
+		if err := pisoconfig.CheckHostPortsFree(ports); err != nil {
+			return err
+		}
+	}
+	if err := startGateway(true); err != nil {
+		return err
+	}
+	if err := waitGatewayHealthy(); err != nil {
+		return err
+	}
+	fmt.Println("piso: gateway rebuilt")
+	return nil
+}
+
 // ---- shared helpers ----
+
+// startGateway brings up the shared gateway compose project. forceRecreate
+// rebuilds the image and replaces the container so `make install` picks up
+// new gateway code and runs store migrations against ~/.piso/state.json.
+func startGateway(forceRecreate bool) error {
+	if err := dockernet.EnsureInternal(); err != nil {
+		return err
+	}
+	gatewayFile, err := pisoconfig.GatewayCompose()
+	if err != nil {
+		return err
+	}
+	composeEnv, err := dockerComposeEnv()
+	if err != nil {
+		return err
+	}
+	args := []string{"compose", "-f", gatewayFile, "-p", "piso", "up", "-d", "--build", "-t", "0"}
+	if forceRecreate {
+		args = append(args, "--force-recreate")
+	}
+	if err := runEnv("docker", args, composeEnv); err != nil {
+		return fmt.Errorf("gateway up: %w", err)
+	}
+	return dockernet.AssertInternal()
+}
+
+// waitGatewayHealthy polls the control plane until it answers or 30s elapses.
+func waitGatewayHealthy() error {
+	gw := pisoconfig.ControlAPIURL()
+	dash := pisoconfig.DashboardURL()
+	for i := 0; i < 30; i++ {
+		if healthy(gw) {
+			fmt.Printf("piso: gateway live — dashboard: %s\n", dash)
+			return nil
+		}
+		time.Sleep(time.Second)
+	}
+	return fmt.Errorf("gateway did not become healthy within 30s")
+}
 
 // dockerComposeEnv is required for compose interpolation of ${PISO_DATA}
 // (gateway bind-mount) and for BuildKit on image builds.
@@ -358,9 +489,13 @@ func dockerComposeEnv() (map[string]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	p := pisoconfig.LoadHostPorts()
 	return map[string]string{
-		"DOCKER_BUILDKIT": "1",
-		"PISO_DATA":       data,
+		"DOCKER_BUILDKIT":   "1",
+		"PISO_DATA":         data,
+		"PISO_PROXY_PORT":   fmt.Sprintf("%d", p.Proxy),
+		"PISO_CTRL_PORT":    fmt.Sprintf("%d", p.Control),
+		"PISO_INGRESS_PORT": fmt.Sprintf("%d", p.Ingress),
 	}, nil
 }
 
@@ -422,6 +557,13 @@ func run(name string, args ...string) error {
 }
 
 func runEnv(name string, args []string, env map[string]string) error {
+	if name == "docker" {
+		resolved, err := dockernet.LookPath()
+		if err != nil {
+			return err
+		}
+		name = resolved
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 	defer cancel()
 	c := exec.CommandContext(ctx, name, args...)

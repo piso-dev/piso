@@ -10,6 +10,9 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export PISO_DATA="${PISO_DATA:-$HOME/.piso}"
+export PISO_PROXY_PORT="${PISO_PROXY_PORT:-8080}"
+export PISO_CTRL_PORT="${PISO_CTRL_PORT:-8081}"
+export PISO_INGRESS_PORT="${PISO_INGRESS_PORT:-8082}"
 mkdir -p "$PISO_DATA"
 
 PROBE_IMAGE=${PROBE_IMAGE:-piso-isolation-probe}

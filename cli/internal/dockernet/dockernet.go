@@ -5,7 +5,9 @@ package dockernet
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
@@ -96,9 +98,41 @@ func isMissingNetwork(out string, err error) bool {
 	return strings.Contains(blob, "no such network")
 }
 
+// LookPath finds the docker CLI. `sudo make install` drops privileges with a
+// thin PATH, so we also probe common Desktop / OrbStack locations.
+func LookPath() (string, error) {
+	if p, err := exec.LookPath("docker"); err == nil {
+		return p, nil
+	}
+	var candidates []string
+	if home, err := os.UserHomeDir(); err == nil {
+		candidates = append(candidates,
+			filepath.Join(home, ".orbstack", "bin", "docker"),
+			filepath.Join(home, ".docker", "bin", "docker"),
+		)
+	}
+	candidates = append(candidates,
+		"/usr/local/bin/docker",
+		"/opt/homebrew/bin/docker",
+		"/usr/bin/docker",
+	)
+	for _, c := range candidates {
+		info, err := os.Stat(c)
+		if err != nil || info.IsDir() {
+			continue
+		}
+		return c, nil
+	}
+	return "", fmt.Errorf("docker not found in PATH; install Docker Desktop or OrbStack")
+}
+
 // dockerOutput runs `docker args...` and returns trimmed combined output.
 func dockerOutput(args ...string) (string, error) {
-	cmd := exec.Command("docker", args...)
+	bin, err := LookPath()
+	if err != nil {
+		return "", err
+	}
+	cmd := exec.Command(bin, args...)
 	out, err := cmd.CombinedOutput()
 	return strings.TrimSpace(string(out)), err
 }

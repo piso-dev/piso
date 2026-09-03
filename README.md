@@ -48,10 +48,18 @@ make install                 # sudo if PREFIX=/usr/local is not writable
 cd /path/to/your/project
 piso up          # ensure gateway + worker for the current dir
 piso attach      # enter the worker, run pi
-piso dashboard   # open the gateway web UI (secrets, patterns, request log)
+piso dashboard   # open http://piso.local
 piso expose 5173 --name preview   # reverse-proxy a worker dev server
 ```
 
-`make install` puts `piso` on `$(PREFIX)/bin` (default `/usr/local`) and copies the Docker build context to `$(PREFIX)/share/piso`. The CLI finds that tree from the binary path, so you can run `piso` from any directory. Gateway secrets/CA/logs live in `~/.piso` (`PISO_DATA` overrides). Override the share tree with `PISO_HOME`.
+`make install` (including `sudo make install` over an existing copy) replaces `$(PREFIX)/bin/piso` and `$(PREFIX)/share/piso`, then runs `piso setup --rebuild` as the login user. That imports any leftover repo `.piso` files that `~/.piso` does not already have, rebuilds the gateway image, recreates the container, and migrates `state.json` on startup. Live secrets in `~/.piso` are kept. Gateway secrets/CA/logs live in `~/.piso` (`PISO_DATA` overrides). Override the share tree with `PISO_HOME`.
+
+The dashboard is **http://piso.local** (host port 80 → container 8081). `piso up` adds `127.0.0.1 piso.local` to `/etc/hosts` when it can; otherwise it prints the line to add. If port 80 is taken:
+
+```bash
+piso up --ctrl-port 8081    # then http://piso.local:8081
+```
+
+`--proxy-port` and `--ingress-port` work the same way. A taken port is a hard error, not a silent remap. Chosen ports are saved in `~/.piso/ports.json`.
 
 See `docs/design.md` for the threat model and the decision pipeline.

@@ -16,23 +16,28 @@ import (
 	"piso/gateway/internal/patterns"
 )
 
+// CurrentStateVersion is written into state.json. Bump when adding a
+// migration in applyMigrations.
+const CurrentStateVersion = 1
+
 // State is the persisted configuration.
 type State struct {
-	Secrets    []SecretRec   `json:"secrets"`
-	Rules      []RuleRec     `json:"rules"`
-	Domains    []DomainRec   `json:"domains"`
+	Version    int            `json:"version"`
+	Secrets    []SecretRec    `json:"secrets"`
+	Rules      []RuleRec      `json:"rules"`
+	Domains    []DomainRec    `json:"domains"`
 	Exceptions []ExceptionRec `json:"exceptions"`
-	Routes     []RouteRec    `json:"routes"`
+	Routes     []RouteRec     `json:"routes"`
 }
 
 // JSON-friendly records (this package owns persistence shape).
 type SecretRec struct {
-	ID          string    `json:"id"`
-	Name        string    `json:"name"`
-	Placeholder string    `json:"placeholder"`
-	Value       string    `json:"value"`
-	AllowedHosts []string `json:"allowedHosts,omitempty"`
-	CreatedAt   time.Time `json:"createdAt"`
+	ID           string    `json:"id"`
+	Name         string    `json:"name"`
+	Placeholder  string    `json:"placeholder"`
+	Value        string    `json:"value"`
+	AllowedHosts []string  `json:"allowedHosts,omitempty"`
+	CreatedAt    time.Time `json:"createdAt"`
 }
 
 type RuleRec struct {
@@ -70,10 +75,10 @@ type RouteRec struct {
 
 // Store is the thread-safe in-memory + on-disk state manager.
 type Store struct {
-	mu       sync.RWMutex
-	state    State
-	path     string    // config file path
-	logPath  string    // request log path
+	mu           sync.RWMutex
+	state        State
+	path         string // config file path
+	logPath      string // request log path
 	patternsPath string // patterns file path
 
 	// live request log
@@ -151,11 +156,18 @@ func (s *Store) load() error {
 	if err := json.Unmarshal(data, &st); err != nil {
 		return fmt.Errorf("state file %s: %w", s.path, err)
 	}
+	if applyMigrations(&st) {
+		s.state = st
+		return s.save()
+	}
 	s.state = st
 	return nil
 }
 
 func (s *Store) save() error {
+	if s.state.Version == 0 {
+		s.state.Version = CurrentStateVersion
+	}
 	data, err := json.MarshalIndent(&s.state, "", "  ")
 	if err != nil {
 		return err
@@ -172,15 +184,31 @@ func (s *Store) save() error {
 
 // ---- reads ----
 
-func (s *Store) Secrets() []SecretRec { s.mu.RLock(); defer s.mu.RUnlock(); return copyRecs(s.state.Secrets) }
-func (s *Store) Rules() []RuleRec     { s.mu.RLock(); defer s.mu.RUnlock(); return copyRuleRecs(s.state.Rules) }
-func (s *Store) Domains() []DomainRec { s.mu.RLock(); defer s.mu.RUnlock(); return copyDomainRecs(s.state.Domains) }
+func (s *Store) Secrets() []SecretRec {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return copyRecs(s.state.Secrets)
+}
+func (s *Store) Rules() []RuleRec {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return copyRuleRecs(s.state.Rules)
+}
+func (s *Store) Domains() []DomainRec {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return copyDomainRecs(s.state.Domains)
+}
 func (s *Store) Exceptions() []ExceptionRec {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return copyExceptionRecs(s.state.Exceptions)
 }
-func (s *Store) Routes() []RouteRec     { s.mu.RLock(); defer s.mu.RUnlock(); return copyRouteRecs(s.state.Routes) }
+func (s *Store) Routes() []RouteRec {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return copyRouteRecs(s.state.Routes)
+}
 func (s *Store) RouteByName(name string) (RouteRec, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -445,11 +473,27 @@ func (s *Store) ReplayUpdate(rec Record) {
 
 // ---- copy helpers (defensive: callers can't mutate store state) ----
 
-func copyRecs(in []SecretRec) []SecretRec { out := make([]SecretRec, len(in)); copy(out, in); return out }
+func copyRecs(in []SecretRec) []SecretRec {
+	out := make([]SecretRec, len(in))
+	copy(out, in)
+	return out
+}
 func copyRuleRecs(in []RuleRec) []RuleRec { out := make([]RuleRec, len(in)); copy(out, in); return out }
-func copyDomainRecs(in []DomainRec) []DomainRec { out := make([]DomainRec, len(in)); copy(out, in); return out }
-func copyExceptionRecs(in []ExceptionRec) []ExceptionRec { out := make([]ExceptionRec, len(in)); copy(out, in); return out }
-func copyRouteRecs(in []RouteRec) []RouteRec { out := make([]RouteRec, len(in)); copy(out, in); return out }
+func copyDomainRecs(in []DomainRec) []DomainRec {
+	out := make([]DomainRec, len(in))
+	copy(out, in)
+	return out
+}
+func copyExceptionRecs(in []ExceptionRec) []ExceptionRec {
+	out := make([]ExceptionRec, len(in))
+	copy(out, in)
+	return out
+}
+func copyRouteRecs(in []RouteRec) []RouteRec {
+	out := make([]RouteRec, len(in))
+	copy(out, in)
+	return out
+}
 
 func filterRules(in []RuleRec, keep func(RuleRec) bool) []RuleRec {
 	out := in[:0]
