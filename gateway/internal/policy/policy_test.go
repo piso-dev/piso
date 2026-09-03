@@ -46,7 +46,8 @@ func TestPlaceholderSubstitutesWithRule(t *testing.T) {
 func TestPlaceholderWithoutRuleBlocks(t *testing.T) {
 	in := Input{
 		Method: "POST", Host: "api.anthropic.com", Path: "/v1/messages",
-		Scan: scanner.Result{Placeholders: []model.Finding{{Kind: model.FindingPlaceholder, Token: "piso_anthropic_abc"}}},
+		Scan:                scanner.Result{Placeholders: []model.Finding{{Kind: model.FindingPlaceholder, Token: "piso_anthropic_abc"}}},
+		SecretByPlaceholder: map[string]model.Secret{"piso_anthropic_abc": {ID: "s1", Placeholder: "piso_anthropic_abc"}},
 	}
 	d := Decide(in)
 	if d.Action != model.ActionBlock || d.Reasons[0] != model.ReasonNoSecretRule {
@@ -173,10 +174,31 @@ func TestPatternScopedExceptionDoesNotWaiveRealSecret(t *testing.T) {
 	}
 }
 
+func TestUnknownPisoTokenInBodyDoesNotBlockVaultSubstitute(t *testing.T) {
+	// Chat/code mentioning piso_egress (the Docker network) is not a vault
+	// token. The Authorization placeholder must still substitute.
+	ph := "piso_routstr_5ef1739b3cf1"
+	sec := model.Secret{ID: "s1", Placeholder: ph, Value: "sk-test-not-real"}
+	in := Input{
+		Method: "POST", Host: "routstr.ft.hn", Path: "/v1/chat/completions",
+		Scan: scanner.Result{Placeholders: []model.Finding{
+			{Kind: model.FindingPlaceholder, Token: ph, Location: "authorization", Field: "Authorization"},
+			{Kind: model.FindingPlaceholder, Token: "piso_egress", Location: "json-body", Field: "messages[29].content"},
+		}},
+		SecretByPlaceholder: map[string]model.Secret{ph: sec},
+		Rules:               []model.Rule{{ID: "r1", SecretID: "s1", Host: "routstr.ft.hn", Placeholder: ph}},
+	}
+	d := Decide(in)
+	if d.Action != model.ActionSubstitute {
+		t.Fatalf("incidental piso_egress must not block, got %q %+v", d.Action, d.Reasons)
+	}
+}
+
 func TestPatternScopedExceptionDoesNotWaivePlaceholder(t *testing.T) {
 	in := Input{
 		Method: "POST", Host: "cdn.example.com", Path: "/v1",
-		Scan: scanner.Result{Placeholders: []model.Finding{{Kind: model.FindingPlaceholder, Token: "piso_x_aaa"}}},
+		Scan:                scanner.Result{Placeholders: []model.Finding{{Kind: model.FindingPlaceholder, Token: "piso_x_aaa"}}},
+		SecretByPlaceholder: map[string]model.Secret{"piso_x_aaa": {ID: "s1", Placeholder: "piso_x_aaa"}},
 		Exceptions: []model.Exception{{
 			ID: "e-jwt", Enabled: true, HostRegex: `^cdn\.example\.com$`, PatternID: "jwt",
 		}},

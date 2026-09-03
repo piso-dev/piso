@@ -111,8 +111,10 @@ func Decide(in Input) model.Decision {
 	return model.Decision{Action: model.ActionAllow, Reasons: reasons}
 }
 
-// substituteAll applies rules to every placeholder in the request. It returns
-// the substituted placeholder list and whether ALL placeholders resolved.
+// substituteAll applies rules to every vault placeholder in the request.
+// Tokens that are not in the secret store (piso_vpc, piso_egress, chat
+// mentioning piso_…) are not credentials and do not fail the request.
+// It returns the substituted list and whether every vault placeholder resolved.
 func substituteAll(in Input) ([]string, bool) {
 	seen := map[string]bool{}
 	var out []string
@@ -121,13 +123,22 @@ func substituteAll(in Input) ([]string, bool) {
 			continue
 		}
 		seen[f.Token] = true
+		if !isVaultPlaceholder(in, f.Token) {
+			continue
+		}
 		if _, ok := lookupRule(in, f.Token); ok {
 			out = append(out, f.Token)
 		} else {
-			return out, false // any unresolvable placeholder blocks the request
+			return out, false // any unresolvable vault placeholder blocks
 		}
 	}
 	return out, true
+}
+
+// isVaultPlaceholder reports whether token is an issued secret placeholder.
+func isVaultPlaceholder(in Input, token string) bool {
+	_, ok := in.SecretByPlaceholder[token]
+	return ok
 }
 
 // lookupRule finds a substitution rule for placeholder on this host.

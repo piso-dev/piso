@@ -160,7 +160,7 @@ func cmdUp(args []string) error {
 		return err
 	}
 	upArgs := []string{"compose", "-f", workerFile, "-p", "piso-" + proj.Slug, "up", "-d", "-t", "0"}
-	if workerNeedsBuild(proj) {
+	if workerNeedsBuild() {
 		upArgs = append(upArgs, "--build")
 	}
 	if err := runEnv("docker", upArgs, composeEnv); err != nil {
@@ -189,7 +189,12 @@ func parseUpArgs(args []string) (string, pisoconfig.HostPorts, error) {
 	return dir, ports, nil
 }
 
-func workerNeedsBuild(proj pisoconfig.Project) bool {
+// workerImageName is the shared worker image. Compose project names differ
+// per directory; the image must not, or every `piso up` in a new folder
+// rebuilds (or ships an empty stub and hangs on runtime npm install).
+const workerImageName = "piso-worker"
+
+func workerNeedsBuild() bool {
 	buildDir, err := pisoconfig.WorkerBuildDir()
 	if err != nil {
 		return true
@@ -198,14 +203,37 @@ func workerNeedsBuild(proj pisoconfig.Project) bool {
 	if err != nil {
 		return true
 	}
-	got, ok := containerLabel(proj.WorkerName(), "piso.worker.hash")
-	if !ok {
-		return true
+	if hash, ok := imageLabel(workerImageName, "piso.worker.hash"); ok && hash == want {
+		return false
 	}
-	return got != want
+	// Reuse a per-project bake from before the image name was shared.
+	if adoptWorkerImage(want) {
+		return false
+	}
+	return true
 }
 
-func containerLabel(name, label string) (string, bool) {
+func adoptWorkerImage(want string) bool {
+	out, err := exec.Command("docker", "images", "-q", "--filter", "label=piso.worker.hash="+want).Output()
+	if err != nil {
+		return false
+	}
+	id := ""
+	for _, line := range strings.Split(string(out), "\n") {
+		if id = strings.TrimSpace(line); id != "" {
+			break
+		}
+	}
+	if id == "" {
+		return false
+	}
+	if err := exec.Command("docker", "tag", id, workerImageName).Run(); err != nil {
+		return false
+	}
+	return true
+}
+
+func imageLabel(name, label string) (string, bool) {
 	out, err := exec.Command("docker", "inspect", "-f", "{{index .Config.Labels \""+label+"\"}}", name).Output()
 	if err != nil {
 		return "", false

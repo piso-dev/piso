@@ -124,7 +124,7 @@ func TestWriteWorkerComposeRendersPerWorkerEnv(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "worker", "entrypoint.sh"), []byte("#!/bin/sh\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	tmpl := []byte("PISO_WORKER_HASH: __WORKER_HASH__ CA_DIR/workers/PROJ-SLUG/placeholders.env WORKER_BUILD_CONTEXT\n")
+	tmpl := []byte("image: piso-worker\nPISO_WORKER_HASH: __WORKER_HASH__ CA_DIR/workers/PROJ-SLUG/placeholders.env WORKER_BUILD_CONTEXT\n")
 	if err := os.WriteFile(filepath.Join(root, "compose", "worker.yaml.tmpl"), tmpl, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -164,6 +164,9 @@ func TestWriteWorkerComposeRendersPerWorkerEnv(t *testing.T) {
 	}
 	if strings.Contains(got, filepath.Join(root, "worker")) {
 		t.Fatalf("compose still pointed at repo worker/:\n%s", got)
+	}
+	if !strings.Contains(got, "image: piso-worker") {
+		t.Fatalf("compose must pin the shared worker image:\n%s", got)
 	}
 }
 

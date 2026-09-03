@@ -8,6 +8,9 @@ name: piso-PROJ-SLUG
 
 services:
   worker:
+    # One image for every project. A new directory must not rebuild (or
+    # worse, bake an empty stub and then npm-install through the gateway).
+    image: piso-worker
     build:
       context: WORKER_BUILD_CONTEXT
       network: host
