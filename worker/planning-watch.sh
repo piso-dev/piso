@@ -1,6 +1,8 @@
 #!/bin/bash
-# Notify the gateway when Plannotator binds, and cancel when it stops.
-# Talks to the control plane (GATEWAY_URL), never the MITM egress proxy.
+# Notify the gateway when Plannotator binds. Do not cancel when the port
+# drops: submit_plan exits if no browser connects, and that would hide the
+# dashboard chip before the host can approve.
+# Talks to the worker API (GATEWAY_URL), never the host control plane or MITM.
 set -u
 
 gw="${GATEWAY_URL:-}"
@@ -19,30 +21,27 @@ port_up() {
 }
 
 notify() {
-  curl -sS --max-time 3 -X POST "${gw}/api/v1/ingress/requests" \
+  code=$(curl -sS --max-time 3 -o /tmp/piso-planning-notify.json -w '%{http_code}' \
+    -X POST "${gw}/api/v1/worker/planning" \
     -H 'Content-Type: application/json' \
     -d "{\"kind\":\"planning\",\"worker\":\"${worker}\",\"slug\":\"${slug}\",\"port\":${port}}" \
-    >/dev/null || true
-}
-
-cancel() {
-  curl -sS --max-time 3 -X POST "${gw}/api/v1/ingress/requests/cancel" \
-    -H 'Content-Type: application/json' \
-    -d "{\"kind\":\"planning\",\"worker\":\"${worker}\"}" \
-    >/dev/null || true
+    || true)
+  echo "notify ${code} $(tr -d '\n' < /tmp/piso-planning-notify.json 2>/dev/null)"
+  if [ "${code}" = "200" ] || [ "${code}" = "201" ]; then
+    return 0
+  fi
+  return 1
 }
 
 while true; do
   if port_up; then
     if [ "$posted" -eq 0 ]; then
-      notify
-      posted=1
+      if notify; then
+        posted=1
+      fi
     fi
   else
-    if [ "$posted" -eq 1 ]; then
-      cancel
-      posted=0
-    fi
+    posted=0
   fi
-  sleep 2
+  sleep 0.4
 done

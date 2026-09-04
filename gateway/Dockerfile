@@ -13,5 +13,5 @@ COPY --from=build /out/gateway /usr/local/bin/gateway
 # secrets/CA/log live under /data (host-mounted, gateway-only)
 VOLUME ["/data"]
 WORKDIR /data
-EXPOSE 8080 8081 8082
+EXPOSE 8080 8081 8082 8083
 ENTRYPOINT ["/usr/local/bin/gateway"]

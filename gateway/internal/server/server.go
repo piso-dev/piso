@@ -30,6 +30,8 @@ type Server struct {
 	Patterns *patterns.Compiled
 	Proxy    *proxy.Handler
 	CA       *proxy.CA
+	// DenyPeer overrides worker-vpc detection on the control plane (tests).
+	DenyPeer denyPeerFunc
 }
 
 // New assembles the server.
@@ -37,14 +39,21 @@ func New(st *store.Store, pat *patterns.Compiled, pr *proxy.Handler, ca *proxy.C
 	return &Server{Store: st, Patterns: pat, Proxy: pr, CA: ca}
 }
 
-// ControlHandler returns the control-plane mux (UI + API).
+// ControlHandler returns the host control-plane mux (UI + API). Worker
+// peers on the internal vpc are rejected; they use WorkerHandler.
 func (s *Server) ControlHandler() http.Handler {
 	mux := http.NewServeMux()
 	api := http.NewServeMux()
 	s.routes(api)
 	mux.Handle("/api/", api)
 	mux.HandleFunc("/", s.ui)
-	return mux
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.denyControlPeer(r.RemoteAddr) {
+			writeJSON(w, 403, map[string]string{"error": "control plane is host-only"})
+			return
+		}
+		mux.ServeHTTP(w, r)
+	})
 }
 
 // IngressHandler returns the reverse-proxy mux for name.piso.local.
@@ -347,10 +356,9 @@ func (s *Server) routes(mux *http.ServeMux) {
 		w.WriteHeader(204)
 	})
 
-	// Worker requests a planning URL; host approves from the dashboard.
+	// Host inbox: list / approve / dismiss. Create and cancel are worker-only
+	// on WorkerHandler (/api/v1/worker/planning).
 	mux.HandleFunc("GET /api/v1/ingress/requests", s.handleListIngress)
-	mux.HandleFunc("POST /api/v1/ingress/requests", s.handleCreateIngress)
-	mux.HandleFunc("POST /api/v1/ingress/requests/cancel", s.handleCancelIngress)
 	mux.HandleFunc("POST /api/v1/ingress/requests/{id}/approve", s.handleApproveIngress)
 	mux.HandleFunc("POST /api/v1/ingress/requests/{id}/dismiss", s.handleDismissIngress)
 }

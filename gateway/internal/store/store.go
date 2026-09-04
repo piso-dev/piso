@@ -259,6 +259,18 @@ func (s *Store) PendingIngress() []IngressRequestRec {
 	return out
 }
 
+func (s *Store) PendingIngressForWorker(worker string) []IngressRequestRec {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var out []IngressRequestRec
+	for _, r := range s.state.IngressRequests {
+		if r.Status == IngressStatusPending && r.Worker == worker {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
 func (s *Store) IngressByID(id string) (IngressRequestRec, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

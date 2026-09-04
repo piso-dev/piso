@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -53,8 +54,9 @@ func TestPlanningRouteNameAndSlug(t *testing.T) {
 
 func TestCreateIngressPendingThenApprove(t *testing.T) {
 	s := testServer(t)
-	h := s.ControlHandler()
-	created := doJSON(t, h, "POST", "/api/v1/ingress/requests", map[string]any{
+	wh := s.WorkerHandler()
+	ch := s.ControlHandler()
+	created := doJSON(t, wh, "POST", "/api/v1/worker/planning", map[string]any{
 		"kind": "planning", "worker": "piso-worker-demo", "port": 19432,
 	})
 	if created.Code != 201 {
@@ -67,17 +69,17 @@ func TestCreateIngressPendingThenApprove(t *testing.T) {
 	if rec.Name != "plan-demo" || rec.Status != store.IngressStatusPending || rec.URL == "" || !strings.Contains(rec.URL, "piso.local") || !strings.Contains(rec.URL, "route=plan-demo") {
 		t.Fatalf("view %+v", rec)
 	}
-	listed := doJSON(t, h, "GET", "/api/v1/ingress/requests", nil)
+	listed := doJSON(t, ch, "GET", "/api/v1/ingress/requests", nil)
 	if listed.Code != 200 || !strings.Contains(listed.Body.String(), rec.ID) {
 		t.Fatalf("list %d %s", listed.Code, listed.Body.String())
 	}
-	again := doJSON(t, h, "POST", "/api/v1/ingress/requests", map[string]any{
+	again := doJSON(t, wh, "POST", "/api/v1/worker/planning", map[string]any{
 		"worker": "piso-worker-demo", "port": 19432,
 	})
 	if again.Code != 200 {
 		t.Fatalf("upsert %d %s", again.Code, again.Body.String())
 	}
-	approved := doJSON(t, h, "POST", "/api/v1/ingress/requests/"+rec.ID+"/approve", nil)
+	approved := doJSON(t, ch, "POST", "/api/v1/ingress/requests/"+rec.ID+"/approve", nil)
 	if approved.Code != 200 {
 		t.Fatalf("approve %d %s", approved.Code, approved.Body.String())
 	}
@@ -91,33 +93,37 @@ func TestCreateIngressPendingThenApprove(t *testing.T) {
 	if out.Route.Name != "plan-demo" || out.URL == "" {
 		t.Fatalf("approve %+v", out)
 	}
-	empty := doJSON(t, h, "GET", "/api/v1/ingress/requests", nil)
+	empty := doJSON(t, ch, "GET", "/api/v1/ingress/requests", nil)
 	if empty.Body.String() != "[]\n" && !strings.Contains(empty.Body.String(), "[]") {
 		t.Fatalf("pending after approve: %s", empty.Body.String())
 	}
-	live := doJSON(t, h, "POST", "/api/v1/ingress/requests", map[string]any{
+	againAfter := doJSON(t, wh, "POST", "/api/v1/worker/planning", map[string]any{
 		"worker": "piso-worker-demo", "port": 19432,
 	})
-	if live.Code != 200 {
-		t.Fatalf("live %d %s", live.Code, live.Body.String())
+	if againAfter.Code != 201 {
+		t.Fatalf("resubmit after approve %d %s", againAfter.Code, againAfter.Body.String())
 	}
-	var liveView ingressView
-	if err := json.Unmarshal(live.Body.Bytes(), &liveView); err != nil {
+	var againView ingressView
+	if err := json.Unmarshal(againAfter.Body.Bytes(), &againView); err != nil {
 		t.Fatal(err)
 	}
-	if liveView.Status != "approved" || liveView.ID != "" {
-		t.Fatalf("expected approved no-pending, got %+v", liveView)
+	if againView.Status != store.IngressStatusPending || againView.ID == "" {
+		t.Fatalf("resubmit must create pending, got %+v", againView)
+	}
+	listedAgain := doJSON(t, ch, "GET", "/api/v1/ingress/requests", nil)
+	if !strings.Contains(listedAgain.Body.String(), againView.ID) {
+		t.Fatalf("inbox missing resubmit: %s", listedAgain.Body.String())
 	}
 }
 
 func TestCreateIngressRejectsBadWorkerAndUnknownKind(t *testing.T) {
 	s := testServer(t)
-	h := s.ControlHandler()
-	bad := doJSON(t, h, "POST", "/api/v1/ingress/requests", map[string]any{"worker": "../etc"})
+	h := s.WorkerHandler()
+	bad := doJSON(t, h, "POST", "/api/v1/worker/planning", map[string]any{"worker": "../etc"})
 	if bad.Code != 400 {
 		t.Fatalf("bad worker %d", bad.Code)
 	}
-	kind := doJSON(t, h, "POST", "/api/v1/ingress/requests", map[string]any{
+	kind := doJSON(t, h, "POST", "/api/v1/worker/planning", map[string]any{
 		"worker": "piso-worker-demo", "kind": "preview",
 	})
 	if kind.Code != 400 {
@@ -131,7 +137,7 @@ func TestApproveIngressConflictAndDismiss(t *testing.T) {
 	if err := s.Store.AddRoute(store.RouteRec{ID: "route_x", Name: "plan-demo", Worker: "piso-worker-other", Port: 80}); err != nil {
 		t.Fatal(err)
 	}
-	created := doJSON(t, h, "POST", "/api/v1/ingress/requests", map[string]any{
+	created := doJSON(t, s.WorkerHandler(), "POST", "/api/v1/worker/planning", map[string]any{
 		"worker": "piso-worker-demo",
 	})
 	if created.Code != 201 {
@@ -157,13 +163,49 @@ func TestApproveIngressConflictAndDismiss(t *testing.T) {
 
 func TestCancelIngressByWorker(t *testing.T) {
 	s := testServer(t)
-	h := s.ControlHandler()
-	if doJSON(t, h, "POST", "/api/v1/ingress/requests", map[string]any{"worker": "piso-worker-demo"}).Code != 201 {
+	h := s.WorkerHandler()
+	if doJSON(t, h, "POST", "/api/v1/worker/planning", map[string]any{"worker": "piso-worker-demo"}).Code != 201 {
 		t.Fatal("create")
 	}
-	cancel := doJSON(t, h, "POST", "/api/v1/ingress/requests/cancel", map[string]any{"worker": "piso-worker-demo"})
+	cancel := doJSON(t, h, "POST", "/api/v1/worker/planning/cancel", map[string]any{"worker": "piso-worker-demo"})
 	if cancel.Code != 200 || !strings.Contains(cancel.Body.String(), `"cancelled":1`) {
 		t.Fatalf("cancel %d %s", cancel.Code, cancel.Body.String())
+	}
+}
+
+func TestWorkerAPIIsNamespacedAndControlRejectsWorkers(t *testing.T) {
+	s := testServer(t)
+	s.DenyPeer = func(string) bool { return true }
+	ch := s.ControlHandler()
+	denied := doJSON(t, ch, "GET", "/api/v1/secrets", nil)
+	if denied.Code != 403 {
+		t.Fatalf("control should 403 workers: %d %s", denied.Code, denied.Body.String())
+	}
+	s.DenyPeer = nil
+	wh := s.WorkerHandler()
+	if doJSON(t, wh, "GET", "/api/v1/secrets", nil).Code != 404 {
+		t.Fatal("worker mux must not serve host APIs")
+	}
+	if doJSON(t, ch, "POST", "/api/v1/worker/planning", map[string]any{"worker": "piso-worker-demo"}).Code != 404 {
+		t.Fatal("control mux must not serve worker APIs")
+	}
+	createOnCtrl := doJSON(t, ch, "POST", "/api/v1/ingress/requests", map[string]any{"worker": "piso-worker-demo"})
+	if createOnCtrl.Code == 200 || createOnCtrl.Code == 201 {
+		t.Fatalf("control must not create routes for the worker: %d %s", createOnCtrl.Code, createOnCtrl.Body.String())
+	}
+	got := doJSON(t, wh, "GET", "/api/v1/worker/health", nil)
+	if got.Code != 200 || !strings.Contains(got.Body.String(), `"ok":true`) {
+		t.Fatalf("worker health %d %s", got.Code, got.Body.String())
+	}
+}
+
+func TestNetworkPlusOne(t *testing.T) {
+	_, n, err := net.ParseCIDR("172.21.0.0/16")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := networkPlusOne(n).String(); got != "172.21.0.1" {
+		t.Fatalf("got %s", got)
 	}
 }
 

@@ -17,12 +17,13 @@ echo "== starting gateway =="
 "$GW" \
   -state "$WORK/state.json" -patterns "$WORK/patterns.json" -log "$WORK/req.jsonl" \
   -ca-cert "$WORK/ca.crt" -ca-key "$WORK/ca.key" \
-  -proxy-listen 127.0.0.1:18080 -ctrl-listen 127.0.0.1:18081 -ingress-listen 127.0.0.1:18082 \
+  -proxy-listen 127.0.0.1:18080 -ctrl-listen 127.0.0.1:18081 -worker-listen 127.0.0.1:18083 -ingress-listen 127.0.0.1:18082 \
   > "$WORK/gw.log" 2>&1 &
 GW_PID=$!
 sleep 1
 
 API=http://127.0.0.1:18081/api/v1
+WAPI=http://127.0.0.1:18083/api/v1
 P="--proxy http://127.0.0.1:18080 --cacert $WORK/ca.crt"
 pass=0; fail=0
 check() { # check <desc> <cond>
@@ -80,7 +81,12 @@ check "real value never in request log" "[ \"$LEAK\" = 0 ]"
 echo "== 7. planning ingress approve =="
 python3 -m http.server 19998 --bind 127.0.0.1 >/dev/null 2>&1 & PLAN=$!
 sleep 0.5
-PEND=$(curl -s -X POST "$API/ingress/requests" -H 'Content-Type: application/json' \
+CTRL_CREATE=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$API/ingress/requests" -H 'Content-Type: application/json' \
+  -d '{"kind":"planning","worker":"127.0.0.1","port":19998,"slug":"smoke"}' || true)
+check "control plane refuses worker planning create" "[ \"$CTRL_CREATE\" != 200 ] && [ \"$CTRL_CREATE\" != 201 ]"
+HOST_ON_WORKER=$(curl -s -o /dev/null -w '%{http_code}' "$WAPI/secrets" || true)
+check "worker API does not expose host secrets" "[ \"$HOST_ON_WORKER\" = 404 ]"
+PEND=$(curl -s -X POST "$WAPI/worker/planning" -H 'Content-Type: application/json' \
   -d '{"kind":"planning","worker":"127.0.0.1","port":19998,"slug":"smoke"}')
 ING_ID=$(python3 -c "import json,sys; print(json.load(sys.stdin)['id'])" <<<"$PEND")
 check "planning request is pending" "[ -n \"$ING_ID\" ]"

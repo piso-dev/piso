@@ -19,7 +19,8 @@ services:
     restart: unless-stopped
     ports:
       # Host ports are set by `piso up --*-port` (PISO_*_PORT). In-container
-      # listen ports stay 8080/8081/8082 so the worker proxy env does not change.
+      # listen ports stay 8080/8081/8082/8083 so the worker proxy env does not change.
+      # :8083 is the worker API and is not published to the host.
       # Bind both 127.0.0.1 and ::1: /etc/hosts maps piso.local to both (macOS
       # .local is mDNS; without ::1, IPv6 lookups hang). IPv4-only publish
       # leaves ::1:80 dead, so browsers stall and the dashboard looks empty.
@@ -41,6 +42,7 @@ services:
       PISO_CA_KEY: /data/ca.key
       PISO_PROXY_LISTEN: :8080
       PISO_CTRL_LISTEN: :8081
+      PISO_WORKER_LISTEN: :8083
       PISO_INGRESS_LISTEN: :8082
       # Host publish port, advertised on /api/v1/health so the dashboard
       # can open https://name.piso.local:<port>.

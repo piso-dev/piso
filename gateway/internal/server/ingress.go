@@ -80,14 +80,6 @@ func (s *Server) handleCreateIngress(w http.ResponseWriter, r *http.Request) {
 	in.Name = planningRouteName(in.Slug)
 	in.Status = store.IngressStatusPending
 
-	if route, ok := s.Store.RouteByName(in.Name); ok && route.Worker == in.Worker && route.Port == in.Port {
-		writeJSON(w, 200, ingressView{
-			Kind: in.Kind, Status: "approved", Worker: in.Worker, Slug: in.Slug,
-			Port: in.Port, Name: in.Name, URL: ingressPublicURL(in.Name),
-		})
-		return
-	}
-
 	in.ID = "ing_" + randID()
 	rec, created, err := s.Store.UpsertPendingIngress(in)
 	if err != nil {

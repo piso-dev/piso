@@ -15,7 +15,7 @@ import (
 )
 
 // DNS name of the gateway's own ingress/control plane, exempted from the
-// internal-target block so the worker may reach the control API.
+// internal-target block so the worker may reach the worker API on the vpc.
 const (
 	ControlHost    = "gateway.piso.local"
 	InternalSuffix = ".piso.local"

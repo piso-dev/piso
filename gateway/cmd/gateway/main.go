@@ -27,6 +27,7 @@ func main() {
 		caKeyPath    = flag.String("ca-key", envOr("PISO_CA_KEY", ".piso/ca.key"), "CA private key (generated if missing)")
 		proxyAddr    = flag.String("proxy-listen", envOr("PISO_PROXY_LISTEN", ":8080"), "egress proxy listen addr")
 		ctrlAddr     = flag.String("ctrl-listen", envOr("PISO_CTRL_LISTEN", ":8081"), "control plane (UI+API) listen addr")
+		workerAddr   = flag.String("worker-listen", envOr("PISO_WORKER_LISTEN", ":8083"), "worker API listen addr (vpc only)")
 		ingressAddr  = flag.String("ingress-listen", envOr("PISO_INGRESS_LISTEN", ":8082"), "ingress reverse proxy listen addr")
 		maxLog       = flag.Int("max-log", 5000, "max in-memory log records")
 	)
@@ -55,6 +56,7 @@ func main() {
 	srv := server.New(st, pat, h, ca)
 
 	go serve("control", *ctrlAddr, srv.ControlHandler())
+	go serve("worker-api", *workerAddr, srv.WorkerHandler())
 	go serve("ingress", *ingressAddr, srv.IngressHandler())
 	serve("egress-proxy", *proxyAddr, h)
 
