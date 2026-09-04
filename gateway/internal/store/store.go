@@ -23,12 +23,13 @@ const CurrentStateVersion = 1
 
 // State is the persisted configuration.
 type State struct {
-	Version    int            `json:"version"`
-	Secrets    []SecretRec    `json:"secrets"`
-	Rules      []RuleRec      `json:"rules"`
-	Domains    []DomainRec    `json:"domains"`
-	Exceptions []ExceptionRec `json:"exceptions"`
-	Routes     []RouteRec     `json:"routes"`
+	Version         int                 `json:"version"`
+	Secrets         []SecretRec         `json:"secrets"`
+	Rules           []RuleRec           `json:"rules"`
+	Domains         []DomainRec         `json:"domains"`
+	Exceptions      []ExceptionRec      `json:"exceptions"`
+	Routes          []RouteRec          `json:"routes"`
+	IngressRequests []IngressRequestRec `json:"ingressRequests,omitempty"`
 }
 
 // JSON-friendly records (this package owns persistence shape).
@@ -75,6 +76,28 @@ type RouteRec struct {
 	Worker string `json:"worker"`
 	Port   int    `json:"port"`
 	Note   string `json:"note,omitempty"`
+}
+
+// Ingress request statuses. Only pending rows appear in the dashboard inbox.
+const (
+	IngressKindPlanning  = "planning"
+	IngressStatusPending = "pending"
+	DefaultPlanningPort  = 19432
+)
+
+// IngressRequestRec is a worker asking the host to publish an ingress route.
+// The worker cannot create a live route; the host approves from the dashboard.
+type IngressRequestRec struct {
+	ID        string    `json:"id"`
+	Kind      string    `json:"kind"`
+	Status    string    `json:"status"`
+	Worker    string    `json:"worker"`
+	Slug      string    `json:"slug,omitempty"`
+	Port      int       `json:"port"`
+	Name      string    `json:"name"`
+	Note      string    `json:"note,omitempty"`
+	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
 }
 
 // Store is the thread-safe in-memory + on-disk state manager.
@@ -222,6 +245,35 @@ func (s *Store) RouteByName(name string) (RouteRec, bool) {
 		}
 	}
 	return RouteRec{}, false
+}
+
+func (s *Store) PendingIngress() []IngressRequestRec {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var out []IngressRequestRec
+	for _, r := range s.state.IngressRequests {
+		if r.Status == IngressStatusPending {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+func (s *Store) IngressByID(id string) (IngressRequestRec, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, r := range s.state.IngressRequests {
+		if r.ID == id {
+			return r, true
+		}
+	}
+	return IngressRequestRec{}, false
+}
+
+func (s *Store) IngressRequests() []IngressRequestRec {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return copyIngressRecs(s.state.IngressRequests)
 }
 
 // ---- mutations (all persist) ----
@@ -630,6 +682,11 @@ func copyExceptionRecs(in []ExceptionRec) []ExceptionRec {
 }
 func copyRouteRecs(in []RouteRec) []RouteRec {
 	out := make([]RouteRec, len(in))
+	copy(out, in)
+	return out
+}
+func copyIngressRecs(in []IngressRequestRec) []IngressRequestRec {
+	out := make([]IngressRequestRec, len(in))
 	copy(out, in)
 	return out
 }

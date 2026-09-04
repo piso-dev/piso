@@ -34,6 +34,16 @@ services:
       HTTP_PROXY: http://gateway:8080
       NO_PROXY: gateway,localhost,127.0.0.1,*.piso.local
       GATEWAY_URL: http://gateway:8081
+      PISO_WORKER_NAME: piso-worker-PROJ-SLUG
+      PISO_WORKER_SLUG: PROJ-SLUG
+      # Plannotator plan-review binds this port inside the worker. A
+      # sidecar asks the gateway to show a Plan review chip; the host
+      # approves and opens https://plan-PROJ-SLUG.piso.local via ingress.
+      PLANNOTATOR_REMOTE: "1"
+      PLANNOTATOR_PORT: "19432"
+      # ~/.plannotator (data dir) sits on the read-only rootfs; use the
+      # tmpfs-backed /tmp so review sessions can persist plans/history.
+      PLANNOTATOR_DATA_DIR: /tmp/plannotator
       NPM_CONFIG_CACHE: /root/.pi/agent/.npm-cache
     cap_drop:
       - ALL

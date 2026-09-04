@@ -42,6 +42,9 @@ services:
       PISO_PROXY_LISTEN: :8080
       PISO_CTRL_LISTEN: :8081
       PISO_INGRESS_LISTEN: :8082
+      # Host publish port, advertised on /api/v1/health so the dashboard
+      # can open https://name.piso.local:<port>.
+      PISO_INGRESS_PORT: ${PISO_INGRESS_PORT:-8082}
     networks:
       - vpc
       - egress

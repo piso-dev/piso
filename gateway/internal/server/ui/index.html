@@ -13,6 +13,8 @@
   #errbar { display:none; background:#3a1d1d; color:#ffb4b4; padding:8px 20px; font-size:13px }
   header h1 { font-size:16px; margin:0; font-weight:600 }
   header .sub { color:var(--muted); font-size:12px }
+  header .btn { margin-left: auto }
+  header .btn.plan-hot { background:var(--warn); color:#1a1a1a }
   nav { display:flex; gap:4px; padding:10px 20px; border-bottom:1px solid var(--border); flex-wrap:wrap }
   nav button { background:transparent; color:var(--muted); border:1px solid transparent; padding:6px 14px; border-radius:6px; cursor:pointer; font-size:13px }
   nav button.active { background:var(--panel); color:var(--fg); border-color:var(--border) }
@@ -72,6 +74,7 @@
   <h1>piso gateway</h1>
   <span class="sub">secrets · substitution rules · credential detection · request log</span>
   <span class="sub" id="health"></span>
+  <button type="button" class="btn" id="openPlanModal">Plan review (<span id="planCount">0</span>)</button>
 </header>
 <div id="errbar"></div>
 <nav id="tabs">
@@ -203,6 +206,17 @@
     </div>
   </section>
 </main>
+<div id="planModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="planModalTitle">
+  <div class="modal-card">
+    <h3 id="planModalTitle">Plan review</h3>
+    <p class="muted">The worker asked to publish a planning UI. Open plan creates the ingress route and opens it. Nothing is reachable until you approve.</p>
+    <div id="planGroups"></div>
+    <p class="muted" id="planStatus"></p>
+    <div class="modal-actions">
+      <button type="button" class="btn danger" id="planClose">Close</button>
+    </div>
+  </div>
+</div>
 <div id="failModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="failModalTitle">
   <div class="modal-card">
     <h3 id="failModalTitle">Blocked secrets</h3>
@@ -714,11 +728,29 @@ $('#domainForm').onsubmit = async ev => {
 };
 
 // ---- routes ----
+let ingressPort = 8082;
+
+/**
+ * Host-facing ingress URL for a route label.
+ * @param {string} name
+ * @returns {string}
+ */
+function routeURL(name) {
+  if (ingressPort === 80) {
+    return `http://piso.local/?route=${encodeURIComponent(name)}`;
+  }
+  return `http://piso.local:${ingressPort}/?route=${encodeURIComponent(name)}`;
+}
+
 async function loadRoutes() {
   const rs = await api('/api/v1/routes'); $('#routerows').innerHTML='';
-  rs.forEach(r => $('#routerows').append(el('tr','',`<td>${esc(r.name)}</td><td class="mono">https://${esc(r.name)}.piso.local</td>
+  rs.forEach(r => {
+    const url = routeURL(r.name);
+    $('#routerows').append(el('tr','',`<td>${esc(r.name)}</td><td class="mono">${esc(url)}</td>
     <td class="mono">${esc(r.worker)}</td><td>${r.port}</td>
-    <td><button class="btn small danger" onclick="delRoute('${r.id}')">del</button></td>`)));
+    <td><button class="btn small" onclick="window.open('${esc(url)}','_blank')">open</button>
+    <button class="btn small danger" onclick="delRoute('${r.id}')">del</button></td>`));
+  });
 }
 async function delRoute(id) { await api(`/api/v1/routes/${id}`, {method:'DELETE'}); loadRoutes(); }
 $('#routeForm').onsubmit = async ev => {
@@ -727,17 +759,145 @@ $('#routeForm').onsubmit = async ev => {
   catch (e) { alert(e.message); }
 };
 
+// ---- plan review inbox ----
+let planItems = [];
+
+/**
+ * Refresh the Plan review chip and modal list.
+ * @returns {Promise<void>}
+ */
+async function loadPlanning() {
+  const rows = await api('/api/v1/ingress/requests');
+  planItems = Array.isArray(rows) ? rows : [];
+  const n = planItems.length;
+  const count = $('#planCount');
+  const btn = $('#openPlanModal');
+  if (count) {
+    count.textContent = String(n);
+  }
+  if (btn) {
+    btn.classList.toggle('plan-hot', n > 0);
+  }
+  if ($('#planModal').classList.contains('open')) {
+    renderPlanGroups();
+  }
+}
+
+/**
+ * Render pending planning cards inside the modal.
+ * @returns {void}
+ */
+function renderPlanGroups() {
+  const box = $('#planGroups');
+  box.innerHTML = '';
+  if (planItems.length === 0) {
+    box.append(el('p', 'muted', 'No pending plan review.'));
+    return;
+  }
+  planItems.forEach((item) => {
+    const url = item.url || routeURL(item.name);
+    const wrap = el('div', 'fail-group', `<p class="meta">${esc((item.kind || 'planning') + ' · ' + (item.worker || '') + ' :' + item.port)}</p>
+      <p class="mono">${esc(url)}</p>
+      <div class="fail-actions">
+        <button type="button" class="btn" data-act="open">Open plan</button>
+        <button type="button" class="btn danger" data-act="dismiss">Dismiss</button>
+      </div>`);
+    const openBtn = wrap.querySelector('[data-act="open"]');
+    const dismissBtn = wrap.querySelector('[data-act="dismiss"]');
+    if (openBtn) {
+      openBtn.addEventListener('click', () => openPlan(item.id, url, openBtn));
+    }
+    if (dismissBtn) {
+      dismissBtn.addEventListener('click', () => dismissPlan(item.id, dismissBtn));
+    }
+    box.append(wrap);
+  });
+}
+
+/**
+ * Approve the pending route, then point a synchronously-opened tab at it.
+ * window.open after await is blocked by popup blockers.
+ * @param {string} id
+ * @param {string} url
+ * @param {HTMLButtonElement} btn
+ * @returns {Promise<void>}
+ */
+async function openPlan(id, url, btn) {
+  const status = $('#planStatus');
+  const tab = window.open('about:blank', '_blank');
+  if (btn) {
+    btn.disabled = true;
+  }
+  try {
+    status.textContent = 'approving…';
+    const out = await api(`/api/v1/ingress/requests/${id}/approve`, {method: 'POST'});
+    const dest = (out && out.url) ? out.url : url;
+    if (tab) {
+      tab.location = dest;
+    } else {
+      window.open(dest, '_blank');
+    }
+    status.textContent = '';
+  } catch (e) {
+    if (tab) {
+      tab.close();
+    }
+    status.textContent = e.message;
+    alert(e.message);
+  }
+  if (btn) {
+    btn.disabled = false;
+  }
+  await loadPlanning();
+  await loadRoutes();
+}
+
+/**
+ * Drop a pending planning request without publishing a route.
+ * @param {string} id
+ * @param {HTMLButtonElement} btn
+ * @returns {Promise<void>}
+ */
+async function dismissPlan(id, btn) {
+  if (btn) {
+    btn.disabled = true;
+  }
+  try {
+    await api(`/api/v1/ingress/requests/${id}/dismiss`, {method: 'POST'});
+  } catch (e) {
+    alert(e.message);
+  }
+  if (btn) {
+    btn.disabled = false;
+  }
+  await loadPlanning();
+}
+
+$('#openPlanModal').onclick = () => {
+  renderPlanGroups();
+  $('#planModal').classList.add('open');
+};
+$('#planClose').onclick = () => $('#planModal').classList.remove('open');
+$('#planModal').addEventListener('click', (ev) => {
+  if (ev.target === $('#planModal')) {
+    $('#planModal').classList.remove('open');
+  }
+});
+
 // ---- init ----
 (async () => {
   try {
     const h = await api('/api/v1/health');
     $('#health').textContent = 'live @ ' + String(h.time).slice(11, 19);
+    if (typeof h.ingressPort === 'number' && h.ingressPort > 0) {
+      ingressPort = h.ingressPort;
+    }
   } catch (e) {
     $('#health').textContent = 'offline';
     showErr('control API unreachable at ' + location.origin + ' — try http://127.0.0.1 (piso.local IPv6 needs ::1 published)');
     return;
   }
-  const loaders = [loadSecrets, loadRules, loadPatterns, loadExceptions, loadDomains, loadRoutes, loadLog];
+  const loaders = [loadSecrets, loadRules, loadPatterns, loadExceptions, loadDomains, loadRoutes, loadPlanning, loadLog];
   for (const fn of loaders) {
     try {
       await fn();
@@ -746,6 +906,9 @@ $('#routeForm').onsubmit = async ev => {
     }
   }
   streamLog();
+  setInterval(() => {
+    loadPlanning().catch(() => {});
+  }, 2000);
 })();
 </script>
 </body>

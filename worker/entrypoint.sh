@@ -39,4 +39,9 @@ if [ -f /opt/piso/npm/.piso-pkg-hash ]; then
   fi
 fi
 
+# When /plan starts Plannotator, ask the host to approve an ingress URL.
+if [ -n "${GATEWAY_URL:-}" ] && [ -n "${PISO_WORKER_NAME:-}" ] && [ -x /usr/local/bin/piso-planning-watch ]; then
+  nohup /usr/local/bin/piso-planning-watch >/tmp/piso-planning-watch.log 2>&1 &
+fi
+
 exec "$@"

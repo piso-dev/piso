@@ -66,7 +66,10 @@ func (s *Server) ui(w http.ResponseWriter, r *http.Request) {
 func (s *Server) routes(mux *http.ServeMux) {
 	// health
 	mux.HandleFunc("GET /api/v1/health", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, 200, map[string]any{"ok": true, "time": time.Now().UTC()})
+		writeJSON(w, 200, map[string]any{
+			"ok": true, "time": time.Now().UTC(),
+			"ingressPort": ingressHostPort(),
+		})
 	})
 
 	// CA cert for distribution
@@ -343,6 +346,13 @@ func (s *Server) routes(mux *http.ServeMux) {
 		}
 		w.WriteHeader(204)
 	})
+
+	// Worker requests a planning URL; host approves from the dashboard.
+	mux.HandleFunc("GET /api/v1/ingress/requests", s.handleListIngress)
+	mux.HandleFunc("POST /api/v1/ingress/requests", s.handleCreateIngress)
+	mux.HandleFunc("POST /api/v1/ingress/requests/cancel", s.handleCancelIngress)
+	mux.HandleFunc("POST /api/v1/ingress/requests/{id}/approve", s.handleApproveIngress)
+	mux.HandleFunc("POST /api/v1/ingress/requests/{id}/dismiss", s.handleDismissIngress)
 }
 
 // reloadPatterns swaps the live compiled library in both the server and the
@@ -394,14 +404,20 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// ingress proxies name.piso.local → worker:port, supporting websocket upgrade
-// (httputil.ReverseProxy handles Upgrade natively).
+// ingress proxies a route to worker:port. The browser can reach it as
+// name.piso.local (needs a hosts line) or as piso.local?route=name (apex
+// already resolves). A cookie keeps the route on later same-origin fetches.
 func (s *Server) ingress(w http.ResponseWriter, r *http.Request) {
-	host := strings.ToLower(r.Host)
-	name := host
-	if i := strings.Index(host, "."); i >= 0 {
-		name = host[:i]
+	if q := strings.TrimSpace(r.URL.Query().Get(ingressRouteQuery)); validIngressLabel(q) {
+		http.SetCookie(w, &http.Cookie{Name: ingressRouteCookie, Value: q, Path: "/", SameSite: http.SameSiteLaxMode})
+		next := *r.URL
+		qs := next.Query()
+		qs.Del(ingressRouteQuery)
+		next.RawQuery = qs.Encode()
+		http.Redirect(w, r, next.RequestURI(), http.StatusFound)
+		return
 	}
+	name := ingressRouteName(r)
 	route, ok := s.Store.RouteByName(name)
 	if !ok {
 		http.NotFound(w, r)

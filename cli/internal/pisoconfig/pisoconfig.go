@@ -191,8 +191,8 @@ func WorkerBuildDir() (string, error) {
 	return filepath.Join(dir, "worker-build"), nil
 }
 
-// CopyWorkerSkeleton copies Dockerfile and entrypoint.sh from the piso home
-// worker tree into dest (the staged build context).
+// CopyWorkerSkeleton copies image files from the piso home worker tree into
+// dest (the staged build context). package.json is written separately.
 func CopyWorkerSkeleton(dest string) error {
 	home, err := Home()
 	if err != nil {
@@ -202,7 +202,7 @@ func CopyWorkerSkeleton(dest string) error {
 		return err
 	}
 	src := filepath.Join(home, "worker")
-	for _, name := range []string{"Dockerfile", "entrypoint.sh"} {
+	for _, name := range []string{"Dockerfile", "entrypoint.sh", "planning-watch.sh"} {
 		if err := copyFile(filepath.Join(src, name), filepath.Join(dest, name)); err != nil {
 			return fmt.Errorf("stage %s: %w", name, err)
 		}
@@ -384,6 +384,17 @@ type RouteIn struct {
 	Name   string `json:"name"`
 	Worker string `json:"worker"`
 	Port   int    `json:"port"`
+}
+
+// RouteRec mirrors the gateway's stored ingress route (GET /api/v1/routes), so
+// the CLI can list the `name.piso.local → worker:port` routes targeting each
+// worker. Fields match store.RouteRec in the gateway (id/name/worker/port).
+type RouteRec struct {
+	ID	   string `json:"id"`
+	Name	 string `json:"name"`
+	Worker	 string `json:"worker"`
+	Port	   int	  `json:"port"`
+	Note	   string `json:"note,omitempty"`
 }
 
 type LogRecord struct {

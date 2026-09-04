@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -141,6 +142,7 @@ func cmdUp(args []string) error {
 	if err := waitGatewayHealthy(); err != nil {
 		return err
 	}
+	syncIngressHosts()
 	if err := syncPiProfile(); err != nil {
 		return err
 	}
@@ -521,8 +523,35 @@ func cmdExpose(args []string) error {
 		b, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("gateway: %s", string(b))
 	}
-	fmt.Printf("piso: https://%s.piso.local → %s:%d\n", name, worker, port)
+	if err := pisoconfig.EnsureIngressHost(name); err != nil {
+		fmt.Fprintf(os.Stderr, "piso: warning: %v\n", err)
+	}
+	p := pisoconfig.LoadHostPorts().Ingress
+	if p == 80 {
+		fmt.Printf("piso: http://%s.piso.local → %s:%d\n", name, worker, port)
+	} else {
+		fmt.Printf("piso: http://%s.piso.local:%d → %s:%d\n", name, p, worker, port)
+	}
 	return nil
+}
+
+func syncIngressHosts() {
+	var routes []pisoconfig.RouteIn
+	if err := getJSON(pisoconfig.GatewayURL()+"/api/v1/routes", &routes); err != nil {
+		return
+	}
+	names := make([]string, 0, len(routes))
+	for _, r := range routes {
+		if r.Name != "" {
+			names = append(names, r.Name)
+		}
+	}
+	if len(names) == 0 {
+		return
+	}
+	if err := pisoconfig.EnsureIngressHosts(names); err != nil {
+		fmt.Fprintf(os.Stderr, "piso: warning: %v\n", err)
+	}
 }
 
 func cmdLogs(args []string) error {
@@ -761,6 +790,8 @@ func runEnv(name string, args []string, env map[string]string) error {
 		}
 		name = resolved
 	}
+	// Worker image bake (apt + bun + pi + host npm) should finish well
+	// under this; CommandContext SIGKILLs docker if it does not.
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 	defer cancel()
 	c := exec.CommandContext(ctx, name, args...)
@@ -768,7 +799,13 @@ func runEnv(name string, args []string, env map[string]string) error {
 	if env != nil {
 		c.Env = append(os.Environ(), envPairs(env)...)
 	}
-	return c.Run()
+	if err := c.Run(); err != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return fmt.Errorf("timed out after 20m running %s %s", name, strings.Join(args, " "))
+		}
+		return err
+	}
+	return nil
 }
 
 func envPairs(m map[string]string) []string {

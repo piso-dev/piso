@@ -58,7 +58,10 @@ curl -s -X POST "$API/secrets" -H 'Content-Type: application/json' \
   -d '{"name":"norule","placeholder":"piso_norule_zzz","value":"sk-NORULE-REAL-1"}' >/dev/null
 curl -s -X POST "$API/rules" -H 'Content-Type: application/json' \
   -d '{"placeholder":"piso_norule_zzz","host":"httpbin.org","secretId":"x"}' >/dev/null
-ST=$(curl -s -X POST "$API/requests/$RID/retry" | python3 -c "import json,sys; print(json.load(sys.stdin)['status'])")
+ST=""
+if [ -n "$RID" ]; then
+  ST=$(curl -s -X POST "$API/requests/$RID/retry" | python3 -c "import json,sys; print(json.load(sys.stdin).get('status',''))")
+fi
 check "retry after rule added → upstream 200" "[ \"$ST\" = 200 ]"
 
 echo "== 5. ingress =="
@@ -73,6 +76,20 @@ kill $SRV 2>/dev/null || true
 echo "== 6. log safety =="
 LEAK=$(grep -c "sk-REAL-KEY-123456789" "$WORK/req.jsonl" || true)
 check "real value never in request log" "[ \"$LEAK\" = 0 ]"
+
+echo "== 7. planning ingress approve =="
+python3 -m http.server 19998 --bind 127.0.0.1 >/dev/null 2>&1 & PLAN=$!
+sleep 0.5
+PEND=$(curl -s -X POST "$API/ingress/requests" -H 'Content-Type: application/json' \
+  -d '{"kind":"planning","worker":"127.0.0.1","port":19998,"slug":"smoke"}')
+ING_ID=$(python3 -c "import json,sys; print(json.load(sys.stdin)['id'])" <<<"$PEND")
+check "planning request is pending" "[ -n \"$ING_ID\" ]"
+MISS=$(curl -s -o /dev/null -w '%{http_code}' -H "Host: plan-smoke.piso.local" http://127.0.0.1:18082/ || true)
+check "pending plan is not routed yet" "[ \"$MISS\" = 404 ]"
+curl -s -X POST "$API/ingress/requests/$ING_ID/approve" >/dev/null
+PLAN_BODY=$(curl -s -H "Host: plan-smoke.piso.local" http://127.0.0.1:18082/ | head -1)
+check "approve opens plan-smoke.piso.local" "echo '$PLAN_BODY' | grep -qi '<!DOCTYPE'"
+kill $PLAN 2>/dev/null || true
 
 echo
 echo "passed: $pass  failed: $fail"
