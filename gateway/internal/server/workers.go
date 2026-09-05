@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
 	"strings"
@@ -67,4 +68,31 @@ func (s *Server) handlePostWorkers(w http.ResponseWriter, r *http.Request) {
 // handleGetWorkers lists the registry (dashboard / CLI / debugging).
 func (s *Server) handleGetWorkers(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, s.Store.Workers())
+}
+
+// handleSetWorkerInternet flips the internet kill-switch for a worker.
+// POST /api/v1/workers/{name}/internet  body: {"disabled": bool}
+func (s *Server) handleSetWorkerInternet(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if !workerNameRe.MatchString(name) {
+		writeJSON(w, 400, map[string]string{"error": "worker name required"})
+		return
+	}
+	var in struct {
+		Disabled bool `json:"disabled"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeJSON(w, 400, map[string]string{"error": "bad json"})
+		return
+	}
+	rec, err := s.Store.SetWorkerInternet(name, in.Disabled)
+	if err != nil {
+		if errors.Is(err, store.ErrWorkerNotFound) {
+			writeJSON(w, 404, map[string]string{"error": "worker not found"})
+			return
+		}
+		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, 200, rec)
 }

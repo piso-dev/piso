@@ -93,6 +93,17 @@ func (h *Handler) handleConnect(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal target denied", http.StatusForbidden)
 		return
 	}
+	// Internet kill-switch: worker toggled off in the dashboard can't egress.
+	if blocked, slug := h.workerInternetBlocked(r); blocked {
+		h.Store.AppendLog(store.Record{
+			ID: recID(), Worker: h.workerID(r), Slug: slug, Ts: time.Now().UTC(),
+			Method: http.MethodConnect, Scheme: "https", Host: host, Path: "/",
+			Action: string(model.ActionBlock), Status: http.StatusForbidden,
+			Reasons: []string{"internet-disabled"},
+		})
+		http.Error(w, "internet access disabled for this worker", http.StatusForbidden)
+		return
+	}
 
 	// Resolve + verify the destination is not internal (hostnames may resolve
 	// to private ranges — metadata-style attacks).
@@ -273,6 +284,27 @@ func (h *Handler) decide(req *http.Request, scheme string, body []byte) model.De
 func (h *Handler) process(ctx context.Context, req *http.Request, scheme string) (*http.Response, bool) {
 	body, _ := io.ReadAll(req.Body)
 	req.Body = io.NopCloser(bytes.NewReader(body))
+
+	// Internet kill-switch: worker toggled off can't egress (plain HTTP too).
+	if blocked, slug := h.workerInternetBlocked(req); blocked {
+		reqID := newID()
+		rec := store.Record{
+			ID: recID(), Worker: h.workerID(req), Slug: slug, Ts: time.Now().UTC(),
+			Method: req.Method, Scheme: scheme, Host: req.URL.Hostname(),
+			Path: req.URL.RequestURI(), RequestID: reqID,
+			Action: string(model.ActionBlock), Status: http.StatusForbidden,
+			Reasons: []string{"internet-disabled"},
+		}
+		h.Store.AppendLog(rec)
+		return &http.Response{
+			Proto: "HTTP/1.1", ProtoMajor: 1, ProtoMinor: 1,
+			StatusCode: http.StatusForbidden, Status: "403 Forbidden",
+			Header:     http.Header{"Connection": {"close"}},
+			Body:       io.NopCloser(bytes.NewReader(nil)),
+			Request:    req,
+			Close:      true,
+		}, false
+	}
 
 	dec := h.decide(req, scheme, body)
 	scan := scanner.ScanRequest(req, scanner.Options{
@@ -572,6 +604,28 @@ func (h *Handler) workerID(r *http.Request) string {
 		}
 	}
 	return "worker"
+}
+
+// workerInternetBlocked reports whether the request's origin worker has the
+// internet kill-switch enabled. It resolves the origin IP via the proxy's
+// worker function (identity), then checks the registry flag. identity empty
+// → not blocked (unknown worker can't be toggled).
+func (h *Handler) workerInternetBlocked(r *http.Request) (blocked bool, slug string) {
+	if h.Worker == nil {
+		return false, ""
+	}
+	identity := h.workerID(r)
+	if identity == "" || identity == "worker" {
+		return false, ""
+	}
+	// workerID returns the slug when known; look up by that slug's name is
+	// ambiguous — instead resolve by origin IP to get the full registry entry.
+	// The proxy's worker fn returns the slug; find the record by it after all
+	// (Slug is unique per worker).
+	if rec, ok := h.Store.WorkerBySlug(identity); ok {
+		return rec.InternetDisabled, rec.Slug
+	}
+	return false, ""
 }
 
 func copyHeader(dst, src http.Header) {

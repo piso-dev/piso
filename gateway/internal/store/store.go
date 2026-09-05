@@ -83,10 +83,11 @@ type RouteRec struct {
 // The proxy resolves a request's origin IP to a worker slug via IPs, so logs
 // are marked with the project slug rather than a generic "worker".
 type WorkerRec struct {
-	Name      string     `json:"name"`    // container name, e.g. "piso-worker-demo"
-	Slug      string     `json:"slug"`    // project slug, e.g. "demo"
-	IPs       []string   `json:"ips,omitempty"` // vpc IP addresses of the container
-	UpdatedAt time.Time  `json:"updatedAt"`
+	Name             string    `json:"name"`    // container name, e.g. "piso-worker-demo"
+	Slug             string    `json:"slug"`    // project slug, e.g. "demo"
+	IPs              []string  `json:"ips,omitempty"` // vpc IP addresses of the container
+	InternetDisabled bool      `json:"internetDisabled,omitempty"` // true = gateway refuses egress
+	UpdatedAt        time.Time `json:"updatedAt"`
 }
 
 // Ingress request statuses. Only pending rows appear in the dashboard inbox.
@@ -618,6 +619,39 @@ func (s *Store) WorkerByName(name string) (WorkerRec, bool) {
 		}
 	}
 	return WorkerRec{}, false
+}
+
+// WorkerBySlug returns the registry entry for a project slug.
+func (s *Store) WorkerBySlug(slug string) (WorkerRec, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, r := range s.state.Workers {
+		if r.Slug == slug {
+			return r, true
+		}
+	}
+	return WorkerRec{}, false
+}
+
+// SetWorkerInternet flips the internet kill-switch for a worker, preserving
+// its slug and IPs. Returns ErrWorkerNotFound if the worker isn't registered
+// (the flag is meaningless without a registry entry to enforce it).
+func (s *Store) SetWorkerInternet(name string, disabled bool) (WorkerRec, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, r := range s.state.Workers {
+		if r.Name != name {
+			continue
+		}
+		r.InternetDisabled = disabled
+		r.UpdatedAt = time.Now().UTC()
+		s.state.Workers[i] = r
+		if err := s.save(); err != nil {
+			return WorkerRec{}, err
+		}
+		return r, nil
+	}
+	return WorkerRec{}, ErrWorkerNotFound
 }
 
 // ---- request log ----

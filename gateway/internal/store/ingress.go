@@ -8,6 +8,9 @@ import (
 // ErrIngressNotFound is a missing pending ingress request.
 var ErrIngressNotFound = fmt.Errorf("ingress request not found")
 
+// ErrWorkerNotFound is a missing worker-registry entry.
+var ErrWorkerNotFound = fmt.Errorf("worker not found")
+
 // ErrIngressLabelTaken is a planning label owned by another worker.
 var ErrIngressLabelTaken = fmt.Errorf("ingress label in use")
 

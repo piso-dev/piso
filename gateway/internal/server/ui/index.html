@@ -67,6 +67,12 @@
   .grid { display:grid; grid-template-columns:1fr 1fr; gap:20px } @media (max-width:900px){ .grid{ grid-template-columns:1fr } }
   .card { background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:16px }
   .card h3 { margin:0 0 10px; font-size:13px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em }
+  .toggle { position:relative; display:inline-block; width:38px; height:20px; vertical-align:middle }
+  .toggle input { opacity:0; width:0; height:0 }
+  .toggle span { position:absolute; cursor:pointer; inset:0; background:var(--bad); border-radius:20px; transition:.2s }
+  .toggle span:before { position:absolute; content:""; height:14px; width:14px; left:3px; top:3px; background:#fff; border-radius:50%; transition:.2s }
+  .toggle input:checked + span { background:var(--ok,#2e7d32) }
+  .toggle input:checked + span:before { transform:translateX(18px) }
 </style>
 </head>
 <body>
@@ -85,6 +91,7 @@
   <button data-tab="exceptions">Exceptions</button>
   <button data-tab="domains">Domains</button>
   <button data-tab="routes">Routes</button>
+  <button data-tab="workers">Workers</button>
 </nav>
 <main>
   <!-- REQUEST LOG -->
@@ -203,6 +210,16 @@
       </form>
       <table><thead><tr><th>Name</th><th>URL</th><th>Worker</th><th>Port</th><th></th></tr></thead>
       <tbody id="routerows"></tbody></table>
+    </div>
+  </section>
+
+  <!-- WORKERS -->
+  <section class="tab" id="tab-workers">
+    <div class="card">
+      <h3>Workers</h3>
+      <p class="muted" style="font-size:12px">Toggle internet off to refuse all egress from that worker at the gateway. Re-enable anytime.</p>
+      <table><thead><tr><th>Name</th><th>Slug</th><th>IPs</th><th>Internet</th><th>Updated</th></tr></thead>
+      <tbody id="workerrows"></tbody></table>
     </div>
   </section>
 </main>
@@ -754,7 +771,25 @@ async function loadRoutes() {
   });
 }
 async function delRoute(id) { await api(`/api/v1/routes/${id}`, {method:'DELETE'}); loadRoutes(); }
-$('#routeForm').onsubmit = async ev => {
+
+async function loadWorkers() {
+  const ws = await api('/api/v1/workers');
+  $('#workerrows').innerHTML = '';
+  (ws || []).forEach(w => {
+    const tr = el('tr', '', `<td class="mono">${esc(w.name||'')}</td><td>${esc(w.slug||'')}</td>
+      <td class="mono">${esc((w.ips||[]).join(', '))}</td>
+      <td><label class="toggle"><input type="checkbox" ${w.internetDisabled?'':'checked'}
+        onchange="setWorkerInternet('${esc(w.name)}', !this.checked)"><span></span></label></td>
+      <td class="muted">${w.updatedAt ? new Date(w.updatedAt).toLocaleTimeString() : ''}</td>`);
+    $('#workerrows').append(tr);
+  });
+}
+async function setWorkerInternet(name, disabled) {
+  try {
+    await api(`/api/v1/workers/${encodeURIComponent(name)}/internet`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({disabled})});
+  } catch (e) { alert(e.message); }
+  loadWorkers();
+}$('#routeForm').onsubmit = async ev => {
   ev.preventDefault(); const f = new FormData(ev.target);
   try { await api('/api/v1/routes', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({name:f.get('name'), worker:f.get('worker'), port: parseInt(f.get('port'))})}); ev.target.reset(); loadRoutes(); }
   catch (e) { alert(e.message); }
@@ -898,7 +933,7 @@ $('#planModal').addEventListener('click', (ev) => {
     showErr('control API unreachable at ' + location.origin + ' — try http://127.0.0.1 (piso.local IPv6 needs ::1 published)');
     return;
   }
-  const loaders = [loadSecrets, loadRules, loadPatterns, loadExceptions, loadDomains, loadRoutes, loadPlanning, loadLog];
+  const loaders = [loadSecrets, loadRules, loadPatterns, loadExceptions, loadDomains, loadRoutes, loadWorkers, loadPlanning, loadLog];
   for (const fn of loaders) {
     try {
       await fn();

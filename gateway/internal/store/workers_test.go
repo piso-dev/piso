@@ -1,6 +1,7 @@
 package store
 
 import (
+	"errors"
 	"path/filepath"
 	"testing"
 )
@@ -64,6 +65,43 @@ func TestWorkerByName(t *testing.T) {
 	}
 	if _, ok := st.WorkerByName("piso-worker-other"); ok {
 		t.Fatal("unexpected hit")
+	}
+}
+
+func TestWorkerBySlug(t *testing.T) {
+	st := workerTestStore(t)
+	if _, err := st.UpsertWorker(WorkerRec{Name: "piso-worker-demo", Slug: "demo", IPs: []string{"192.168.107.50"}}); err != nil {
+		t.Fatal(err)
+	}
+	rec, ok := st.WorkerBySlug("demo")
+	if !ok || rec.Name != "piso-worker-demo" {
+		t.Fatalf("WorkerBySlug miss: %+v", rec)
+	}
+}
+
+func TestSetWorkerInternetPreservesIPsAndSlug(t *testing.T) {
+	st := workerTestStore(t)
+	if _, err := st.UpsertWorker(WorkerRec{Name: "piso-worker-demo", Slug: "demo", IPs: []string{"192.168.107.50"}}); err != nil {
+		t.Fatal(err)
+	}
+	rec, err := st.SetWorkerInternet("piso-worker-demo", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rec.InternetDisabled {
+		t.Fatal("expected disabled")
+	}
+	if rec.Slug != "demo" || len(rec.IPs) != 1 || rec.IPs[0] != "192.168.107.50" {
+		t.Fatalf("slug/IPs not preserved: %+v", rec)
+	}
+	// flip back
+	rec, err = st.SetWorkerInternet("piso-worker-demo", false)
+	if err != nil || rec.InternetDisabled {
+		t.Fatalf("re-enable: %+v err=%v", rec, err)
+	}
+	// unknown worker
+	if _, err := st.SetWorkerInternet("piso-worker-missing", true); !errors.Is(err, ErrWorkerNotFound) {
+		t.Fatalf("expected ErrWorkerNotFound, got %v", err)
 	}
 }
 
