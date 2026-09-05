@@ -19,7 +19,7 @@ import (
 
 // CurrentStateVersion is written into state.json. Bump when adding a
 // migration in applyMigrations.
-const CurrentStateVersion = 1
+const CurrentStateVersion = 2
 
 // State is the persisted configuration.
 type State struct {
@@ -30,6 +30,7 @@ type State struct {
 	Exceptions      []ExceptionRec      `json:"exceptions"`
 	Routes          []RouteRec          `json:"routes"`
 	IngressRequests []IngressRequestRec `json:"ingressRequests,omitempty"`
+	Workers         []WorkerRec         `json:"workers,omitempty"`
 }
 
 // JSON-friendly records (this package owns persistence shape).
@@ -78,6 +79,16 @@ type RouteRec struct {
 	Note   string `json:"note,omitempty"`
 }
 
+// WorkerRec is the slug↔IP registry populated by the host CLI at `piso up`.
+// The proxy resolves a request's origin IP to a worker slug via IPs, so logs
+// are marked with the project slug rather than a generic "worker".
+type WorkerRec struct {
+	Name      string     `json:"name"`    // container name, e.g. "piso-worker-demo"
+	Slug      string     `json:"slug"`    // project slug, e.g. "demo"
+	IPs       []string   `json:"ips,omitempty"` // vpc IP addresses of the container
+	UpdatedAt time.Time  `json:"updatedAt"`
+}
+
 // Ingress request statuses. Only pending rows appear in the dashboard inbox.
 const (
 	IngressKindPlanning  = "planning"
@@ -119,6 +130,7 @@ type Store struct {
 type Record struct {
 	ID        string    `json:"id"`
 	Worker    string    `json:"worker"`
+	Slug      string    `json:"slug,omitempty"`
 	Ts        time.Time `json:"ts"`
 	Method    string    `json:"method"`
 	Scheme    string    `json:"scheme"`
@@ -548,6 +560,66 @@ func (s *Store) DeleteRoute(id string) error {
 	return s.save()
 }
 
+// ---- worker registry (IP→slug, populated by the host CLI at `piso up`) ----
+
+// Workers returns a copy of the worker registry.
+func (s *Store) Workers() []WorkerRec {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return copyWorkerRecs(s.state.Workers)
+}
+
+// UpsertWorker records or refreshes a worker's slug + vpc IPs, keyed by name.
+func (s *Store) UpsertWorker(rec WorkerRec) (WorkerRec, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec.UpdatedAt = time.Now().UTC()
+	for i, r := range s.state.Workers {
+		if r.Name == rec.Name {
+			// preserve the prior slug if the new one is empty; keep IPs updated
+			if rec.Slug == "" {
+				rec.Slug = r.Slug
+			}
+			s.state.Workers[i] = rec
+			if err := s.save(); err != nil {
+				return WorkerRec{}, err
+			}
+			return rec, nil
+		}
+	}
+	s.state.Workers = append(s.state.Workers, rec)
+	if err := s.save(); err != nil {
+		return WorkerRec{}, err
+	}
+	return rec, nil
+}
+
+// WorkerByIP returns the worker whose vpc IPs include ip (exact string match).
+func (s *Store) WorkerByIP(ip string) (WorkerRec, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, r := range s.state.Workers {
+		for _, wip := range r.IPs {
+			if wip == ip {
+				return r, true
+			}
+		}
+	}
+	return WorkerRec{}, false
+}
+
+// WorkerByName returns the registry entry for a container name.
+func (s *Store) WorkerByName(name string) (WorkerRec, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, r := range s.state.Workers {
+		if r.Name == name {
+			return r, true
+		}
+	}
+	return WorkerRec{}, false
+}
+
 // ---- request log ----
 
 // AppendLog records a request and broadcasts it to SSE subscribers.
@@ -690,6 +762,16 @@ func copyDomainRecs(in []DomainRec) []DomainRec {
 func copyExceptionRecs(in []ExceptionRec) []ExceptionRec {
 	out := make([]ExceptionRec, len(in))
 	copy(out, in)
+	return out
+}
+func copyWorkerRecs(in []WorkerRec) []WorkerRec {
+	out := make([]WorkerRec, len(in))
+	for i, r := range in {
+		out[i] = r
+		if r.IPs != nil {
+			out[i].IPs = append([]string(nil), r.IPs...)
+		}
+	}
 	return out
 }
 func copyRouteRecs(in []RouteRec) []RouteRec {

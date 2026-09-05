@@ -18,6 +18,32 @@ import (
 	"piso/gateway/internal/store"
 )
 
+// workerIdentityFn returns the proxy's request→worker-identity callback. It
+// resolves the request's origin IP against the worker registry (populated by
+// the host CLI at `piso up`) and returns the worker slug, falling back to the
+// container name or, failing that, "worker".
+func workerIdentityFn(st *store.Store) func(*http.Request) string {
+	return func(r *http.Request) string {
+		slug, ok := st.WorkerByIP(remoteIP(r))
+		if ok {
+			return slug.Slug
+		}
+		return ""
+	}
+}
+
+func remoteIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return ""
+	}
+	return host
+}
+
 func main() {
 	var (
 		statePath    = flag.String("state", envOr("PISO_STATE_FILE", ".piso/state.json"), "state file (secrets/rules/domains/exceptions/routes)")
@@ -52,7 +78,7 @@ func main() {
 		log.Fatalf("ca: %v", err)
 	}
 
-	h := proxy.New(ca, st, pat, nil)
+	h := proxy.New(ca, st, pat, workerIdentityFn(st))
 	srv := server.New(st, pat, h, ca)
 
 	go serve("control", *ctrlAddr, srv.ControlHandler())

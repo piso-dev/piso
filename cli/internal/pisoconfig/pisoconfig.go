@@ -397,9 +397,17 @@ type RouteRec struct {
 	Note	   string `json:"note,omitempty"`
 }
 
+// WorkerIn is the host-CLI registration payload for the slug↔IP registry.
+type WorkerIn struct {
+	Name string   `json:"name"`
+	Slug string   `json:"slug"`
+	IPs  []string `json:"ips"`
+}
+
 type LogRecord struct {
 	ID       string    `json:"id"`
 	Worker   string    `json:"worker"`
+	Slug     string    `json:"slug,omitempty"`
 	Ts       time.Time `json:"ts"`
 	Method   string    `json:"method"`
 	Scheme   string    `json:"scheme"`

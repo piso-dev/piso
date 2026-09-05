@@ -168,6 +168,9 @@ func cmdUp(args []string) error {
 	if err := runEnv("docker", upArgs, composeEnv); err != nil {
 		return fmt.Errorf("worker up: %w", err)
 	}
+	// Register the worker's slug↔IP identity with the gateway so request logs
+	// can be tagged with the project slug. Refreshed on every `piso up`.
+	_ = registerWorkerWithGateway(proj)
 	fmt.Printf("piso: worker %s ready. Run `piso attach`.\n", proj.WorkerName())
 	return nil
 }
@@ -189,6 +192,30 @@ func parseUpArgs(args []string) (string, pisoconfig.HostPorts, error) {
 		dir = rest[0]
 	}
 	return dir, ports, nil
+}
+
+// registerWorkerWithGateway tells the gateway this worker's name/slug and its
+// vpc IPs, so the proxy can tag request logs with the slug. Best-effort: a
+// failure here must never fail `piso up`.
+func registerWorkerWithGateway(proj pisoconfig.Project) error {
+	ips, err := dockernet.ContainerIPs(proj.WorkerName())
+	if err != nil {
+		return err
+	}
+	body, _ := json.Marshal(pisoconfig.WorkerIn{
+		Name: proj.WorkerName(), Slug: proj.Slug, IPs: ips,
+	})
+	gw := pisoconfig.GatewayURL()
+	resp, err := http.Post(gw + "/api/v1/workers", "application/json", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		b, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("gateway %d %s", resp.StatusCode, strings.TrimSpace(string(b)))
+	}
+	return nil
 }
 
 // workerImageName is the shared worker image. Compose project names differ
@@ -761,8 +788,15 @@ func printRecord(r pisoconfig.LogRecord) {
 		}
 		f = " [" + strings.Join(parts, ",") + "]"
 	}
-	fmt.Printf("%s %-11s %-3d %-5s %s://%s%s  %s%s\n",
-		r.Ts.Format("15:04:05"), r.Action, r.Status, r.Method,
+	slug := strings.TrimSpace(r.Slug)
+	if slug == "" {
+		slug = strings.TrimSpace(r.Worker)
+	}
+	if slug == "" {
+		slug = "?"
+	}
+	fmt.Printf("%s %-8s %-11s %-3d %-5s %s://%s%s  %s%s\n",
+		r.Ts.Format("15:04:05"), slug, r.Action, r.Status, r.Method,
 		r.Scheme, r.Host, r.Path, strings.Join(r.Reasons, "+"), f)
 }
 

@@ -85,7 +85,7 @@ func (h *Handler) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// Hard network-level block on internal targets (belt & braces with policy).
 	if ip := net.ParseIP(host); ip != nil && (ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast()) {
 		h.Store.AppendLog(store.Record{
-			ID: recID(), Worker: h.workerID(r), Ts: time.Now().UTC(),
+			ID: recID(), Worker: h.workerID(r), Slug: h.workerID(r), Ts: time.Now().UTC(),
 			Method: http.MethodConnect, Scheme: "https", Host: host, Path: "/",
 			Action: string(model.ActionBlock), Status: http.StatusForbidden,
 			Reasons: []string{string(model.ReasonInternalTarget)},
@@ -162,6 +162,10 @@ func (h *Handler) handleConnect(w http.ResponseWriter, r *http.Request) {
 		if req.Host == "" {
 			req.Host = host
 		}
+		// http.ReadRequest does not populate RemoteAddr (the server normally
+		// does). The CONNECT request r carries the worker's origin IP — copy it
+		// so worker-identity lookup (IP→slug) works for tunneled requests.
+		req.RemoteAddr = r.RemoteAddr
 		fwdCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		resp, keepAlive := h.process(fwdCtx, req, "https")
 		writeErr := writeTunnelResponse(tlsConn, resp)
@@ -276,9 +280,11 @@ func (h *Handler) process(ctx context.Context, req *http.Request, scheme string)
 	})
 
 	reqID := newID()
+	wid := h.workerID(req)
 	rec := store.Record{
 		ID:        recID(),
-		Worker:    h.workerID(req),
+		Worker:    wid,
+		Slug:      wid,
 		Ts:        time.Now().UTC(),
 		Method:    req.Method,
 		Scheme:    scheme,

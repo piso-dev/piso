@@ -28,5 +28,14 @@ func applyMigrations(st *State) bool {
 		st.Version = 1
 		changed = true
 	}
+	// v1→v2: worker registry (slug↔IP) added. Older files have no "workers"
+	// field (nil slice); normalize so writers don't emit nulls.
+	if st.Version < 2 {
+		if st.Workers == nil {
+			st.Workers = []WorkerRec{}
+		}
+		st.Version = 2
+		changed = true
+	}
 	return changed
 }

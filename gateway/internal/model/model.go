@@ -138,6 +138,7 @@ const (
 type RequestRecord struct {
 	ID        string    `json:"id"`
 	Worker    string    `json:"worker"`
+	Slug      string    `json:"slug,omitempty"`
 	Ts        time.Time `json:"ts"`
 	Method    string    `json:"method"`
 	Scheme    string    `json:"scheme"`

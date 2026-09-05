@@ -136,3 +136,50 @@ func dockerOutput(args ...string) (string, error) {
 	out, err := cmd.CombinedOutput()
 	return strings.TrimSpace(string(out)), err
 }
+
+// ContainerIPs returns the IPv4/v6 addresses the container is attached to,
+// parsed from `docker inspect`. Used to populate the worker registry (slug↔IP)
+// so the gateway can tag request logs.
+func ContainerIPs(name string) ([]string, error) {
+	out, err := dockerOutput("inspect", "-f", "{{range $n, $conf := .NetworkSettings.Networks}}{{$n}} {{$conf.IPAddress}} {{end}}", name)
+	if err != nil {
+		return nil, err
+	}
+	return parseContainerIPs(string(out)), nil
+}
+
+// parseContainerIPs extracts the IP tokens from `docker inspect` output that is
+// a space-separated sequence of "<netname> <ip>" pairs. A token is an IP if it
+// contains only IP characters (digits, dots, colons, hex letters); the network
+// name tokens (e.g. "bzzz", "vpc") are discarded.
+func parseContainerIPs(out string) []string {
+	var ips []string
+	for _, line := range strings.Split(out, " ") {
+		if isIPString(line) {
+			ips = append(ips, line)
+		}
+	}
+	return ips
+}
+
+// isIPString reports a token that looks like a literal IPv4/IPv6 address:
+// digits, dots, colons, or hex letters. Hostnames with letters beyond a-f are
+// rejected (so network names like "vpc" / "bzzz" are not treated as IPs).
+func isIPString(s string) bool {
+	if s == "" || len(s) > 45 {
+		return false
+	}
+	digits := 0
+	for _, r := range strings.ToLower(s) {
+		digit := r >= '0' && r <= '9'
+		hex := r >= 'a' && r <= 'f'
+		sep := r == '.' || r == ':' || r == '_'
+		if !digit && !hex && !sep {
+			return false
+		}
+		if digit {
+			digits++
+		}
+	}
+	return digits > 0
+}

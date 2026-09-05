@@ -35,3 +35,17 @@ func TestIsMissingNetwork(t *testing.T) {
 		t.Fatal("nil error is not missing")
 	}
 }
+
+func TestParseContainerIPs(t *testing.T) {
+	got := parseContainerIPs("vpc 192.168.107.50 egress 172.20.0.2 ")
+	if len(got) != 2 || got[0] != "192.168.107.50" || got[1] != "172.20.0.2" {
+		t.Fatalf("parse %+v", got)
+	}
+	if len(parseContainerIPs("")) != 0 {
+		t.Fatal("expected empty")
+	}
+	if len(parseContainerIPs("bzzz somehost foo")) != 0 {
+		t.Fatal("hostnames should be rejected")
+	}
+}
+

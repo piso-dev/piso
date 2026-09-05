@@ -280,7 +280,8 @@ function clearLogIndex() {
 function logRowCells(r) {
   const findings = (r.findings||[]).map(f => `${esc(f.kind)}${f.patternId?':'+esc(f.patternId):''}@${esc(f.location)}`).join(' · ');
   const reasons = esc((r.reasons||[]).join(', '));
-  const extra = [r.worker ? 'worker '+esc(r.worker) : '', reasons, findings].filter(Boolean).join(' · ');
+  const who = (r.slug && r.slug !== 'worker') ? r.slug : (r.worker || '');
+  const extra = [who ? 'worker '+esc(who) : '', reasons, findings].filter(Boolean).join(' · ');
   return `<td class="muted mono">${esc(new Date(r.ts).toLocaleTimeString())}</td>
     <td>${esc(r.method)}</td>
     <td class="mono"><span class="log-url">${esc(r.scheme)}://${esc(r.host)}${esc(r.path)}</span>
