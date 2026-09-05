@@ -414,9 +414,14 @@ func cmdAttach(args []string) error {
 	if len(args) > 0 && args[0] == "--shell" {
 		inner += "exec /bin/bash"
 	} else {
-		// pi -r is the session picker; with zero jsonl files it shows
-		// "No sessions found" and waits. Start a new session instead.
-		inner += `if find /root/.pi/agent/sessions -name '*.jsonl' -print -quit 2>/dev/null | grep -q .; then exec pi -r; else exec pi; fi`
+		// pi -r is the session picker for the CURRENT project. Sessions are
+		// namespaced by cwd under ~/.pi/agent/sessions/<--cwd-->/ (pi's
+		// sanitization: --<cwd with / and : → - >--). The worker always mounts
+		// the project at /workspace → dir "--workspace--". Only show the
+		// picker when THIS project has sessions; a jsonl under a *different*
+		// project's dir must not trigger pi -r (which would open an empty
+		// picker for the new project).
+		inner += `sd=/root/.pi/agent/sessions/--workspace--; if [ -d "$sd" ] && find "$sd" -name '*.jsonl' -print -quit 2>/dev/null | grep -q .; then exec pi -r; else exec pi; fi`
 	}
 	cmdArgs := []string{"exec", "-it", proj.WorkerName(), "bash", "-lc", inner}
 	c := exec.Command("docker", cmdArgs...)
