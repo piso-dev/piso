@@ -79,7 +79,9 @@ Usage:
   piso up [dir] [--proxy-port N] [--ctrl-port N] [--ingress-port N]
                          ensure gateway + worker for [dir] (default: cwd)
   piso down              stop this project's worker (gateway stays up)
-  piso attach            enter the worker and run pi (new session if none exist)
+  piso attach [--shell] [--new]
+                         enter the worker and run pi (new session if none exist;
+                         --new forces a fresh one, --shell drops into bash)
   piso status            show gateway + worker state
   piso secrets list|add|rm   manage gateway secrets (real values never leave it)
   piso expose <port> [--name n]  reverse-proxy a worker port as https://n.piso.local
@@ -415,9 +417,23 @@ func cmdAttach(args []string) error {
 	if err != nil {
 		return err
 	}
+	// --shell drops into bash instead of pi; --new always starts a fresh pi
+	// session instead of the restore picker (--shell wins if both are given).
+	var shell bool
+	var fresh bool
+	for _, a := range args {
+		switch a {
+		case "--shell":
+			shell = true
+		case "--new":
+			fresh = true
+		}
+	}
 	inner := "set -a; if [ -f /etc/piso/placeholders.env ]; then . /etc/piso/placeholders.env; fi; set +a; "
-	if len(args) > 0 && args[0] == "--shell" {
+	if shell {
 		inner += "exec /bin/bash"
+	} else if fresh {
+		inner += "exec pi"
 	} else {
 		// pi -r is the session picker for the CURRENT project. Sessions are
 		// namespaced by cwd under ~/.pi/agent/sessions/<--cwd-->/ (pi's
