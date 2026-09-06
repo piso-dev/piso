@@ -56,6 +56,8 @@ func main() {
 		err = cmdDashboard(args)
 	case "setup":
 		err = cmdSetup(args)
+	case "update":
+		err = cmdUpdate(args)
 	case "version":
 		fmt.Println("piso", version)
 	case "help", "-h", "--help":
@@ -84,6 +86,8 @@ Usage:
   piso logs [--follow]   tail the gateway request log (SSE when --follow)
   piso dashboard         open the gateway web UI (http://piso.local)
   piso setup [--rebuild] import leftover data and (with --rebuild) recreate the gateway
+  piso update [version] [--dry-run] [--force]  pin a pi version, rebuild the shared worker
+                         image once, and recreate every worker (confirm before applying)
 
 Host ports default to 8080 (proxy), 80 (control / http://piso.local), 8082 (ingress).
 If a port is taken, piso up exits with the flag to override
@@ -203,7 +207,7 @@ func registerWorkerWithGateway(proj pisoconfig.Project) error {
 		return err
 	}
 	body, _ := json.Marshal(pisoconfig.WorkerIn{
-		Name: proj.WorkerName(), Slug: proj.Slug, IPs: ips,
+		Name: proj.WorkerName(), Slug: proj.Slug, Dir: proj.Dir, IPs: ips,
 	})
 	gw := pisoconfig.GatewayURL()
 	resp, err := http.Post(gw + "/api/v1/workers", "application/json", bytes.NewReader(body))
@@ -697,6 +701,211 @@ func rebuildGateway() error {
 	}
 	fmt.Println("piso: gateway rebuilt")
 	return nil
+}
+
+// cmdUpdate rolls out a pinned pi version to all workers: resolve the target
+// version, pin it in the staged worker Dockerfile (which changes the build
+// hash), rebuild the shared piso-worker image once, and recreate each worker.
+func cmdUpdate(args []string) error {
+	fs := flag.NewFlagSet("update", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	dryRun := fs.Bool("dry-run", false, "show what would change without building")
+	force := fs.Bool("force", false, "rebuild and recreate even when the staged version already matches")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	version := strings.TrimSpace(fs.Arg(0))
+
+	// 1. resolve the target version (latest from npm when not specified)
+	if version == "" {
+		v, err := npmLatestPiVersion()
+		if err != nil {
+			return fmt.Errorf("resolve latest pi: %w", err)
+		}
+		version = v
+		fmt.Printf("piso: latest pi is %s\n", version)
+	} else {
+		fmt.Printf("piso: pinning pi %s\n", version)
+	}
+
+	// 2. rewrite the staged Dockerfile's ARG (staged copy, not the repo)
+	buildDir, err := pisoconfig.WorkerBuildDir()
+	if err != nil {
+		return err
+	}
+	dfPath := filepath.Join(buildDir, "Dockerfile")
+	df, err := os.ReadFile(dfPath)
+	if err != nil {
+		return fmt.Errorf("staged Dockerfile: %w (run piso up first)", err)
+	}
+	if !bytes.Contains(df, []byte("PISO_PI_VERSION")) {
+		return fmt.Errorf("staged Dockerfile missing PISO_PI_VERSION arg; re-run piso up to re-stage")
+	}
+
+	// current pinned version (persisted; the staged Dockerfile is ephemeral)
+	old := pisoconfig.LoadPiVersion()
+	if old == version && !*force {
+		fmt.Printf("piso: already on pi %s (use --force to rebuild anyway)\n", version)
+		return nil
+	}
+	if old == version && *force {
+		fmt.Printf("piso: already on pi %s — forcing build + recreate\n", version)
+	}
+
+	// 2b. fail-closed session guard: probe every running worker for a live pi.
+	// An in-flight turn dies when the container is recreated, so abort before
+	// any build or confirm rather than interrupting a live session. In dry-run
+	// the same scan runs but only reports (exit 0).
+	var recs []pisoconfig.WorkerRec
+	if err := getJSON(pisoconfig.GatewayURL()+"/api/v1/workers", &recs); err != nil {
+		return fmt.Errorf("list workers: %w", err)
+	}
+	sessions := scanActivePiSessions(recs)
+	if len(sessions) > 0 {
+		fmt.Println("piso: active pi session(s) detected:")
+		for _, s := range sessions {
+			fmt.Printf("  %s (%s): pi PIDs %s, up %s\n", s.Worker, s.Slug, strings.Join(s.PIDs, ","), s.Uptime)
+		}
+		if *dryRun {
+			fmt.Printf("piso: --dry-run: would NOT proceed (%d worker(s) busy)\n", len(sessions))
+			return nil
+		}
+		return fmt.Errorf("active pi session(s) in %d worker(s); close pi and re-run (no --force)", len(sessions))
+	}
+
+	if *dryRun {
+		fmt.Printf("piso: --dry-run: would pin %s → %s, rebuild piso-worker, recreate %d workers\n", old, version, len(recs))
+		return nil
+	}
+
+	// 3. confirm before applying (explicit version skips the prompt)
+	if fs.Arg(0) == "" {
+		if !confirm(fmt.Sprintf("Roll out pi %s → %s to all workers", old, version)) {
+			fmt.Println("piso: cancelled")
+			return nil
+		}
+	}
+
+	// 4. persist the pin + rewrite the staged Dockerfile ARG
+	if err := pisoconfig.SavePiVersion(version); err != nil {
+		return fmt.Errorf("save pi version: %w", err)
+	}
+	updated := pisoconfig.RewriteWorkerDockerfileARG(string(df), version)
+	if err := os.WriteFile(dfPath, []byte(updated), 0o600); err != nil {
+		return fmt.Errorf("write staged Dockerfile: %w", err)
+	}
+	fmt.Printf("piso: staged pi %s in worker build context\n", version)
+
+	// 5. enumerate workers + build + recreate
+	return rolloutWorkers(old, version)
+}
+
+// npmLatestPiVersion queries the npm registry for the latest pi version.
+func npmLatestPiVersion() (string, error) {
+	resp, err := http.Get("https://registry.npmjs.org/@earendil-works/pi-coding-agent/latest")
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	var d struct {
+		Version string `json:"version"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&d); err != nil {
+		return "", err
+	}
+	if d.Version == "" {
+		return "", fmt.Errorf("npm gave empty version")
+	}
+	return d.Version, nil
+}
+
+// confirm asks a yes/no on stdin (no TTY → default no).
+func confirm(prompt string) bool {
+	fmt.Printf("%s [y/N]: ", prompt)
+	sc := bufio.NewScanner(os.Stdin)
+	if sc.Scan() {
+		ans := strings.ToLower(strings.TrimSpace(sc.Text()))
+		return ans == "y" || ans == "yes"
+	}
+	return false
+}
+
+// rolloutWorkers enumerates registered workers, builds the shared worker image
+// once (the staged ARG change makes workerNeedsBuild fire), and recreates each
+// worker via its compose file. Skips workers that aren't running (nothing to
+// recreate) and warns if a running worker has a live pi process (session) — a
+// recreate resets the pi runtime mid-session.
+func rolloutWorkers(old, version string) error {
+	// enumerate registered workers
+	var recs []pisoconfig.WorkerRec
+	if err := getJSON(pisoconfig.GatewayURL()+"/api/v1/workers", &recs); err != nil {
+		return fmt.Errorf("list workers: %w", err)
+	}
+	if len(recs) == 0 {
+		fmt.Println("piso: no registered workers to update")
+		return nil
+	}
+
+	// build the shared image once (hash change → --build)
+	if err := buildSharedWorker(); err != nil {
+		return err
+	}
+	fmt.Printf("piso: built piso-worker (pi %s → %s)\n", old, version)
+
+	// recreate each registered running worker
+	updated := 0
+	for _, w := range recs {
+		if w.Dir == "" {
+			fmt.Printf("  %s: no project dir registered, skipping\n", w.Name)
+			continue
+		}
+		if !containerRunning(w.Name) {
+			fmt.Printf("  %s: not running, skipping\n", w.Name)
+			continue
+		}
+		if err := recreateWorker(w); err != nil {
+			fmt.Printf("  %s: recreate failed: %v\n", w.Name, err)
+			continue
+		}
+		fmt.Printf("  %s: recreated\n", w.Name)
+		updated++
+	}
+	fmt.Printf("piso: rollout complete (%d workers recreated)\n", updated)
+	return nil
+}
+
+// buildSharedWorker rebuilds piso-worker from the staged context (the ARG
+// rewrite changed the hash, so compose --build fires).
+func buildSharedWorker() error {
+	composeEnv, err := dockerComposeEnv()
+	if err != nil {
+		return err
+	}
+	buildDir, err := pisoconfig.WorkerBuildDir()
+	if err != nil {
+		return err
+	}
+	// docker build -t piso-worker <staged context>
+	return runEnv("docker", []string{"build", "-t", "piso-worker", buildDir}, composeEnv)
+}
+
+// containerRunning reports whether a named container is up.
+func containerRunning(name string) bool {
+	out, err := dockerOutputLite("ps", "--filter", "name="+name, "--filter", "status=running", "--format", "{{.Names}}")
+	if err != nil {
+		return false
+	}
+	return strings.Contains(out, name)
+}
+
+// recreateWorker recreates a worker's compose service (image change → recreate).
+func recreateWorker(w pisoconfig.WorkerRec) error {
+	composeEnv, err := dockerComposeEnv()
+	if err != nil {
+		return err
+	}
+	file := filepath.Join(w.Dir, ".piso", "worker-"+w.Slug+".yaml")
+	return runEnv("docker", []string{"compose", "-f", file, "-p", "piso-" + w.Slug, "up", "-d", "-t", "0"}, composeEnv)
 }
 
 // ---- shared helpers ----

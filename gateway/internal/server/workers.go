@@ -14,6 +14,7 @@ import (
 type workerIn struct {
 	Name string   `json:"name"`
 	Slug string   `json:"slug"`
+	Dir  string   `json:"dir,omitempty"`
 	IPs  []string `json:"ips"`
 }
 
@@ -29,6 +30,7 @@ func (s *Server) handlePostWorkers(w http.ResponseWriter, r *http.Request) {
 	}
 	in.Name = strings.TrimSpace(in.Name)
 	in.Slug = strings.TrimSpace(in.Slug)
+	in.Dir = strings.TrimSpace(in.Dir)
 	if !workerNameRe.MatchString(in.Name) {
 		writeJSON(w, 400, map[string]string{"error": "worker name required"})
 		return
@@ -57,7 +59,7 @@ func (s *Server) handlePostWorkers(w http.ResponseWriter, r *http.Request) {
 		seen[key] = true
 		ips = append(ips, raw)
 	}
-	rec, err := s.Store.UpsertWorker(store.WorkerRec{Name: in.Name, Slug: in.Slug, IPs: ips})
+	rec, err := s.Store.UpsertWorker(store.WorkerRec{Name: in.Name, Slug: in.Slug, Dir: in.Dir, IPs: ips})
 	if err != nil {
 		writeJSON(w, 500, map[string]string{"error": err.Error()})
 		return

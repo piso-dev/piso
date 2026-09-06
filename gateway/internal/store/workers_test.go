@@ -19,13 +19,16 @@ func workerTestStore(t *testing.T) *Store {
 func TestUpsertWorkerCreates(t *testing.T) {
 	st := workerTestStore(t)
 	rec, err := st.UpsertWorker(WorkerRec{
-		Name: "piso-worker-demo", Slug: "demo", IPs: []string{"192.168.107.50"},
+		Name: "piso-worker-demo", Slug: "demo", Dir: "/home/u/demo", IPs: []string{"192.168.107.50"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if rec.Slug != "demo" {
 		t.Fatalf("slug %q", rec.Slug)
+	}
+	if rec.Dir != "/home/u/demo" {
+		t.Fatalf("dir %q", rec.Dir)
 	}
 	byIP, ok := st.WorkerByIP("192.168.107.50")
 	if !ok || byIP.Slug != "demo" {

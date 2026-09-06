@@ -203,8 +203,18 @@ func CopyWorkerSkeleton(dest string) error {
 	}
 	src := filepath.Join(home, "worker")
 	for _, name := range []string{"Dockerfile", "entrypoint.sh", "planning-watch.sh"} {
-		if err := copyFile(filepath.Join(src, name), filepath.Join(dest, name)); err != nil {
+		dstFile := filepath.Join(dest, name)
+		if err := copyFile(filepath.Join(src, name), dstFile); err != nil {
 			return fmt.Errorf("stage %s: %w", name, err)
+		}
+		if name == "Dockerfile" {
+			// Re-inject the persisted pi pin; `piso update` writes it, and a
+			// plain `piso up` must not clobber it back to the repo default.
+			raw, err := os.ReadFile(dstFile)
+			if err == nil {
+				pinned := RewriteWorkerDockerfileARG(string(raw), LoadPiVersion())
+				_ = os.WriteFile(dstFile, []byte(pinned), 0o644)
+			}
 		}
 	}
 	return nil
@@ -401,7 +411,18 @@ type RouteRec struct {
 type WorkerIn struct {
 	Name string   `json:"name"`
 	Slug string   `json:"slug"`
+	Dir  string   `json:"dir,omitempty"`
 	IPs  []string `json:"ips"`
+}
+
+// WorkerRec mirrors the gateway's stored registry entry (GET /api/v1/workers).
+type WorkerRec struct {
+	Name             string    `json:"name"`
+	Slug             string    `json:"slug"`
+	Dir              string    `json:"dir,omitempty"`
+	IPs              []string  `json:"ips,omitempty"`
+	InternetDisabled bool      `json:"internetDisabled,omitempty"`
+	UpdatedAt        time.Time `json:"updatedAt"`
 }
 
 type LogRecord struct {

@@ -12,7 +12,7 @@ func TestPostWorkersRegistersAndLists(t *testing.T) {
 
 	// register a worker from the host CLI
 	res := doJSON(t, ch, "POST", "/api/v1/workers", map[string]any{
-		"name": "piso-worker-demo", "slug": "demo", "ips": []string{"192.168.107.50", "192.168.107.50"},
+		"name": "piso-worker-demo", "slug": "demo", "dir": "/home/u/demo", "ips": []string{"192.168.107.50", "192.168.107.50"},
 	})
 	if res.Code != 200 {
 		t.Fatalf("post workers %d %s", res.Code, res.Body.String())
@@ -20,6 +20,7 @@ func TestPostWorkersRegistersAndLists(t *testing.T) {
 	var rec struct {
 		Name string   `json:"name"`
 		Slug string   `json:"slug"`
+		Dir  string   `json:"dir"`
 		IPs  []string `json:"ips"`
 	}
 	if err := json.Unmarshal(res.Body.Bytes(), &rec); err != nil {
@@ -27,6 +28,9 @@ func TestPostWorkersRegistersAndLists(t *testing.T) {
 	}
 	if rec.Name != "piso-worker-demo" || rec.Slug != "demo" {
 		t.Fatalf("rec %+v", rec)
+	}
+	if rec.Dir != "/home/u/demo" {
+		t.Fatalf("dir %q", rec.Dir)
 	}
 	// duplicate IPs deduped
 	if len(rec.IPs) != 1 || rec.IPs[0] != "192.168.107.50" {

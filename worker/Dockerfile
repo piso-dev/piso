@@ -24,8 +24,12 @@ RUN apt-get update \
 RUN curl -fsSL https://bun.sh/install | bash -s "bun-v1.2.11" \
   && ln -s /root/.bun/bin/bun /usr/local/bin/bun
 
-# pi CLI (same install the pi docs use; we invoke it via bun)
-RUN npm install -g --ignore-scripts @earendil-works/pi-coding-agent
+# pi CLI (same install the pi docs use; we invoke it via bun).
+# PISO_PI_VERSION is pinned per rollout (`piso update` rewrites the staged
+# ARG); default is the last known-good so the baked image never installs a
+# silently-newer pi.
+ARG PISO_PI_VERSION=0.84.4
+RUN npm install -g --ignore-scripts @earendil-works/pi-coding-agent@${PISO_PI_VERSION}
 
 # Host pi extensions. Installed here (Docker build has real network) into
 # /opt/piso/npm — NOT /root/.pi/agent, which a volume hides at runtime.

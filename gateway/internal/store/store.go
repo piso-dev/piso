@@ -85,6 +85,7 @@ type RouteRec struct {
 type WorkerRec struct {
 	Name             string    `json:"name"`    // container name, e.g. "piso-worker-demo"
 	Slug             string    `json:"slug"`    // project slug, e.g. "demo"
+	Dir              string    `json:"dir,omitempty"` // host project dir mounted at /workspace
 	IPs              []string  `json:"ips,omitempty"` // vpc IP addresses of the container
 	InternetDisabled bool      `json:"internetDisabled,omitempty"` // true = gateway refuses egress
 	UpdatedAt        time.Time `json:"updatedAt"`
