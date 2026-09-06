@@ -79,9 +79,10 @@ Usage:
   piso up [dir] [--proxy-port N] [--ctrl-port N] [--ingress-port N]
                          ensure gateway + worker for [dir] (default: cwd)
   piso down              stop this project's worker (gateway stays up)
-  piso attach [--shell] [--new]
+  piso attach [--shell] [--new] [--session <id|path>]
                          enter the worker and run pi (new session if none exist;
-                         --new forces a fresh one, --shell drops into bash)
+                         --new forces a fresh one, --session opens a specific
+                         one, --shell drops into bash)
   piso status            show gateway + worker state
   piso secrets list|add|rm   manage gateway secrets (real values never leave it)
   piso expose <port> [--name n]  reverse-proxy a worker port as https://n.piso.local
@@ -418,20 +419,33 @@ func cmdAttach(args []string) error {
 		return err
 	}
 	// --shell drops into bash instead of pi; --new always starts a fresh pi
-	// session instead of the restore picker (--shell wins if both are given).
+	// session instead of the restore picker; --session <id|path> opens a
+	// specific session (id or .jsonl path, resolved by pi). --shell wins if
+	// combined with anything else; --new conflicts with --session.
 	var shell bool
 	var fresh bool
-	for _, a := range args {
-		switch a {
+	var sess string
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
 		case "--shell":
 			shell = true
 		case "--new":
 			fresh = true
+		case "--session":
+			if i+1 >= len(args) || strings.HasPrefix(args[i+1], "-") {
+				return fmt.Errorf("usage: piso attach [--shell] [--new] [--session <id|path>]")
+			}
+			sess, i = args[i+1], i+1
 		}
+	}
+	if sess != "" && fresh {
+		return fmt.Errorf("--new and --session are mutually exclusive")
 	}
 	inner := "set -a; if [ -f /etc/piso/placeholders.env ]; then . /etc/piso/placeholders.env; fi; set +a; "
 	if shell {
 		inner += "exec /bin/bash"
+	} else if sess != "" {
+		inner += "exec pi --session " + shq(sess)
 	} else if fresh {
 		inner += "exec pi"
 	} else {
@@ -448,6 +462,12 @@ func cmdAttach(args []string) error {
 	c := exec.Command("docker", cmdArgs...)
 	c.Stdin, c.Stdout, c.Stderr = os.Stdin, os.Stdout, os.Stderr
 	return c.Run()
+}
+
+// shq single-quotes s so it embeds losslessly in the worker's bash -lc
+// string (a session id never needs it, but paths with spaces/quotes do).
+func shq(s string) string {
+	return "'" + strings.Join(strings.Split(s, "'"), "'\\''") + "'"
 }
 
 // ---- status / secrets / expose / logs / dashboard ----
