@@ -31,6 +31,7 @@
   #tab-log .log-detail { display:block; margin-top:4px; color:var(--muted); font-size:12px }
   .logbar { display:flex; align-items:center; gap:12px; margin-bottom:12px; flex-wrap:wrap }
   .logbar .muted { font-size:12px }
+  .logbar input[type="text"] { min-width:220px; background:var(--panel); border:1px solid var(--border); color:var(--fg); padding:7px 10px; border-radius:6px; font-size:13px }
   .modal { display:none; position:fixed; inset:0; background:rgba(0,0,0,.55); z-index:20; align-items:center; justify-content:center; padding:16px }
   .modal.open { display:flex }
   .modal-card { background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:20px; width:100%; max-width:100%; max-height:90vh; overflow-x:hidden; overflow-y:auto }
@@ -45,7 +46,7 @@
   .fail-actions .btn { flex:1 1 10rem; min-width:0 }
   .fail-secret { display:none; flex-direction:column; gap:8px; width:100% }
   .fail-group.is-secret .fail-secret { display:flex }
-  #failModalHint, #failModalIdle, #failStatus { overflow-wrap:anywhere; word-break:break-word }
+  #failModalHint, #failStatus { overflow-wrap:anywhere; word-break:break-word }
   .modal-card label.chk { color:var(--muted); font-size:13px; display:flex; gap:8px; align-items:center }
   .modal-actions { display:flex; gap:8px; justify-content:flex-end; margin-top:8px; flex-wrap:wrap; width:100% }
   th { color:var(--muted); font-weight:500; font-size:12px; text-transform:uppercase; letter-spacing:.03em }
@@ -98,7 +99,7 @@
   <section class="tab active" id="tab-log">
     <div class="logbar">
       <button type="button" class="btn" id="openFailModal">Blocked secrets (<span id="failCount">0</span>)</button>
-      <span class="muted" id="failIdle"></span>
+      <input type="text" id="logFilter" placeholder="filter by worker or URL…" autocomplete="off">
     </div>
     <table>
       <thead><tr><th>When</th><th>Method</th><th>Request</th><th>Verdict</th></tr></thead>
@@ -238,7 +239,6 @@
   <div class="modal-card">
     <h3 id="failModalTitle">Blocked secrets</h3>
     <p class="muted" id="failModalHint">Leave a pattern blocked, allow it on that host, or set an env var. Empty secret values are skipped. Allow does not waive other patterns or real secrets.</p>
-    <p class="muted" id="failModalIdle"></p>
     <form id="failForm">
       <div id="failGroups"></div>
       <p class="muted" id="failStatus"></p>
@@ -279,7 +279,8 @@ const reason = a => a==='block' ? '<span class="badge retry">retryable</span>' :
 
 // ---- request log (live via SSE) + failure aggregator ----
 const logById = {};
-const IDLE_MS = 5000;
+let logFilter = '';
+let logDebounce = null;
 
 function placeholderTokens(r) {
   return (r.findings || []).filter(f => f.kind === 'placeholder' && f.token).map(f => f.token);
@@ -306,8 +307,22 @@ function logRowCells(r) {
     <td>${verdict(r.action)}</td>`;
 }
 
+function logMatches(r) {
+  const q = logFilter.trim().toLowerCase();
+  if (q === '') {
+    return true;
+  }
+  const url = ((r.scheme || '') + '://' + (r.host || '') + (r.path || '')).toLowerCase();
+  const who = String(r.worker || '').toLowerCase();
+  return who.indexOf(q) >= 0 || url.indexOf(q) >= 0;
+}
+
 function logRow(r, atTop) {
   logById[r.id] = r;
+  if (!logMatches(r)) {
+    refreshFailBar();
+    return;
+  }
   const existing = document.querySelector('#logrows tr[data-id="' + CSS.escape(r.id) + '"]');
   if (existing) {
     existing.innerHTML = logRowCells(r);
@@ -333,46 +348,10 @@ function blockedRecords() {
   return Object.keys(logById).map(k => logById[k]).filter(r => r.action === 'block');
 }
 
-function newestBlockedTs() {
-  let max = 0;
-  blockedRecords().forEach(r => {
-    const t = Date.parse(r.ts);
-    if (!isNaN(t) && t > max) {
-      max = t;
-    }
-  });
-  return max;
-}
-
-function idleLabel() {
-  const n = blockedRecords().length;
-  if (n === 0) {
-    return 'no blocked requests';
-  }
-  const last = newestBlockedTs();
-  if (!last) {
-    return n + ' blocked';
-  }
-  const ago = Date.now() - last;
-  if (ago < IDLE_MS) {
-    return 'still receiving';
-  }
-  return 'quiet for ' + Math.floor(ago / 1000) + 's';
-}
-
 function refreshFailBar() {
-  const n = blockedRecords().length;
   const count = $('#failCount');
-  const idle = $('#failIdle');
   if (count) {
-    count.textContent = String(n);
-  }
-  if (idle) {
-    idle.textContent = idleLabel();
-  }
-  const modalIdle = $('#failModalIdle');
-  if (modalIdle && $('#failModal').classList.contains('open')) {
-    modalIdle.textContent = idleLabel();
+    count.textContent = String(blockedRecords().length);
   }
 }
 
@@ -562,7 +541,6 @@ async function exceptPatternGroup(host, patternId, btn) {
     await loadExceptions();
     await loadLog();
     renderFailGroups();
-    $('#failModalIdle').textContent = idleLabel();
     if (bad.length === 0 && failGroups().length === 0) {
       closeFailModal();
     }
@@ -582,7 +560,6 @@ function closeFailModal() {
 function openFailModal() {
   renderFailGroups();
   $('#failStatus').textContent = '';
-  $('#failModalIdle').textContent = idleLabel();
   $('#failModal').classList.add('open');
 }
 
@@ -598,7 +575,6 @@ document.addEventListener('keydown', ev => {
     closeFailModal();
   }
 });
-setInterval(refreshFailBar, 1000);
 
 $('#failForm').onsubmit = async ev => {
   ev.preventDefault();
@@ -670,6 +646,11 @@ function streamLog() {
   es.addEventListener('record', ev => { const r = JSON.parse(ev.data); logRow(r); });
   es.onerror = () => {};
 }
+$('#logFilter').oninput = ev => {
+  logFilter = ev.target.value;
+  clearTimeout(logDebounce);
+  logDebounce = setTimeout(() => { loadLog().catch(() => {}); }, 150);
+};
 
 // ---- secrets ----
 async function loadSecrets() {

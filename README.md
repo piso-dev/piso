@@ -47,7 +47,7 @@ make install                 # sudo if PREFIX=/usr/local is not writable
 # or: make install PREFIX=$HOME/.local   # then ensure ~/.local/bin is on PATH
 cd /path/to/your/project
 piso up          # ensure gateway + worker for the current dir
-piso attach      # enter the worker, run pi
+piso attach      # enter the worker, run pi (--new starts a fresh session)
 piso dashboard   # open http://piso.local
 piso expose 5173 --name preview   # reverse-proxy a worker dev server
 ```
