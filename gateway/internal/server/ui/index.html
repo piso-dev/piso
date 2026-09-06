@@ -644,6 +644,7 @@ async function loadLog() {
 function streamLog() {
   const es = new EventSource('/api/v1/requests/stream');
   es.addEventListener('record', ev => { const r = JSON.parse(ev.data); logRow(r); });
+  es.addEventListener('planning', ev => { loadPlanning().catch(() => {}); });
   es.onerror = () => {};
 }
 $('#logFilter').oninput = ev => {
@@ -778,9 +779,15 @@ async function setWorkerInternet(name, disabled) {
 
 // ---- plan review inbox ----
 let planItems = [];
+// ids we've already surfaced this page load; the first load seeds the set
+// and never auto-opens (a plan pending when the dashboard opens stays in the
+// inbox). only ids seen for the first time after that trigger auto-open.
+let planSeen = new Set();
+let planSeeded = false;
 
 /**
- * Refresh the Plan review chip and modal list.
+ * Refresh the Plan review chip and modal list. Genuinely new plans get
+ * auto-opened (see autoOpenPlan).
  * @returns {Promise<void>}
  */
 async function loadPlanning() {
@@ -795,6 +802,13 @@ async function loadPlanning() {
   if (btn) {
     btn.classList.toggle('plan-hot', n > 0);
   }
+  // Diff against everything seen so far: ids that just appeared are new.
+  const fresh = planItems.filter(p => p.id && !planSeen.has(p.id));
+  planItems.forEach(p => { if (p.id) planSeen.add(p.id); });
+  if (planSeeded && fresh.length > 0) {
+    fresh.forEach(item => autoOpenPlan(item));
+  }
+  planSeeded = true;
   if ($('#planModal').classList.contains('open')) {
     renderPlanGroups();
   }
@@ -832,6 +846,34 @@ function renderPlanGroups() {
 }
 
 /**
+ * Approve a pending route for id and point a tab at it. tab is the popup
+ * grabbed synchronously by the caller (window.open after await is blocked by
+ * popup blockers). Returns the destination URL when approved, '' on error
+ * (the tab is closed).
+ * @param {string} id
+ * @param {string} url
+ * @param {Window|null} tab
+ * @returns {Promise<string>}
+ */
+async function approveAndPoint(id, url, tab) {
+  try {
+    const out = await api(`/api/v1/ingress/requests/${id}/approve`, {method: 'POST'});
+    const dest = (out && out.url) ? out.url : url;
+    if (tab) {
+      tab.location = dest;
+    } else {
+      window.open(dest, '_blank');
+    }
+    return dest;
+  } catch (e) {
+    if (tab) {
+      tab.close();
+    }
+    return '';
+  }
+}
+
+/**
  * Approve the pending route, then point a synchronously-opened tab at it.
  * window.open after await is blocked by popup blockers.
  * @param {string} id
@@ -847,23 +889,45 @@ async function openPlan(id, url, btn) {
   }
   try {
     status.textContent = 'approving…';
-    const out = await api(`/api/v1/ingress/requests/${id}/approve`, {method: 'POST'});
-    const dest = (out && out.url) ? out.url : url;
-    if (tab) {
-      tab.location = dest;
-    } else {
-      window.open(dest, '_blank');
+    const dest = await approveAndPoint(id, url, tab);
+    status.textContent = dest === '' ? 'approve failed — see blocked requests' : '';
+  } finally {
+    if (btn) {
+      btn.disabled = false;
     }
-    status.textContent = '';
-  } catch (e) {
-    if (tab) {
-      tab.close();
-    }
-    status.textContent = e.message;
-    alert(e.message);
   }
-  if (btn) {
-    btn.disabled = false;
+  await loadPlanning();
+  await loadRoutes();
+}
+
+/**
+ * A genuinely new plan arrived while the dashboard is open: open the plan
+ * itself in a new tab, no click needed. The tab must be grabbed synchronously
+ * — the SSE/poll handler is not a user gesture, so the browser may refuse it
+ * (popup blockers allow the tab only for real clicks). In that case approve
+ * NOTHING and open the review modal instead, so a plan is never silently
+ * published while invisible: one click there is a real gesture the blocker
+ * permits.
+ * @param {object} item  pending ingress request (ingressView)
+ * @returns {Promise<void>}
+ */
+async function autoOpenPlan(item) {
+  const url = item.url || routeURL(item.name);
+  const tab = window.open('about:blank', '_blank');
+  if (!tab) {
+    // Refused by popup blocker: no approval. Surface in the modal instead.
+    $('#planModal').classList.add('open');
+    renderPlanGroups();
+    $('#planStatus').textContent = 'auto-open was blocked — Open plan to approve';
+    return;
+  }
+  const dest = await approveAndPoint(item.id, url, tab);
+  if (dest === '') {
+    // Approve failed and the tab was closed: surface the failure in the inbox.
+    $('#planModal').classList.add('open');
+    renderPlanGroups();
+    $('#planStatus').textContent = 'auto-open failed to approve — review below';
+    return;
   }
   await loadPlanning();
   await loadRoutes();

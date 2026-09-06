@@ -55,6 +55,9 @@ func (s *Store) UpsertPendingIngress(rec IngressRequestRec) (IngressRequestRec, 
 	if err := s.save(); err != nil {
 		return IngressRequestRec{}, false, err
 	}
+	// Genuinely new plan: tell SSE subscribers immediately. Non-blocking
+	// (drop-if-full), safe under the store lock.
+	s.broadcastIngress(rec)
 	return rec, true, nil
 }
 

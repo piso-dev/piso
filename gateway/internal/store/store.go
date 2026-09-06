@@ -125,6 +125,9 @@ type Store struct {
 	records  []Record // most recent first
 	maxLog   int
 	onRecord chan Record // broadcast for SSE
+
+	// pending ingress requests (worker-published plan UIs)
+	onIngress chan IngressRequestRec // broadcast for SSE
 }
 
 // Record is the log-safe request record (this package's persistence/live
@@ -172,6 +175,7 @@ func New(path, logPath, patternsPath string, maxLog int) (*Store, error) {
 	s := &Store{
 		path: path, logPath: logPath, patternsPath: patternsPath, maxLog: maxLog,
 		onRecord: make(chan Record, 64),
+		onIngress: make(chan IngressRequestRec, 64),
 	}
 	if err := s.load(); err != nil {
 		return nil, err
@@ -696,6 +700,20 @@ func (s *Store) Records(limit int) []Record {
 
 // Sub returns a channel of new records (SSE). Callers must drain.
 func (s *Store) Sub() <-chan Record { return s.onRecord }
+
+// broadcastIngress notifies SSE subscribers that a genuinely new ingress
+// request landed (UpsertPendingIngress only calls it when created). Same
+// non-blocking drop-if-full policy as broadcast; subscribers have the 2s
+// dashboard poll as a fallback if a push is ever dropped.
+func (s *Store) broadcastIngress(rec IngressRequestRec) {
+	select {
+	case s.onIngress <- rec:
+	default:
+	}
+}
+
+// SubIngress returns a channel of new pending-ingress requests (SSE).
+func (s *Store) SubIngress() <-chan IngressRequestRec { return s.onIngress }
 
 // ReplayGet returns a captured record by id (for retry).
 func (s *Store) ReplayGet(id string) (Record, bool) {

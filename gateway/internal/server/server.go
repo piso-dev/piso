@@ -398,6 +398,7 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 	fl.Flush()
 
 	sub := s.Store.Sub()
+	subIng := s.Store.SubIngress()
 	ctx := r.Context()
 	tick := time.NewTicker(20 * time.Second)
 	defer tick.Stop()
@@ -406,6 +407,11 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 		case rec := <-sub:
 			if b, err := json.Marshal(rec); err == nil {
 				fmt.Fprintf(w, "event: record\ndata: %s\n\n", b)
+				fl.Flush()
+			}
+		case irec := <-subIng:
+			if b, err := json.Marshal(viewIngress(irec, true)); err == nil {
+				fmt.Fprintf(w, "event: planning\ndata: %s\n\n", b)
 				fl.Flush()
 			}
 		case <-tick.C:
