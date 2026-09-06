@@ -86,8 +86,9 @@ Usage:
   piso logs [--follow]   tail the gateway request log (SSE when --follow)
   piso dashboard         open the gateway web UI (http://piso.local)
   piso setup [--rebuild] import leftover data and (with --rebuild) recreate the gateway
-  piso update [version] [--dry-run] [--force]  pin a pi version, rebuild the shared worker
-                         image once, and recreate every worker (confirm before applying)
+  piso update [version] [--dry-run] [--force]  refresh host extensions, pin a pi version,
+                         rebuild the shared worker image once, and recreate every worker
+                         (confirm before applying)
 
 Host ports default to 8080 (proxy), 80 (control / http://piso.local), 8082 (ingress).
 If a port is taken, piso up exits with the flag to override
@@ -716,6 +717,19 @@ func cmdUpdate(args []string) error {
 	}
 	version := strings.TrimSpace(fs.Arg(0))
 
+	// 0. refresh extensions on the host first: updates ~/.pi/agent/npm/
+	// package.json (+ settings packages), which piso re-stages into the worker
+	// build context — so the rebuilt image bakes the newer extension versions
+	// alongside the new pi. Best-effort: a failure here is a warning, not fatal
+	// (the pi pin itself can still roll out).
+	if ! *dryRun {
+		if err := updateHostExtensions(); err != nil {
+			fmt.Fprintf(os.Stderr, "piso: warning: extension refresh failed: %v\n", err)
+		} else {
+			fmt.Println("piso: refreshed host extensions")
+		}
+	}
+
 	// 1. resolve the target version (latest from npm when not specified)
 	if version == "" {
 		v, err := npmLatestPiVersion()
@@ -796,8 +810,29 @@ func cmdUpdate(args []string) error {
 	}
 	fmt.Printf("piso: staged pi %s in worker build context\n", version)
 
+	// 4b. re-stage the extension package.json (fresh pins after updateHostExtensions)
+	// + re-stage the Dockerfile (CopyWorkerSkeleton re-injects the persisted pi
+	// pin). The rebuild hash then covers BOTH the pi pin and extension pins.
+	if _, err := prepareWorkerBuild(); err != nil {
+		return fmt.Errorf("re-stage worker build: %w", err)
+	}
+
 	// 5. enumerate workers + build + recreate
 	return rolloutWorkers(old, version)
+}
+
+// updateHostExtensions refreshes the host's installed pi extensions by running
+// `pi update --extensions`. This updates ~/.pi/agent/npm/package.json (plus the
+// settings.json package pins), which the next image build re-stages into the
+// worker — so the rebuilt worker ships the newer extension versions alongside
+// the new pi. Best-effort: returns an error (treated as a warning by callers)
+// if pi is missing or the update fails.
+func updateHostExtensions() error {
+	piBin, err := exec.LookPath("pi")
+	if err != nil {
+		return fmt.Errorf("pi not on PATH: %w", err)
+	}
+	return exec.Command(piBin, "update", "--extensions").Run()
 }
 
 // npmLatestPiVersion queries the npm registry for the latest pi version.
