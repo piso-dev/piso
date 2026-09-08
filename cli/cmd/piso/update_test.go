@@ -45,3 +45,25 @@ func TestFmtInterval(t *testing.T) {
 		}
 	}
 }
+func TestUpdateDecision(t *testing.T) {
+	// pi changed → roll regardless of packages
+	if got := decideUpdate("0.84.4", "0.85.0", false, true, "aaa", "bbb"); got != updateDecisionRollPi {
+		t.Fatalf("pi change → %d", got)
+	}
+	// package set changed while pi is current → roll (the fix)
+	if got := decideUpdate("0.84.4", "0.84.4", false, true, "aaa", "bbb"); got != updateDecisionPackages {
+		t.Fatalf("package change → %d", got)
+	}
+	// nothing changed → nothing
+	if got := decideUpdate("0.84.4", "0.84.4", false, true, "aaa", "aaa"); got != updateDecisionNothing {
+		t.Fatalf("no change → %d", got)
+	}
+	// force overrides nothing
+	if got := decideUpdate("0.84.4", "0.84.4", true, true, "aaa", "aaa"); got != updateDecisionRollPi {
+		t.Fatalf("force → %d", got)
+	}
+	// unhashable pre-state (pkgsOk=false) → cannot claim package change
+	if got := decideUpdate("0.84.4", "0.84.4", false, false, "", "bbb"); got != updateDecisionNothing {
+		t.Fatalf("unhashable before → %d", got)
+	}
+}

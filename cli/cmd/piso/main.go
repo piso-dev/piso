@@ -860,6 +860,31 @@ func rebuildGateway() error {
 	return nil
 }
 
+// updateDecision is the cmdUpdate gate: for a given pinned/current pi version,
+// force flag, and package-set before/after the extension refresh, decide whether
+// to proceed. Exported as a pure function so the logic is unit-testable without
+// npm/docker round-trips.
+type updateDecision int
+const (
+	updateDecisionNothing   = 0 // already current and nothing changed
+	updateDecisionPackages  = 1 // extensions changed — re-stage + rebuild
+	updateDecisionRollPi    = 2 // pi pin changed — normal rollout
+)
+
+// decideUpdate decides the cmdUpdate gate: nothing to do vs proceed.
+func decideUpdate(old, version string, force, pkgsOk bool, pkgsBefore, pkgsAfter string) updateDecision {
+	if old != version {
+		return updateDecisionRollPi
+	}
+	if force {
+		return updateDecisionRollPi
+	}
+	if pkgsOk && pkgsBefore != "" && pkgsAfter != "" && pkgsBefore != pkgsAfter {
+		return updateDecisionPackages
+	}
+	return updateDecisionNothing
+}
+
 // cmdUpdate rolls out a pinned pi version to all workers: resolve the target
 // version, pin it in the staged worker Dockerfile (which changes the build
 // hash), rebuild the shared piso-worker image once, and recreate each worker.
@@ -873,6 +898,16 @@ func cmdUpdate(args []string) error {
 	}
 	version := strings.TrimSpace(fs.Arg(0))
 
+	// 0. hash the CURRENT package set BEFORE refreshing extensions so we can
+	// tell whether the refresh changed anything (a package-only update must
+	// still roll to workers even when the pi pin is already current).
+	pkgsBefore, pkgErr := stagedPackagesHash()
+	if pkgErr != nil {
+		// Not fatal: if we cannot hash the pre-refresh state we conservatively
+		// treat it as "no package change" so the pi-pin (or --force) decides;
+		// the updateDecision guard below stays Nothing for packages.
+		pkgsBefore = ""
+	}
 	// 0. refresh extensions on the host first: updates ~/.pi/agent/npm/
 	// package.json (+ settings packages), which piso re-stages into the worker
 	// build context — so the rebuilt image bakes the newer extension versions
@@ -914,9 +949,14 @@ func cmdUpdate(args []string) error {
 
 	// current pinned version (persisted; the staged Dockerfile is ephemeral)
 	old := pisoconfig.LoadPiVersion()
-	if old == version && !*force {
+	pkgsAfter, _ := stagedPackagesHash()
+	enough := decideUpdate(old, version, *force, pkgErr == nil, pkgsBefore, pkgsAfter)
+	if enough == updateDecisionNothing {
 		fmt.Printf("piso: already on pi %s (use --force to rebuild anyway)\n", version)
 		return nil
+	}
+	if enough == updateDecisionPackages {
+		fmt.Println("piso: extension packages changed — rebuilding to bake them")
 	}
 	if old == version && *force {
 		fmt.Printf("piso: already on pi %s — forcing build + recreate\n", version)
@@ -944,13 +984,21 @@ func cmdUpdate(args []string) error {
 	}
 
 	if *dryRun {
-		fmt.Printf("piso: --dry-run: would pin %s → %s, rebuild piso-worker, recreate %d workers\n", old, version, len(recs))
+		what := fmt.Sprintf("pin %s → %s", old, version)
+		if enough == updateDecisionPackages {
+			what += " + refreshed extension packages"
+		}
+		fmt.Printf("piso: --dry-run: would %s, rebuild piso-worker, recreate %d workers\n", what, len(recs))
 		return nil
 	}
 
 	// 3. confirm before applying (explicit version skips the prompt)
 	if fs.Arg(0) == "" {
-		if !confirm(fmt.Sprintf("Roll out pi %s → %s to all workers", old, version)) {
+		what := fmt.Sprintf("Roll out pi %s → %s", old, version)
+		if enough == updateDecisionPackages {
+			what += " + refreshed extension packages"
+		}
+		if !confirm(what + " to all workers") {
 			fmt.Println("piso: cancelled")
 			return nil
 		}
@@ -989,6 +1037,30 @@ func updateHostExtensions() error {
 		return fmt.Errorf("pi not on PATH: %w", err)
 	}
 	return exec.Command(piBin, "update", "--extensions").Run()
+}
+
+// stagedPackagesHash returns the hash of the extension package set that WOULD
+// be staged into the worker build context (host package.json + settings
+// packages merged). Read-only: does not write or re-stage. Used by cmdUpdate to
+// detect whether a package-only refresh changed anything, so the early-return
+// "already on pi X" does not silently skip rolling new packages to workers.
+func stagedPackagesHash() (string, error) {
+	agent, err := piprofile.AgentDir()
+	if err != nil {
+		return "", err
+	}
+	settings, _ := os.ReadFile(piprofile.SettingsPath(agent))
+	pkgs, err := piprofile.ReadSettingsPackages(settings)
+	if err != nil {
+		return "", err
+	}
+	hostRaw, _ := os.ReadFile(piprofile.HostPackageJSON(agent))
+	hostDeps, err := pkgstamp.DepsFromHostPackageJSON(hostRaw)
+	if err != nil {
+		return "", err
+	}
+	deps := pkgstamp.MergeDeps(hostDeps, pkgstamp.DepsFromPackages(pkgs))
+	return pkgstamp.Hash(deps), nil
 }
 
 // npmLatestPiVersion queries the npm registry for the latest pi version.
