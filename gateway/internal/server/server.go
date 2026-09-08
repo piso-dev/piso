@@ -40,7 +40,8 @@ func New(st *store.Store, pat *patterns.Compiled, pr *proxy.Handler, ca *proxy.C
 }
 
 // ControlHandler returns the host control-plane mux (UI + API). Worker
-// peers on the internal vpc are rejected; they use WorkerHandler.
+// peers on the internal vpc are rejected; they use WorkerHandler. Kept for
+// API/tests; the production host web entrypoint is WebHandler.
 func (s *Server) ControlHandler() http.Handler {
 	mux := http.NewServeMux()
 	api := http.NewServeMux()
@@ -56,7 +57,34 @@ func (s *Server) ControlHandler() http.Handler {
 	})
 }
 
-// IngressHandler returns the reverse-proxy mux for name.piso.local.
+// WebHandler is the single host web entrypoint (Option B): control plane and
+// ingress share ONE published port (default 80) and are dispatched by the
+// Host header, so every URL is portless — `http://piso.local` is the
+// dashboard, `http://<label>.piso.local` is that route's worker server. The
+// apex carries the dashboard UI + control API; any *.piso.local subdomain (or
+// an apex carrying the ?route= / route-cookie) is proxied to the worker.
+func (s *Server) WebHandler() http.Handler {
+	mux := http.NewServeMux()
+	api := http.NewServeMux()
+	s.routes(api)
+	mux.Handle("/api/", api)
+	mux.HandleFunc("/", s.ui)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.denyControlPeer(r.RemoteAddr) {
+			writeJSON(w, 403, map[string]string{"error": "control plane is host-only"})
+			return
+		}
+		if isWebRouteRequest(r) {
+			s.ingress(w, r)
+			return
+		}
+		mux.ServeHTTP(w, r)
+	})
+}
+
+// IngressHandler returns the reverse-proxy mux for name.piso.local. Kept as a
+// separate listener (host ingress port) for backward compatibility; WebHandler
+// is the canonical entrypoint.
 func (s *Server) IngressHandler() http.Handler {
 	return http.HandlerFunc(s.ingress)
 }
@@ -338,6 +366,11 @@ func (s *Server) routes(mux *http.ServeMux) {
 		if in.ID == "" {
 			in.ID = "route_" + randID()
 		}
+		// Host-created routes are sticky "expose" routes (the worker watcher
+		// marks its own with origin "auto" via /api/v1/worker/ports).
+		if in.Origin == "" {
+			in.Origin = store.AutoRouteOriginExpose
+		}
 		if in.Name == "" || in.Port == 0 {
 			writeJSON(w, 400, map[string]string{"error": "name and port required"})
 			return
@@ -399,6 +432,7 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 
 	sub := s.Store.Sub()
 	subIng := s.Store.SubIngress()
+	subRoutes := s.Store.SubRoutes()
 	ctx := r.Context()
 	tick := time.NewTicker(20 * time.Second)
 	defer tick.Stop()
@@ -412,6 +446,11 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 		case irec := <-subIng:
 			if b, err := json.Marshal(viewIngress(irec, true)); err == nil {
 				fmt.Fprintf(w, "event: planning\ndata: %s\n\n", b)
+				fl.Flush()
+			}
+		case rte := <-subRoutes:
+			if b, err := json.Marshal(rte); err == nil {
+				fmt.Fprintf(w, "event: route\ndata: %s\n\n", b)
 				fl.Flush()
 			}
 		case <-tick.C:
@@ -428,12 +467,21 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 // already resolves). A cookie keeps the route on later same-origin fetches.
 func (s *Server) ingress(w http.ResponseWriter, r *http.Request) {
 	if q := strings.TrimSpace(r.URL.Query().Get(ingressRouteQuery)); validIngressLabel(q) {
-		http.SetCookie(w, &http.Cookie{Name: ingressRouteCookie, Value: q, Path: "/", SameSite: http.SameSiteLaxMode})
+		// Canonical form is the portless subdomain: piso.local?route=x becomes
+		// http://x.piso.local[<webport>]<path>. Keeping the browser on the
+		// apex with a route cookie is what let a stale cookie hijack the whole
+		// dashboard — so route any explicit ?route= to the subdomain instead.
 		next := *r.URL
 		qs := next.Query()
 		qs.Del(ingressRouteQuery)
 		next.RawQuery = qs.Encode()
-		http.Redirect(w, r, next.RequestURI(), http.StatusFound)
+		port := ingressHostPort()
+		host := q + ".piso.local"
+		dest := host + next.RequestURI()
+		if port != 80 {
+			dest = host + fmt.Sprintf(":%d", port) + next.RequestURI()
+		}
+		http.Redirect(w, r, "http://" + dest, http.StatusFound)
 		return
 	}
 	name := ingressRouteName(r)

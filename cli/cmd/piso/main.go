@@ -50,6 +50,8 @@ func main() {
 		err = cmdSecrets(args)
 	case "expose":
 		err = cmdExpose(args)
+	case "sync":
+		err = cmdSync(args)
 	case "logs":
 		err = cmdLogs(args)
 	case "dashboard":
@@ -86,6 +88,11 @@ Usage:
   piso status            show gateway + worker state
   piso secrets list|add|rm   manage gateway secrets (real values never leave it)
   piso expose <port> [--name n]  reverse-proxy a worker port as https://n.piso.local
+  piso sync [--watch]     reconcile /etc/hosts with gateway routes; --watch keeps
+                           syncing live as auto routes appear/expire
+  piso sync daemon[-status|-restart|-stop|-uninstall]
+                           manage the global hosts-sync service (auto-starts on
+                           piso up; run restart manually after a sudo make install)
   piso logs [--follow]   tail the gateway request log (SSE when --follow)
   piso dashboard         open the gateway web UI (http://piso.local)
   piso setup [--rebuild] import leftover data and (with --rebuild) recreate the gateway
@@ -93,7 +100,9 @@ Usage:
                          rebuild the shared worker image once, and recreate every worker
                          (confirm before applying)
 
-Host ports default to 8080 (proxy), 80 (control / http://piso.local), 8082 (ingress).
+Host ports default to 8080 (proxy) and 80 (single web port: dashboard at
+http://piso.local AND every route at http://<label>.piso.local, dispatched by
+Host — no port in any URL). 8082 remains as the legacy ingress alias.
 If a port is taken, piso up exits with the flag to override
 (--proxy-port, --ctrl-port, --ingress-port). Env: PISO_*_PORT.
 make install runs piso setup --rebuild so an existing install is replaced
@@ -150,7 +159,9 @@ func cmdUp(args []string) error {
 	if err := waitGatewayHealthy(); err != nil {
 		return err
 	}
-	syncIngressHosts()
+	if err := syncIngressHosts(); err != nil {
+		fmt.Fprintf(os.Stderr, "piso: warning: hosts sync: %v\n", err)
+	}
 	if err := syncPiProfile(); err != nil {
 		return err
 	}
@@ -596,10 +607,13 @@ func cmdExpose(args []string) error {
 		b, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("gateway: %s", string(b))
 	}
-	if err := pisoconfig.EnsureIngressHost(name); err != nil {
+	if err := syncIngressHosts(); err != nil {
 		fmt.Fprintf(os.Stderr, "piso: warning: %v\n", err)
 	}
-	p := pisoconfig.LoadHostPorts().Ingress
+	// The web entrypoint (WebHandler) serves both dashboard and routes on the
+	// CONTROL host port, dispatched by Host — so a route's canonical URL is
+	// portless (http://<name>.piso.local) or uses that port when =/= 80.
+	p := pisoconfig.LoadHostPorts().Control
 	if p == 80 {
 		fmt.Printf("piso: http://%s.piso.local → %s:%d\n", name, worker, port)
 	} else {
@@ -608,10 +622,13 @@ func cmdExpose(args []string) error {
 	return nil
 }
 
-func syncIngressHosts() {
-	var routes []pisoconfig.RouteIn
+// syncIngressHosts reconciles /etc/hosts with the gateway's current route
+// labels (adds missing, drops routed-away ones). Best-effort at `piso up`/
+// `piso expose` (callers print the error as a warning); fatal in `piso sync`.
+func syncIngressHosts() error {
+	var routes []pisoconfig.RouteRec
 	if err := getJSON(pisoconfig.GatewayURL()+"/api/v1/routes", &routes); err != nil {
-		return
+		return err
 	}
 	names := make([]string, 0, len(routes))
 	for _, r := range routes {
@@ -619,11 +636,114 @@ func syncIngressHosts() {
 			names = append(names, r.Name)
 		}
 	}
-	if len(names) == 0 {
-		return
+	return pisoconfig.ReconcileIngressHosts(names)
+}
+
+// cmdSync reconciles /etc/hosts with the gateway's routes.
+//   piso sync                     one-shot reconcile
+//   piso sync --watch             foreground watch loop (SSE route events)
+//   piso sync daemon              same loop, as the managed service body
+//   piso sync daemon-status       pidfile+ps probe (no root needed)
+//   piso sync daemon-restart      install/reload the global service (root)
+//   piso sync daemon-stop         stop it (root)
+//   piso sync daemon-uninstall    stop + remove managed config (root)
+func cmdSync(args []string) error {
+	if len(args) == 0 {
+		if err := syncIngressHosts(); err != nil {
+			return err
+		}
+		fmt.Println("piso: hosts in sync")
+		return nil
 	}
-	if err := pisoconfig.EnsureIngressHosts(names); err != nil {
-		fmt.Fprintf(os.Stderr, "piso: warning: %v\n", err)
+	switch args[0] {
+	case "--watch":
+		if err := syncIngressHosts(); err != nil {
+			return err
+		}
+		fmt.Println("piso: hosts in sync")
+		return syncWatchLoop(pisoconfig.GatewayURL())
+	case "daemon":
+		// Service body (root): block until the gateway is reachable, then
+		// reconcile and watch forever. A launchd KeepAlive restart after a
+		// reboot lands here with the gateway still starting.
+		gw := pisoconfig.GatewayURL()
+		for {
+			if err := syncIngressHosts(); err == nil {
+				break
+			}
+			time.Sleep(5 * time.Second)
+		}
+		return syncWatchLoop(gw)
+	case "daemon-status":
+		st, err := pisoconfig.SyncDaemonStatus()
+		if err != nil {
+			return err
+		}
+		if st.Running {
+			fmt.Printf("piso: hosts sync daemon: running (pid %s)\n", st.Pid)
+		} else {
+			fmt.Println("piso: hosts sync daemon: stopped")
+		}
+		return nil
+	case "daemon-restart":
+		fmt.Println("piso: hosts sync daemon: (re)starting…")
+		return pisoconfig.SyncDaemonInstallRestart()
+	case "daemon-stop":
+		return pisoconfig.SyncDaemonStop()
+	case "daemon-uninstall":
+		return pisoconfig.SyncDaemonUninstall()
+	default:
+		return fmt.Errorf("usage: piso sync [--watch|daemon|daemon-status|daemon-restart|daemon-stop|daemon-uninstall]")
+	}
+}
+
+// ensureSyncDaemon converges the host on the global hosts-sync service.
+// Called by `piso up` (after the gateway is healthy) for EVERY project — the
+// daemon is host-scoped, not per-worker, so different projects share the one
+// service. Running → leave it; stopped → install/restart it. Errors are the
+// caller's to downgrade (piso up warns instead of failing).
+func ensureSyncDaemon() error {
+	st, err := pisoconfig.SyncDaemonStatus()
+	if err != nil {
+		return err
+	}
+	if st.Running {
+		fmt.Printf("piso: hosts sync daemon: running (pid %s)\n", st.Pid)
+		return nil
+	}
+	fmt.Println("piso: hosts sync daemon: not running — (re)starting (may prompt for sudo)")
+	return pisoconfig.SyncDaemonInstallRestart()
+}
+
+// syncWatchLoop reconciles /etc/hosts whenever a route event arrives on the
+// gateway SSE stream (new auto route, route deleted, stale route swept). Each
+// (re)connect reconciles once, so events missed while disconnected are
+// recovered; the loop only returns when the process is killed. Idempotent
+// ReconcileIngressHosts makes the event-driven calls cheap.
+func syncWatchLoop(gw string) error {
+	for {
+		req, _ := http.NewRequest("GET", gw+"/api/v1/requests/stream", nil)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			time.Sleep(2 * time.Second)
+			continue
+		}
+		if err := syncIngressHosts(); err != nil {
+			fmt.Fprintf(os.Stderr, "piso: warning: %v\n", err)
+		}
+		sc := bufio.NewScanner(resp.Body)
+		sc.Buffer(make([]byte, 1<<20), 1<<20)
+		for sc.Scan() {
+			line := sc.Text()
+			// route + planning events carry "port"; request-log records do not.
+			if strings.HasPrefix(line, "data: ") && strings.Contains(line, `"port"`) {
+				if err := syncIngressHosts(); err != nil {
+					fmt.Fprintf(os.Stderr, "piso: warning: %v\n", err)
+				}
+			}
+		}
+		resp.Body.Close()
+		time.Sleep(2 * time.Second)
 	}
 }
 

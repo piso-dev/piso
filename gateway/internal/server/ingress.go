@@ -256,6 +256,23 @@ func isIngressApex(host string) bool {
 	}
 }
 
+// isWebRouteRequest reports whether a request to the single web listener should
+// be handled by the ingress (a worker route) rather than the dashboard. True
+// for: an explicit ?route= query, or any *.piso.local subdomain host. The
+// apex (piso.local / localhost / 127.0.0.1) is ALWAYS the dashboard unless an
+// explicit ?route= is present — a route cookie must never hijack piso.local
+// (a stale cookie after a rebuild would 404 the whole dashboard).
+func isWebRouteRequest(r *http.Request) bool {
+	if q := strings.TrimSpace(r.URL.Query().Get(ingressRouteQuery)); validIngressLabel(q) {
+		return true
+	}
+	host := ingressHostname(r.Host)
+	if isIngressApex(host) {
+		return false
+	}
+	return strings.HasSuffix(host, ".piso.local")
+}
+
 // ingressRouteName is the label to look up: ?route=, cookie on the apex, or
 // the first label of name.piso.local.
 func ingressRouteName(r *http.Request) string {

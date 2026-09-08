@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -21,7 +22,84 @@ func (s *Server) WorkerHandler() http.Handler {
 	mux.HandleFunc("POST /api/v1/worker/planning", s.handleCreateIngress)
 	mux.HandleFunc("POST /api/v1/worker/planning/cancel", s.handleCancelIngress)
 	mux.HandleFunc("POST /api/v1/worker/context", s.handleWorkerPostContext)
+	mux.HandleFunc("POST /api/v1/worker/ports", s.handleWorkerPostPorts)
 	return mux
+}
+
+// portIn is one listener reported by the ports watcher.
+type portIn struct {
+	Port      int    `json:"port"`
+	Reachable bool   `json:"reachable,omitempty"`
+	Note      string `json:"note,omitempty"`
+}
+
+// portsIn is the watcher's full-set report: identity + every listening TCP
+// port with reachability from the vpc.
+type portsIn struct {
+	Worker string   `json:"worker"`
+	Slug   string   `json:"slug,omitempty"`
+	Ports  []portIn `json:"ports"`
+}
+
+// handleWorkerPostPorts receives the ports watcher's listener set and
+// auto-creates <slug>-<port> routes for the reachable ports (the expose loop
+// in the plan: any server, any worker, no host ceremony). Origin marks routes
+// as watcher-managed (rate-capped, GC'd after down-grace) vs host-created
+// (sticky). Identity is checked against the slug↔IP registry so a worker
+// cannot squat another worker's label namespace.
+func (s *Server) handleWorkerPostPorts(w http.ResponseWriter, r *http.Request) {
+	var in portsIn
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeJSON(w, 400, map[string]string{"error": "bad json"})
+		return
+	}
+	in.Worker = strings.TrimSpace(in.Worker)
+	in.Slug = strings.TrimSpace(in.Slug)
+	if !workerNameRe.MatchString(in.Worker) {
+		writeJSON(w, 400, map[string]string{"error": "worker name required"})
+		return
+	}
+	if in.Slug == "" {
+		in.Slug = slugFromWorker(in.Worker)
+	}
+	if !workerNameRe.MatchString(in.Slug) {
+		writeJSON(w, 400, map[string]string{"error": "slug required"})
+		return
+	}
+	// A registered worker's source IP must match the reported identity.
+	if reg, ok := s.Store.WorkerByIP(requestIP(r)); ok && reg.Name != in.Worker {
+		writeJSON(w, 403, map[string]string{"error": "identity mismatch"})
+		return
+	}
+	ports := make([]int, 0, len(in.Ports))
+	unreachable := make([]store.UnreachablePort, 0, len(in.Ports))
+	seen := map[int]bool{}
+	for _, p := range in.Ports {
+		if p.Port < 1 || p.Port > 65535 || seen[p.Port] {
+			continue
+		}
+		seen[p.Port] = true
+		if p.Reachable {
+			ports = append(ports, p.Port)
+			continue
+		}
+		unreachable = append(unreachable, store.UnreachablePort{Port: p.Port, Note: sanitizeLabel(p.Note, 80)})
+	}
+	if _, err := s.Store.SyncWorkerPorts(in.Worker, in.Slug, ports); err != nil {
+		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		return
+	}
+	s.Store.SetWorkerUnreachable(in.Worker, unreachable)
+	writeJSON(w, 200, map[string]bool{"ok": true})
+}
+
+// requestIP returns the caller's host IP (no port) for registry lookups.
+func requestIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	return host
 }
 
 // handleWorkerPostContext receives the watcher's live context and stores it.

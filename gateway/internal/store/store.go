@@ -19,7 +19,7 @@ import (
 
 // CurrentStateVersion is written into state.json. Bump when adding a
 // migration in applyMigrations.
-const CurrentStateVersion = 3
+const CurrentStateVersion = 4
 
 // State is the persisted configuration.
 type State struct {
@@ -78,6 +78,13 @@ type RouteRec struct {
 	Worker string `json:"worker"`
 	Port   int    `json:"port"`
 	Note   string `json:"note,omitempty"`
+	// Origin is how the route was created: "expose" (host, sticky — survives
+	// GC) or "auto" (worker ports watcher, <slug>-<port>, rate-capped and
+	// swept when stale). Legacy / migrated routes default to "expose".
+	Origin string `json:"origin,omitempty"`
+	// LastSeenMs is the last watcher heartbeat that included this port
+	// (unix ms). Auto routes only; drives the down badge and stale GC.
+	LastSeenMs int64 `json:"lastSeenMs,omitempty"`
 }
 
 // WorkerRec is the slug↔IP registry populated by the host CLI at `piso up`.
@@ -143,6 +150,13 @@ type Store struct {
 
 	// pending ingress requests (worker-published plan UIs)
 	onIngress chan IngressRequestRec // broadcast for SSE
+
+	// route changes (auto-published dev servers + host routes)
+	onRoute chan RouteRec // broadcast for SSE
+
+	// transient listener hints: worker → ports the watcher reported but the
+	// gateway cannot route to (loopback / specific-IP / v6-only binds)
+	unreachable map[string][]UnreachablePort
 }
 
 // Record is the log-safe request record (this package's persistence/live
@@ -198,6 +212,8 @@ func New(path, logPath, patternsPath string, maxLog int) (*Store, error) {
 		path: path, logPath: logPath, patternsPath: patternsPath, maxLog: maxLog,
 		onRecord: make(chan Record, 64),
 		onIngress: make(chan IngressRequestRec, 64),
+		onRoute: make(chan RouteRec, 64),
+		unreachable: map[string][]UnreachablePort{},
 	}
 	if err := s.load(); err != nil {
 		return nil, err
@@ -271,10 +287,38 @@ func (s *Store) Exceptions() []ExceptionRec {
 	defer s.mu.RUnlock()
 	return copyExceptionRecs(s.state.Exceptions)
 }
+// UnreachablePort is a listener the worker reported but the gateway cannot
+// route to (loopback / specific-IP / IPv6-only bind). Advisory UI hint only;
+// never persisted.
+type UnreachablePort struct {
+	Port int    `json:"port"`
+	Note string `json:"note,omitempty"`
+}
+
 func (s *Store) Routes() []RouteRec {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return copyRouteRecs(s.state.Routes)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// Lazy GC: auto routes are only kept alive by the watcher heartbeat. A
+	// port that stopped being reported (or a worker that died entirely)
+	// leaves its route stale; sweep it after the down-grace. Expose routes
+	// never expire. Deletions are broadcast so `piso sync --watch` and the
+	// dashboard drop them promptly.
+	out := s.state.Routes[:0]
+	changed := false
+	now := time.Now().UnixNano()/1000000
+	for _, r := range s.state.Routes {
+		if r.Origin == AutoRouteOriginAuto && r.LastSeenMs > 0 && now - r.LastSeenMs > AutoRouteGraceMs {
+			changed = true
+			s.broadcastRoute(r)
+			continue
+		}
+		out = append(out, r)
+	}
+	if changed {
+		s.state.Routes = out
+		_ = s.save()
+	}
+	return out
 }
 func (s *Store) RouteByName(name string) (RouteRec, bool) {
 	s.mu.RLock()
@@ -568,11 +612,19 @@ func (s *Store) AddRoute(rec RouteRec) error {
 	for i, r := range s.state.Routes {
 		if r.Name == rec.Name {
 			s.state.Routes[i] = rec
-			return s.save()
+			if err := s.save(); err != nil {
+				return err
+			}
+			s.broadcastRoute(rec)
+			return nil
 		}
 	}
 	s.state.Routes = append(s.state.Routes, rec)
-	return s.save()
+	if err := s.save(); err != nil {
+		return err
+	}
+	s.broadcastRoute(rec)
+	return nil
 }
 
 func (s *Store) DeleteRoute(id string) error {
@@ -582,10 +634,30 @@ func (s *Store) DeleteRoute(id string) error {
 	for _, r := range s.state.Routes {
 		if r.ID != id {
 			out = append(out, r)
+			continue
 		}
+		s.broadcastRoute(r)
 	}
 	s.state.Routes = out
 	return s.save()
+}
+
+// SetWorkerUnreachable replaces the transient listener hints for a worker
+// (the watcher posts the full set each time, so: wholesale replace).
+func (s *Store) SetWorkerUnreachable(worker string, ports []UnreachablePort) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.unreachable[worker] = ports
+}
+
+// WorkerUnreachable returns the transient listener hints for a worker.
+func (s *Store) WorkerUnreachable(worker string) ([]UnreachablePort, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if v, ok := s.unreachable[worker]; ok {
+		return v, true
+	}
+	return nil, false
 }
 
 // ---- worker registry (IP→slug, populated by the host CLI at `piso up`) ----
@@ -800,6 +872,20 @@ func (s *Store) broadcastIngress(rec IngressRequestRec) {
 // SubIngress returns a channel of new pending-ingress requests (SSE).
 func (s *Store) SubIngress() <-chan IngressRequestRec { return s.onIngress }
 
+// broadcastRoute notifies SSE subscribers that a route was created, replaced,
+// deleted, or expired (dashboard live-routes tab + `piso sync --watch`). Same
+// non-blocking drop-if-full policy as broadcast (the dashboard's 2s poll and
+// the CLI's periodic reconcile are the fallback).
+func (s *Store) broadcastRoute(rec RouteRec) {
+	select {
+	case s.onRoute <- rec:
+	default:
+	}
+}
+
+// SubRoutes returns a channel of route changes (SSE). Callers must drain.
+func (s *Store) SubRoutes() <-chan RouteRec { return s.onRoute }
+
 // ReplayGet returns a captured record by id (for retry).
 func (s *Store) ReplayGet(id string) (Record, bool) {
 	s.mu.RLock()
@@ -910,11 +996,6 @@ func copyWorkerRecs(in []WorkerRec) []WorkerRec {
 			out[i].IPs = append([]string(nil), r.IPs...)
 		}
 	}
-	return out
-}
-func copyRouteRecs(in []RouteRec) []RouteRec {
-	out := make([]RouteRec, len(in))
-	copy(out, in)
 	return out
 }
 func copyIngressRecs(in []IngressRequestRec) []IngressRequestRec {

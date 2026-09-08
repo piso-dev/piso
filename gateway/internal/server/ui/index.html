@@ -202,7 +202,8 @@
   <!-- ROUTES -->
   <section class="tab" id="tab-routes">
     <div class="card">
-      <h3>Ingress routes — name.piso.local → worker:port</h3>
+      <h3>Ingress routes — name.piso.local → worker:port
+        <span class="muted" style="font-size:11px;font-weight:400">&nbsp;•&nbsp; auto = worker-published &lt;slug&gt;-&lt;port&gt; (live badge via heartbeat, swept when stale) · expose = host-created (sticky)</span></h3>
       <form id="routeForm">
         <input name="name" placeholder="preview" required>
         <input name="worker" id="routeWorker" placeholder="worker container name" required>
@@ -667,6 +668,7 @@ function streamLog() {
   const es = new EventSource('/api/v1/requests/stream');
   es.addEventListener('record', ev => { const r = JSON.parse(ev.data); logRow(r); });
   es.addEventListener('planning', ev => { loadPlanning().catch(() => {}); });
+  es.addEventListener('route', ev => { loadRoutes().catch(() => {}); });
   es.onerror = () => {};
 }
 $('#logFilter').oninput = ev => {
@@ -750,7 +752,7 @@ $('#domainForm').onsubmit = async ev => {
 };
 
 // ---- routes ----
-let ingressPort = 8082;
+let ingressPort = 80; // canonical web port; health() overrides it
 
 /**
  * Host-facing ingress URL for a route label.
@@ -768,10 +770,19 @@ async function loadRoutes() {
   const rs = await api('/api/v1/routes'); $('#routerows').innerHTML='';
   rs.forEach(r => {
     const url = routeURL(r.name);
-    $('#routerows').append(el('tr','',`<td>${esc(r.name)}</td><td class="mono">${esc(url)}</td>
+    const origin = r.origin === 'auto'
+      ? `<span class="badge" style="background:rgba(79,140,255,.12);color:var(--accent)">auto</span>`
+      : (r.origin === 'expose' ? '<span class="badge ok">expose</span>' : '');
+    let state = '';
+    if (r.origin === 'auto') {
+      const age = r.lastSeenMs ? Date.now() - r.lastSeenMs : Infinity;
+      state = age > 45000 ? ' <span class="badge block">down</span>' : ' <span class="badge ok">live</span>';
+    }
+    const note = r.note ? ` <span class="muted">${esc(r.note)}</span>` : '';
+    $('#routerows').append(el('tr','',`<td>${esc(r.name)} ${origin}${state}${note}</td><td class="mono">${esc(url)}</td>
     <td class="mono">${esc(r.worker)}</td><td>${r.port}</td>
     <td><button class="btn small" onclick="window.open('${esc(url)}','_blank')">open</button>
-    <button class="btn small danger" onclick="delRoute('${r.id}')">del</button></td>`));
+    <button class="btn small danger" onclick="delRoute('${r.id}')">kill</button></td>`));
   });
 }
 async function delRoute(id) { await api(`/api/v1/routes/${id}`, {method:'DELETE'}); loadRoutes(); }
@@ -784,6 +795,8 @@ async function loadWorkers() {
     const ctxParts = [];
     if (c.project) { ctxParts.push('repo ' + esc(c.project)); if (c.branch) ctxParts.push('⎇ ' + esc(c.branch)); if (c.commit) ctxParts.push('@' + esc(c.commit)); }
     if (c.model) ctxParts.push('model ' + esc(c.model));
+    const unr = (w.unreachablePorts||[]).map(u => ':' + u.port + (u.note ? ' (' + esc(u.note) + ')' : '')).join(', ');
+    if (unr) ctxParts.push('<span style="color:var(--warn)">local-only: ' + unr + '</span>');
     const ctxCell = ctxParts.length ? ctxParts.join(' · ') + (c.ts ? ` <span class="muted">(${new Date(c.ts).toLocaleTimeString()})</span>` : '') : '<span class="muted">no context</span>';
     const tr = el('tr', '', `<td class="mono">${esc(w.name||'')}</td><td>${esc(w.slug||'')}</td>
       <td class="mono">${esc((w.ips||[]).join(', '))}</td>

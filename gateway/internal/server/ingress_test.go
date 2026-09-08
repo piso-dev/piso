@@ -209,7 +209,7 @@ func TestNetworkPlusOne(t *testing.T) {
 	}
 }
 
-func TestIngressApexQuerySetsCookieAndPrettyHost(t *testing.T) {
+func TestApexRouteRedirectsToSubdomain(t *testing.T) {
 	s := testServer(t)
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("from-worker"))
@@ -223,43 +223,43 @@ func TestIngressApexQuerySetsCookieAndPrettyHost(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Store.AddRoute(store.RouteRec{ID: "r1", Name: "plan-demo", Worker: "127.0.0.1", Port: port}); err != nil {
+	if err := s.Store.AddRoute(store.RouteRec{ID: "r1", Name: "plan-demo", Worker: "127.0.0.1", Port: port, Origin: store.AutoRouteOriginExpose}); err != nil {
 		t.Fatal(err)
 	}
-	h := s.IngressHandler()
+	h := s.WebHandler()
 
+	// apex ?route=plan-demo → 302 to the canonical portless subdomain (the
+	// hosts daemon resolves it; no cookie is set anymore — a stale route
+	// cookie must never hijack the dashboard).
 	w := httptest.NewRecorder()
-	req := httptest.NewRequest("GET", "http://piso.local:8082/?route=plan-demo", nil)
-	req.Host = "piso.local:8082"
+	req := httptest.NewRequest("GET", "http://piso.local/?route=plan-demo", nil)
+	req.Host = "piso.local"
 	h.ServeHTTP(w, req)
 	if w.Code != http.StatusFound {
 		t.Fatalf("redirect %d", w.Code)
 	}
-	var cookie *http.Cookie
-	for _, c := range w.Result().Cookies() {
-		if c.Name == ingressRouteCookie {
-			cookie = c
-		}
-	}
-	if cookie == nil || cookie.Value != "plan-demo" {
-		t.Fatalf("cookie %v", w.Result().Cookies())
+	if n := len(w.Result().Cookies()); n != 0 {
+		t.Fatalf("no cookie should be set after option-B redirect, got %d", n)
 	}
 
+	// the subdomain (what the browser lands on) proxies to the worker
 	w2 := httptest.NewRecorder()
-	req2 := httptest.NewRequest("GET", "http://piso.local:8082/", nil)
-	req2.Host = "piso.local:8082"
-	req2.AddCookie(cookie)
+	req2 := httptest.NewRequest("GET", "http://plan-demo.piso.local/", nil)
+	req2.Host = "plan-demo.piso.local"
 	h.ServeHTTP(w2, req2)
 	if w2.Code != 200 || !strings.Contains(w2.Body.String(), "from-worker") {
-		t.Fatalf("cookie route %d %s", w2.Code, w2.Body.String())
+		t.Fatalf("subdomain route %d %s", w2.Code, w2.Body.String())
 	}
 
+	// a plain apex is ALWAYS the dashboard, even with a route cookie present
+	// (regression: stale cookie used to 404 piso.local).
 	w3 := httptest.NewRecorder()
-	req3 := httptest.NewRequest("GET", "http://plan-demo.piso.local/", nil)
-	req3.Host = "plan-demo.piso.local"
+	req3 := httptest.NewRequest("GET", "http://piso.local/", nil)
+	req3.Host = "piso.local"
+	req3.AddCookie(&http.Cookie{Name: ingressRouteCookie, Value: "plan-demo"})
 	h.ServeHTTP(w3, req3)
-	if w3.Code != 200 || !strings.Contains(w3.Body.String(), "from-worker") {
-		t.Fatalf("pretty host %d %s", w3.Code, w3.Body.String())
+	if w3.Code != 200 || !strings.Contains(w3.Body.String(), "piso gateway") {
+		t.Fatalf("apex with cookie must serve dashboard, got %d %s", w3.Code, w3.Body.String())
 	}
 }
 
@@ -271,5 +271,62 @@ func TestIngressPublicURLUsesEnvPort(t *testing.T) {
 	t.Setenv("PISO_INGRESS_PORT", "80")
 	if got := ingressPublicURL("plan-demo"); got != "http://piso.local/?route=plan-demo" {
 		t.Fatalf("got %q", got)
+	}
+}
+
+func TestWebHandlerDispatchesByHost(t *testing.T) {
+	s := testServer(t)
+	// a backend to proxy to (the "worker")
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("from-worker"))
+	}))
+	t.Cleanup(backend.Close)
+	u, err := url.Parse(backend.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, err := strconv.Atoi(u.Port())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Store.AddRoute(store.RouteRec{ID: "r1", Name: "demo-8080", Worker: "127.0.0.1", Port: port, Origin: store.AutoRouteOriginAuto}); err != nil {
+		t.Fatal(err)
+	}
+	h := s.WebHandler()
+
+	// a bare <label>.piso.local opens the worker server — no port, no redirect
+	req := httptest.NewRequest("GET", "http://demo-8080.piso.local/app", nil)
+	req.Host = "demo-8080.piso.local"
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != 200 || !strings.Contains(w.Body.String(), "from-worker") {
+		t.Fatalf("subdomain should proxy, got %d %s", w.Code, w.Body.String())
+	}
+
+	// the apex is the dashboard
+	apex := httptest.NewRequest("GET", "http://piso.local/", nil)
+	apex.Host = "piso.local"
+	w2 := httptest.NewRecorder()
+	h.ServeHTTP(w2, apex)
+	if w2.Code != 200 || !strings.Contains(w2.Body.String(), "piso gateway") {
+		t.Fatalf("apex should serve dashboard, got %d %s", w2.Code, w2.Body.String())
+	}
+
+	// unknown subdomain → 404 (no accidental wildcard routing)
+	unknown := httptest.NewRequest("GET", "http://nope-99999.piso.local/", nil)
+	unknown.Host = "nope-99999.piso.local"
+	w3 := httptest.NewRecorder()
+	h.ServeHTTP(w3, unknown)
+	if w3.Code == 200 {
+		t.Fatalf("unknown subdomain should 404, got %d %s", w3.Code, w3.Body.String())
+	}
+
+	// apex ?route= still drives the route (cookie flow)
+	qr := httptest.NewRequest("GET", "http://piso.local/?route=demo-8080", nil)
+	qr.Host = "piso.local"
+	w4 := httptest.NewRecorder()
+	h.ServeHTTP(w4, qr)
+	if w4.Code != http.StatusFound {
+		t.Fatalf("apex ?route= should redirect to drop the query, got %d %s", w4.Code, w4.Body.String())
 	}
 }

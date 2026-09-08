@@ -89,6 +89,122 @@ func ingressFQDN(name string) string {
 	return name + "." + DashboardHost
 }
 
+// ReconcileIngressHosts rewrites the "# managed by piso" block of /etc/hosts
+// so it contains exactly piso.local plus one v4+v6 line per expected ingress
+// label. Labels no longer routed are removed (lazy GC — reconcile runs at
+// every `piso up` / `piso sync`, re-adding anything a stale removal dropped).
+// Non-piso lines are preserved verbatim. When the file is not writable, the
+// returned error names the exact lines to add.
+func ReconcileIngressHosts(names []string) error {
+	return reconcileHosts(HostsPath, names)
+}
+
+func reconcileHosts(path string, names []string) error {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	lines := strings.Split(string(b), "\n")
+	// wanted managed entries, keyed "<ip> <fqdn>" (both loopback families)
+	want := map[string]bool{}
+	want["127.0.0.1 " + DashboardHost] = true
+	want["::1 " + DashboardHost] = true
+	for _, name := range names {
+		fqdn := ingressFQDN(name)
+		if fqdn == "" {
+			continue
+		}
+		want["127.0.0.1 " + fqdn] = true
+		want["::1 " + fqdn] = true
+	}
+	var out strings.Builder
+	changed := false
+	for _, line := range lines {
+		if !strings.Contains(line, hostsMarker) {
+			out.WriteString(line + "\n")
+			continue
+		}
+		fields := strings.Fields(strings.TrimSpace(line))
+		if len(fields) >= 2 && (fields[0] == "127.0.0.1" || fields[0] == "::1") {
+			// Keep the entry only when every hostname in it is wanted
+			// (comments run to end of line and are ignored).
+			all := true
+			for j := 1; j < len(fields); j++ {
+				if strings.HasPrefix(fields[j], "#") {
+					break
+				}
+				if !want[fields[0] + " " + fields[j]] {
+					all = false
+					break
+				}
+			}
+			if all {
+				out.WriteString(line + "\n")
+				for j := 1; j < len(fields); j++ {
+					if !strings.HasPrefix(fields[j], "#") {
+						want[fields[0] + " " + fields[j]] = false
+					}
+				}
+				continue
+			}
+		}
+		changed = true // dropped a stale managed line
+	}
+	// Append wanted entries that were not present (deterministic order).
+	for _, name := range names {
+		fqdn := ingressFQDN(name)
+		if fqdn == "" {
+			continue
+		}
+		if want["127.0.0.1 " + fqdn] {
+			out.WriteString("127.0.0.1 " + fqdn + " " + hostsMarker + "\n")
+			want["127.0.0.1 " + fqdn] = false
+			changed = true
+		}
+		if want["::1 " + fqdn] {
+			out.WriteString("::1 " + fqdn + " " + hostsMarker + "\n")
+			want["::1 " + fqdn] = false
+			changed = true
+		}
+	}
+	if want["127.0.0.1 " + DashboardHost] {
+		out.WriteString(hostsLineV4 + " " + hostsMarker + "\n")
+		changed = true
+	}
+	if want["::1 " + DashboardHost] {
+		out.WriteString(hostsLineV6 + " " + hostsMarker + "\n")
+		changed = true
+	}
+	if !changed {
+		return nil
+	}
+	// Write atomically (temp + rename) so a partial /etc/hosts is never visible.
+	tmp := path + ".piso.tmp"
+	if err := os.WriteFile(tmp, []byte(out.String()), 0o644); err != nil {
+		if os.IsPermission(err) {
+			return fmt.Errorf("%s is not writable; add these lines (once):\n%s", path, ingressHostsHint(names))
+		}
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return err
+	}
+	return nil
+}
+
+// ingressHostsHint renders the manual v4+v6 lines for the expected labels.
+func ingressHostsHint(names []string) string {
+	var b strings.Builder
+	for _, name := range names {
+		fqdn := ingressFQDN(name)
+		if fqdn == "" {
+			continue
+		}
+		b.WriteString(fmt.Sprintf("  127.0.0.1 %s %s\n  ::1 %s %s\n", fqdn, hostsMarker, fqdn, hostsMarker))
+	}
+	return b.String()
+}
+
 func hostsHasName(text, ip, fqdn string) bool {
 	for _, line := range strings.Split(text, "\n") {
 		trim := strings.TrimSpace(line)

@@ -1,4 +1,4 @@
-.PHONY: build test gw-run smoke isolation install setup-install
+.PHONY: build test gw-run smoke isolation install setup-install uninstall
 
 BIN ?= bin
 # Default matches /usr/local/bin on PATH. Use PREFIX=$$HOME/.local to avoid sudo,
@@ -43,6 +43,18 @@ install: build
 	@echo "share     $(SHARE)"
 	@echo "data      $(REAL_HOME)/.piso"
 	$(MAKE) setup-install
+	@echo "restarting hosts sync daemon with the new binary"
+	PISO_DATA="$(REAL_HOME)/.piso" $(PREFIX)/bin/piso sync daemon-restart || \
+		echo "piso: warning: sync daemon not running (sudo may be needed); run: sudo PISO_DATA=$(REAL_HOME)/.piso $(PREFIX)/bin/piso sync daemon-restart"
+
+# Uninstall: stop the global hosts-sync daemon first, then remove binaries and
+# the share tree. User data (~/.piso: secrets, CA, state) is intentionally kept.
+uninstall:
+	@echo "stopping hosts sync daemon"
+	-PISO_DATA="$(REAL_HOME)/.piso" $(PREFIX)/bin/piso sync daemon-uninstall || true
+	rm -f $(PREFIX)/bin/piso
+	rm -rf $(SHARE)
+	@echo "piso: uninstalled (kept $(REAL_HOME)/.piso data)"
 
 # Post-install as the login user: import leftover repo .piso files that are
 # missing from ~/.piso, then rebuild/recreate the gateway container.

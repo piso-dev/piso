@@ -3,7 +3,9 @@ package store
 import (
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 )
 
 func testStore(t *testing.T) *Store {
@@ -53,7 +55,7 @@ func TestApproveIngressCreatesRouteAndClearsPending(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rec.ID != "ing_a" || route.Name != "plan-demo" || route.Worker != "piso-worker-demo" || route.Port != 19432 {
+	if rec.ID != "ing_a" || route.Name != "plan-demo" || route.Worker != "piso-worker-demo" || route.Port != 19432 || route.Origin != AutoRouteOriginExpose {
 		t.Fatalf("rec=%+v route=%+v", rec, route)
 	}
 	if len(st.PendingIngress()) != 0 {
@@ -116,5 +118,139 @@ func TestDismissAndCancelPending(t *testing.T) {
 	}
 	if err := st.DismissIngress("missing"); !errors.Is(err, ErrIngressNotFound) {
 		t.Fatalf("missing dismiss: %v", err)
+	}
+}
+
+func TestAutoRouteName(t *testing.T) {
+	if got := AutoRouteName("My_Project", 8080); got != "my-project-8080" {
+		t.Fatalf("got %q", got)
+	}
+	if got := AutoRouteName("demo", 80); got != "demo-80" {
+		t.Fatalf("got %q", got)
+	}
+	// 63-char cap: long slug + port must not exceed, no trailing dash.
+	long := AutoRouteName(strings.Repeat("a", 63), 99999)
+	if len(long) > 63 || strings.HasSuffix(long, "-") {
+		t.Fatalf("long label %q (len %d)", long, len(long))
+	}
+}
+
+func TestSyncWorkerPortsCreatesAndRefreshes(t *testing.T) {
+	st := testStore(t)
+	created, err := st.SyncWorkerPorts("piso-worker-demo", "demo", []int{9090, 8080})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(created) != 2 {
+		t.Fatalf("created %d", len(created))
+	}
+	r8080, ok := st.RouteByName("demo-8080")
+	if !ok || r8080.Worker != "piso-worker-demo" || r8080.Port != 8080 || r8080.Origin != AutoRouteOriginAuto {
+		t.Fatalf("route %+v ok=%v", r8080, ok)
+	}
+	if r8080.LastSeenMs <= 0 {
+		t.Fatal("auto route missing heartbeat")
+	}
+	// a second report is a refresh, not a duplicate (id + last seen updated)
+	again, err := st.SyncWorkerPorts("piso-worker-demo", "demo", []int{8080, 9090})
+	if err != nil || len(again) != 0 {
+		t.Fatalf("second report created %d err=%v", len(again), err)
+	}
+	r2, _ := st.RouteByName("demo-8080")
+	if r2.ID != r8080.ID || r2.LastSeenMs < r8080.LastSeenMs {
+		t.Fatalf("refresh lost identity or heartbeat: %+v vs %+v", r2, r8080)
+	}
+	// another worker cannot share the label namespace (its own slug)
+	other, err := st.SyncWorkerPorts("piso-worker-other", "other", []int{8080})
+	if err != nil || len(other) != 1 || other[0].Name != "other-8080" {
+		t.Fatalf("other worker %+v err=%v", other, err)
+	}
+}
+
+func TestSyncWorkerPortsExposeWins(t *testing.T) {
+	st := testStore(t)
+	if err := st.AddRoute(RouteRec{ID: "route_x", Name: "demo-8080", Worker: "piso-worker-demo", Port: 8080, Origin: AutoRouteOriginExpose}); err != nil {
+		t.Fatal(err)
+	}
+	created, err := st.SyncWorkerPorts("piso-worker-demo", "demo", []int{8080})
+	if err != nil || len(created) != 0 {
+		t.Fatalf("expose route must not be recreated: %d err=%v", len(created), err)
+	}
+	r, ok := st.RouteByName("demo-8080")
+	if !ok || r.ID != "route_x" || r.Origin != AutoRouteOriginExpose {
+		t.Fatalf("expose route replaced: %+v", r)
+	}
+	// expose route still gets the heartbeat badge refresh
+	if r.LastSeenMs <= 0 {
+		t.Fatal("expose route missing heartbeat refresh")
+	}
+}
+
+func TestSyncWorkerPortsRateCap(t *testing.T) {
+	st := testStore(t)
+	ports := make([]int, 25)
+	for i := 0; i < 25; i++ {
+		ports[i] = 1000 + i
+	}
+	created, err := st.SyncWorkerPorts("piso-worker-demo", "demo", ports)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(created) != MaxAutoRoutesPerWorker {
+		t.Fatalf("rate cap: created %d", len(created))
+	}
+	n := 0
+	for _, r := range st.Routes() {
+		if r.Origin == AutoRouteOriginAuto && r.Worker == "piso-worker-demo" {
+			n++
+		}
+	}
+	if n != MaxAutoRoutesPerWorker {
+		t.Fatalf("auto routes after cap: %d", n)
+	}
+}
+
+func TestRoutesSweepsStaleAuto(t *testing.T) {
+	st := testStore(t)
+	now := time.Now().UnixNano()/1000000
+	if err := st.AddRoute(RouteRec{ID: "r_stale", Name: "demo-8080", Worker: "piso-worker-demo", Port: 8080, Origin: AutoRouteOriginAuto, LastSeenMs: now - AutoRouteGraceMs - 1000}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AddRoute(RouteRec{ID: "r_fresh", Name: "demo-9090", Worker: "piso-worker-demo", Port: 9090, Origin: AutoRouteOriginAuto, LastSeenMs: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AddRoute(RouteRec{ID: "r_exp", Name: "preview", Worker: "piso-worker-demo", Port: 5173, Origin: AutoRouteOriginExpose}); err != nil {
+		t.Fatal(err)
+	}
+	routes := st.Routes()
+	n := 0
+	for _, r := range routes {
+		if r.ID == "r_stale" {
+			t.Fatal("stale auto route survived the sweep")
+		}
+		n++
+	}
+	if n != 2 {
+		t.Fatalf("sweep kept %d routes (want fresh + expose)", n)
+	}
+	// the sweep persisted: a reload sees the stale route gone
+	got, ok := st.RouteByName("demo-8080")
+	if ok || got.ID != "" {
+		t.Fatalf("stale route still resolvable: %+v", got)
+	}
+}
+
+func TestSetWorkerUnreachableHints(t *testing.T) {
+	st := testStore(t)
+	st.SetWorkerUnreachable("piso-worker-demo", []UnreachablePort{
+		UnreachablePort{Port: 19432, Note: "bound to loopback 127.0.0.1"},
+	})
+	hints, ok := st.WorkerUnreachable("piso-worker-demo")
+	if !ok || len(hints) != 1 || hints[0].Port != 19432 {
+		t.Fatalf("hints %+v ok=%v", hints, ok)
+	}
+	st.SetWorkerUnreachable("piso-worker-demo", nil)
+	if _, ok := st.WorkerUnreachable("piso-worker-demo"); ok {
+		t.Fatal("cleared hints still present")
 	}
 }

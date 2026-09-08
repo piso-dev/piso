@@ -59,7 +59,8 @@ WORKDIR /workspace
 COPY entrypoint.sh /usr/local/bin/piso-entrypoint
 COPY planning-watch.sh /usr/local/bin/piso-planning-watch
 COPY context-watch.sh /usr/local/bin/piso-context-watch
-RUN chmod +x /usr/local/bin/piso-entrypoint /usr/local/bin/piso-planning-watch /usr/local/bin/piso-context-watch
+COPY ports-watch.sh /usr/local/bin/piso-ports-watch
+RUN chmod +x /usr/local/bin/piso-entrypoint /usr/local/bin/piso-planning-watch /usr/local/bin/piso-context-watch /usr/local/bin/piso-ports-watch
 
 # Declared last so changing the hash only rewrites this label layer.
 ARG PISO_WORKER_HASH=dev

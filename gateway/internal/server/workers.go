@@ -68,14 +68,15 @@ func (s *Server) handlePostWorkers(w http.ResponseWriter, r *http.Request) {
 }
 
 // workerView is the /api/v1/workers response: the registry entry plus its
-// live context (repo/branch/commit/model), when the watcher has reported one.
+// live context (repo/branch/commit/model) and listener hints, when reported.
 type workerView struct {
 	store.WorkerRec
-	Context *store.WorkerCtx `json:"context,omitempty"`
+	Context          *store.WorkerCtx        `json:"context,omitempty"`
+	UnreachablePorts []store.UnreachablePort `json:"unreachablePorts,omitempty"`
 }
 
 // handleGetWorkers lists the registry (dashboard / CLI / debugging), with each
-// worker's live context attached for the dashboard Workers tab.
+// worker's live context and unreachable-listener hints attached.
 func (s *Server) handleGetWorkers(w http.ResponseWriter, r *http.Request) {
 	ws := s.Store.Workers()
 	out := make([]workerView, 0, len(ws))
@@ -84,6 +85,9 @@ func (s *Server) handleGetWorkers(w http.ResponseWriter, r *http.Request) {
 		if ctx, ok := s.Store.WorkerCtxBySlug(w.Slug); ok {
 			c := ctx
 			v.Context = &c
+		}
+		if unr, ok := s.Store.WorkerUnreachable(w.Name); ok {
+			v.UnreachablePorts = unr
 		}
 		out = append(out, v)
 	}

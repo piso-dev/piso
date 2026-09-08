@@ -81,7 +81,10 @@ func main() {
 	h := proxy.New(ca, st, pat, workerIdentityFn(st))
 	srv := server.New(st, pat, h, ca)
 
-	go serve("control", *ctrlAddr, srv.ControlHandler())
+	// WebHandler is the single host web entrypoint (dashboard + ingress on the
+	// same port, dispatched by Host). The old ControlHandler is kept for tests;
+	// IngressHandler is kept on the ingress port for backward compatibility.
+	go serve("web", *ctrlAddr, srv.WebHandler())
 	go serve("worker-api", *workerAddr, srv.WorkerHandler())
 	go serve("ingress", *ingressAddr, srv.IngressHandler())
 	serve("egress-proxy", *proxyAddr, h)

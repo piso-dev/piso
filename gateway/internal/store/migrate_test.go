@@ -61,3 +61,19 @@ func TestNewEmptyStateWritesCurrentVersion(t *testing.T) {
 		t.Fatalf("version %d", st.state.Version)
 	}
 }
+
+func TestApplyMigrationsV3ToV4DefaultsOriginToExpose(t *testing.T) {
+	st := State{Version: 3, Routes: []RouteRec{
+		RouteRec{ID: "r1", Name: "plan-demo", Worker: "piso-worker-demo", Port: 19432},
+	}}
+	if !applyMigrations(&st) {
+		t.Fatal("expected rewrite")
+	}
+	if st.Version != CurrentStateVersion {
+		t.Fatalf("version %d", st.Version)
+	}
+	if st.Routes[0].Origin != AutoRouteOriginExpose {
+		t.Fatalf("legacy route origin %q", st.Routes[0].Origin)
+	}
+}
+

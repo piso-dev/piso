@@ -64,4 +64,21 @@ piso up --ctrl-port 8081    # then http://piso.local:8081
 
 `--proxy-port` and `--ingress-port` work the same way. A taken port is a hard error, not a silent remap. Chosen ports are saved in `~/.piso/ports.json`.
 
+### Hosts sync daemon (auto subdomains)
+
+`piso up` also converges the host on a global hosts-sync service so every
+**<slug>-<port>.piso.local** resolves the moment a worker server starts — no
+manual `piso expose` or hosts lines. It is managed as root (`sudo make install`
+restarts it with the new binary; `make uninstall` stops it):
+
+```bash
+piso sync daemon-status    # running? (no sudo needed)
+piso sync daemon-restart   # (re)install/start; piso up does this automatically
+```
+
+On macOS it is a launchd service (`com.piso.sync`, survives reboots); elsewhere
+a nohup+pidfile fallback is used. The daemon only needs `/etc/hosts` write
+access and the gateway's control-plane port — workers do not need to run for it
+to stay alive.
+
 See `docs/design.md` for the threat model and the decision pipeline.

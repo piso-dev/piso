@@ -45,5 +45,20 @@ func applyMigrations(st *State) bool {
 		st.Version = 3
 		changed = true
 	}
+	// v3→v4: route provenance + live-tracking fields added. Routes that
+	// existed before the worker ports watcher were all host-created
+	// (`piso expose` / dashboard), so they default to origin "expose".
+	if st.Version < 4 {
+		if st.Routes == nil {
+			st.Routes = []RouteRec{}
+		}
+		for i, r := range st.Routes {
+			if r.Origin == "" {
+				st.Routes[i].Origin = AutoRouteOriginExpose
+			}
+		}
+		st.Version = 4
+		changed = true
+	}
 	return changed
 }
