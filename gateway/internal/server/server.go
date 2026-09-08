@@ -6,6 +6,7 @@ import (
 	"embed"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -383,10 +384,34 @@ func (s *Server) routes(mux *http.ServeMux) {
 	})
 	mux.HandleFunc("DELETE /api/v1/routes/{id}", func(w http.ResponseWriter, r *http.Request) {
 		if err := s.Store.DeleteRoute(r.PathValue("id")); err != nil {
+			if errors.Is(err, store.ErrRouteNotFound) {
+				writeJSON(w, 404, map[string]string{"error": "not found"})
+				return
+			}
 			writeJSON(w, 500, map[string]string{"error": err.Error()})
 			return
 		}
 		w.WriteHeader(204)
+	})
+	// block / unblock a route (the off/on toggle — keeps the row, stops proxying)
+	mux.HandleFunc("POST /api/v1/routes/{id}/disabled", func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			Disabled bool `json:"disabled"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			writeJSON(w, 400, map[string]string{"error": "bad json"})
+			return
+		}
+		rec, err := s.Store.SetRouteDisabled(r.PathValue("id"), in.Disabled)
+		if err != nil {
+			if errors.Is(err, store.ErrRouteNotFound) {
+				writeJSON(w, 404, map[string]string{"error": "not found"})
+				return
+			}
+			writeJSON(w, 500, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, 200, rec)
 	})
 
 	// worker registry (slug↔IP), populated by the host CLI at `piso up`
@@ -488,6 +513,12 @@ func (s *Server) ingress(w http.ResponseWriter, r *http.Request) {
 	route, ok := s.Store.RouteByName(name)
 	if !ok {
 		http.NotFound(w, r)
+		return
+	}
+	if route.Disabled {
+		// Blocked by the off toggle: refuse to proxy. 403 keeps it distinct
+		// from an unknown label (404).
+		http.Error(w, "route disabled", http.StatusForbidden)
 		return
 	}
 	target, err := url.Parse(fmt.Sprintf("http://%s:%d", route.Worker, route.Port))

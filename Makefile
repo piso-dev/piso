@@ -45,7 +45,7 @@ install: build
 	$(MAKE) setup-install
 	@echo "restarting hosts sync daemon with the new binary"
 	PISO_DATA="$(REAL_HOME)/.piso" $(PREFIX)/bin/piso sync daemon-restart || \
-		echo "piso: warning: sync daemon not running (sudo may be needed); run: sudo PISO_DATA=$(REAL_HOME)/.piso $(PREFIX)/bin/piso sync daemon-restart"
+		echo "piso: warning: sync daemon did not verify up (see above); retry: sudo PISO_DATA=$(REAL_HOME)/.piso $(PREFIX)/bin/piso sync daemon-restart"
 
 # Uninstall: stop the global hosts-sync daemon first, then remove binaries and
 # the share tree. User data (~/.piso: secrets, CA, state) is intentionally kept.

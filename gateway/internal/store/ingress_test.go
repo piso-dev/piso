@@ -254,3 +254,29 @@ func TestSetWorkerUnreachableHints(t *testing.T) {
 		t.Fatal("cleared hints still present")
 	}
 }
+
+func TestSetRouteDisabledKeepsRowAndFlips(t *testing.T) {
+	st := testStore(t)
+	if err := st.AddRoute(RouteRec{ID: "r1", Name: "demo-8080", Worker: "piso-worker-demo", Port: 8080, Origin: AutoRouteOriginAuto, LastSeenMs: time.Now().UnixNano()/1000000}); err != nil {
+		t.Fatal(err)
+	}
+	// flip off
+	rec, err := st.SetRouteDisabled("r1", true)
+	if err != nil || !rec.Disabled {
+		t.Fatalf("disable %+v err=%v", rec, err)
+	}
+	// row still resolvable (the toggle can re-enable)
+	got, ok := st.RouteByName("demo-8080")
+	if !ok || !got.Disabled {
+		t.Fatalf("row lost or not marked: %+v ok=%v", got, ok)
+	}
+	// re-enable
+	rec, err = st.SetRouteDisabled("r1", false)
+	if err != nil || rec.Disabled {
+		t.Fatalf("enable %+v err=%v", rec, err)
+	}
+	// unknown id → ErrRouteNotFound
+	if _, err := st.SetRouteDisabled("nope", true); !errors.Is(err, ErrRouteNotFound) {
+		t.Fatalf("missing route: %v", err)
+	}
+}

@@ -85,6 +85,10 @@ type RouteRec struct {
 	// LastSeenMs is the last watcher heartbeat that included this port
 	// (unix ms). Auto routes only; drives the down badge and stale GC.
 	LastSeenMs int64 `json:"lastSeenMs,omitempty"`
+	// Disabled blocks serving this route (the gateway refuses to proxy it)
+	// but KEEPS the row so the toggle can re-enable it. Auto routes that are
+	// disabled are still swept by the stale-GC (they don't resurrect).
+	Disabled bool `json:"disabled,omitempty"`
 }
 
 // WorkerRec is the slug↔IP registry populated by the host CLI at `piso up`.
@@ -640,6 +644,25 @@ func (s *Store) DeleteRoute(id string) error {
 	}
 	s.state.Routes = out
 	return s.save()
+}
+
+// SetRouteDisabled flips the disable flag on a route (blocks proxy service,
+// keeps the row so it can be re-enabled). Unknown id → ErrRouteNotFound.
+func (s *Store) SetRouteDisabled(id string, disabled bool) (RouteRec, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, r := range s.state.Routes {
+		if r.ID != id {
+			continue
+		}
+		s.state.Routes[i].Disabled = disabled
+		if err := s.save(); err != nil {
+			return RouteRec{}, err
+		}
+		s.broadcastRoute(s.state.Routes[i])
+		return s.state.Routes[i], nil
+	}
+	return RouteRec{}, ErrRouteNotFound
 }
 
 // SetWorkerUnreachable replaces the transient listener hints for a worker

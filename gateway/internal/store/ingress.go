@@ -123,6 +123,9 @@ func randID() string {
 // ErrIngressNotFound is a missing pending ingress request.
 var ErrIngressNotFound = fmt.Errorf("ingress request not found")
 
+// ErrRouteNotFound is a missing ingress route (by id).
+var ErrRouteNotFound = fmt.Errorf("route not found")
+
 // ErrWorkerNotFound is a missing worker-registry entry.
 var ErrWorkerNotFound = fmt.Errorf("worker not found")
 

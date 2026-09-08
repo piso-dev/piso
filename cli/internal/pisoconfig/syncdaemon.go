@@ -209,25 +209,48 @@ func bootoutSystem(label string) {
 	_ = exec.Command("launchctl", "bootout", systemServiceTarget(label)).Run()
 }
 
-// daemonStartRoot starts (or restarts) the managed service.
+// daemonStartRoot starts (or restarts) the managed service, then VERIFIES the
+// daemon actually comes up. launchctl bootstrap/kickstart return once launchd
+// *queues* the start — the process may still be relaunching — so a bare exit
+// code is a flaky signal (the original `sudo make install` warning was this
+// race). We poll piso's own daemon-status until it reports running.
 func daemonStartRoot() error {
 	if launchctlAvailable() {
-		// bootstrap loads the plist into the system domain and starts it via
-		// RunAtLoad. Errors are swallowed on purpose: a just-issued bootout
-		// can still be draining (bootstrap would then exit "already loaded"),
-		// and the kickstart below is the authoritative start — if the daemon
-		// is truly not runnable it fails there with a real message.
+		// bootstrap loads the plist into the system domain (RunAtLoad starts
+		// it). Errors are swallowed: on an upgrade a just-issued bootout can
+		// still be draining, making bootstrap exit "already loaded".
 		_ = exec.Command("launchctl", "bootstrap", "system", daemonConfigPath()).Run()
-		// kickstart -k kills and restarts the service so an upgrade picks up
-		// the new binary. The target MUST be domain-qualified: without
-		// system/ it resolves in the user (gui/$UID) domain and exits 64.
+		// kickstart -k kills + restarts the service so it picks up the new
+		// binary. MUST be domain-qualified (system/<label>) or it resolves in
+		// the user domain and exits 64.
 		c := exec.Command("launchctl", "kickstart", "-k", systemServiceTarget(syncDaemonLabel))
 		if err := c.Run(); err != nil {
-			return fmt.Errorf("launchctl kickstart: %v", err)
+			// launchd queued but did not accept; try waiting anyway — the
+			// process may still come up from bootstrap alone.
+			_ = err
 		}
-		return nil
+	} else if err := startNohupDaemon(); err != nil {
+		return err
 	}
-	return startNohupDaemon()
+	// Wait for the daemon to actually report running (launchd relaunch or
+	// fresh boot). Give it a few seconds; the pidfile+ps probe is cheap.
+	if err := waitForDaemon(20); err != nil {
+		return fmt.Errorf("sync daemon did not come up: %v", err)
+	}
+	return nil
+}
+
+// waitForDaemon polls piso's daemon-status until the daemon reports running or
+// ~seconds elapse (0.3s probes).
+func waitForDaemon(seconds int) error {
+	for i := 0; i < seconds*3; i++ {
+		st, err := SyncDaemonStatus()
+		if err == nil && st.Running {
+			return nil
+		}
+		exec.Command("/bin/sleep", "0.3").Run()
+	}
+	return fmt.Errorf("not running after %ds", seconds)
 }
 
 // startNohupDaemon executes the nohup bootstrap script (it backgrounds the

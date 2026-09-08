@@ -755,15 +755,15 @@ $('#domainForm').onsubmit = async ev => {
 let ingressPort = 80; // canonical web port; health() overrides it
 
 /**
- * Host-facing ingress URL for a route label.
- * @param {string} name
- * @returns {string}
+ * Host-facing canonical URL for a route label: the portless subdomain
+ * (http://<name>.piso.local). The web port is only spliced in when it is not
+ * 80. This is the URL the browser opens (Host dispatch sends it to ingress).
  */
 function routeURL(name) {
   if (ingressPort === 80) {
-    return `http://piso.local/?route=${encodeURIComponent(name)}`;
+    return `http://${encodeURIComponent(name)}.piso.local`;
   }
-  return `http://piso.local:${ingressPort}/?route=${encodeURIComponent(name)}`;
+  return `http://${encodeURIComponent(name)}.piso.local:${ingressPort}`;
 }
 
 async function loadRoutes() {
@@ -774,18 +774,37 @@ async function loadRoutes() {
       ? `<span class="badge" style="background:rgba(79,140,255,.12);color:var(--accent)">auto</span>`
       : (r.origin === 'expose' ? '<span class="badge ok">expose</span>' : '');
     let state = '';
-    if (r.origin === 'auto') {
+    if (r.origin === 'auto' && !r.disabled) {
       const age = r.lastSeenMs ? Date.now() - r.lastSeenMs : Infinity;
       state = age > 45000 ? ' <span class="badge block">down</span>' : ' <span class="badge ok">live</span>';
     }
     const note = r.note ? ` <span class="muted">${esc(r.note)}</span>` : '';
-    $('#routerows').append(el('tr','',`<td>${esc(r.name)} ${origin}${state}${note}</td><td class="mono">${esc(url)}</td>
+    const blocked = r.disabled ? ' <span class="badge block">blocked</span>' : '';
+    $('#routerows').append(el('tr','',`<td>${esc(r.name)} ${origin}${state}${blocked}${note}</td><td class="mono">${esc(url)}</td>
     <td class="mono">${esc(r.worker)}</td><td>${r.port}</td>
     <td><button class="btn small" onclick="window.open('${esc(url)}','_blank')">open</button>
-    <button class="btn small danger" onclick="delRoute('${r.id}')">kill</button></td>`));
+    <label class="toggle" title="block / allow this route"><input type="checkbox" ${!r.disabled?'checked':''}
+      onchange="setRouteDisabled('${r.id}', !this.checked)"><span></span></label></td>`));
   });
 }
-async function delRoute(id) { await api(`/api/v1/routes/${id}`, {method:'DELETE'}); loadRoutes(); }
+
+// setRouteDisabled blocks (or unblocks) a route without deleting it.
+async function setRouteDisabled(id, disabled) {
+  try {
+    await api(`/api/v1/routes/${id}/disabled`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({disabled})});
+  } catch (e) { alert(e.message); }
+  loadRoutes();
+}
+
+// The routes table polls so stale auto routes disappear on their own while
+// you watch (the gateway sweeps them once the down-grace elapses; the badge
+// goes down after 45s). EventSource also refreshes on route changes.
+let routesPolled = false;
+function ensureRoutesPoll() {
+  if (routesPolled) { return; }
+  routesPolled = true;
+  setInterval(() => { loadRoutes().catch(() => {}); }, 5000);
+}
 
 async function loadWorkers() {
   const ws = await api('/api/v1/workers');
@@ -1028,6 +1047,7 @@ $('#planModal').addEventListener('click', (ev) => {
     }
   }
   streamLog();
+  ensureRoutesPoll();
   setInterval(() => {
     loadPlanning().catch(() => {});
   }, 2000);

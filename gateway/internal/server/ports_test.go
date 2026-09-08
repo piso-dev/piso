@@ -3,9 +3,14 @@ package server
 import (
 	"bytes"
 	"encoding/json"
+	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strconv"
 	"strings"
 	"testing"
+
+	"piso/gateway/internal/store"
 )
 
 func TestWorkerPostPortsCreatesAutoRoutes(t *testing.T) {
@@ -99,5 +104,61 @@ func TestWorkerPostPortsIdentityMismatch(t *testing.T) {
 	s.WorkerHandler().ServeHTTP(w, req)
 	if w.Code != 403 {
 		t.Fatalf("identity spoof accepted: %d %s", w.Code, w.Body.String())
+	}
+}
+
+// A disabled route refuses to proxy (403) but stays listed for the toggle;
+// re-enabling serves again.
+func TestRouteDisabledBlocksProxy(t *testing.T) {
+	s := testServer(t)
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("from-worker"))
+	}))
+	t.Cleanup(backend.Close)
+	u, err := url.Parse(backend.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, err := strconv.Atoi(u.Port())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Store.AddRoute(store.RouteRec{ID: "r1", Name: "demo-8080", Worker: "127.0.0.1", Port: port, Origin: store.AutoRouteOriginAuto, LastSeenMs: 1}); err != nil {
+		t.Fatal(err)
+	}
+	h := s.WebHandler()
+	hit := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest("GET", "http://demo-8080.piso.local/", nil)
+		req.Host = "demo-8080.piso.local"
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, req)
+		return w
+	}
+	if w := hit(); w.Code != 200 || !strings.Contains(w.Body.String(), "from-worker") {
+		t.Fatalf("pre-disable %d %s", w.Code, w.Body.String())
+	}
+	// disable via the control API
+	raw, _ := json.Marshal(map[string]any{"disabled": true})
+	req := httptest.NewRequest("POST", "/api/v1/routes/r1/disabled", bytes.NewReader(raw))
+	req.Header.Set("Content-Type", "application/json")
+	wc := httptest.NewRecorder()
+	s.ControlHandler().ServeHTTP(wc, req)
+	if wc.Code != 200 {
+		t.Fatalf("disable api %d %s", wc.Code, wc.Body.String())
+	}
+	if w := hit(); w.Code != http.StatusForbidden {
+		t.Fatalf("disabled route should 403, got %d %s", w.Code, w.Body.String())
+	}
+	// re-enable
+	raw, _ = json.Marshal(map[string]any{"disabled": false})
+	req = httptest.NewRequest("POST", "/api/v1/routes/r1/disabled", bytes.NewReader(raw))
+	req.Header.Set("Content-Type", "application/json")
+	wc = httptest.NewRecorder()
+	s.ControlHandler().ServeHTTP(wc, req)
+	if wc.Code != 200 {
+		t.Fatalf("enable api %d %s", wc.Code, wc.Body.String())
+	}
+	if w := hit(); w.Code != 200 {
+		t.Fatalf("re-enabled should serve, got %d", w.Code)
 	}
 }
