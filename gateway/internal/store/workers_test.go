@@ -138,13 +138,13 @@ func TestApplyMigrationsV1ToV2(t *testing.T) {
 	if !applyMigrations(&st) {
 		t.Fatal("expected rewrite")
 	}
-	if st.Version != 2 {
+	if st.Version != CurrentStateVersion {
 		t.Fatalf("version %d", st.Version)
 	}
 	if st.Workers == nil {
-		t.Fatal("workers should be non-nil after v2 migration")
+		t.Fatal("workers should be non-nil after migration")
 	}
 	if applyMigrations(&st) {
-		t.Fatal("v2 should be a no-op")
+		t.Fatal("already-current should be a no-op")
 	}
 }

@@ -67,9 +67,27 @@ func (s *Server) handlePostWorkers(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, rec)
 }
 
-// handleGetWorkers lists the registry (dashboard / CLI / debugging).
+// workerView is the /api/v1/workers response: the registry entry plus its
+// live context (repo/branch/commit/model), when the watcher has reported one.
+type workerView struct {
+	store.WorkerRec
+	Context *store.WorkerCtx `json:"context,omitempty"`
+}
+
+// handleGetWorkers lists the registry (dashboard / CLI / debugging), with each
+// worker's live context attached for the dashboard Workers tab.
 func (s *Server) handleGetWorkers(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, 200, s.Store.Workers())
+	ws := s.Store.Workers()
+	out := make([]workerView, 0, len(ws))
+	for _, w := range ws {
+		v := workerView{WorkerRec: w}
+		if ctx, ok := s.Store.WorkerCtxBySlug(w.Slug); ok {
+			c := ctx
+			v.Context = &c
+		}
+		out = append(out, v)
+	}
+	writeJSON(w, 200, out)
 }
 
 // handleSetWorkerInternet flips the internet kill-switch for a worker.

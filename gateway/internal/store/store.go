@@ -19,7 +19,7 @@ import (
 
 // CurrentStateVersion is written into state.json. Bump when adding a
 // migration in applyMigrations.
-const CurrentStateVersion = 2
+const CurrentStateVersion = 3
 
 // State is the persisted configuration.
 type State struct {
@@ -31,6 +31,7 @@ type State struct {
 	Routes          []RouteRec          `json:"routes"`
 	IngressRequests []IngressRequestRec `json:"ingressRequests,omitempty"`
 	Workers         []WorkerRec         `json:"workers,omitempty"`
+	Contexts        []WorkerCtx         `json:"contexts,omitempty"`
 }
 
 // JSON-friendly records (this package owns persistence shape).
@@ -91,6 +92,20 @@ type WorkerRec struct {
 	UpdatedAt        time.Time `json:"updatedAt"`
 }
 
+// WorkerCtx is the worker's live context, reported by piso-context-watch and
+// snapshotted onto each request-log row by AppendLog (labels describe the
+// request's origin worker at that moment; advisory only).
+type WorkerCtx struct {
+	Worker  string    `json:"worker"`     // container name
+	Slug    string    `json:"slug"`       // project slug (unique key)
+	Folder  string    `json:"folder,omitempty"`  // host path / worker cwd, e.g. /workspace
+	Project string    `json:"project,omitempty"` // repo name or folder basename
+	Branch  string    `json:"branch,omitempty"`  // git branch, "" when detached/absent
+	Commit  string    `json:"commit,omitempty"`  // short sha
+	Model   string    `json:"model,omitempty"`   // provider/modelId
+	Ts      time.Time `json:"ts"`
+}
+
 // Ingress request statuses. Only pending rows appear in the dashboard inbox.
 const (
 	IngressKindPlanning  = "planning"
@@ -147,6 +162,13 @@ type Record struct {
 	Findings  []Finding `json:"findings"`
 	RequestID string    `json:"requestId"`
 	Retryable bool      `json:"retryable"`
+	// Worker-context labels snapshotted from WorkerCtx at record time
+	// (folder/path, git repo, branch, commit, pi model). Enriched in
+	// AppendLog when the row doesn't already carry a label.
+	Project string `json:"project,omitempty"`
+	Branch  string `json:"branch,omitempty"`
+	Commit  string `json:"commit,omitempty"`
+	Model   string `json:"model,omitempty"`
 	// Capture holds the raw request for replay. It is server-side only and
 	// NEVER serialized (json:"-"): the request log/SSE/API must not contain
 	// raw bodies or headers (they can hold real credentials on a real-secret
@@ -659,10 +681,73 @@ func (s *Store) SetWorkerInternet(name string, disabled bool) (WorkerRec, error)
 	return WorkerRec{}, ErrWorkerNotFound
 }
 
+// UpsertWorkerCtx records the worker's live context (reported by the in-
+// container watcher). Keyed by slug; the watcher only posts on change.
+// Returns the stored row and the Ts (for the dashboard).
+func (s *Store) UpsertWorkerCtx(ctx WorkerCtx) (WorkerCtx, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ctx.Ts = time.Now().UTC()
+	for i, c := range s.state.Contexts {
+		if c.Slug == ctx.Slug {
+			ctx.Worker = c.Worker // never let a report rename another's row
+			s.state.Contexts[i] = ctx
+			if err := s.save(); err != nil {
+				return WorkerCtx{}, err
+			}
+			return ctx, nil
+		}
+	}
+	s.state.Contexts = append(s.state.Contexts, ctx)
+	if err := s.save(); err != nil {
+		return WorkerCtx{}, err
+	}
+	return ctx, nil
+}
+
+// WorkerCtxBySlug returns the stored context for a project slug.
+func (s *Store) WorkerCtxBySlug(slug string) (WorkerCtx, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, c := range s.state.Contexts {
+		if c.Slug == slug {
+			return c, true
+		}
+	}
+	return WorkerCtx{}, false
+}
+
+// WorkersCtx returns all stored contexts keyed by slug (for the dashboard
+// Workers tab live display / /api/v1/workers).
+func (s *Store) WorkersCtx() []WorkerCtx {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]WorkerCtx, len(s.state.Contexts))
+	copy(out, s.state.Contexts)
+	return out
+}
+
 // ---- request log ----
 
 // AppendLog records a request and broadcasts it to SSE subscribers.
 func (s *Store) AppendLog(rec Record) {
+	// Snapshot the worker's live context onto this row (labels describe the
+	// origin worker at that moment). Only fills fields the record doesn't
+	// already carry so call sites that set a label explicitly win.
+	if ctx, ok := s.WorkerCtxBySlug(rec.Slug); ok {
+		if rec.Project == "" {
+			rec.Project = ctx.Project
+		}
+		if rec.Branch == "" {
+			rec.Branch = ctx.Branch
+		}
+		if rec.Commit == "" {
+			rec.Commit = ctx.Commit
+		}
+		if rec.Model == "" {
+			rec.Model = ctx.Model
+		}
+	}
 	s.mu.Lock()
 	s.records = append([]Record{rec}, s.records...)
 	if len(s.records) > s.maxLog {

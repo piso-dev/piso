@@ -37,5 +37,13 @@ func applyMigrations(st *State) bool {
 		st.Version = 2
 		changed = true
 	}
+	// v2→v3: worker log-label context added. Older files lack the field.
+	if st.Version < 3 {
+		if st.Contexts == nil {
+			st.Contexts = []WorkerCtx{}
+		}
+		st.Version = 3
+		changed = true
+	}
 	return changed
 }

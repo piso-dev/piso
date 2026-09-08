@@ -44,4 +44,10 @@ if [ -n "${GATEWAY_URL:-}" ] && [ -n "${PISO_WORKER_NAME:-}" ] && [ -x /usr/loca
   nohup /usr/local/bin/piso-planning-watch >/tmp/piso-planning-watch.log 2>&1 &
 fi
 
+# Report the worker's live context (folder / git repo / branch / commit /
+# model) so the dashboard request log can label each row. Advisory only.
+if [ -n "${GATEWAY_URL:-}" ] && [ -n "${PISO_WORKER_NAME:-}" ] && [ -n "${PISO_WORKER_SLUG:-}" ] && [ -x /usr/local/bin/piso-context-watch ]; then
+  nohup /usr/local/bin/piso-context-watch >/tmp/piso-context-watch.log 2>&1 &
+fi
+
 exec "$@"

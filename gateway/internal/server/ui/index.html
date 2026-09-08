@@ -219,7 +219,7 @@
     <div class="card">
       <h3>Workers</h3>
       <p class="muted" style="font-size:12px">Toggle internet off to refuse all egress from that worker at the gateway. Re-enable anytime.</p>
-      <table><thead><tr><th>Name</th><th>Slug</th><th>IPs</th><th>Internet</th><th>Updated</th></tr></thead>
+      <table><thead><tr><th>Name</th><th>Slug</th><th>IPs</th><th>Context</th><th>Internet</th><th>Updated</th></tr></thead>
       <tbody id="workerrows"></tbody></table>
     </div>
   </section>
@@ -295,15 +295,36 @@ function clearLogIndex() {
  * @param {object} r
  * @returns {string}
  */
+function contextLabel(r) {
+  // Non-empty git/project + model labels for a log row. Project is the repo
+  // name, or the folder basename when not inside a git repo (so branch /
+  // commit are empty then).
+  const project = (r.project || '').trim();
+  const branch = (r.branch || '').trim();
+  const commit = (r.commit || '').trim();
+  const model = (r.model || '').trim();
+  const parts = [];
+  if (project) {
+    parts.push('repo ' + esc(project));
+    if (branch) parts.push('⎇ ' + esc(branch));
+    if (commit) parts.push('@' + esc(commit));
+  }
+  if (model) parts.push('model ' + esc(model));
+  return parts.join(' · ');
+}
+
 function logRowCells(r) {
   const findings = (r.findings||[]).map(f => `${esc(f.kind)}${f.patternId?':'+esc(f.patternId):''}@${esc(f.location)}`).join(' · ');
   const reasons = esc((r.reasons||[]).join(', '));
   const who = (r.slug && r.slug !== 'worker') ? r.slug : (r.worker || '');
   const extra = [who ? 'worker '+esc(who) : '', reasons, findings].filter(Boolean).join(' · ');
+  const ctx = contextLabel(r);
+  const detail = [extra ? `<span class="log-detail">${extra}</span>` : '',
+                  ctx ? `<span class="log-detail">${ctx}</span>` : ''].join('');
   return `<td class="muted mono">${esc(new Date(r.ts).toLocaleTimeString())}</td>
     <td>${esc(r.method)}</td>
     <td class="mono"><span class="log-url">${esc(r.scheme)}://${esc(r.host)}${esc(r.path)}</span>
-      ${extra ? `<span class="log-detail">${extra}</span>` : ''}</td>
+      ${detail}</td>
     <td>${verdict(r.action)}</td>`;
 }
 
@@ -314,7 +335,8 @@ function logMatches(r) {
   }
   const url = ((r.scheme || '') + '://' + (r.host || '') + (r.path || '')).toLowerCase();
   const who = String(r.worker || '').toLowerCase();
-  return who.indexOf(q) >= 0 || url.indexOf(q) >= 0;
+  const labels = [r.project, r.branch, r.commit, r.model].map(x => String(x||'').toLowerCase()).join(' ');
+  return who.indexOf(q) >= 0 || url.indexOf(q) >= 0 || labels.indexOf(q) >= 0;
 }
 
 function logRow(r, atTop) {
@@ -758,8 +780,14 @@ async function loadWorkers() {
   const ws = await api('/api/v1/workers');
   $('#workerrows').innerHTML = '';
   (ws || []).forEach(w => {
+    const c = w.context || {};
+    const ctxParts = [];
+    if (c.project) { ctxParts.push('repo ' + esc(c.project)); if (c.branch) ctxParts.push('⎇ ' + esc(c.branch)); if (c.commit) ctxParts.push('@' + esc(c.commit)); }
+    if (c.model) ctxParts.push('model ' + esc(c.model));
+    const ctxCell = ctxParts.length ? ctxParts.join(' · ') + (c.ts ? ` <span class="muted">(${new Date(c.ts).toLocaleTimeString()})</span>` : '') : '<span class="muted">no context</span>';
     const tr = el('tr', '', `<td class="mono">${esc(w.name||'')}</td><td>${esc(w.slug||'')}</td>
       <td class="mono">${esc((w.ips||[]).join(', '))}</td>
+      <td>${ctxCell}</td>
       <td><label class="toggle"><input type="checkbox" ${w.internetDisabled?'':'checked'}
         onchange="setWorkerInternet('${esc(w.name)}', !this.checked)"><span></span></label></td>
       <td class="muted">${w.updatedAt ? new Date(w.updatedAt).toLocaleTimeString() : ''}</td>`);

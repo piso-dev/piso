@@ -1,6 +1,7 @@
 package store
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,14 +13,14 @@ func TestApplyMigrationsV0ToV1(t *testing.T) {
 	if !applyMigrations(&st) {
 		t.Fatal("expected rewrite")
 	}
-	if st.Version != 1 {
+	if st.Version != CurrentStateVersion {
 		t.Fatalf("version %d", st.Version)
 	}
 	if st.Secrets == nil || st.Routes == nil {
 		t.Fatal("slices should be non-nil")
 	}
 	if applyMigrations(&st) {
-		t.Fatal("v1 should be a no-op")
+		t.Fatal("already-current should be a no-op")
 	}
 }
 
@@ -44,8 +45,8 @@ func TestLoadMigratesLegacyFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(onDisk), `"version": 1`) {
-		t.Fatalf("migrated file missing version: %s", onDisk)
+	if !strings.Contains(string(onDisk), fmt.Sprintf("\"version\": %d", CurrentStateVersion)) {
+		t.Fatalf("migrated file missing current version: %s", onDisk)
 	}
 }
 

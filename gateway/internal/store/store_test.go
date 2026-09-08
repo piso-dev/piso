@@ -106,3 +106,53 @@ func TestSecretRoundTripWithoutValueLeakOnSummary(t *testing.T) {
 		t.Fatal("cascading rule delete failed")
 	}
 }
+
+func TestWorkerCtxUpsertAndLogEnrichment(t *testing.T) {
+	dir := t.TempDir()
+	st, err := New(filepath.Join(dir, "state.json"), filepath.Join(dir, "req.jsonl"), filepath.Join(dir, "patterns.json"), 100)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ctx := WorkerCtx{Worker: "piso-worker-demo", Slug: "demo", Folder: "/workspace",
+		Project: "demo", Branch: "main", Commit: "abc1234", Model: "routstr/deepseek-v4-flash-0731"}
+	got, err := st.UpsertWorkerCtx(ctx)
+	if err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+	if got.Ts.IsZero() {
+		t.Fatal("timestamp not stamped")
+	}
+
+	// AppendLog snapshots context onto a matching-slug row
+	st.AppendLog(Record{ID: "r1", Slug: "demo", Action: "allow", Status: 200})
+	r1 := st.Records(1)[0]
+	if r1.Project != "demo" || r1.Branch != "main" || r1.Commit != "abc1234" || r1.Model != "routstr/deepseek-v4-flash-0731" {
+		t.Fatalf("enrichment failed: %+v", r1)
+	}
+	// A row that already sets a label keeps it (call site wins)
+	st.AppendLog(Record{ID: "r2", Slug: "demo", Action: "allow", Status: 200, Branch: "explicit"})
+	r2 := st.Records(1)[0]
+	if r2.Branch != "explicit" {
+		t.Fatalf("explicit label clobbered: %+v", r2)
+	}
+	// A record for an unregistered slug gets no labels
+	st.AppendLog(Record{ID: "r3", Slug: "", Action: "block", Status: 407})
+	r3 := st.Records(1)[0]
+	if r3.Project != "" || r3.Model != "" {
+		t.Fatalf("labels leaked to unknown worker: %+v", r3)
+	}
+
+	// Update path preserves the original worker for the same slug
+	ctx2 := WorkerCtx{Worker: "other-name", Slug: "demo", Project: "demo", Branch: "feature/x"}
+	st.UpsertWorkerCtx(ctx2)
+	stored, ok := st.WorkerCtxBySlug("demo")
+	if !ok {
+		t.Fatal("ctx not found by slug")
+	}
+	if stored.Worker != "piso-worker-demo" || stored.Branch != "feature/x" {
+		t.Fatalf("update path: %+v", stored)
+	}
+	if len(st.WorkersCtx()) != 1 {
+		t.Fatalf("WorkersCtx length: %d", len(st.WorkersCtx()))
+	}
+}
