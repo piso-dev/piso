@@ -268,12 +268,27 @@ function showErr(msg) {
   b.textContent = msg;
 }
 
-// tabs
-document.querySelectorAll('#tabs button').forEach(b => b.onclick = () => {
+// tabs — hash-routed: each tab updates location.hash (#/<name>) so the
+// current view is bookmarkable/shareable and survives reload. Valid names are
+// the button data-tab values; unknown/empty hash falls back to the log tab.
+function activateTab(name) {
+  const btn = document.querySelector(`#tabs button[data-tab="${name}"]`);
+  if (!btn) { name = 'log'; }
   document.querySelectorAll('#tabs button').forEach(x => x.classList.remove('active'));
   document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
-  b.classList.add('active'); $(`#tab-${b.dataset.tab}`).classList.add('active');
+  const b = document.querySelector(`#tabs button[data-tab="${name}"]`);
+  if (b) { b.classList.add('active'); }
+  $(`#tab-${name}`).classList.add('active');
+}
+function tabFromHash() {
+  const h = location.hash;
+  return h && h.startsWith('#/') ? h.slice(2) : '';
+}
+document.querySelectorAll('#tabs button').forEach(b => b.onclick = () => {
+  activateTab(b.dataset.tab);
+  location.hash = '#/' + b.dataset.tab;
 });
+window.addEventListener('hashchange', () => activateTab(tabFromHash()));
 
 const verdict = a => a==='block' ? '<span class="badge block">blocked</span>' : a==='substitute' ? '<span class="badge sub">substituted</span>' : '<span class="badge ok">allowed</span>';
 const reason = a => a==='block' ? '<span class="badge retry">retryable</span>' : '';
@@ -1048,6 +1063,7 @@ $('#planModal').addEventListener('click', (ev) => {
   }
   streamLog();
   ensureRoutesPoll();
+  activateTab(tabFromHash() || 'log');
   setInterval(() => {
     loadPlanning().catch(() => {});
   }, 2000);
