@@ -1,11 +1,13 @@
 package proxy
 
 import (
+	"bufio"
 	"bytes"
 	"io"
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestWriteTunnelResponseForcesHTTP11(t *testing.T) {
@@ -38,7 +40,7 @@ func TestWriteTunnelResponseForcesHTTP11(t *testing.T) {
 	}
 }
 
-func TestWriteTunnelResponseFixesContentLength(t *testing.T) {
+func TestWriteTunnelResponseDropsUntrustedContentLength(t *testing.T) {
 	body := []byte(`{"ok":true}`)
 	resp := &http.Response{
 		StatusCode:    http.StatusOK,
@@ -51,8 +53,80 @@ func TestWriteTunnelResponseFixesContentLength(t *testing.T) {
 	if err := writeTunnelResponse(&buf, resp); err != nil {
 		t.Fatal(err)
 	}
-	got := buf.String()
-	if !strings.Contains(got, "Content-Length: 11\r\n") {
-		t.Fatalf("want Content-Length of actual body, got:\n%s", got)
+	raw := buf.String()
+	if strings.Contains(raw, "Content-Length: 9999") {
+		t.Fatalf("untrusted HTTP/2 Content-Length leaked:\n%s", raw)
+	}
+
+	parsed, err := http.ReadResponse(bufio.NewReader(bytes.NewReader(buf.Bytes())), nil)
+	if err != nil {
+		t.Fatalf("ReadResponse: %v", err)
+	}
+	got, err := io.ReadAll(parsed.Body)
+	_ = parsed.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(body) {
+		t.Fatalf("body %q, want %q", got, body)
+	}
+}
+
+func TestWriteTunnelResponseStreamsBeforeEOF(t *testing.T) {
+	pr, pw := io.Pipe()
+	resp := &http.Response{
+		StatusCode:    http.StatusOK,
+		Proto:         "HTTP/2.0",
+		ProtoMajor:    2,
+		Header:        http.Header{"Content-Type": {"text/event-stream"}},
+		Body:          pr,
+		ContentLength: -1,
+	}
+
+	outR, outW := io.Pipe()
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- writeTunnelResponse(outW, resp)
+		_ = outW.Close()
+	}()
+
+	parsed, err := http.ReadResponse(bufio.NewReader(outR), nil)
+	if err != nil {
+		t.Fatalf("headers should arrive before origin EOF: %v", err)
+	}
+	if parsed.StatusCode != http.StatusOK {
+		t.Fatalf("status %d", parsed.StatusCode)
+	}
+
+	first := make(chan string, 1)
+	go func() {
+		buf := make([]byte, 64)
+		n, readErr := parsed.Body.Read(buf)
+		if n > 0 {
+			first <- string(buf[:n])
+			return
+		}
+		if readErr != nil {
+			first <- ""
+		}
+	}()
+
+	if _, err := pw.Write([]byte("data: token\n\n")); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case got := <-first:
+		if !strings.Contains(got, "data: token") {
+			t.Fatalf("streamed body %q, want token", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("client did not see body bytes until origin EOF (still buffering)")
+	}
+
+	_ = pw.Close()
+	_ = parsed.Body.Close()
+	if err := <-errCh; err != nil {
+		t.Fatalf("writeTunnelResponse: %v", err)
 	}
 }

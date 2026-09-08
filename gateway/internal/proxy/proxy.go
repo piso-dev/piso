@@ -8,13 +8,14 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net"
 	"net/http"
+	"net/http/httputil"
 	"net/url"
-	"strconv"
 	"strings"
 	"time"
 
@@ -24,6 +25,20 @@ import (
 	"piso/gateway/internal/scanner"
 	"piso/gateway/internal/store"
 )
+
+// headerTimeout is how long the forwarding client waits for origin response
+// headers. LLM routers often hold headers until the model starts; 30s was
+// producing empty 502s (http2: timeout awaiting response headers).
+const headerTimeout = 90 * time.Second
+
+// streamTimeout bounds a forwarded request including a streamed body.
+// Completions can run for minutes after headers; the old 60s deadline
+// canceled the origin body mid-stream.
+const streamTimeout = 10 * time.Minute
+
+// streamCopyBuf is the io.Copy buffer for tunnel bodies. The default 32KiB
+// would hold SSE tokens in the gateway until the buffer filled.
+const streamCopyBuf = 1024
 
 // Handler is the egress MITM proxy.
 type Handler struct {
@@ -47,7 +62,7 @@ func New(ca *CA, st *store.Store, pat *patterns.Compiled, workerFn func(*http.Re
 	// the response to HTTP/1.1 before writing it onto the MITM tunnel.
 	tr.Proxy = nil
 	tr.DisableCompression = true
-	tr.ResponseHeaderTimeout = 30 * time.Second
+	tr.ResponseHeaderTimeout = headerTimeout
 	return &Handler{
 		CA:       ca,
 		Store:    st,
@@ -177,7 +192,9 @@ func (h *Handler) handleConnect(w http.ResponseWriter, r *http.Request) {
 		// does). The CONNECT request r carries the worker's origin IP — copy it
 		// so worker-identity lookup (IP→slug) works for tunneled requests.
 		req.RemoteAddr = r.RemoteAddr
-		fwdCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		// streamTimeout covers headers + streamed body. headerTimeout on
+		// the transport still fails fast when the origin never sends headers.
+		fwdCtx, cancel := context.WithTimeout(context.Background(), streamTimeout)
 		resp, keepAlive := h.process(fwdCtx, req, "https")
 		writeErr := writeTunnelResponse(tlsConn, resp)
 		_ = resp.Body.Close()
@@ -299,10 +316,10 @@ func (h *Handler) process(ctx context.Context, req *http.Request, scheme string)
 		return &http.Response{
 			Proto: "HTTP/1.1", ProtoMajor: 1, ProtoMinor: 1,
 			StatusCode: http.StatusForbidden, Status: "403 Forbidden",
-			Header:     http.Header{"Connection": {"close"}},
-			Body:       io.NopCloser(bytes.NewReader(nil)),
-			Request:    req,
-			Close:      true,
+			Header:  http.Header{"Connection": {"close"}},
+			Body:    io.NopCloser(bytes.NewReader(nil)),
+			Request: req,
+			Close:   true,
 		}, false
 	}
 
@@ -412,23 +429,17 @@ func prepareTunnelResponse(resp *http.Response) {
 	}
 }
 
-// writeTunnelResponse writes a clean HTTP/1.1 response. It buffers the body
-// so Content-Length matches bytes on the wire; resp.Write on an HTTP/2
-// origin response can advertise the wrong length and hang the client.
+// writeTunnelResponse writes a clean HTTP/1.1 response onto the MITM tunnel.
+// Origin bodies are streamed with chunked encoding so chat completions are
+// not held until EOF (buffering hid the first token and raced streamTimeout).
+// HTTP/2 Content-Length is ignored: origins often advertise the wrong length.
 // The caller still closes the body.
 func writeTunnelResponse(w io.Writer, resp *http.Response) error {
 	if resp == nil {
 		return fmt.Errorf("nil response")
 	}
 	prepareTunnelResponse(resp)
-	var body []byte
-	if resp.Body != nil {
-		b, err := io.ReadAll(resp.Body)
-		if err != nil {
-			return err
-		}
-		body = b
-	}
+
 	status := resp.StatusCode
 	if status == 0 {
 		status = http.StatusOK
@@ -437,14 +448,22 @@ func writeTunnelResponse(w io.Writer, resp *http.Response) error {
 	if text == "" {
 		text = "OK"
 	}
-	hdr := resp.Header.Clone()
-	if hdr == nil {
-		hdr = make(http.Header)
+
+	hdr := make(http.Header)
+	if resp.Header != nil {
+		hdr = resp.Header.Clone()
 	}
 	for _, h := range []string{"Content-Length", "Transfer-Encoding"} {
 		hdr.Del(h)
 	}
-	hdr.Set("Content-Length", strconv.Itoa(len(body)))
+
+	noBody := !responseHasBody(resp)
+	if noBody {
+		hdr.Set("Content-Length", "0")
+	} else {
+		hdr.Set("Transfer-Encoding", "chunked")
+	}
+
 	if _, err := fmt.Fprintf(w, "HTTP/1.1 %03d %s\r\n", status, text); err != nil {
 		return err
 	}
@@ -454,11 +473,57 @@ func writeTunnelResponse(w io.Writer, resp *http.Response) error {
 	if _, err := io.WriteString(w, "\r\n"); err != nil {
 		return err
 	}
-	_, err := w.Write(body)
-	return err
+	flushWriter(w)
+	if noBody {
+		return nil
+	}
+
+	cw := httputil.NewChunkedWriter(w)
+	if _, err := io.CopyBuffer(cw, resp.Body, make([]byte, streamCopyBuf)); err != nil {
+		_ = cw.Close()
+		return err
+	}
+	if err := cw.Close(); err != nil {
+		return err
+	}
+	_, err := io.WriteString(w, "\r\n")
+	if err != nil {
+		return err
+	}
+	flushWriter(w)
+	return nil
 }
 
-// forward replays the (possibly substituted) request upstream.
+// responseHasBody reports whether the response carries an entity body on the
+// wire. Content-Length is ignored: HTTP/2 origins often advertise 0 or a
+// stale value while still sending bytes.
+func responseHasBody(resp *http.Response) bool {
+	if resp == nil || resp.Body == nil {
+		return false
+	}
+	if resp.StatusCode == http.StatusNoContent || resp.StatusCode == http.StatusNotModified {
+		return false
+	}
+	if resp.Request != nil && resp.Request.Method == http.MethodHead {
+		return false
+	}
+	return true
+}
+
+// flushWriter flushes w when it exposes Flush, so SSE tokens leave the
+// gateway instead of sitting in a bufio buffer.
+func flushWriter(w io.Writer) {
+	switch f := w.(type) {
+	case interface{ Flush() error }:
+		_ = f.Flush()
+	case interface{ Flush() }:
+		f.Flush()
+	}
+}
+
+// forward replays the (possibly substituted) request upstream. The body is
+// already in memory (process read it for scanning), so GetBody is set and a
+// dead HTTP/2 connection can be retried once — Go will not retry POST itself.
 func (h *Handler) forward(ctx context.Context, req *http.Request, scheme string) (*http.Response, error) {
 	target := *req.URL
 	target.Scheme = scheme
@@ -466,7 +531,87 @@ func (h *Handler) forward(ctx context.Context, req *http.Request, scheme string)
 	outReq := req.Clone(ctx)
 	outReq.URL = &target
 	outReq.RequestURI = ""
-	return h.client.Do(outReq)
+	if err := ensureGetBody(outReq); err != nil {
+		return nil, err
+	}
+
+	resp, err := h.client.Do(outReq)
+	if err == nil || !isRetryableUpstream(err) || outReq.GetBody == nil {
+		return resp, err
+	}
+
+	body, getErr := outReq.GetBody()
+	if getErr != nil {
+		return nil, err
+	}
+	retry := outReq.Clone(ctx)
+	retry.Body = body
+	retry.GetBody = outReq.GetBody
+	log.Printf("proxy: retrying %s %s after dead upstream conn: %v", retry.Method, retry.URL.Host, err)
+	return h.client.Do(retry)
+}
+
+// ensureGetBody snapshots req.Body so the transport (and forward's own retry)
+// can rewind POST/PUT/PATCH after a dead connection. No-op when GetBody is
+// already set or there is no body.
+func ensureGetBody(req *http.Request) error {
+	if req == nil {
+		return fmt.Errorf("nil request")
+	}
+	if req.GetBody != nil {
+		return nil
+	}
+	if req.Body == nil || req.Body == http.NoBody {
+		return nil
+	}
+	b, err := io.ReadAll(req.Body)
+	_ = req.Body.Close()
+	if err != nil {
+		return err
+	}
+	req.GetBody = func() (io.ReadCloser, error) {
+		return io.NopCloser(bytes.NewReader(b)), nil
+	}
+	req.Body = io.NopCloser(bytes.NewReader(b))
+	req.ContentLength = int64(len(b))
+	return nil
+}
+
+// isRetryableUpstream reports whether err is a dead/idle HTTP/2 (or TCP)
+// connection, safe to retry once because the body is rewindable. Timeouts
+// and cancellations are not retried: those are a slow or abandoned origin.
+func isRetryableUpstream(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return false
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	for _, needle := range []string{
+		"http2: server sent goaway",
+		"http2: client connection lost",
+		"http2: client conn not usable",
+		"http2: transport received server's graceful shutdown goaway",
+		"refused stream",
+		"connection reset by peer",
+		"broken pipe",
+		"use of closed network connection",
+		"server closed idle connection",
+		"http2: connection error",
+	} {
+		if strings.Contains(msg, needle) {
+			return true
+		}
+	}
+	return false
 }
 
 // applySubstitution replaces placeholder tokens with real values in headers

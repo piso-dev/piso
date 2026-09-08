@@ -39,7 +39,7 @@ func TestWorkerInternetBlocked(t *testing.T) {
 	req := &http.Request{RemoteAddr: "192.168.107.50:12345"}
 
 	// enabled → not blocked
-	if blocked, slug := h.workerInternetBlocked(req); blocked {
+	if blocked, _ := h.workerInternetBlocked(req); blocked {
 		t.Fatal("worker with internet enabled should not be blocked")
 	}
 
