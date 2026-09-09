@@ -152,10 +152,10 @@ func ReadSettingsPackages(raw []byte) ([]string, error) {
 
 // informantPromptPath is the in-image prompt template teaching pi to emit
 // semantic activity events (Tier B). monitorPromptPath is the project-manager
-// (PM) template. Both are loaded via settings.json "prompts": every worker's
-// pi reads INFORMANT (it narrates its own work); the monitor additionally
-// reads MONITOR (it curates + pokes). PISO_ROLE=monitor + the MONITOR content
-// give the monitor the PM frame.
+// (PM) template. The CONTRACT is entrypoint.sh writing ~/.pi/agent/AGENTS.md
+// from INFORMANT.md (pi loads that global context file on every run). The
+// settings "prompts" entries below are only the interactive cheat-sheet
+// (/INFORMANT, /MONITOR in the editor) — templates are never auto-injected.
 const (
 	informantPromptPath = "/opt/piso/INFORMANT.md"
 	monitorPromptPath   = "/opt/piso/MONITOR.md"

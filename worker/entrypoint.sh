@@ -39,6 +39,22 @@ if [ -f /opt/piso/npm/.piso-pkg-hash ]; then
   fi
 fi
 
+# Fold the Tier B informant convention into EVERY pi run via the global
+# context file: pi reads ~/.pi/agent/AGENTS.md as a context file on every
+# start (fresh, -r, --session, -p), so the model always knows piso-informant
+# without any launcher passing flags or conversation-history stuffing.
+# The image's /opt/piso/INFORMANT.md is the source of truth; the volume
+# persists AGENTS.md, so re-sync whenever the content changes.
+# settings.json "prompts" is NOT the contract — it only provides the
+# interactive /INFORMANT cheat-sheet. Monitor excluded: its pi is the PM
+# (MONITOR.md governs), and INFORMANT milestones would only pollute its feed.
+if [ "${PISO_ROLE:-}" != "monitor" ] && [ -f /opt/piso/INFORMANT.md ]; then
+  if [ ! -f /root/.pi/agent/AGENTS.md ] || ! cmp -s /opt/piso/INFORMANT.md /root/.pi/agent/AGENTS.md; then
+    mkdir -p /root/.pi/agent
+    cp /opt/piso/INFORMANT.md /root/.pi/agent/AGENTS.md
+  fi
+fi
+
 # When /plan starts Plannotator, ask the host to approve an ingress URL.
 if [ -n "${GATEWAY_URL:-}" ] && [ -n "${PISO_WORKER_NAME:-}" ] && [ -x /usr/local/bin/piso-planning-watch ]; then
   nohup /usr/local/bin/piso-planning-watch >/tmp/piso-planning-watch.log 2>&1 &
