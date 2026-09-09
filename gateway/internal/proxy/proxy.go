@@ -294,6 +294,7 @@ func (h *Handler) decide(req *http.Request, scheme string, body []byte) model.De
 		Rules:               recRules(h.Store),
 		Domains:             recDomains(h.Store),
 		Exceptions:          recExceptions(h.Store),
+		Worker:              h.workerID(req),
 	})
 }
 

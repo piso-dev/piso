@@ -13,7 +13,7 @@ import (
 func testHandler(t *testing.T) (*Handler, *store.Store) {
 	t.Helper()
 	dir := t.TempDir()
-	st, err := store.New(filepath.Join(dir, "state.json"), filepath.Join(dir, "log.jsonl"), filepath.Join(dir, "patterns.json"), 20)
+	st, err := store.New(filepath.Join(dir, "state.json"), filepath.Join(dir, "log.jsonl"), filepath.Join(dir, "patterns.json"), filepath.Join(dir, "activities.db"), 20)
 	if err != nil {
 		t.Fatal(err)
 	}

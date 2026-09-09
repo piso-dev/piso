@@ -140,6 +140,12 @@ func cmdUp(args []string) error {
 	if err := pisoconfig.EnsureWorkerPlaceholdersEnv(proj.Slug); err != nil {
 		return err
 	}
+	// The monitor also gets a placeholders.env (its scoped model key is in the
+	// secrets vault; this exports piso_monitor_… so the monitor's pi can call
+	// the model through the MITM).
+	if err := pisoconfig.EnsureWorkerPlaceholdersEnv("monitor"); err != nil {
+		return err
+	}
 	if err := pisoconfig.EnsurePiProfileFiles(); err != nil {
 		return err
 	}
@@ -147,6 +153,22 @@ func cmdUp(args []string) error {
 	// Otherwise fail before compose if something else owns them.
 	if !healthy(pisoconfig.ControlAPIURL()) {
 		if err := pisoconfig.CheckHostPortsFree(ports); err != nil {
+			return err
+		}
+	}
+
+	// 0. Build the shared worker image BEFORE the gateway: the gateway compose
+	// includes a monitor service that runs `image: piso-worker`, so the image
+	// must exist before `docker compose up -f gateway.yaml` creates it. On a
+	// fresh machine this is the first build; otherwise it's a cheap no-op.
+	if n, err := prepareWorkerBuild(); err != nil {
+		return err
+	} else if n > 0 {
+		fmt.Printf("piso: baking %d host extensions into the worker image\n", n)
+	}
+	if workerNeedsBuild() {
+		fmt.Println("piso: building shared worker image")
+		if err := buildSharedWorker(); err != nil {
 			return err
 		}
 	}
@@ -165,13 +187,10 @@ func cmdUp(args []string) error {
 	if err := syncPiProfile(); err != nil {
 		return err
 	}
-	// 2. worker (per-project). Stage host extensions into the image build
-	// context, then rebuild only when that context hash changes.
-	if n, err := prepareWorkerBuild(); err != nil {
-		return err
-	} else if n > 0 {
-		fmt.Printf("piso: baking %d host extensions into the worker image\n", n)
-	}
+	// 2. worker (per-project). The image is already built (step 0); just render
+	// the project's compose and create the container. `workerNeedsBuild()` is
+	// now false because step 0 built it, but keep --build when appropriate so a
+	// changed context rebuilds on the worker path too.
 	composeEnv, err := dockerComposeEnv()
 	if err != nil {
 		return err
@@ -304,6 +323,10 @@ func syncPiProfile() error {
 	}
 	dest := piprofile.ProfileDir(dataDir)
 	settings, _ := os.ReadFile(piprofile.SettingsPath(agent))
+	// Inject the informant prompt template so the worker's pi loads the Tier B
+	// convention automatically (emit progress/milestone/etc.). Preserves the
+	// user's other settings; dedupes.
+	settings = piprofile.EnsureInformantPrompts(settings)
 	rawModels, modelsErr := os.ReadFile(piprofile.ModelsPath(agent))
 	placeholders := map[string]string{}
 	if modelsErr == nil {
@@ -528,13 +551,19 @@ func cmdSecrets(args []string) error {
 		return nil
 	}
 	switch args[0] {
-	case "add":
-		if len(args) < 5 {
-			return fmt.Errorf("usage: piso secrets add <name> <placeholder> <value> [host,...]")
+	case "add-monitor":
+		// One-command provisioning of the monitor's scoped model key:
+		//   piso secrets add-monitor api.anthropic.com sk-ant-...
+		if len(args) < 3 {
+			return fmt.Errorf("usage: piso secrets add-monitor <host> <value>")
 		}
+		host := args[1]
+		value := args[2]
+		ph := "piso_monitor_" + strings.ToLower(fmt.Sprintf("%x", time.Now().UnixNano()))
 		body, _ := json.Marshal(pisoconfig.SecretIn{
-			Name: args[1], Placeholder: args[2], Value: args[3],
-			AllowedHosts: splitCSV(args[4:]),
+			Name: "monitor-model", Placeholder: ph, Value: value,
+			AllowedHosts: []string{host},
+			Workers:      []string{"monitor"},
 		})
 		resp, err := http.Post(gw+"/api/v1/secrets", "application/json", bytes.NewReader(body))
 		if err != nil {
@@ -545,7 +574,49 @@ func cmdSecrets(args []string) error {
 			b, _ := io.ReadAll(resp.Body)
 			return fmt.Errorf("gateway: %s", string(b))
 		}
-		fmt.Println("secret added:", args[2])
+		fmt.Println("monitor secret added:", ph, "(scoped to workers: monitor)")
+		return nil
+	case "add":
+		if len(args) < 5 {
+			return fmt.Errorf("usage: piso secrets add <name> <placeholder> <value> [host,...] [--workers a,b]")
+		}
+		name := args[1]
+		ph := args[2]
+		val := args[3]
+		var hosts []string
+		var workers []string
+		i := 4
+		for i < len(args) {
+			switch args[i] {
+			case "--workers":
+				if i+1 < len(args) {
+					workers = splitCSV(args[i+1:i+2])
+					i++
+				}
+			default:
+				hosts = append(hosts, args[i])
+			}
+			i++
+		}
+		body, _ := json.Marshal(pisoconfig.SecretIn{
+			Name: name, Placeholder: ph, Value: val,
+			AllowedHosts: hosts,
+			Workers:      workers,
+		})
+		resp, err := http.Post(gw+"/api/v1/secrets", "application/json", bytes.NewReader(body))
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != 201 {
+			b, _ := io.ReadAll(resp.Body)
+			return fmt.Errorf("gateway: %s", string(b))
+		}
+		scope := ""
+		if len(workers) > 0 {
+			scope = " (workers: " + strings.Join(workers, ",") + ")"
+		}
+		fmt.Println("secret added:", ph, scope)
 		return nil
 	case "rm":
 		if len(args) < 2 {
@@ -849,6 +920,20 @@ func rebuildGateway() error {
 		if err := pisoconfig.CheckHostPortsFree(ports); err != nil {
 			return err
 		}
+	}
+	// The gateway compose now includes the monitor (image: piso-worker); the
+	// shared worker image must exist before `docker compose up` creates it.
+	if _, err := prepareWorkerBuild(); err != nil {
+		return err
+	}
+	if workerNeedsBuild() {
+		if err := buildSharedWorker(); err != nil {
+			return err
+		}
+	}
+	// The monitor needs its placeholders.env (scoped model key) too.
+	if err := pisoconfig.EnsureWorkerPlaceholdersEnv("monitor"); err != nil {
+		return err
 	}
 	if err := startGateway(true); err != nil {
 		return err

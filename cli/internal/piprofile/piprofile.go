@@ -149,3 +149,68 @@ func ReadSettingsPackages(raw []byte) ([]string, error) {
 	}
 	return s.Packages, nil
 }
+
+// informantPromptPath is the in-image prompt template teaching pi to emit
+// semantic activity events (Tier B). monitorPromptPath is the project-manager
+// (PM) template. Both are loaded via settings.json "prompts": every worker's
+// pi reads INFORMANT (it narrates its own work); the monitor additionally
+// reads MONITOR (it curates + pokes). PISO_ROLE=monitor + the MONITOR content
+// give the monitor the PM frame.
+const (
+	informantPromptPath = "/opt/piso/INFORMANT.md"
+	monitorPromptPath   = "/opt/piso/MONITOR.md"
+)
+
+// EnsureInformantPrompts returns a copy of settings with the informant (and,
+// for monitors, the monitor) prompt template(s) added to the "prompts" array
+// (deduped, preserving every other key). Empty/nil settings both produce a
+// valid `{"prompts": [...]}`.
+func EnsureInformantPrompts(settings []byte) []byte {
+	var m map[string]any
+	if err := json.Unmarshal(settings, &m); err != nil || m == nil {
+		m = map[string]any{}
+	}
+	// read existing prompts (string or []string)
+	has := func(path string) bool {
+		switch v := m["prompts"].(type) {
+		case []any:
+			for _, e := range v {
+				if s, ok := e.(string); ok && s == path {
+					return true
+				}
+			}
+		case []string:
+			for _, s := range v {
+				if s == path {
+					return true
+				}
+			}
+		case nil:
+		default:
+		}
+		return false
+	}
+	add := func(path string) {
+		switch v := m["prompts"].(type) {
+		case []any:
+			m["prompts"] = append(v, path)
+		case []string:
+			m["prompts"] = append(v, path)
+		case nil:
+			m["prompts"] = []any{path}
+		default:
+			m["prompts"] = []any{path}
+		}
+	}
+	if !has(informantPromptPath) {
+		add(informantPromptPath)
+	}
+	if !has(monitorPromptPath) {
+		add(monitorPromptPath)
+	}
+	out, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		return settings // fall back to verbatim on marshal failure
+	}
+	return append(out, '\n')
+}

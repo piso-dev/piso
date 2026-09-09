@@ -22,6 +22,10 @@ endif
 USER_PATH := $(REAL_HOME)/.orbstack/bin:/usr/local/go/bin:/usr/local/bin:/opt/homebrew/bin:$(PATH)
 
 build:
+	# First run after adding an external module (e.g. modernc.org/sqlite):
+	# resolve the graph + write go.sum on the host (this repo has no Go
+	# toolchain inside the container). Idempotent when clean.
+	$(AS_USER) env HOME="$(REAL_HOME)" PATH="$(USER_PATH)" go mod tidy
 	$(AS_USER) env HOME="$(REAL_HOME)" PATH="$(USER_PATH)" go build -o $(BIN)/piso ./cli/cmd/piso
 	$(AS_USER) env HOME="$(REAL_HOME)" PATH="$(USER_PATH)" go build -o $(BIN)/gateway ./gateway/cmd/gateway
 
@@ -38,6 +42,7 @@ install: build
 	rm -rf $(SHARE)/compose $(SHARE)/worker $(SHARE)/gateway
 	cp -R compose worker gateway $(SHARE)/
 	install -m 644 go.mod $(SHARE)/go.mod
+	install -m 644 go.sum $(SHARE)/go.sum
 	if [ -f .dockerignore ]; then install -m 644 .dockerignore $(SHARE)/.dockerignore; fi
 	@echo "installed $(PREFIX)/bin/piso"
 	@echo "share     $(SHARE)"

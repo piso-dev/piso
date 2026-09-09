@@ -277,3 +277,48 @@ func TestControlPlaneHostAllowed(t *testing.T) {
 		t.Fatalf("control plane must be reachable from worker: %q %+v", d.Action, d.Reasons)
 	}
 }
+
+func TestScopedSecretSubstitutesOnlyForAllowedWorker(t *testing.T) {
+	sec := model.Secret{
+		ID: "s_mon", Placeholder: "piso_mon_abc", Value: "sk-monitor-real",
+		AllowedHosts: []string{"api.anthropic.com"}, Workers: []string{"monitor"},
+	}
+	base := Input{
+		Method: "POST", Host: "api.anthropic.com", Path: "/v1/messages",
+		Scan:                scanner.Result{Placeholders: []model.Finding{{Kind: model.FindingPlaceholder, Token: "piso_mon_abc"}}},
+		SecretByPlaceholder: map[string]model.Secret{"piso_mon_abc": sec},
+		Rules:               []model.Rule{{ID: "r1", SecretID: "s_mon", Host: "api.anthropic.com", Placeholder: "piso_mon_abc"}},
+	}
+	// the designated monitor worker substitutes
+	in := base
+	in.Worker = "monitor"
+	if d := Decide(in); d.Action != model.ActionSubstitute {
+		t.Fatalf("monitor should substitute, got %q %+v", d.Action, d.Reasons)
+	}
+	// another worker cannot use the scoped key → no-secret-rule block
+	in2 := base
+	in2.Worker = "demo"
+	d := Decide(in2)
+	if d.Action != model.ActionBlock || len(d.Reasons) == 0 || d.Reasons[0] != model.ReasonNoSecretRule {
+		t.Fatalf("other worker should be blocked, got %q %+v", d.Action, d.Reasons)
+	}
+}
+
+func TestScopedSecretStarOrEmptyAllowsAll(t *testing.T) {
+	for _, workers := range [][]string{nil, {"*"}} {
+		sec := model.Secret{
+			ID: "s", Placeholder: "piso_ph_abc", Value: "v",
+			AllowedHosts: []string{"api.anthropic.com"}, Workers: workers,
+		}
+		in := Input{
+			Method: "POST", Host: "api.anthropic.com", Path: "/v1/messages",
+			Scan:                scanner.Result{Placeholders: []model.Finding{{Kind: model.FindingPlaceholder, Token: "piso_ph_abc"}}},
+			SecretByPlaceholder: map[string]model.Secret{"piso_ph_abc": sec},
+			Rules:               []model.Rule{{ID: "r", SecretID: "s", Host: "api.anthropic.com", Placeholder: "piso_ph_abc"}},
+			Worker:              "demo",
+		}
+		if d := Decide(in); d.Action != model.ActionSubstitute {
+			t.Fatalf("workers=%v should substitute for any worker, got %q %+v", workers, d.Action, d.Reasons)
+		}
+	}
+}

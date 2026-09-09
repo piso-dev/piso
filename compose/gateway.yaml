@@ -38,6 +38,7 @@ services:
       PISO_STATE_FILE: /data/state.json
       PISO_PATTERNS_FILE: /data/patterns.json
       PISO_LOG_FILE: /data/requests.jsonl
+      PISO_ACTIVITIES_FILE: /data/activities.db
       PISO_CA_CERT: /data/ca.crt
       PISO_CA_KEY: /data/ca.key
       PISO_PROXY_LISTEN: :8080
@@ -54,6 +55,50 @@ services:
       - vpc
       - egress
 
+  # Project manager: a special worker that reads activity and decides pokes/
+  # reminders. Host-scoped (watches all projects), so it lives with the
+  # gateway — same lifecycle, same sandboxing (internal vpc, cap_drop,
+  # no project mount, read-only rootfs). Its slug is "monitor", but nothing
+  # in the codebase treats it differently — it is an ordinary worker whose
+  # LLM access is a scoped secret (Workers: [monitor]).
+  monitor:
+    image: piso-worker
+    container_name: piso-worker-monitor
+    restart: unless-stopped
+    stdin_open: true
+    tty: true
+    # The PM wake loop (pi reads the feed per MONITOR.md, emits pokes). The
+    # entrypoint launches the infra watchers first, then exec's this.
+    command: /usr/local/bin/piso-monitor-loop
+    volumes:
+      - piso-agent-monitor:/root/.pi/agent   # own session volume; NO project mount
+      - ${PISO_DATA}/ca.crt:/piso-ca.pem:ro
+      - ${PISO_DATA}/pi-profile/settings.json:/root/.pi/agent/settings.json:ro
+      - ${PISO_DATA}/pi-profile/models.json:/root/.pi/agent/models.json:ro
+      - ${PISO_DATA}/workers/monitor/placeholders.env:/etc/piso/placeholders.env:ro
+    environment:
+      HTTPS_PROXY: http://gateway:8080
+      HTTP_PROXY: http://gateway:8080
+      NO_PROXY: gateway,localhost,127.0.0.1,*.piso.local
+      GATEWAY_URL: http://gateway:8083
+      PISO_WORKER_NAME: piso-worker-monitor
+      PISO_WORKER_SLUG: monitor
+      PISO_ROLE: monitor
+      NPM_CONFIG_CACHE: /root/.pi/agent/.npm-cache
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /run
+      - /root/.cache
+      - /root/.npm
+    networks:
+      - vpc
+
 networks:
   vpc:
     name: piso_vpc
@@ -65,3 +110,7 @@ networks:
   egress:
     name: piso_egress
     driver: bridge
+
+volumes:
+  piso-agent-monitor:
+    name: piso-agent-monitor

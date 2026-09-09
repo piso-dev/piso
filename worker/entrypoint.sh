@@ -50,6 +50,14 @@ if [ -n "${GATEWAY_URL:-}" ] && [ -n "${PISO_WORKER_NAME:-}" ] && [ -x /usr/loca
   nohup /usr/local/bin/piso-ports-watch >/tmp/piso-ports-watch.log 2>&1 &
 fi
 
+# Tier A activity informant: coarse beats (session start/end, alive) for the
+# PM board's live/idle floor. Suppressed in the MONITOR role — the monitor's
+# own pi process is a manager, not work-in-a-project, so its "working on …"
+# beats would just be noise on its track (it has no project mount).
+if [ "${PISO_ROLE:-}" != "monitor" ] && [ -n "${GATEWAY_URL:-}" ] && [ -n "${PISO_WORKER_NAME:-}" ] && [ -x /usr/local/bin/piso-activity-watch ]; then
+  nohup /usr/local/bin/piso-activity-watch >/tmp/piso-activity-watch.log 2>&1 &
+fi
+
 # Report the worker's live context (folder / git repo / branch / commit /
 # model) so the dashboard request log can label each row. Advisory only.
 if [ -n "${GATEWAY_URL:-}" ] && [ -n "${PISO_WORKER_NAME:-}" ] && [ -n "${PISO_WORKER_SLUG:-}" ] && [ -x /usr/local/bin/piso-context-watch ]; then

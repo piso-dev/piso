@@ -414,6 +414,26 @@ func (s *Server) routes(mux *http.ServeMux) {
 		writeJSON(w, 200, rec)
 	})
 
+	// GET /api/v1/activities — host board read (the control plane is host-only;
+	// the monitor uses the worker API on :8083 instead).
+	mux.HandleFunc("GET /api/v1/activities", func(w http.ResponseWriter, r *http.Request) {
+		f := store.ActivityFilter{
+			Kind: strings.TrimSpace(r.URL.Query().Get("kind")),
+			Slug: strings.TrimSpace(r.URL.Query().Get("slug")),
+			TargetSlug: strings.TrimSpace(r.URL.Query().Get("target")),
+			Limit: atoiDefault(r.URL.Query().Get("limit"), 500),
+		}
+		acts, err := s.Store.QueryActivities(f)
+		if err != nil {
+			writeJSON(w, 500, map[string]string{"error": err.Error()})
+			return
+		}
+		if acts == nil {
+			acts = []store.Activity{}
+		}
+		writeJSON(w, 200, acts)
+	})
+
 	// worker registry (slug↔IP), populated by the host CLI at `piso up`
 	mux.HandleFunc("GET /api/v1/workers", s.handleGetWorkers)
 	mux.HandleFunc("POST /api/v1/workers", s.handlePostWorkers)
@@ -458,6 +478,7 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 	sub := s.Store.Sub()
 	subIng := s.Store.SubIngress()
 	subRoutes := s.Store.SubRoutes()
+	subActs := s.Store.SubActivities()
 	ctx := r.Context()
 	tick := time.NewTicker(20 * time.Second)
 	defer tick.Stop()
@@ -476,6 +497,11 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 		case rte := <-subRoutes:
 			if b, err := json.Marshal(rte); err == nil {
 				fmt.Fprintf(w, "event: route\ndata: %s\n\n", b)
+				fl.Flush()
+			}
+		case act := <-subActs:
+			if b, err := json.Marshal(act); err == nil {
+				fmt.Fprintf(w, "event: activity\ndata: %s\n\n", b)
 				fl.Flush()
 			}
 		case <-tick.C:

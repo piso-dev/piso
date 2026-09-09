@@ -49,6 +49,7 @@ func main() {
 		statePath    = flag.String("state", envOr("PISO_STATE_FILE", ".piso/state.json"), "state file (secrets/rules/domains/exceptions/routes)")
 		patternsPath = flag.String("patterns", envOr("PISO_PATTERNS_FILE", ".piso/patterns.json"), "credential pattern library file")
 		logPath      = flag.String("log", envOr("PISO_LOG_FILE", ".piso/requests.jsonl"), "request log (JSONL)")
+		activitiesPath = flag.String("activities", envOr("PISO_ACTIVITIES_FILE", ".piso/activities.db"), "activity database (SQLite)")
 		caCertPath   = flag.String("ca-cert", envOr("PISO_CA_CERT", ".piso/ca.crt"), "CA certificate (generated if missing)")
 		caKeyPath    = flag.String("ca-key", envOr("PISO_CA_KEY", ".piso/ca.key"), "CA private key (generated if missing)")
 		proxyAddr    = flag.String("proxy-listen", envOr("PISO_PROXY_LISTEN", ":8080"), "egress proxy listen addr")
@@ -63,7 +64,7 @@ func main() {
 		log.Fatalf("mkdir: %v", err)
 	}
 
-	st, err := store.New(*statePath, *logPath, *patternsPath, *maxLog)
+	st, err := store.New(*statePath, *logPath, *patternsPath, *activitiesPath, *maxLog)
 	if err != nil {
 		log.Fatalf("store: %v", err)
 	}

@@ -55,3 +55,48 @@ func TestReadSettingsPackages(t *testing.T) {
 		t.Fatalf("%v", pkgs)
 	}
 }
+
+func TestEnsureInformantPromptsAddsOnce(t *testing.T) {
+	out1 := EnsureInformantPrompts([]byte("{}\n"))
+	if !strings.Contains(string(out1), informantPromptPath) {
+		t.Fatalf("missing prompt: %s", out1)
+	}
+	// second call does not duplicate
+	out2 := EnsureInformantPrompts(out1)
+	if strings.Count(string(out2), informantPromptPath) != 1 {
+		t.Fatalf("duplicated: %s", out2)
+	}
+}
+
+func TestEnsureInformantPromptsPreservesOtherSettings(t *testing.T) {
+	in := []byte(`{"theme":"dark","prompts":["/custom/a.md"]}`)
+	out := EnsureInformantPrompts(in)
+	s := string(out)
+	if !strings.Contains(s, "dark") || !strings.Contains(s, "/custom/a.md") || !strings.Contains(s, informantPromptPath) {
+		t.Fatalf("clobbered: %s", s)
+	}
+}
+
+func TestEnsureInformantPromptsIncludesMonitorPrompt(t *testing.T) {
+	out := EnsureInformantPrompts([]byte("{}\n"))
+	s := string(out)
+	if !strings.Contains(s, informantPromptPath) || !strings.Contains(s, monitorPromptPath) {
+		t.Fatalf("missing prompt(s): %s", s)
+	}
+	// adding both once, twice is idempotent
+	out2 := EnsureInformantPrompts(out)
+	if strings.Count(string(out2), informantPromptPath) != 1 || strings.Count(string(out2), monitorPromptPath) != 1 {
+		t.Fatalf("duplicated: %s", out2)
+	}
+}
+
+func TestEnsureInformantPromptsHandlesEmptyAndExistingStrings(t *testing.T) {
+	if !strings.Contains(string(EnsureInformantPrompts(nil)), informantPromptPath) {
+		t.Fatal("nil settings should still yield the prompt")
+	}
+	// []string prompts form
+	out := EnsureInformantPrompts([]byte(`{"prompts":["/a.md"]}`))
+	if strings.Count(string(out), informantPromptPath) != 1 {
+		t.Fatalf("[]string form: %s", out)
+	}
+}

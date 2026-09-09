@@ -74,6 +74,25 @@
   .toggle span:before { position:absolute; content:""; height:14px; width:14px; left:3px; top:3px; background:#fff; border-radius:50%; transition:.2s }
   .toggle input:checked + span { background:var(--ok,#2e7d32) }
   .toggle input:checked + span:before { transform:translateX(18px) }
+
+  /* PM board: horizontal tracks + timeline items */
+  .board-header { display:flex; gap:12px; align-items:baseline; margin-bottom:12px; flex-wrap:wrap }
+  .track { background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:10px 14px; margin-bottom:10px }
+  .track.dim { opacity:.5 }
+  .track-head { display:flex; align-items:baseline; gap:10px; flex-wrap:wrap; margin-bottom:6px }
+  .track-head .slug { font-weight:600; font-size:14px }
+  .track-head .meta { color:var(--muted); font-size:12px }
+  .track-items { display:flex; flex-direction:column; gap:6px }
+  .titem { display:flex; gap:10px; align-items:baseline; font-size:13px; border-left:3px solid var(--muted); padding-left:10px }
+  .titem .ts { color:var(--muted); font-size:11px; white-space:nowrap; min-width:76px; font-family:ui-monospace,SFMono-Regular,Menlo,monospace }
+  .titem .txt { overflow-wrap:anywhere }
+  .titem.k-progress { border-left-color:var(--accent) }
+  .titem.k-milestone { border-left-color:var(--ok) }
+  .titem.k-reminder { border-left-color:var(--warn) }
+  .titem.k-poke { border-left-color:var(--bad) }
+  .titem.k-active { border-left-color:var(--accent); font-style:italic }
+  .pulse { animation:pulse 1.6s ease-in-out infinite }
+  @keyframes pulse { 0%,100% { opacity:1 } 50% { opacity:.35 } }
 </style>
 </head>
 <body>
@@ -85,6 +104,7 @@
 </header>
 <div id="errbar"></div>
 <nav id="tabs">
+  <button data-tab="board">Board</button>
   <button data-tab="log" class="active">Request log</button>
   <button data-tab="secrets">Secrets</button>
   <button data-tab="rules">Rules</button>
@@ -95,6 +115,14 @@
   <button data-tab="workers">Workers</button>
 </nav>
 <main>
+  <!-- PM BOARD (new main screen) -->
+  <section class="tab" id="tab-board">
+    <div class="logbar">
+      <span class="muted" id="boardStatus"></span>
+    </div>
+    <div id="boardTracks"></div>
+  </section>
+
   <!-- REQUEST LOG -->
   <section class="tab active" id="tab-log">
     <div class="logbar">
@@ -684,6 +712,7 @@ function streamLog() {
   es.addEventListener('record', ev => { const r = JSON.parse(ev.data); logRow(r); });
   es.addEventListener('planning', ev => { loadPlanning().catch(() => {}); });
   es.addEventListener('route', ev => { loadRoutes().catch(() => {}); });
+  es.addEventListener('activity', ev => { loadBoard().catch(() => {}); });
   es.onerror = () => {};
 }
 $('#logFilter').oninput = ev => {
@@ -819,6 +848,86 @@ function ensureRoutesPoll() {
   if (routesPolled) { return; }
   routesPolled = true;
   setInterval(() => { loadRoutes().catch(() => {}); }, 5000);
+}
+
+// ---- PM board (timeline tracks per project) ----
+const KIND_LABEL = { progress:'progress', milestone:'milestone', reminder:'reminder', poke:'poke', active:'active', note:'note' };
+
+// loadBoard renders the board: fetch activities + worker context, group into
+// one track per slug (plus any target-only slugs for pokes), and paint a
+// timeline. A live worker (recent activity) pulses; an idle one dims.
+async function loadBoard() {
+  const [acts, ws] = await Promise.all([
+    api('/api/v1/activities?limit=500'),
+    api('/api/v1/workers')
+  ]).catch(e => { $('#boardStatus').textContent = e.message; return [[], []]; });
+  const actsList = Array.isArray(acts) ? acts : [];
+  const wsList = Array.isArray(ws) ? ws : [];
+  const now = Date.now();
+  const IDLE_MS = 15 * 60 * 1000;   // dim a track idle > 15 min
+  const LIVE_MS = 3 * 60 * 1000;    // pulse a live track with activity < 3 min
+
+  // slug -> {slug, isMonitor, ctx, items:[]}
+  const bySlug = {};
+  const ensure = (slug) => {
+    if (!bySlug[slug]) { bySlug[slug] = {slug, items: []}; }
+    return bySlug[slug];
+  };
+  wsList.forEach(w => { if (w.slug) ensure(w.slug).ctx = w.context || {}; });
+
+  actsList.forEach(a => {
+    const target = (a.targetSlug && a.targetSlug !== a.slug) ? a.targetSlug : a.slug;
+    ensure(target).items.push(a);
+  });
+
+  const slugs = Object.keys(bySlug).sort();
+  if (slugs.length === 0) {
+    $('#boardTracks').innerHTML = '<p class="muted">No activity yet. Start work in a worker or run the informant.</p>';
+    $('#boardStatus').textContent = '';
+    return;
+  }
+  $('#boardStatus').textContent = `${slugs.length} project${slugs.length===1?'':'s'} · ${actsList.length} activities`;
+  const box = $('#boardTracks');
+  box.innerHTML = '';
+  slugs.forEach(slug => {
+    const t = bySlug[slug];
+    const last = t.items.reduce((mx, it) => (it.ts > mx ? it.ts : mx), 0);
+    const age = now - last;
+    const live = age < LIVE_MS;
+    const dim = age > IDLE_MS;
+    const ctx = t.ctx || {};
+    const meta = [
+      ctx.project ? 'repo ' + esc(ctx.project) : '',
+      ctx.branch ? '⎇ ' + esc(ctx.branch) : '',
+      ctx.commit ? '@' + esc(ctx.commit) : '',
+      t.items.length + ' events'
+    ].filter(Boolean).join(' · ');
+    const items = t.items
+      .slice()
+      .sort((a,b) => b.ts - a.ts)
+      .slice(0, 20)
+      .map(it => {
+        const k = it.kind && KIND_LABEL[it.kind] ? it.kind : 'note';
+        const ts = new Date(it.ts).toLocaleTimeString();
+        const pulse = (k === 'active' && live) ? ' <span class="pulse">●</span>' : '';
+        return `<div class="titem k-${esc(k)}"><span class="ts">${esc(ts)}</span><span class="txt">${esc(it.text)}${pulse}</span></div>`;
+      }).join('');
+    const track = el('div', 'track' + (dim ? ' dim' : ''), '');
+    track.innerHTML = `<div class="track-head"><span class="slug">${esc(slug)}</span>` +
+      (live ? '<span class="badge ok">live</span>' : '') +
+      (dim ? '<span class="badge">idle</span>' : '') +
+      `<span class="meta">${meta}</span></div><div class="track-items">${items}</div>`;
+    box.append(track);
+  });
+}
+
+// The board also refreshes on a light poll (SSE activity events already
+// trigger loadBoard; the poll covers races).
+let boardPolled = false;
+function ensureBoardPoll() {
+  if (boardPolled) { return; }
+  boardPolled = true;
+  setInterval(() => { loadBoard().catch(() => {}); }, 10000);
 }
 
 async function loadWorkers() {
@@ -1053,7 +1162,7 @@ $('#planModal').addEventListener('click', (ev) => {
     showErr('control API unreachable at ' + location.origin + ' — try http://127.0.0.1 (piso.local IPv6 needs ::1 published)');
     return;
   }
-  const loaders = [loadSecrets, loadRules, loadPatterns, loadExceptions, loadDomains, loadRoutes, loadWorkers, loadPlanning, loadLog];
+  const loaders = [loadBoard, loadSecrets, loadRules, loadPatterns, loadExceptions, loadDomains, loadRoutes, loadWorkers, loadPlanning, loadLog];
   for (const fn of loaders) {
     try {
       await fn();
@@ -1063,7 +1172,8 @@ $('#planModal').addEventListener('click', (ev) => {
   }
   streamLog();
   ensureRoutesPoll();
-  activateTab(tabFromHash() || 'log');
+  ensureBoardPoll();
+  activateTab(tabFromHash() || 'board');
   setInterval(() => {
     loadPlanning().catch(() => {});
   }, 2000);

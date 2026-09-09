@@ -33,6 +33,10 @@ type Input struct {
 	Rules               []model.Rule
 	Domains             map[string]model.DomainPolicy // keyed by lowercase host
 	Exceptions          []model.Exception
+	// Worker is the origin worker SLUG (e.g. "demo", "monitor"). Used to
+	// enforce Secret.Workers scoping: a secret whose Workers list is non-empty
+	// only substitutes for a listed worker. Empty Workers = all workers.
+	Worker string
 }
 
 // Decide runs the pipeline and returns the action plus reasons.
@@ -126,13 +130,30 @@ func substituteAll(in Input) ([]string, bool) {
 		if !isVaultPlaceholder(in, f.Token) {
 			continue
 		}
-		if _, ok := lookupRule(in, f.Token); ok {
+		if _, ok := lookupRule(in, f.Token); ok && in.secretAllowedForWorker(f.Token) {
 			out = append(out, f.Token)
 		} else {
 			return out, false // any unresolvable vault placeholder blocks
 		}
 	}
 	return out, true
+}
+
+// secretAllowedForWorker reports whether the origin worker may substitute this
+// placeholder's secret. Secret.Workers scoping: non-empty list = ONLY those
+// slugs may use it ("*" = all); empty = all. A worker outside the list is
+// treated as having no rule → blocked no-secret-rule (retryable).
+func (in Input) secretAllowedForWorker(token string) bool {
+	sec, ok := in.SecretByPlaceholder[token]
+	if !ok || len(sec.Workers) == 0 {
+		return true
+	}
+	for _, w := range sec.Workers {
+		if w == "*" || w == in.Worker {
+			return true
+		}
+	}
+	return false
 }
 
 // isVaultPlaceholder reports whether token is an issued secret placeholder.

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -23,6 +24,9 @@ func (s *Server) WorkerHandler() http.Handler {
 	mux.HandleFunc("POST /api/v1/worker/planning/cancel", s.handleCancelIngress)
 	mux.HandleFunc("POST /api/v1/worker/context", s.handleWorkerPostContext)
 	mux.HandleFunc("POST /api/v1/worker/ports", s.handleWorkerPostPorts)
+	mux.HandleFunc("POST /api/v1/worker/activity", s.handleWorkerPostActivity)
+	mux.HandleFunc("GET /api/v1/worker/activities", s.handleWorkerGetActivities)
+	mux.HandleFunc("POST /api/v1/worker/activity/revoke", s.handleWorkerRevokeActivity)
 	return mux
 }
 
@@ -100,6 +104,141 @@ func requestIP(r *http.Request) string {
 		host = r.RemoteAddr
 	}
 	return host
+}
+
+// activityIn is one informant report (or monitor poke) posted by a worker.
+type activityIn struct {
+	Worker     string `json:"worker"`
+	Slug       string `json:"slug,omitempty"`
+	Kind       string `json:"kind"`
+	TargetSlug string `json:"targetSlug,omitempty"`
+	Text       string `json:"text"`
+}
+
+// handleWorkerPostActivity stores an activity reported by a worker's
+// informant (or the monitor). The origin worker is identity-checked against
+// the slug↔IP registry exactly like the ports handler; text is sanitized
+// (labels render in the host dashboard). No headers/bodies ever enter the
+// activity store — only the sanitized text.
+func (s *Server) handleWorkerPostActivity(w http.ResponseWriter, r *http.Request) {
+	var in activityIn
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeJSON(w, 400, map[string]string{"error": "bad json"})
+		return
+	}
+	in.Worker = strings.TrimSpace(in.Worker)
+	in.Slug = strings.TrimSpace(in.Slug)
+	in.Kind = strings.TrimSpace(in.Kind)
+	in.TargetSlug = strings.TrimSpace(in.TargetSlug)
+	in.Text = strings.TrimSpace(in.Text)
+	if !workerNameRe.MatchString(in.Worker) {
+		writeJSON(w, 400, map[string]string{"error": "worker name required"})
+		return
+	}
+	if in.Slug == "" {
+		in.Slug = slugFromWorker(in.Worker)
+	}
+	if !workerNameRe.MatchString(in.Slug) {
+		writeJSON(w, 400, map[string]string{"error": "slug required"})
+		return
+	}
+	if !store.ValidActivityKind(in.Kind) {
+		writeJSON(w, 400, map[string]string{"error": "unknown kind"})
+		return
+	}
+	if in.Text == "" {
+		writeJSON(w, 400, map[string]string{"error": "text required"})
+		return
+	}
+	// A registered worker's source IP must match the reported identity.
+	if reg, ok := s.Store.WorkerByIP(requestIP(r)); ok && (reg.Name != in.Worker || reg.Slug != in.Slug) {
+		writeJSON(w, 403, map[string]string{"error": "identity mismatch"})
+		return
+	}
+	a := store.Activity{
+		Worker: in.Worker, Slug: in.Slug, Kind: in.Kind,
+		TargetSlug: sanitizeLabel(in.TargetSlug, 63),
+		Text:       sanitizeLabel(in.Text, 500),
+	}
+	if err := s.Store.InsertActivity(a); err != nil {
+		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, 201, a)
+}
+
+// handleWorkerGetActivities returns the activity feed. The monitor polls this;
+// any registered worker may read the whole feed (it is scrubbed: sanitized
+// text only). Caller identity is verified like the ports handler.
+func (s *Server) handleWorkerGetActivities(w http.ResponseWriter, r *http.Request) {
+	worker := strings.TrimSpace(r.URL.Query().Get("worker"))
+	if !workerNameRe.MatchString(worker) {
+		writeJSON(w, 400, map[string]string{"error": "worker required"})
+		return
+	}
+	if reg, ok := s.Store.WorkerByIP(requestIP(r)); ok && reg.Name != worker {
+		writeJSON(w, 403, map[string]string{"error": "identity mismatch"})
+		return
+	}
+	f := store.ActivityFilter{
+		Kind:    strings.TrimSpace(r.URL.Query().Get("kind")),
+		Slug:    strings.TrimSpace(r.URL.Query().Get("slug")),
+		Limit:   atoiDefault(r.URL.Query().Get("limit"), 500),
+	}
+	acts, err := s.Store.QueryActivities(f)
+	if err != nil {
+		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		return
+	}
+	if acts == nil {
+		acts = []store.Activity{}
+	}
+	writeJSON(w, 200, acts)
+}
+
+// handleWorkerRevokeActivity removes one of the caller's own activity rows
+// (id is scoped to the posting worker).
+func (s *Server) handleWorkerRevokeActivity(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		ID     string `json:"id"`
+		Worker string `json:"worker"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeJSON(w, 400, map[string]string{"error": "bad json"})
+		return
+	}
+	in.ID = strings.TrimSpace(in.ID)
+	in.Worker = strings.TrimSpace(in.Worker)
+	if in.ID == "" || !workerNameRe.MatchString(in.Worker) {
+		writeJSON(w, 400, map[string]string{"error": "id and worker required"})
+		return
+	}
+	if reg, ok := s.Store.WorkerByIP(requestIP(r)); ok && reg.Name != in.Worker {
+		writeJSON(w, 403, map[string]string{"error": "identity mismatch"})
+		return
+	}
+	deleted, err := s.Store.DeleteOwnActivity(in.ID, in.Worker)
+	if err != nil {
+		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		return
+	}
+	if !deleted {
+		writeJSON(w, 404, map[string]string{"error": "not found"})
+		return
+	}
+	w.WriteHeader(204)
+}
+
+// atoiDefault parses s as an int, returning def on empty/invalid.
+func atoiDefault(s string, def int) int {
+	if s == "" {
+		return def
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil || n < 1 {
+		return def
+	}
+	return n
 }
 
 // handleWorkerPostContext receives the watcher's live context and stores it.

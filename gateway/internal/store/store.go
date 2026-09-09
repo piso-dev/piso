@@ -6,6 +6,7 @@ package store
 
 import (
 	"bufio"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -147,6 +148,9 @@ type Store struct {
 	logPath      string // request log path
 	patternsPath string // patterns file path
 
+	// activity DB (SQLite; out-of-band from state.json)
+	activitiesDB *sql.DB
+
 	// live request log
 	records  []Record // most recent first
 	maxLog   int
@@ -154,6 +158,9 @@ type Store struct {
 
 	// pending ingress requests (worker-published plan UIs)
 	onIngress chan IngressRequestRec // broadcast for SSE
+
+	// activity events (informant reports + monitor pokes)
+	onActivity chan Activity // broadcast for SSE
 
 	// route changes (auto-published dev servers + host routes)
 	onRoute chan RouteRec // broadcast for SSE
@@ -210,13 +217,17 @@ type Capture struct {
 	Body    []byte              `json:"body"`
 }
 
-// New loads state from path (creating it if missing) and prepares the log.
-func New(path, logPath, patternsPath string, maxLog int) (*Store, error) {
+// New loads state from path (creating it if missing), prepares the log, and
+// opens the SQLite activity database (activities.db). Activities are durable
+// and queryable but live outside state.json, so they never trigger a state
+// migration.
+func New(path, logPath, patternsPath, activitiesPath string, maxLog int) (*Store, error) {
 	s := &Store{
 		path: path, logPath: logPath, patternsPath: patternsPath, maxLog: maxLog,
-		onRecord: make(chan Record, 64),
-		onIngress: make(chan IngressRequestRec, 64),
-		onRoute: make(chan RouteRec, 64),
+		onRecord:    make(chan Record, 64),
+		onIngress:   make(chan IngressRequestRec, 64),
+		onRoute:     make(chan RouteRec, 64),
+		onActivity:  make(chan Activity, 64),
 		unreachable: map[string][]UnreachablePort{},
 	}
 	if err := s.load(); err != nil {
@@ -224,6 +235,11 @@ func New(path, logPath, patternsPath string, maxLog int) (*Store, error) {
 	}
 	if err := os.MkdirAll(filepath.Dir(logPath), 0o700); err != nil {
 		return nil, err
+	}
+	if activitiesPath != "" {
+		if err := s.openActivityDB(activitiesPath); err != nil {
+			return nil, err
+		}
 	}
 	return s, nil
 }

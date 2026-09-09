@@ -162,3 +162,61 @@ func TestRouteDisabledBlocksProxy(t *testing.T) {
 		t.Fatalf("re-enabled should serve, got %d", w.Code)
 	}
 }
+
+func TestWorkerActivityPostGetRevoke(t *testing.T) {
+	s := testServer(t)
+	wh := s.WorkerHandler()
+	// post an activity
+	res := doJSON(t, wh, "POST", "/api/v1/worker/activity", map[string]any{
+		"worker": "piso-worker-demo", "kind": "progress", "text": "Started OAuth flow",
+	})
+	if res.Code != 201 {
+		t.Fatalf("post %d %s", res.Code, res.Body.String())
+	}
+	var act store.Activity
+	_ = json.Unmarshal(res.Body.Bytes(), &act)
+	if act.ID == "" || act.Kind != "progress" || act.Slug != "demo" || act.Text != "Started OAuth flow" {
+		t.Fatalf("act %+v", act)
+	}
+	// control plane read (host board)
+	ctrl := doJSON(t, s.ControlHandler(), "GET", "/api/v1/activities", nil)
+	if ctrl.Code != 200 || !strings.Contains(ctrl.Body.String(), act.ID) {
+		t.Fatalf("control read %d %s", ctrl.Code, ctrl.Body.String())
+	}
+	// worker feed read
+	feed := doJSON(t, wh, "GET", "/api/v1/worker/activities?worker=piso-worker-demo", nil)
+	if feed.Code != 200 || !strings.Contains(feed.Body.String(), "Started OAuth flow") {
+		t.Fatalf("feed %d %s", feed.Code, feed.Body.String())
+	}
+	// revoke by a different worker → 404 (scoped)
+	rev := doJSON(t, wh, "POST", "/api/v1/worker/activity/revoke", map[string]any{"id": act.ID, "worker": "piso-worker-other"})
+	if rev.Code != 404 {
+		t.Fatalf("cross-worker revoke %d %s", rev.Code, rev.Body.String())
+	}
+	// revoke by owner → 204
+	rev = doJSON(t, wh, "POST", "/api/v1/worker/activity/revoke", map[string]any{"id": act.ID, "worker": "piso-worker-demo"})
+	if rev.Code != 204 {
+		t.Fatalf("own revoke %d %s", rev.Code, rev.Body.String())
+	}
+}
+
+func TestWorkerActivityValidation(t *testing.T) {
+	s := testServer(t)
+	wh := s.WorkerHandler()
+	// bad worker
+	if w := doJSON(t, wh, "POST", "/api/v1/worker/activity", map[string]any{"worker": "../etc", "kind": "note", "text": "x"}); w.Code != 400 {
+		t.Fatalf("bad worker %d", w.Code)
+	}
+	// unknown kind
+	if w := doJSON(t, wh, "POST", "/api/v1/worker/activity", map[string]any{"worker": "piso-worker-demo", "kind": "bogus", "text": "x"}); w.Code != 400 {
+		t.Fatalf("bad kind %d %s", w.Code, w.Body.String())
+	}
+	// empty text
+	if w := doJSON(t, wh, "POST", "/api/v1/worker/activity", map[string]any{"worker": "piso-worker-demo", "kind": "note", "text": "  "}); w.Code != 400 {
+		t.Fatalf("empty text %d", w.Code)
+	}
+	// control-plane read without worker (board) still works; worker feed needs a worker
+	if w := doJSON(t, wh, "GET", "/api/v1/worker/activities", nil); w.Code != 400 {
+		t.Fatalf("feed without worker %d", w.Code)
+	}
+}
