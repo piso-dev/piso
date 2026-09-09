@@ -14,7 +14,7 @@ The gateway's activity store, via the worker API (you are `piso-worker-monitor`)
   returns every project's activities: `{id, worker, slug, kind, targetSlug,
   text, ts}`. Kinds: `progress`, `milestone`, `reminder`, `poke`, `active`,
   `waiting`, `note`. `slug` is the source project; `targetSlug` is who a poke is aimed at.
-  `waiting` means an agent run ended and the human owes the next input.
+  `waiting` is Tier B only: the agent said the run needs the human's next input.
 - `GET http://gateway:8083/api/v1/worker/activities?worker=piso-worker-monitor&slug=<proj>`
   filters to one project.
 
