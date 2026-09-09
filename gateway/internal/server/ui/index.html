@@ -6,7 +6,8 @@
 <title>piso gateway</title>
 <style>
   :root { --bg:#0f1115; --panel:#171a21; --fg:#e6e8ee; --muted:#8b93a5; --accent:#4f8cff;
-          --ok:#2ecc71; --warn:#f1c40f; --bad:#e74c3c; --border:#262b36; }
+          --ok:#2ecc71; --warn:#f1c40f; --bad:#e74c3c; --border:#262b36;
+          --tl-label-w:200px; }
   * { box-sizing:border-box }
   body { margin:0; font:14px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif; background:var(--bg); color:var(--fg) }
   header { display:flex; align-items:center; gap:16px; padding:14px 20px; border-bottom:1px solid var(--border) }
@@ -84,14 +85,17 @@
   .kf input { margin:0 }
   .kap { width:10px; height:10px; border-radius:2px; display:inline-block }
   .board-wrap { overflow:auto; border:1px solid var(--border); border-radius:8px; background:var(--panel); position:relative; max-height:72vh; padding-top:6px }
-  #boardTracks { position:relative; min-width:100% }
-  .tl-row { position:relative; display:flex; align-items:center; border-bottom:1px solid var(--border) }
+  #boardTracks { position:relative }
+  /* padding-left is a left gutter the width of the overlay labels: at scrollLeft=0
+     the timeline's left edge sits fully visible beside them; as you scroll right the
+     sticky labels cover the lane (HUD) without stealing width from the time axis. */
+  .tl-row { position:relative; display:flex; align-items:stretch; border-bottom:1px solid var(--border); padding-left:var(--tl-label-w) }
   .tl-row:last-child { border-bottom:none }
-  .tl-label { position:sticky; left:0; z-index:3; background:var(--panel); min-width:160px; max-width:240px; padding:0 10px; border-right:1px solid var(--border); height:100%; display:flex; flex-direction:column; justify-content:center; gap:2px; box-shadow:2px 0 4px rgba(0,0,0,.3); overflow:hidden }
+  .tl-label { position:sticky; left:0; z-index:3; background:var(--panel); width:var(--tl-label-w); flex:0 0 var(--tl-label-w); margin-left:calc(0px - var(--tl-label-w)); padding:0 10px; border-right:1px solid var(--border); display:flex; flex-direction:column; justify-content:center; gap:2px; box-shadow:2px 0 4px rgba(0,0,0,.3); overflow:hidden }
   .tl-label.lbl-head { font-weight:600; color:var(--fg) }
-  .tl-label .slug { font-weight:600; font-size:13px; white-space:nowrap }
+  .tl-label .slug { font-weight:600; font-size:13px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis }
   .tl-label .meta { color:var(--muted); font-size:11px; white-space:normal; overflow-wrap:anywhere; word-break:break-word }
-  .tl-lane { position:relative; flex:1; height:100%; min-height:34px; background:repeating-linear-gradient(90deg, transparent 0 calc(25% - 1px), rgba(255,255,255,.03) calc(25% - 1px) 25%) }
+  .tl-lane { position:relative; flex:1 1 auto; width:0; min-height:34px; background:repeating-linear-gradient(90deg, transparent 0 calc(25% - 1px), rgba(255,255,255,.03) calc(25% - 1px) 25%) }
   .blk { position:absolute; top:50%; transform:translateY(-50%); height:26px; border-radius:4px; color:#0f1115; font-size:11px; font-weight:700; display:flex; align-items:center; justify-content:center; overflow:hidden; white-space:nowrap; cursor:default; border:1px solid rgba(0,0,0,.25); box-shadow:inset 0 -1px 0 rgba(0,0,0,.28) }
   .blk.k-progress { background:var(--accent) }
   .blk.k-milestone { background:var(--ok) }
@@ -338,9 +342,6 @@ function showErr(msg) {
 // current view is bookmarkable/shareable and survives reload. Valid names are
 // the button data-tab values; unknown/empty hash falls back to the log tab.
 function activateTab(name) {
-  if (name === 'board' && typeof bRender === 'function') {
-    bRender();      // board is hidden at boot: remeasure + repaint when first shown
-  }
   const btn = document.querySelector(`#tabs button[data-tab="${name}"]`);
   if (!btn) { name = 'log'; }
   document.querySelectorAll('#tabs button').forEach(x => x.classList.remove('active'));
@@ -348,6 +349,10 @@ function activateTab(name) {
   const b = document.querySelector(`#tabs button[data-tab="${name}"]`);
   if (b) { b.classList.add('active'); }
   $(`#tab-${name}`).classList.add('active');
+  // Board tab is display:none until active; measure viewport only after it is shown.
+  if (name === 'board' && typeof bRender === 'function') {
+    bRender();
+  }
 }
 function tabFromHash() {
   const h = location.hash;
@@ -898,6 +903,7 @@ const BOARD_KINDS = ['progress','milestone','reminder','poke','active','note'];
 const KIND_COLOR = { progress:'var(--accent)', milestone:'var(--ok)', reminder:'var(--warn)', poke:'var(--bad)', active:'#7a8ba0', note:'#9a7fd4' };
 const MERGE_MS = 10 * 60 * 1000;   // merge consecutive same-kind events within 10 min into one block
 const MIN_BLK = 16;                // min block width (px) so single events stay visible
+const TL_LABEL_W = 200;            // must match --tl-label-w; left gutter so t=start can sit clear of labels
 
 let bActs = [];
 let bWorkers = [];
@@ -906,12 +912,13 @@ let bOnKind = new Set(BOARD_KINDS);           // kind filter
 let bOnSlug = null;                           // project filter: Set, or null = all
 let bPinned = true;                           // auto-scroll to most-recent hour until user scrolls back
 let boardPolled = false;
+let boardClocked = false;
 
-// time -> x (px from the left edge of the full scrollable timeline)
-function bTimeToPx(ts, vw) {
+// time -> x (px from the left edge of the lane / time axis, not including the label gutter)
+function bTimeToPx(ts, timelineW, now) {
   const rangeMs = bView.rangeH * 3600 * 1000;
-  const start = Date.now() - rangeMs;
-  return (ts - start) / rangeMs * vw * (bView.rangeH / bView.scaleH);
+  const start = (now ?? Date.now()) - rangeMs;
+  return (ts - start) / rangeMs * timelineW;
 }
 
 // Merge chronologically-adjacent events of the SAME kind into one block; as
@@ -1011,10 +1018,14 @@ function bBuildFilters() {
 
 function bRender() {
   const wrap = $('#boardWrap');
-  const vw = Math.max(wrap.clientWidth, 400);
+  const vw = wrap.clientWidth;
+  if (vw <= 0) return; // hidden tab: width is not measurable yet
   const now = Date.now();
   const startMs = now - bView.rangeH * 3600 * 1000;
-  const total = vw * (bView.rangeH / bView.scaleH);
+  // Lane/time-axis width is a pure function of the visible wrap (screen) and scale/range.
+  // Labels overlay via a matching left gutter; they do not shrink the axis.
+  const timelineW = vw * (bView.rangeH / bView.scaleH);
+  const total = TL_LABEL_W + timelineW;
 
   // group into per-project tracks; the monitor is never its own track, but
   // its pokes still colour the target project's track
@@ -1034,27 +1045,33 @@ function bRender() {
   box.innerHTML = '';
   const slugs = Object.keys(by).filter(s => by[s].items.length).sort((x, y) => by[y].last - by[x].last);
   $('#boardStatus').textContent = slugs.length + ' project' + (slugs.length === 1 ? '' : 's') + ' · ' + count + ' activities';
+  box.style.width = total + 'px';
   if (slugs.length === 0) {
-    box.style.width = vw + 'px';
     const empty = el('div', 'tl-row', null); empty.style.height = '44px';
     empty.append(el('div', 'tl-label', 'board'));
-    empty.append(el('div', 'tl-lane', '<span class="muted">No matching activity yet. Start work in a worker or run the informant.</span>'));
+    const emptyLane = el('div', 'tl-lane', null);
+    const hint = el('span', 'muted', 'No matching activity yet. Start work in a worker or run the informant.');
+    hint.style.cssText = 'position:absolute;right:12px;top:50%;transform:translateY(-50%)';
+    emptyLane.append(hint);
+    empty.append(emptyLane);
     box.append(empty);
+    if (bPinned) wrap.scrollLeft = box.scrollWidth;
     return;
   }
 
-  // ruler row; pick a tick step that stays ~150px+ apart at the current scale
+  // Ruler ticks sit on a wall-clock grid (not now-relative offsets) so they share
+  // bTimeToPx with the event blocks and stream left together as now advances.
   const pxPerHour = vw / bView.scaleH;
-  let tickStep = 0.0833;
-  for (const cand of [0.0833, 0.25, 0.5, 1, 2, 4, 6]) { if (cand * pxPerHour >= 150) { tickStep = cand; break; } }
+  const TICK_MS = [5*60*1000, 15*60*1000, 30*60*1000, 3600*1000, 2*3600*1000, 4*3600*1000, 6*3600*1000];
+  let stepMs = TICK_MS[0];
+  for (const cand of TICK_MS) { if ((cand / 3600000) * pxPerHour >= 150) { stepMs = cand; break; } }
   const ruler = el('div', 'tl-row', null); ruler.style.minHeight = '28px';
   ruler.append(el('div', 'tl-label lbl-head', 'project'));
   const rlane = el('div', 'tl-lane', null); rlane.style.overflow = 'hidden';
-  for (let h = 0; h <= bView.rangeH; h += tickStep) {
-    const t = startMs + h * 3600 * 1000;
-    if (t > now + 3600 * 1000) continue;
+  const firstTick = Math.ceil(startMs / stepMs) * stepMs;
+  for (let t = firstTick; t <= now; t += stepMs) {
     const s = el('span', null, new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
-    s.style.cssText = `position:absolute;left:${bTimeToPx(t, vw).toFixed(0)}px;top:8px;transform:translateX(-50%);font-size:10px;color:var(--muted);white-space:nowrap`;
+    s.style.cssText = `position:absolute;left:${bTimeToPx(t, timelineW, now).toFixed(1)}px;top:8px;transform:translateX(-50%);font-size:10px;color:var(--muted);white-space:nowrap`;
     rlane.append(s);
   }
   ruler.append(rlane);
@@ -1071,7 +1088,7 @@ function bRender() {
     row.append(lab);
     const lane = el('div', 'tl-lane', null);
     runs.forEach(run => {
-      const x1 = bTimeToPx(run.start, vw), x2 = bTimeToPx(run.end, vw);
+      const x1 = bTimeToPx(run.start, timelineW, now), x2 = bTimeToPx(run.end, timelineW, now);
       let w = Math.max(x2 - x1, MIN_BLK), x = x1;
       if (w === MIN_BLK) x = x2 - MIN_BLK; // anchor min-width to the event time
       const b = el('div', 'blk k-' + esc(run.kind), run.items.length > 1 ? String(run.items.length) : '');
@@ -1083,8 +1100,6 @@ function bRender() {
     row.append(lane);
     box.append(row);
   });
-
-  box.style.width = total + 'px';
 
   if (bPinned) wrap.scrollLeft = box.scrollWidth;   // keep the newest hour in view
 }
@@ -1110,11 +1125,26 @@ function ensureBoardPoll() {
   setInterval(() => { loadBoard().catch(() => {}); }, 10000);
 }
 
+// Keep the sliding window live while the board is visible so events and ticks
+// both stream left as now advances, instead of waiting on the 10s data poll.
+function ensureBoardClock() {
+  if (boardClocked) { return; }
+  boardClocked = true;
+  setInterval(() => {
+    if (!$('#tab-board').classList.contains('active')) return;
+    if ($('#bPop').style.display === 'block') return;
+    bRender();
+  }, 1000);
+}
+
 // toolbar + scroll wiring
 $('#bScale').onchange = e => { bView.scaleH = parseFloat(e.target.value); bPinned = true; bRender(); };
 $('#bRange').onchange = e => { bView.rangeH = parseFloat(e.target.value); bPinned = true; bRender(); };
 $('#bReset').onclick = () => { bView = { scaleH: 1, rangeH: 24 }; bOnKind = new Set(BOARD_KINDS); bOnSlug = null; bPinned = true; bBuildFilters(); bRender(); };
 $('#bJump').onclick = () => { bPinned = true; bRender(); };
+window.addEventListener('resize', () => {
+  if ($('#tab-board').classList.contains('active')) bRender();
+});
 (() => {
   const wrap = $('#boardWrap');
   // Auto-drift back to "now" (right edge) after 30s without interaction: the
@@ -1382,6 +1412,7 @@ $('#planModal').addEventListener('click', (ev) => {
   streamLog();
   ensureRoutesPoll();
   ensureBoardPoll();
+  ensureBoardClock();
   activateTab(tabFromHash() || 'board');
   setInterval(() => {
     loadPlanning().catch(() => {});
