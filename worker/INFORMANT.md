@@ -19,12 +19,15 @@ Do this **briefly and often** — one short line, not prose:
   `piso-informant poke "Blocked: OIDC discovery returns 404"`
 - **Made a time commitment**:
   `piso-informant reminder "Check PR by 5pm"`
+- **This run is done and you need the human's next input** (a question, an
+  approval, a choice — not a background blocker):
+  `piso-informant waiting "Need you to pick the auth approach"`
 - **Any notable status the human should know**:
   `piso-informant note "spent the afternoon on the CQRS docs"`
 
 ## Rules
 
-- Use the **exact kinds**: `progress | milestone | reminder | poke | active | note`.
+- Use the **exact kinds**: `progress | milestone | reminder | poke | active | waiting | note`.
 - **Text is short** (a sentence max), factual, and free of credentials,
   tokens, or file contents — it is stored and rendered on the host board.
 - For a poke/reminder aimed at **another** project, pass its slug as the 3rd

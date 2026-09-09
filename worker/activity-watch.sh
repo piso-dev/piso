@@ -8,8 +8,9 @@
 # - Same pattern as context-watch / ports-watch: in-container loop, POST to the
 #   worker API (GATEWAY_URL, :8083) — never the host control plane.
 # - Events: kind=active (alive beat w/ project context), kind=note (session
-#   start/end). Idle is DERIVED gateway-side (no active beats for N min), so we
-#   do not emit a separate idle event.
+#   start/end), kind=waiting (agent run ended, pi still up, human owes input).
+#   A gap of > 3 min between active beats is downtime (the board will not
+#   extend the block). Idle-at-prompt is waiting, not active.
 # - Sanitization identical to context-watch (control chars → space, cap len).
 set -u
 
@@ -21,8 +22,9 @@ if [ -z "$gw" ] || [ -z "$worker" ] || [ -z "$slug" ]; then
   exit 0
 fi
 
-BEAT_SECS=120            # post an active beat at most every 2 min
+BEAT_SECS=60             # active beat at most every 1 min (board merges ≤ 3 min)
 RESCAN_SECS=5            # check for session boundary every 5 s
+WAIT_CONFIRM_SECS=10     # quiet-at-prompt must last this long before 'waiting'
 GIT=(git -c safe.directory=*)
 
 san() {
@@ -36,23 +38,75 @@ san() {
   printf '%s' "$v"
 }
 
-# json_bool outputs true/false for a pi-process-present check
-pi_present() {
+# pi_status prints down | busy | idle
+#   down: no pi agent process
+#   busy: pi is running and has descendant processes (a tool/command in flight)
+#   idle: pi is up but has no tool children (typically sitting at the prompt)
+pi_status() {
   python3 - <<'PY' 2>/dev/null | head -1
 import os, re
 want1 = re.compile(r'pi-coding-agent')
 want2 = re.compile(r'(^|\s)pi(\s|$)')
-bad = re.compile(r'piso-entrypoint|piso-planning-watch|piso-context-watch|piso-ports-watch|piso-activity-watch|docker-init|sleep infinity')
+bad = re.compile(r'piso-entrypoint|piso-planning-watch|piso-context-watch|piso-ports-watch|piso-activity-watch|piso-monitor-loop|docker-init|sleep infinity')
+
+def cmdline(pid):
+    raw = open('/proc/%s/cmdline' % pid, 'rb').read().replace(b'\0', b' ')
+    return raw.decode('utf-8', 'replace')
+
+def is_pi(cmd):
+    if bad.search(cmd): return False
+    return bool(want1.search(cmd) or want2.search(cmd))
+
+pi_pids = []
 for p in os.listdir('/proc'):
     if not p.isdigit(): continue
     try:
-        raw = open('/proc/%s/cmdline' % p, 'rb').read().replace(b'\0', b' ')
-        cmd = raw.decode('utf-8', 'replace')
-        if bad.search(cmd): continue
-        if want1.search(cmd) or want2.search(cmd):
-            print('1'); break
+        cmd = cmdline(p)
+        if is_pi(cmd):
+            pi_pids.append(int(p))
     except Exception:
         pass
+if not pi_pids:
+    print('down')
+    raise SystemExit
+
+def children_of(pid):
+    kids = set()
+    task = '/proc/%d/task' % pid
+    try:
+        for tid in os.listdir(task):
+            try:
+                raw = open('%s/%s/children' % (task, tid)).read().split()
+                kids.update(int(x) for x in raw)
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return kids
+
+ppid_of = {}
+for p in os.listdir('/proc'):
+    if not p.isdigit(): continue
+    try:
+        st = open('/proc/%s/stat' % p).read()
+        rp = st.rfind(')')
+        fields = st[rp+2:].split()
+        ppid_of[int(p)] = int(fields[1])
+    except Exception:
+        pass
+
+seen = set(pi_pids)
+stack = list(pi_pids)
+desc = set()
+while stack:
+    pid = stack.pop()
+    for k in children_of(pid):
+        if k not in seen:
+            seen.add(k); stack.append(k); desc.add(k)
+    for c, parent in list(ppid_of.items()):
+        if parent == pid and c not in seen:
+            seen.add(c); stack.append(c); desc.add(c)
+print('busy' if desc else 'idle')
 PY
 }
 
@@ -103,11 +157,14 @@ PY
 }
 
 last_beat=0
-last_state=""   # "up" | "down"
+last_state=""        # "up" | "down"
+waiting_emitted=0    # 1 once we've posted waiting for this idle stretch
+quiet_since=0        # unix secs when the run first went quiet, or 0
 while true; do
   now=$(date +%s 2>/dev/null) || now=0
+  status="$(pi_status)"
   state="down"
-  if [ "$(pi_present)" = "1" ]; then
+  if [ "$status" = "busy" ] || [ "$status" = "idle" ]; then
     state="up"
   fi
 
@@ -117,17 +174,39 @@ while true; do
     else
       if post "note" "session ended"; then last_state="$state"; fi
     fi
-    last_beat=0   # force a fresh active beat after a boundary
+    last_beat=0
+    waiting_emitted=0
+    quiet_since=0
   fi
 
-  # alive beat — the board's live marker. Fire ONLY when there is recent
-  # session-file activity (real model/tool exchange), so an idle attached pi
-  # does not keep the board "live".
-  recent=$(session_recency)
-  if [ "$recent" -ge $((now - BEAT_SECS)) ] && [ $((now - last_beat)) -ge "$BEAT_SECS" ]; then
-    ctx="$(proj_ctx)"
-    if post "active" "working on ${ctx:-unknown}"; then
-      last_beat=$now
+  recent=$(session_recency); recent=${recent:-0}
+  jsonl_fresh=0
+  if [ "$recent" -ge $((now - 20)) ]; then jsonl_fresh=1; fi
+
+  # Working: model/tool exchange (fresh jsonl) OR a tool child still running.
+  # Either one keeps the active block alive. Sitting at the prompt is not work.
+  working=0
+  if [ "$state" = "up" ]; then
+    if [ "$jsonl_fresh" = "1" ] || [ "$status" = "busy" ]; then
+      working=1
+    fi
+  fi
+
+  if [ "$working" = "1" ]; then
+    quiet_since=0
+    waiting_emitted=0
+    if [ $((now - last_beat)) -ge "$BEAT_SECS" ]; then
+      ctx="$(proj_ctx)"
+      if post "active" "working on ${ctx:-unknown}"; then
+        last_beat=$now
+      fi
+    fi
+  elif [ "$state" = "up" ]; then
+    if [ "$quiet_since" -eq 0 ]; then quiet_since=$now; fi
+    if [ "$waiting_emitted" -eq 0 ] && [ $((now - quiet_since)) -ge "$WAIT_CONFIRM_SECS" ]; then
+      if post "waiting" "awaiting input"; then
+        waiting_emitted=1
+      fi
     fi
   fi
 

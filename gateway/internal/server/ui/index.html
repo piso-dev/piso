@@ -102,6 +102,7 @@
   .blk.k-reminder { background:var(--warn); color:#1a1a1a }
   .blk.k-poke { background:var(--bad) }
   .blk.k-active { background:#7a8ba0 }
+  .blk.k-waiting { background:#e67e22 }
   .blk.k-note { background:#9a7fd4 }
   .blk:hover { outline:2px solid #fff; outline-offset:1px; z-index:6 }
   .pop { position:fixed; z-index:60; max-width:340px; background:#0d1117; border:1px solid var(--border); border-radius:8px; padding:10px 12px; box-shadow:0 6px 24px rgba(0,0,0,.55); pointer-events:none; font-size:12px; line-height:1.45 }
@@ -899,9 +900,9 @@ function ensureRoutesPoll() {
 
 
 // ---- PM board: multi-track bus-style timeline (monitor not shown as a track) ----
-const BOARD_KINDS = ['progress','milestone','reminder','poke','active','note'];
-const KIND_COLOR = { progress:'var(--accent)', milestone:'var(--ok)', reminder:'var(--warn)', poke:'var(--bad)', active:'#7a8ba0', note:'#9a7fd4' };
-const MERGE_MS = 10 * 60 * 1000;   // merge consecutive same-kind events within 10 min into one block
+const BOARD_KINDS = ['progress','milestone','reminder','poke','active','waiting','note'];
+const KIND_COLOR = { progress:'var(--accent)', milestone:'var(--ok)', reminder:'var(--warn)', poke:'var(--bad)', active:'#7a8ba0', waiting:'#e67e22', note:'#9a7fd4' };
+const MERGE_MS = 3 * 60 * 1000;    // merge consecutive same-kind events only if the gap is ≤ 3 min
 const MIN_BLK = 16;                // min block width (px) so single events stay visible
 const TL_LABEL_W = 200;            // must match --tl-label-w; left gutter so t=start can sit clear of labels
 
@@ -921,9 +922,8 @@ function bTimeToPx(ts, timelineW, now) {
   return (ts - start) / rangeMs * timelineW;
 }
 
-// Merge chronologically-adjacent events of the SAME kind into one block; as
-// time marches forward a continuing run extends the block rather than
-// starting a new one (music-sequencer behaviour).
+// Merge chronologically-adjacent events of the SAME kind into one block only
+// while the gap is ≤ 3 min. A longer quiet stretch is downtime: do not extend.
 function bMergeRuns(items) {
   const sorted = items.slice().sort((a, b) => a.ts - b.ts);
   const runs = [];

@@ -13,7 +13,8 @@ The gateway's activity store, via the worker API (you are `piso-worker-monitor`)
 - `GET http://gateway:8083/api/v1/worker/activities?worker=piso-worker-monitor`
   returns every project's activities: `{id, worker, slug, kind, targetSlug,
   text, ts}`. Kinds: `progress`, `milestone`, `reminder`, `poke`, `active`,
-  `note`. `slug` is the source project; `targetSlug` is who a poke is aimed at.
+  `waiting`, `note`. `slug` is the source project; `targetSlug` is who a poke is aimed at.
+  `waiting` means an agent run ended and the human owes the next input.
 - `GET http://gateway:8083/api/v1/worker/activities?worker=piso-worker-monitor&slug=<proj>`
   filters to one project.
 
@@ -31,26 +32,30 @@ Emit board items exactly like a worker would, using the informant helper
 
 ## When to poke (be conservative — noise destroys trust)
 
-A poke is warranted ONLY when BOTH hold:
+A poke is a nudge to the HUMAN, not a board decoration. The board already
+shows `waiting` (orange) when a run ended and needs input — do not echo that
+the instant it appears.
 
-1. **The project is stale or blocked**, evidenced by:
-   - no `active`/`progress` activity for the project in a **long** window
-     (> 1 hour of silence), AND
-   - the last thing it said was a **blocker** (`poke` from the worker, or a
-     `progress` that reads as stuck), OR it's a project the human actively
-     cares about and it's gone dark.
-2. **The human can actually do something.** Output is pulling quickly plus
-   attention is cheap. Do NOT poke for: short idle (< 1h), a project mid-
-   long-build (recent `active` beats), routine milestones, or anything a
-   normal board read already shows.
+A poke is warranted ONLY when ALL hold:
+
+1. **At least 10 minutes have passed** since the project's last meaningful
+   event (`waiting`, `poke` from the worker, `progress`, `active`, or
+   `session started/ended`). Read `ts`. If the newest of those is younger
+   than 10 minutes, stay silent — the human may still be in the session.
+2. **The project is still waiting on the human or has gone dark**, evidenced
+   by: a `waiting` (or worker `poke` blocker) with no later `active` /
+   `progress` / `session started`, OR ≥ 10 minutes of silence after work.
+3. **The human can actually do something.** Do NOT poke for: a project mid-
+   run (recent `active` beats), routine milestones, or anything a normal
+   board read already shows.
 
 Dos and don'ts:
-- DO summarize once: `note "Project X: 3h idle after 'blocked on CI creds'; no
-  progress since 14:02"`.
+- DO summarize once: `note "Project X: 12m waiting after 'Need you to pick auth'; no progress since 14:02"`.
 - DO poke at most ONE project per wake unless several are genuinely stuck.
-- DON'T emit `progress`/`milestone`/`active` for your own actions — you manage;
+- DON'T emit `progress`/`milestone`/`active`/`waiting` for your own actions — you manage;
   the Tier A watcher is suppressed for you.
 - DON'T repeat the same poke within an hour unless the state changed.
+- DON'T poke the same `waiting` the moment you see it — wait the 10 minutes.
 - DON'T mention placeholders, tokens, or anything in raw request data — you
   never see it.
 - DO keep text short, factual, human-readable.

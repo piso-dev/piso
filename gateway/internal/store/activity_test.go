@@ -47,6 +47,17 @@ func TestInsertAndQueryActivities(t *testing.T) {
 	}
 }
 
+func TestWaitingKindAccepted(t *testing.T) {
+	st := testStore(t)
+	if err := st.InsertActivity(Activity{Worker: "piso-worker-demo", Slug: "demo", Kind: ActivityKindWaiting, Text: "awaiting input"}); err != nil {
+		t.Fatal(err)
+	}
+	all, err := st.QueryActivities(ActivityFilter{Kind: ActivityKindWaiting, Limit: 10})
+	if err != nil || len(all) != 1 {
+		t.Fatalf("waiting: %+v err=%v", all, err)
+	}
+}
+
 func TestDeleteOwnActivityScopesToWorker(t *testing.T) {
 	st := testStore(t)
 	if err := st.InsertActivity(Activity{Worker: "piso-worker-demo", Slug: "demo", Kind: ActivityKindNote, Text: "note"}); err != nil {
