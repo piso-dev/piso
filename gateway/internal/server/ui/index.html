@@ -75,24 +75,36 @@
   .toggle input:checked + span { background:var(--ok,#2e7d32) }
   .toggle input:checked + span:before { transform:translateX(18px) }
 
-  /* PM board: horizontal tracks + timeline items */
-  .board-header { display:flex; gap:12px; align-items:baseline; margin-bottom:12px; flex-wrap:wrap }
-  .track { background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:10px 14px; margin-bottom:10px }
-  .track.dim { opacity:.5 }
-  .track-head { display:flex; align-items:baseline; gap:10px; flex-wrap:wrap; margin-bottom:6px }
-  .track-head .slug { font-weight:600; font-size:14px }
-  .track-head .meta { color:var(--muted); font-size:12px }
-  .track-items { display:flex; flex-direction:column; gap:6px }
-  .titem { display:flex; gap:10px; align-items:baseline; font-size:13px; border-left:3px solid var(--muted); padding-left:10px }
-  .titem .ts { color:var(--muted); font-size:11px; white-space:nowrap; min-width:76px; font-family:ui-monospace,SFMono-Regular,Menlo,monospace }
-  .titem .txt { overflow-wrap:anywhere }
-  .titem.k-progress { border-left-color:var(--accent) }
-  .titem.k-milestone { border-left-color:var(--ok) }
-  .titem.k-reminder { border-left-color:var(--warn) }
-  .titem.k-poke { border-left-color:var(--bad) }
-  .titem.k-active { border-left-color:var(--accent); font-style:italic }
-  .pulse { animation:pulse 1.6s ease-in-out infinite }
-  @keyframes pulse { 0%,100% { opacity:1 } 50% { opacity:.35 } }
+  /* PM board: multi-track bus-style timeline (music-sequencer look) */
+  .board-toolbar { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:12px; padding:10px 12px; background:var(--panel); border:1px solid var(--border); border-radius:8px }
+  .board-toolbar > label { display:flex; align-items:center; gap:6px; color:var(--muted); font-size:12px }
+  .board-toolbar select { background:var(--bg); border:1px solid var(--border); color:var(--fg); padding:4px 8px; border-radius:5px; font-size:12px }
+  .kf { display:flex; align-items:center; gap:8px; flex-wrap:wrap; padding-left:10px; border-left:1px solid var(--border) }
+  .kf label { display:flex; align-items:center; gap:5px; color:var(--muted); font-size:12px; cursor:pointer; white-space:nowrap }
+  .kf input { margin:0 }
+  .kap { width:10px; height:10px; border-radius:2px; display:inline-block }
+  .board-wrap { overflow:auto; border:1px solid var(--border); border-radius:8px; background:var(--panel); position:relative; max-height:72vh; padding-top:6px }
+  #boardTracks { position:relative; min-width:100% }
+  .tl-row { position:relative; display:flex; align-items:center; border-bottom:1px solid var(--border) }
+  .tl-row:last-child { border-bottom:none }
+  .tl-label { position:sticky; left:0; z-index:3; background:var(--panel); min-width:160px; max-width:240px; padding:0 10px; border-right:1px solid var(--border); height:100%; display:flex; flex-direction:column; justify-content:center; gap:2px; box-shadow:2px 0 4px rgba(0,0,0,.3); overflow:hidden }
+  .tl-label.lbl-head { font-weight:600; color:var(--fg) }
+  .tl-label .slug { font-weight:600; font-size:13px; white-space:nowrap }
+  .tl-label .meta { color:var(--muted); font-size:11px; white-space:normal; overflow-wrap:anywhere; word-break:break-word }
+  .tl-lane { position:relative; flex:1; height:100%; min-height:34px; background:repeating-linear-gradient(90deg, transparent 0 calc(25% - 1px), rgba(255,255,255,.03) calc(25% - 1px) 25%) }
+  .blk { position:absolute; top:50%; transform:translateY(-50%); height:26px; border-radius:4px; color:#0f1115; font-size:11px; font-weight:700; display:flex; align-items:center; justify-content:center; overflow:hidden; white-space:nowrap; cursor:default; border:1px solid rgba(0,0,0,.25); box-shadow:inset 0 -1px 0 rgba(0,0,0,.28) }
+  .blk.k-progress { background:var(--accent) }
+  .blk.k-milestone { background:var(--ok) }
+  .blk.k-reminder { background:var(--warn); color:#1a1a1a }
+  .blk.k-poke { background:var(--bad) }
+  .blk.k-active { background:#7a8ba0 }
+  .blk.k-note { background:#9a7fd4 }
+  .blk:hover { outline:2px solid #fff; outline-offset:1px; z-index:6 }
+  .pop { position:fixed; z-index:60; max-width:340px; background:#0d1117; border:1px solid var(--border); border-radius:8px; padding:10px 12px; box-shadow:0 6px 24px rgba(0,0,0,.55); pointer-events:none; font-size:12px; line-height:1.45 }
+  .pop .pt { font-weight:700; margin-bottom:4px; display:flex; align-items:center; gap:6px; text-transform:capitalize }
+  .pop .ps { color:var(--muted); margin-bottom:4px }
+  .pop .pm { font-size:11px; color:var(--fg); border-top:1px solid var(--border); padding-top:3px; margin-top:3px; overflow-wrap:anywhere }
+  .pop .pm .mono { color:var(--muted) }
 </style>
 </head>
 <body>
@@ -115,12 +127,38 @@
   <button data-tab="workers">Workers</button>
 </nav>
 <main>
-  <!-- PM BOARD (new main screen) -->
+  <!-- PM BOARD (new main screen): bus-style timeline, monitor hidden -->
   <section class="tab" id="tab-board">
-    <div class="logbar">
+    <div class="board-toolbar">
+      <label>Scale
+        <select id="bScale">
+          <option value="0.25">15 min</option>
+          <option value="0.5">30 min</option>
+          <option value="1" selected>1 hour</option>
+          <option value="2">2 hours</option>
+          <option value="4">4 hours</option>
+        </select>
+      </label>
+      <label>Range
+        <select id="bRange">
+          <option value="2">2 hours</option>
+          <option value="6">6 hours</option>
+          <option value="12">12 hours</option>
+          <option value="24" selected>24 hours</option>
+          <option value="48">48 hours</option>
+          <option value="168">7 days</option>
+        </select>
+      </label>
+      <div class="kf" id="bKindFilters" title="filter event kinds"></div>
+      <div class="kf" id="bProjectFilters" title="filter projects"></div>
+      <button type="button" class="btn small" id="bReset">Reset</button>
+      <button type="button" class="btn small" id="bJump">Now</button>
       <span class="muted" id="boardStatus"></span>
     </div>
-    <div id="boardTracks"></div>
+    <div class="board-wrap" id="boardWrap">
+      <div id="boardTracks"></div>
+    </div>
+    <div id="bPop" class="pop" style="display:none"></div>
   </section>
 
   <!-- REQUEST LOG -->
@@ -300,6 +338,9 @@ function showErr(msg) {
 // current view is bookmarkable/shareable and survives reload. Valid names are
 // the button data-tab values; unknown/empty hash falls back to the log tab.
 function activateTab(name) {
+  if (name === 'board' && typeof bRender === 'function') {
+    bRender();      // board is hidden at boot: remeasure + repaint when first shown
+  }
   const btn = document.querySelector(`#tabs button[data-tab="${name}"]`);
   if (!btn) { name = 'log'; }
   document.querySelectorAll('#tabs button').forEach(x => x.classList.remove('active'));
@@ -850,85 +891,253 @@ function ensureRoutesPoll() {
   setInterval(() => { loadRoutes().catch(() => {}); }, 5000);
 }
 
-// ---- PM board (timeline tracks per project) ----
-const KIND_LABEL = { progress:'progress', milestone:'milestone', reminder:'reminder', poke:'poke', active:'active', note:'note' };
 
-// loadBoard renders the board: fetch activities + worker context, group into
-// one track per slug (plus any target-only slugs for pokes), and paint a
-// timeline. A live worker (recent activity) pulses; an idle one dims.
-async function loadBoard() {
-  const [acts, ws] = await Promise.all([
-    api('/api/v1/activities?limit=500'),
-    api('/api/v1/workers')
-  ]).catch(e => { $('#boardStatus').textContent = e.message; return [[], []]; });
-  const actsList = Array.isArray(acts) ? acts : [];
-  const wsList = Array.isArray(ws) ? ws : [];
-  const now = Date.now();
-  const IDLE_MS = 15 * 60 * 1000;   // dim a track idle > 15 min
-  const LIVE_MS = 3 * 60 * 1000;    // pulse a live track with activity < 3 min
 
-  // slug -> {slug, isMonitor, ctx, items:[]}
-  const bySlug = {};
-  const ensure = (slug) => {
-    if (!bySlug[slug]) { bySlug[slug] = {slug, items: []}; }
-    return bySlug[slug];
+// ---- PM board: multi-track bus-style timeline (monitor not shown as a track) ----
+const BOARD_KINDS = ['progress','milestone','reminder','poke','active','note'];
+const KIND_COLOR = { progress:'var(--accent)', milestone:'var(--ok)', reminder:'var(--warn)', poke:'var(--bad)', active:'#7a8ba0', note:'#9a7fd4' };
+const MERGE_MS = 10 * 60 * 1000;   // merge consecutive same-kind events within 10 min into one block
+const MIN_BLK = 16;                // min block width (px) so single events stay visible
+
+let bActs = [];
+let bWorkers = [];
+let bView = { scaleH: 1, rangeH: 24 };        // scaleH = hours per viewport, rangeH = total history length
+let bOnKind = new Set(BOARD_KINDS);           // kind filter
+let bOnSlug = null;                           // project filter: Set, or null = all
+let bPinned = true;                           // auto-scroll to most-recent hour until user scrolls back
+let boardPolled = false;
+
+// time -> x (px from the left edge of the full scrollable timeline)
+function bTimeToPx(ts, vw) {
+  const rangeMs = bView.rangeH * 3600 * 1000;
+  const start = Date.now() - rangeMs;
+  return (ts - start) / rangeMs * vw * (bView.rangeH / bView.scaleH);
+}
+
+// Merge chronologically-adjacent events of the SAME kind into one block; as
+// time marches forward a continuing run extends the block rather than
+// starting a new one (music-sequencer behaviour).
+function bMergeRuns(items) {
+  const sorted = items.slice().sort((a, b) => a.ts - b.ts);
+  const runs = [];
+  let cur = null;
+  for (const it of sorted) {
+    if (cur && it.kind === cur.kind && (it.ts - cur.end) <= MERGE_MS) {
+      cur.end = Math.max(cur.end, it.ts);
+      cur.items.push(it);
+    } else {
+      cur = { kind: it.kind, start: it.ts, end: it.ts, items: [it] };
+      runs.push(cur);
+    }
+  }
+  return runs;
+}
+
+function bPopShow(ev, run) {
+  const p = $('#bPop');
+  const first = run.items[0];
+  const slug = first.slug || '';
+  if (run.kind === 'active') {
+    // active pings are identical status blips; a per-event list is useless.
+    // show only what's informative: who, since when, how long.
+    const dur = run.end - run.start;
+    const durTxt = dur >= 3600000 ? Math.round(dur / 3600000) + 'h ' + Math.round((dur % 3600000) / 60000) + 'm'
+                 : dur >= 60000 ? Math.round(dur / 60000) + 'm'
+                 : Math.max(Math.round(dur / 1000), 1) + 's';
+    p.innerHTML =
+      `<div class="pt"><span class="kap" style="background:${KIND_COLOR[run.kind]}"></span>active</div>` +
+      `<div class="ps mono">${esc(slug)} &nbsp; since ${bFmtTime(run.start)}</div>` +
+      (run.items.length > 1 ? `<div class="pm">running ${esc(durTxt)}</div>` : '');
+  } else {
+    const span = run.items.length > 1
+      ? bFmtTime(run.start) + ' → ' + bFmtTime(run.end)
+      : bFmtTime(run.start);
+    const rows = run.items.slice(0, 8).map(it =>
+      `<div class="pm"><b>${esc(new Date(it.ts).toLocaleTimeString())}</b> ` +
+      `<span class="mono">${esc(it.worker || '')}</span> — ${esc(it.text)}</div>`).join('');
+    const more = run.items.length > 8 ? `<div class="pm">+${run.items.length - 8} more</div>` : '';
+    p.innerHTML =
+      `<div class="pt"><span class="kap" style="background:${KIND_COLOR[run.kind]}"></span>${esc(run.kind)} · ${run.items.length}${run.items.length === 1 ? ' event' : ' events'}</div>` +
+      `<div class="ps mono">${esc(slug)} &nbsp; ${esc(span)}</div>` + rows + more;
+  }
+  p.style.display = 'block';
+  const r = p.getBoundingClientRect();
+  let x = ev.clientX + 14, y = ev.clientY + 14;
+  if (x + r.width > window.innerWidth) x = ev.clientX - r.width - 10;
+  if (y + r.height > window.innerHeight) y = ev.clientY - r.height - 10;
+  p.style.left = x + 'px';
+  p.style.top = y + 'px';
+}
+function bPopHide() { $('#bPop').style.display = 'none'; }
+function bFmtTime(ts) { return new Date(ts).toLocaleString(); }
+
+function bTrackLabel(slug) {
+  const w = bWorkers.find(x => x.slug === slug);
+  const c = (w && w.context) || {};
+  return [c.project, c.branch ? '⎇ ' + c.branch : '', c.commit ? '@' + c.commit : ''].filter(Boolean).join(' · ');
+}
+
+function bBuildFilters() {
+  const kb = $('#bKindFilters'); kb.innerHTML = '';
+  BOARD_KINDS.forEach(k => {
+    const lab = document.createElement('label');
+    const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = bOnKind.has(k);
+    cb.onchange = () => { cb.checked ? bOnKind.add(k) : bOnKind.delete(k); bRender(); };
+    const sw = el('span', 'kap', null); sw.style.background = KIND_COLOR[k];
+    lab.append(cb, sw, ' ' + k); kb.append(lab);
+  });
+  const pb = $('#bProjectFilters'); pb.innerHTML = '';
+  const slugs = [...new Set(bActs.map(a => a.slug).filter(s => s && s !== 'monitor'))].sort();
+  if (slugs.length <= 1) { pb.style.display = 'none'; return; }
+  pb.style.display = '';
+  const mk = (name, on) => {
+    const lab = document.createElement('label');
+    const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = on;
+    lab.append(cb, ' ' + name); pb.append(lab);
+    return cb;
   };
-  wsList.forEach(w => { if (w.slug) ensure(w.slug).ctx = w.context || {}; });
+  const all = mk('all', !bOnSlug);
+  all.onchange = () => { bOnSlug = all.checked ? null : new Set(slugs); bBuildFilters(); bRender(); };
+  const cbs = slugs.map(s => mk(s, bOnSlug ? bOnSlug.has(s) : true));
+  cbs.forEach((cb, i) => {
+    cb.onchange = () => {
+      if (!bOnSlug) bOnSlug = new Set(slugs);
+      cb.checked ? bOnSlug.add(slugs[i]) : bOnSlug.delete(slugs[i]);
+      if (bOnSlug.size === slugs.length) bOnSlug = null;
+      bBuildFilters(); bRender();
+    };
+  });
+}
 
-  actsList.forEach(a => {
-    const target = (a.targetSlug && a.targetSlug !== a.slug) ? a.targetSlug : a.slug;
-    ensure(target).items.push(a);
+function bRender() {
+  const wrap = $('#boardWrap');
+  const vw = Math.max(wrap.clientWidth, 400);
+  const now = Date.now();
+  const startMs = now - bView.rangeH * 3600 * 1000;
+  const total = vw * (bView.rangeH / bView.scaleH);
+
+  // group into per-project tracks; the monitor is never its own track, but
+  // its pokes still colour the target project's track
+  const by = {};
+  const ensure = s => { if (!by[s]) by[s] = { slug: s, items: [], last: 0 }; return by[s]; };
+  let count = 0;
+  bActs.forEach(a => {
+    if (!bOnKind.has(a.kind)) return;
+    if (a.slug === 'monitor') return;
+    const t = (a.targetSlug && a.targetSlug !== a.slug) ? a.targetSlug : a.slug;
+    if (t === 'monitor') return;
+    if (bOnSlug && !bOnSlug.has(t)) return;
+    const rec = ensure(t); rec.items.push(a); rec.last = Math.max(rec.last, a.ts); count++;
   });
 
-  const slugs = Object.keys(bySlug).sort();
-  if (slugs.length === 0) {
-    $('#boardTracks').innerHTML = '<p class="muted">No activity yet. Start work in a worker or run the informant.</p>';
-    $('#boardStatus').textContent = '';
-    return;
-  }
-  $('#boardStatus').textContent = `${slugs.length} project${slugs.length===1?'':'s'} · ${actsList.length} activities`;
   const box = $('#boardTracks');
   box.innerHTML = '';
+  const slugs = Object.keys(by).filter(s => by[s].items.length).sort((x, y) => by[y].last - by[x].last);
+  $('#boardStatus').textContent = slugs.length + ' project' + (slugs.length === 1 ? '' : 's') + ' · ' + count + ' activities';
+  if (slugs.length === 0) {
+    box.style.width = vw + 'px';
+    const empty = el('div', 'tl-row', null); empty.style.height = '44px';
+    empty.append(el('div', 'tl-label', 'board'));
+    empty.append(el('div', 'tl-lane', '<span class="muted">No matching activity yet. Start work in a worker or run the informant.</span>'));
+    box.append(empty);
+    return;
+  }
+
+  // ruler row; pick a tick step that stays ~150px+ apart at the current scale
+  const pxPerHour = vw / bView.scaleH;
+  let tickStep = 0.0833;
+  for (const cand of [0.0833, 0.25, 0.5, 1, 2, 4, 6]) { if (cand * pxPerHour >= 150) { tickStep = cand; break; } }
+  const ruler = el('div', 'tl-row', null); ruler.style.minHeight = '28px';
+  ruler.append(el('div', 'tl-label lbl-head', 'project'));
+  const rlane = el('div', 'tl-lane', null); rlane.style.overflow = 'hidden';
+  for (let h = 0; h <= bView.rangeH; h += tickStep) {
+    const t = startMs + h * 3600 * 1000;
+    if (t > now + 3600 * 1000) continue;
+    const s = el('span', null, new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
+    s.style.cssText = `position:absolute;left:${bTimeToPx(t, vw).toFixed(0)}px;top:8px;transform:translateX(-50%);font-size:10px;color:var(--muted);white-space:nowrap`;
+    rlane.append(s);
+  }
+  ruler.append(rlane);
+  box.append(ruler);
+
   slugs.forEach(slug => {
-    const t = bySlug[slug];
-    const last = t.items.reduce((mx, it) => (it.ts > mx ? it.ts : mx), 0);
-    const age = now - last;
-    const live = age < LIVE_MS;
-    const dim = age > IDLE_MS;
-    const ctx = t.ctx || {};
-    const meta = [
-      ctx.project ? 'repo ' + esc(ctx.project) : '',
-      ctx.branch ? '⎇ ' + esc(ctx.branch) : '',
-      ctx.commit ? '@' + esc(ctx.commit) : '',
-      t.items.length + ' events'
-    ].filter(Boolean).join(' · ');
-    const items = t.items
-      .slice()
-      .sort((a,b) => b.ts - a.ts)
-      .slice(0, 20)
-      .map(it => {
-        const k = it.kind && KIND_LABEL[it.kind] ? it.kind : 'note';
-        const ts = new Date(it.ts).toLocaleTimeString();
-        const pulse = (k === 'active' && live) ? ' <span class="pulse">●</span>' : '';
-        return `<div class="titem k-${esc(k)}"><span class="ts">${esc(ts)}</span><span class="txt">${esc(it.text)}${pulse}</span></div>`;
-      }).join('');
-    const track = el('div', 'track' + (dim ? ' dim' : ''), '');
-    track.innerHTML = `<div class="track-head"><span class="slug">${esc(slug)}</span>` +
-      (live ? '<span class="badge ok">live</span>' : '') +
-      (dim ? '<span class="badge">idle</span>' : '') +
-      `<span class="meta">${meta}</span></div><div class="track-items">${items}</div>`;
-    box.append(track);
+    const t = by[slug];
+    const runs = bMergeRuns(t.items);
+    const row = el('div', 'tl-row', null); row.style.minHeight = '44px';
+    const lab = el('div', 'tl-label', null);
+    lab.append(el('span', 'slug', esc(slug)));
+    const meta = bTrackLabel(slug);
+    if (meta) lab.append(el('span', 'meta', esc(meta)));
+    row.append(lab);
+    const lane = el('div', 'tl-lane', null);
+    runs.forEach(run => {
+      const x1 = bTimeToPx(run.start, vw), x2 = bTimeToPx(run.end, vw);
+      let w = Math.max(x2 - x1, MIN_BLK), x = x1;
+      if (w === MIN_BLK) x = x2 - MIN_BLK; // anchor min-width to the event time
+      const b = el('div', 'blk k-' + esc(run.kind), run.items.length > 1 ? String(run.items.length) : '');
+      b.style.cssText = `left:${x.toFixed(1)}px;width:${w.toFixed(1)}px`;
+      b.addEventListener('mousemove', ev => bPopShow(ev, run));
+      b.addEventListener('mouseleave', bPopHide);
+      lane.append(b);
+    });
+    row.append(lane);
+    box.append(row);
   });
+
+  box.style.width = total + 'px';
+
+  if (bPinned) wrap.scrollLeft = box.scrollWidth;   // keep the newest hour in view
+}
+
+// loadBoard refreshes data and re-renders. Called on SSE activity events, on
+// boot, and on the light poll.
+async function loadBoard() {
+  const [acts, ws] = await Promise.all([
+    api('/api/v1/activities?limit=2000'),
+    api('/api/v1/workers')
+  ]).catch(e => { $('#boardStatus').textContent = e.message; return [[], []]; });
+  bActs = Array.isArray(acts) ? acts : [];
+  bWorkers = Array.isArray(ws) ? ws : [];
+  bBuildFilters();
+  bRender();
 }
 
 // The board also refreshes on a light poll (SSE activity events already
 // trigger loadBoard; the poll covers races).
-let boardPolled = false;
 function ensureBoardPoll() {
   if (boardPolled) { return; }
   boardPolled = true;
   setInterval(() => { loadBoard().catch(() => {}); }, 10000);
 }
+
+// toolbar + scroll wiring
+$('#bScale').onchange = e => { bView.scaleH = parseFloat(e.target.value); bPinned = true; bRender(); };
+$('#bRange').onchange = e => { bView.rangeH = parseFloat(e.target.value); bPinned = true; bRender(); };
+$('#bReset').onclick = () => { bView = { scaleH: 1, rangeH: 24 }; bOnKind = new Set(BOARD_KINDS); bOnSlug = null; bPinned = true; bBuildFilters(); bRender(); };
+$('#bJump').onclick = () => { bPinned = true; bRender(); };
+(() => {
+  const wrap = $('#boardWrap');
+  // Auto-drift back to "now" (right edge) after 30s without interaction: the
+  // timeline keeps growing to the right, so re-pinning keeps the newest
+  // activity in view for continuity even while you're away or resting the cursor.
+  const IDLE_MS = 30000;
+  let idleT = null;
+  const arm = () => {
+    if (idleT) clearTimeout(idleT);
+    idleT = setTimeout(() => {
+      idleT = null;
+      if (!bPinned) { bPinned = true; bRender(); }
+    }, IDLE_MS);
+  };
+  const disarm = () => { if (idleT) { clearTimeout(idleT); idleT = null; } };
+  wrap.addEventListener('scroll', () => {
+    const atEnd = wrap.scrollLeft >= (wrap.scrollWidth - wrap.clientWidth - 8);
+    if (atEnd) { bPinned = true; disarm(); } else if (bPinned) { bPinned = false; arm(); }
+  });
+  // Any direct touch keeps the idle clock at bay while unpinned.
+  ['pointerdown', 'wheel', 'touchstart'].forEach(t =>
+    wrap.addEventListener(t, () => { if (!bPinned) arm(); }, {passive: true}));
+})();
 
 async function loadWorkers() {
   const ws = await api('/api/v1/workers');
