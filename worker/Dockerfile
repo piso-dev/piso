@@ -48,6 +48,28 @@ RUN cd /opt/piso/npm \
      fi \
   && sha256sum package.json | awk '{print substr($1,1,16)}' > .piso-pkg-hash
 
+# node-pty ships no linux prebuild. Ship the pty.node that `npm rebuild
+# node-pty` just compiled so ANY runtime reinstall (pi's extension manager
+# reinstalls into this tree) short-circuits at prebuild.js with exit 0 and
+# never calls node-gyp. Inside a hardened worker (cap_drop ALL) node-gyp's
+# header-tarball extraction attempts fchown for tarball uid/gid, which the
+# kernel denies (EPERM) — this is the `TAR_ENTRY_ERROR EPERM: fchown` seen
+# at image runtime.
+RUN PB="node_modules/node-pty/prebuilds/$(node -e 'process.stdout.write(process.platform + "-" + process.arch)')" \
+  && mkdir -p "/opt/piso/npm/$PB" \
+  && cp "/opt/piso/npm/node_modules/node-pty/build/Release/pty.node" "/opt/piso/npm/$PB/pty.node"
+
+# Bake node-gyp's dev headers for the image's exact node version so a native
+# configure can skip the header-tarball download+extract (whose fchown is
+# blocked under cap_drop ALL). `npm rebuild node-pty` above already installed
+# them into /root/.cache/node-gyp; keep a fallback install and persist the
+# dir under /opt/piso for entrypoint.sh to seed the per-boot tmpfs.
+RUN NODEVER="$(node -v | tr -d v)" \
+  && CACHE=/root/.cache/node-gyp \
+  && { [ -f "$CACHE/$NODEVER/installVersion" ] || node /usr/local/lib/node_modules/npm/node_modules/node-gyp/bin/node-gyp.js install "v${NODEVER}" --ensure; } \
+  && mkdir -p /opt/piso/node-gyp \
+  && cp -a "$CACHE/." /opt/piso/node-gyp/
+
 # Egress: only via the gateway. NO_PROXY keeps internal services direct.
 ENV HTTPS_PROXY=http://gateway:8080 \
     HTTP_PROXY=http://gateway:8080 \

@@ -39,6 +39,38 @@ if [ -f /opt/piso/npm/.piso-pkg-hash ]; then
   fi
 fi
 
+# node-gyp dev headers for the image's node version, baked into
+# /opt/piso/node-gyp at build time. /root/.cache is a per-boot tmpfs here
+# (compose tmpfs), so seed it on every start: with headers present, node-gyp's
+# configure short-circuits and never extracts its header tarball — the extract
+# does fchown for tarball uid/gid, which the kernel denies under cap_drop ALL
+# (EPERM). This is the `TAR_ENTRY_ERROR EPERM: operation not permitted,
+# fchown` failure seen when a native module (node-pty) is (re)built inside a
+# hardened worker.
+if [ -d /opt/piso/node-gyp ]; then
+  mkdir -p /root/.cache/node-gyp
+  cp -an /opt/piso/node-gyp/. /root/.cache/node-gyp/ 2>/dev/null || true
+fi
+
+# node-pty ships no linux prebuild; its install script is
+# `node scripts/prebuild.js || node-gyp rebuild`, and npm re-runs it whenever
+# pi (re)installs extensions into the agent volume. If the tree already has a
+# compiled build/Release/pty.node but the platform prebuild is missing (volume
+# baked from a pre-fix image), synthesize the prebuild so prebuild.js exits 0
+# and node-gyp is never invoked in the hardened worker.
+NP=/root/.pi/agent/npm/node_modules/node-pty
+if [ -x "$NP/build/Release/pty.node" ]; then
+  arch="$(node -e 'process.stdout.write(process.arch)' 2>/dev/null || true)"
+  case "$arch" in
+    arm64|x64) ;;
+    *) arch="" ;;
+  esac
+  if [ -n "$arch" ] && [ ! -f "$NP/prebuilds/linux-$arch/pty.node" ]; then
+    mkdir -p "$NP/prebuilds/linux-$arch"
+    cp "$NP/build/Release/pty.node" "$NP/prebuilds/linux-$arch/pty.node"
+  fi
+fi
+
 # Fold the Tier B informant convention into EVERY pi run via the global
 # context file: pi reads ~/.pi/agent/AGENTS.md as a context file on every
 # start (fresh, -r, --session, -p), so the model always knows piso-informant
