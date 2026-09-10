@@ -80,6 +80,7 @@ WORKDIR /workspace
 
 COPY entrypoint.sh /usr/local/bin/piso-entrypoint
 COPY planning-watch.sh /usr/local/bin/piso-planning-watch
+COPY loopback-forward.py /usr/local/bin/piso-loopback-forward
 COPY context-watch.sh /usr/local/bin/piso-context-watch
 COPY ports-watch.sh /usr/local/bin/piso-ports-watch
 COPY activity-watch.sh /usr/local/bin/piso-activity-watch
@@ -90,7 +91,7 @@ COPY monitor-loop.sh /usr/local/bin/piso-monitor-loop
 RUN chmod +x /usr/local/bin/piso-monitor-loop
 # make the monitor loop invocable as a plain name (and pi can call it too)
 RUN ln -sf /usr/local/bin/piso-monitor-loop /usr/local/bin/piso-monitor
-RUN chmod +x /usr/local/bin/piso-entrypoint /usr/local/bin/piso-planning-watch /usr/local/bin/piso-context-watch /usr/local/bin/piso-ports-watch /usr/local/bin/piso-activity-watch /usr/local/bin/piso-informant
+RUN chmod +x /usr/local/bin/piso-entrypoint /usr/local/bin/piso-planning-watch /usr/local/bin/piso-loopback-forward /usr/local/bin/piso-context-watch /usr/local/bin/piso-ports-watch /usr/local/bin/piso-activity-watch /usr/local/bin/piso-informant
 # piso-informant is CALLED by the agent (not a background watcher); ensure it
 # is on PATH (entrypoint runs at /usr/local/bin which is on the default PATH).
 ENV PATH=/usr/local/bin:$PATH

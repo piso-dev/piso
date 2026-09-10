@@ -202,7 +202,7 @@ func CopyWorkerSkeleton(dest string) error {
 		return err
 	}
 	src := filepath.Join(home, "worker")
-	for _, name := range []string{"Dockerfile", "entrypoint.sh", "planning-watch.sh", "context-watch.sh", "ports-watch.sh", "activity-watch.sh", "informant-help.sh", "INFORMANT.md", "MONITOR.md", "monitor-loop.sh"} {
+	for _, name := range []string{"Dockerfile", "entrypoint.sh", "planning-watch.sh", "loopback-forward.py", "context-watch.sh", "ports-watch.sh", "activity-watch.sh", "informant-help.sh", "INFORMANT.md", "MONITOR.md", "monitor-loop.sh"} {
 		dstFile := filepath.Join(dest, name)
 		if err := copyFile(filepath.Join(src, name), dstFile); err != nil {
 			return fmt.Errorf("stage %s: %w", name, err)

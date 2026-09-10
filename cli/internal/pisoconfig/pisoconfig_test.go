@@ -135,7 +135,7 @@ func TestWriteWorkerComposeRendersPerWorkerEnv(t *testing.T) {
 	if err := os.MkdirAll(build, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"Dockerfile", "entrypoint.sh", "planning-watch.sh", "context-watch.sh", "ports-watch.sh", "activity-watch.sh", "informant-help.sh", "INFORMANT.md", "MONITOR.md", "monitor-loop.sh", "package.json"} {
+	for _, name := range []string{"Dockerfile", "entrypoint.sh", "planning-watch.sh", "loopback-forward.py", "context-watch.sh", "ports-watch.sh", "activity-watch.sh", "informant-help.sh", "INFORMANT.md", "MONITOR.md", "monitor-loop.sh", "package.json"} {
 		if err := os.WriteFile(filepath.Join(build, name), []byte("x\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}

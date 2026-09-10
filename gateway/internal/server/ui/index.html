@@ -1278,10 +1278,36 @@ function renderPlanGroups() {
  * @param {Window|null} tab
  * @returns {Promise<string>}
  */
+/**
+ * After approve, piso sync still has to write plan-<slug>.piso.local into
+ * /etc/hosts. Navigating immediately races that and Chrome shows “could not
+ * be reached”. Probe the canonical subdomain until DNS works (or we time out).
+ * @param {string} dest
+ * @param {number} [timeoutMs]
+ * @returns {Promise<void>}
+ */
+async function waitForIngressDest(dest, timeoutMs) {
+  let probe = dest;
+  try {
+    const u = new URL(dest, location.origin);
+    const q = u.searchParams.get('route');
+    if (q) probe = routeURL(q);
+  } catch (_) { /* keep dest */ }
+  const deadline = Date.now() + (timeoutMs || 8000);
+  while (Date.now() < deadline) {
+    try {
+      await fetch(probe, { mode: 'no-cors', cache: 'no-store', signal: AbortSignal.timeout(800) });
+      return;
+    } catch (_) { /* NXDOMAIN / connection — retry */ }
+    await new Promise(r => setTimeout(r, 150));
+  }
+}
+
 async function approveAndPoint(id, url, tab) {
   try {
     const out = await api(`/api/v1/ingress/requests/${id}/approve`, {method: 'POST'});
     const dest = (out && out.url) ? out.url : url;
+    await waitForIngressDest(dest);
     if (tab) {
       tab.location = dest;
     } else {
