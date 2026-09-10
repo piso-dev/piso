@@ -60,7 +60,8 @@
   code, .mono { font:12px ui-monospace, SFMono-Regular, Menlo, monospace }
   .muted { color:var(--muted) }
   form { display:flex; gap:8px; flex-wrap:wrap; margin:14px 0; align-items:center }
-  form input, form select { background:var(--panel); border:1px solid var(--border); color:var(--fg); padding:7px 10px; border-radius:6px; font-size:13px; min-width:140px }
+  form input, form select, form textarea { background:var(--panel); border:1px solid var(--border); color:var(--fg); padding:7px 10px; border-radius:6px; font-size:13px; min-width:140px }
+  form textarea { resize:vertical; font:13px ui-monospace, SFMono-Regular, Menlo, monospace; width:100%; box-sizing:border-box }
   form button, .btn { background:var(--accent); border:0; color:#fff; padding:7px 14px; border-radius:6px; cursor:pointer; font-size:13px }
   .btn.danger { background:transparent; border:1px solid var(--bad); color:var(--bad) }
   .btn.small { padding:3px 8px; font-size:12px }
@@ -182,16 +183,9 @@
   <section class="tab" id="tab-secrets">
     <div class="grid">
       <div class="card">
-        <h3>Add secret</h3>
-        <form id="secretForm">
-          <input name="name" placeholder="name (anthropic)" required>
-          <input name="placeholder" placeholder="piso_anthropic_xyz" required>
-          <input name="envKey" placeholder="ANTHROPIC_API_KEY (optional)">
-          <input name="value" type="password" autocomplete="new-password" placeholder="real value (hidden)" required>
-          <input name="allowedHosts" placeholder="allowed hosts, comma-sep (optional)">
-          <button type="submit">Add</button>
-        </form>
-        <p class="muted" style="margin:6px 0 0; font-size:12px">Real values are stored only in the gateway and never leave it. Placeholders are what the worker uses.</p>
+        <h3>Secrets</h3>
+        <p class="muted" style="margin:0 0 10px; font-size:12px">Real values are stored only in the gateway and never leave it. Placeholders are what the worker uses.</p>
+        <button type="button" class="btn" id="openSecretModal">+ Add secret</button>
       </div>
       <div class="card">
         <h3>Secrets (summaries only)</h3>
@@ -317,6 +311,24 @@
       <div class="modal-actions">
         <button type="button" class="btn danger" id="failCancel">Cancel</button>
         <button type="submit">Save and write worker env</button>
+      </div>
+    </form>
+  </div>
+</div>
+<div id="secretModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="secretModalTitle">
+  <div class="modal-card">
+    <h3 id="secretModalTitle">Add secret</h3>
+    <p class="muted" id="secretModalHint">The real value stays in the gateway; workers only ever see the <span class="mono">piso_…</span> placeholder.</p>
+    <form id="secretModalForm">
+      <input name="name" id="sName" placeholder="name (anthropic)" autocomplete="off" required>
+      <input name="envKey" id="sEnvKey" placeholder="env var name — auto-derived from name" autocomplete="off" spellcheck="false">
+      <input name="placeholder" id="sPlaceholder" placeholder="piso_anthropic_xyz" autocomplete="off" spellcheck="false" required>
+      <textarea name="value" id="sValue" rows="3" placeholder="real value (the actual credential)" autocomplete="new-password" required></textarea>
+      <input name="allowedHosts" id="sAllowedHosts" placeholder="allowed hosts, comma-sep (optional)" autocomplete="off">
+      <p class="muted" id="secretModalNotes" style="margin:0; font-size:12px"></p>
+      <div class="modal-actions">
+        <button type="button" class="btn danger" id="secretModalCancel">Cancel</button>
+        <button type="submit">Save secret</button>
       </div>
     </form>
   </div>
@@ -685,6 +697,7 @@ $('#failModal').addEventListener('click', ev => {
 });
 document.addEventListener('keydown', ev => {
   if (ev.key === 'Escape') {
+    if ($('#secretModal').classList.contains('open')) { closeSecretModal(); return; }
     closeFailModal();
   }
 });
@@ -769,23 +782,120 @@ $('#logFilter').oninput = ev => {
 };
 
 // ---- secrets ----
+let secretMode = 'add';   // 'add' | 'edit'
+let secretEnvKeyTouched = false; // stop auto-deriving once the user edits envKey
+
+// deriveEnvKey mirrors the gateway's store.DeriveEnvKey (uppercase; keep
+// [A-Z0-9_], other → '_'; trim edge '_'; prefix '_' if it starts with a digit).
+function deriveEnvKey(name) {
+  let out = (name||'').toUpperCase().replace(/[^A-Z0-9_]/g,'_').replace(/^_+|_+$/g,'');
+  if (!out) return '';
+  if (/^[0-9]/.test(out)) out = '_' + out;
+  return out;
+}
+function derivePlaceholder(name) {
+  const p = (name||'').toLowerCase().replace(/[^a-z0-9]/g,'_').replace(/^_+|_+$/g,'');
+  return p ? 'piso_' + p : '';
+}
+
+function deriveSecretPreview() {
+  const sName = $('#sName');
+  if (!sName) return;
+  if (secretMode === 'add' && !secretEnvKeyTouched) {
+    $('#sEnvKey').value = deriveEnvKey(sName.value);
+  }
+  if (secretMode === 'add' && (!sName.dataset.placeTouched)) {
+    $('#sPlaceholder').value = derivePlaceholder(sName.value);
+  }
+  $('#secretModalNotes').textContent = (secretMode === 'edit')
+    ? 'Placeholder is fixed — substitution rules reference it. Blank real value keeps the existing one.'
+    : (sName.value ? `env var will be ${$('#sEnvKey').value||'(set an envKey)'} · placeholder ${$('#sPlaceholder').value||'(set a placeholder)'}` : '');
+}
+$('#sName').oninput = () => deriveSecretPreview();
+$('#sEnvKey').oninput = () => { secretEnvKeyTouched = true; };
+$('#sPlaceholder').oninput = () => { $('#sName').dataset.placeTouched = '1'; };
+
+function openSecretModal(mode, s) {
+  secretMode = mode;
+  secretEnvKeyTouched = false;
+  $('#sName').dataset.placeTouched = '';
+  if (mode === 'add') {
+    $('#secretModalTitle').textContent = 'Add secret';
+    $('#secretModalHint').hidden = false;
+    $('#secretModalNotes').hidden = false;
+    $('#sName').value = ''; $('#sEnvKey').value = ''; $('#sPlaceholder').value = '';
+    $('#sValue').value = ''; $('#sAllowedHosts').value = '';
+    $('#sPlaceholder').removeAttribute('disabled');
+    $('#sValue').required = true;
+    $('#sValue').placeholder = 'real value (the actual credential)';
+    $('#sName').dataset.id = '';
+  } else {
+    $('#secretModalTitle').textContent = 'Edit secret';
+    $('#secretModalHint').hidden = false;
+    $('#secretModalNotes').hidden = false;
+    $('#sName').value = s.name; $('#sEnvKey').value = s.envKey||'';
+    $('#sPlaceholder').value = s.placeholder;
+    $('#sAllowedHosts').value = (s.allowedHosts||[]).join(', ');
+    $('#sValue').value = '';
+    $('#sValue').required = false;
+    $('#sValue').placeholder = 'leave blank to keep the existing value';
+    $('#sPlaceholder').setAttribute('disabled','');
+    $('#sName').dataset.id = s.id;
+    deriveSecretPreview();
+  }
+  $('#secretModal').classList.add('open');
+  $('#sName').focus();
+}
+function closeSecretModal() {
+  $('#secretModal').classList.remove('open');
+}
+
+$('#openSecretModal').onclick = () => openSecretModal('add');
+$('#secretModalCancel').onclick = () => closeSecretModal();
+$('#secretModal').addEventListener('click', ev => {
+  if (ev.target === $('#secretModal')) closeSecretModal();
+});
+$('#secretModalForm').onsubmit = async ev => {
+  ev.preventDefault();
+  const id = $('#sName').dataset.id;
+  const body = {
+    name: $('#sName').value,
+    envKey: $('#sEnvKey').value,
+    value: $('#sValue').value,
+    allowedHosts: ($('#sAllowedHosts').value||'').split(',').map(s=>s.trim()).filter(Boolean)
+  };
+  const url = id ? `/api/v1/secrets/${id}` : '/api/v1/secrets';
+  const method = id ? 'PUT' : 'POST';
+  if (!id) body.placeholder = $('#sPlaceholder').value;
+  try {
+    await api(url, {method, headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+    closeSecretModal();
+    await loadSecrets();
+    await loadRules();
+    await loadLog();
+  } catch (e) { alert(e.message); }
+};
+
 async function loadSecrets() {
   const ss = await api('/api/v1/secrets');
   $('#secretrows').innerHTML = '';
   ss.forEach(s => $('#secretrows').append(el('tr', '', `<td>${esc(s.name)}</td><td class="mono">${esc(s.envKey||'')}</td>
     <td class="mono">${esc(s.placeholder)}</td>
     <td><span class="mono">${esc((s.allowedHosts||[]).join(', '))}</span></td>
-    <td><button class="btn small danger" onclick="delSecret('${s.id}')">del</button></td>`)));
+    <td><button class="btn small" onclick="editSecret('${s.id}')">edit</button>
+        <button class="btn small danger" onclick="delSecret('${s.id}')">del</button></td>`)));
   const sel = $('#ruleSecret'); sel.placeholder = ss.length ? `secret id: ${ss[0].id}` : 'secret id';
 }
-async function delSecret(id) { await api(`/api/v1/secrets/${id}`, {method:'DELETE'}); loadSecrets(); }
-$('#secretForm').onsubmit = async ev => {
-  ev.preventDefault(); const f = new FormData(ev.target);
-  const allowedHosts = (f.get('allowedHosts')||'').split(',').map(s=>s.trim()).filter(Boolean);
-  const body = { name:f.get('name'), placeholder:f.get('placeholder'), envKey:f.get('envKey'), value:f.get('value'), allowedHosts };
-  try { await api('/api/v1/secrets', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)}); ev.target.reset(); loadSecrets(); }
-  catch (e) { alert(e.message); }
-};
+async function editSecret(id) {
+  const ss = await api('/api/v1/secrets');
+  const s = ss.find(x => x.id === id);
+  if (s) openSecretModal('edit', s);
+}
+async function delSecret(id) {
+  if (!confirm('Delete secret ' + id + '?')) return;
+  await api(`/api/v1/secrets/${id}`, {method:'DELETE'});
+  await loadSecrets(); await loadRules();
+}
 
 // ---- rules ----
 async function loadRules() {

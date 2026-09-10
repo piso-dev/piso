@@ -173,6 +173,71 @@ func TestCancelIngressByWorker(t *testing.T) {
 	}
 }
 
+func TestSecretsDeriveEnvKeyAndEdit(t *testing.T) {
+	s := testServer(t)
+	ch := s.ControlHandler()
+	// blank envKey → derived from name
+	created := doJSON(t, ch, "POST", "/api/v1/secrets", map[string]any{
+		"name": "CLD2 SSH", "placeholder": "piso_cld2_ssh_1", "value": "super-secret",
+	})
+	if created.Code != 201 {
+		t.Fatalf("create %d %s", created.Code, created.Body.String())
+	}
+	if !strings.Contains(created.Body.String(), `"envKey":"CLD2_SSH"`) {
+		t.Fatalf("envKey not derived: %s", created.Body.String())
+	}
+	recs := s.Store.Secrets()
+	if len(recs) != 1 || recs[0].EnvKey != "CLD2_SSH" {
+		t.Fatalf("store envKey: %+v", recs)
+	}
+	id := recs[0].ID
+	// placeholder is required
+	if doJSON(t, ch, "POST", "/api/v1/secrets", map[string]any{"name": "x", "value": "v"}).Code != 400 {
+		t.Fatal("placeholder required")
+	}
+	// a name that derives nothing must 400 rather than store an empty envKey
+	if doJSON(t, ch, "POST", "/api/v1/secrets", map[string]any{"name": "***", "placeholder": "piso_x", "value": "v"}).Code != 400 {
+		t.Fatal("all-symbols name should 400")
+	}
+	// edit: rename + new value + explicit envKey; placeholder carries over
+	edited := doJSON(t, ch, "PUT", "/api/v1/secrets/"+id, map[string]any{
+		"name": "CLD2", "envKey": "MY_SSH", "value": "sk-2", "allowedHosts": []string{"host.example"},
+	})
+	if edited.Code != 200 {
+		t.Fatalf("edit %d %s", edited.Code, edited.Body.String())
+	}
+	if !strings.Contains(edited.Body.String(), `"name":"CLD2"`) || !strings.Contains(edited.Body.String(), `"envKey":"MY_SSH"`) {
+		t.Fatalf("edit body: %s", edited.Body.String())
+	}
+	rec := s.Store.Secrets()[0]
+	if rec.EnvKey != "MY_SSH" || rec.Placeholder != "piso_cld2_ssh_1" || rec.Value != "sk-2" {
+		t.Fatalf("store after edit: %+v", rec)
+	}
+	// blank value keeps the existing real value
+	doJSON(t, ch, "PUT", "/api/v1/secrets/"+id, map[string]any{"name": "CLD2", "envKey": "MY_SSH"})
+	rec = s.Store.Secrets()[0]
+	if rec.Value != "sk-2" {
+		t.Fatalf("blank value should keep existing: %+v", rec)
+	}
+	// worker scoping is creation-time: an edit must not wipe it
+	scoped := doJSON(t, ch, "POST", "/api/v1/secrets", map[string]any{
+		"name": "mon", "placeholder": "piso_mon_1", "value": "v", "workers": []string{"monitor"},
+	})
+	if scoped.Code != 201 {
+		t.Fatalf("scoped create %d %s", scoped.Code, scoped.Body.String())
+	}
+	mid := s.Store.Secrets()[1].ID
+	doJSON(t, ch, "PUT", "/api/v1/secrets/"+mid, map[string]any{"name": "mon", "envKey": "MON_KEY"})
+	rec = s.Store.Secrets()[1]
+	if len(rec.Workers) != 1 || rec.Workers[0] != "monitor" {
+		t.Fatalf("edit must preserve worker scoping: %+v", rec.Workers)
+	}
+	// unknown id → 404
+	if doJSON(t, ch, "PUT", "/api/v1/secrets/sec_nope", map[string]any{"name": "a"}).Code != 404 {
+		t.Fatal("edit missing should 404")
+	}
+}
+
 func TestWorkerAPIIsNamespacedAndControlRejectsWorkers(t *testing.T) {
 	s := testServer(t)
 	s.DenyPeer = func(string) bool { return true }

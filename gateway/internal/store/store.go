@@ -422,6 +422,18 @@ func (s *Store) DeleteSecret(id string) error {
 	return s.writePlaceholdersEnvLocked()
 }
 
+// SecretByID returns the secret with this id.
+func (s *Store) SecretByID(id string) (SecretRec, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, rec := range s.state.Secrets {
+		if rec.ID == id {
+			return rec, true
+		}
+	}
+	return SecretRec{}, false
+}
+
 // SecretByEnvKey returns the first secret with this env key.
 func (s *Store) SecretByEnvKey(envKey string) (SecretRec, bool) {
 	s.mu.RLock()

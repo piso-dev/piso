@@ -9,7 +9,7 @@ import (
 func workerTestStore(t *testing.T) *Store {
 	t.Helper()
 	dir := t.TempDir()
-	st, err := New(filepath.Join(dir, "state.json"), filepath.Join(dir, "log.jsonl"), filepath.Join(dir, "patterns.json"), 20)
+	st, err := New(filepath.Join(dir, "state.json"), filepath.Join(dir, "log.jsonl"), filepath.Join(dir, "patterns.json"), filepath.Join(dir, "activities.db"), 20)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +113,7 @@ func TestWorkerRegistryPersists(t *testing.T) {
 	path := filepath.Join(dir, "state.json")
 	logPath := filepath.Join(dir, "log.jsonl")
 	patPath := filepath.Join(dir, "patterns.json")
-	st, err := New(path, logPath, patPath, 20)
+	st, err := New(path, logPath, patPath, filepath.Join(dir, "activities.db"), 20)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,7 +121,7 @@ func TestWorkerRegistryPersists(t *testing.T) {
 		t.Fatal(err)
 	}
 	// reopen from disk
-	st2, err := New(path, logPath, patPath, 20)
+	st2, err := New(path, logPath, patPath, filepath.Join(dir, "activities.db"), 20)
 	if err != nil {
 		t.Fatal(err)
 	}

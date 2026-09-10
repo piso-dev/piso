@@ -17,6 +17,29 @@ func PlaceholdersEnvPath(statePath string) string {
 	return filepath.Join(filepath.Dir(statePath), PlaceholdersEnvName)
 }
 
+// DeriveEnvKey derives a POSIX env var name from a human secret name:
+// uppercase; keep [A-Z0-9_], map every other rune to '_'; trim edge '_';
+// prefix '_' if it would start with a digit. Empty result returns "" so the
+// caller can ask for an explicit key.
+func DeriveEnvKey(name string) string {
+	var b strings.Builder
+	for _, r := range strings.ToUpper(name) {
+		if (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte('_')
+		}
+	}
+	out := strings.Trim(b.String(), "_")
+	if out == "" {
+		return ""
+	}
+	if out[0] >= '0' && out[0] <= '9' {
+		out = "_" + out
+	}
+	return out
+}
+
 // ValidEnvKey reports a POSIX-ish exported name: [A-Za-z_][A-Za-z0-9_]*.
 func ValidEnvKey(key string) bool {
 	if key == "" {

@@ -9,7 +9,7 @@ import (
 
 func TestPatternPersistenceAndReload(t *testing.T) {
 	dir := t.TempDir()
-	st, err := New(filepath.Join(dir, "state.json"), filepath.Join(dir, "req.jsonl"), filepath.Join(dir, "patterns.json"), 100)
+	st, err := New(filepath.Join(dir, "state.json"), filepath.Join(dir, "req.jsonl"), filepath.Join(dir, "patterns.json"), filepath.Join(dir, "activities.db"), 100)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -52,7 +52,7 @@ func TestPatternPersistenceAndReload(t *testing.T) {
 
 func TestApplyAllowedExceptionUpdatesMatchingRows(t *testing.T) {
 	dir := t.TempDir()
-	st, err := New(filepath.Join(dir, "state.json"), filepath.Join(dir, "req.jsonl"), filepath.Join(dir, "patterns.json"), 100)
+	st, err := New(filepath.Join(dir, "state.json"), filepath.Join(dir, "req.jsonl"), filepath.Join(dir, "patterns.json"), filepath.Join(dir, "activities.db"), 100)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -85,7 +85,7 @@ func TestApplyAllowedExceptionUpdatesMatchingRows(t *testing.T) {
 
 func TestSecretRoundTripWithoutValueLeakOnSummary(t *testing.T) {
 	dir := t.TempDir()
-	st, _ := New(filepath.Join(dir, "state.json"), filepath.Join(dir, "req.jsonl"), filepath.Join(dir, "patterns.json"), 100)
+	st, _ := New(filepath.Join(dir, "state.json"), filepath.Join(dir, "req.jsonl"), filepath.Join(dir, "patterns.json"), filepath.Join(dir, "activities.db"), 100)
 	rec := SecretRec{ID: "s1", Name: "anthropic", Placeholder: "piso_anthropic_x", Value: "sk-super-secret-value"}
 	if err := st.AddSecret(rec); err != nil {
 		t.Fatalf("AddSecret: %v", err)
@@ -109,7 +109,7 @@ func TestSecretRoundTripWithoutValueLeakOnSummary(t *testing.T) {
 
 func TestWorkerCtxUpsertAndLogEnrichment(t *testing.T) {
 	dir := t.TempDir()
-	st, err := New(filepath.Join(dir, "state.json"), filepath.Join(dir, "req.jsonl"), filepath.Join(dir, "patterns.json"), 100)
+	st, err := New(filepath.Join(dir, "state.json"), filepath.Join(dir, "req.jsonl"), filepath.Join(dir, "patterns.json"), filepath.Join(dir, "activities.db"), 100)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

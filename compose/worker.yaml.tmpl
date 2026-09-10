@@ -26,7 +26,7 @@ services:
       - PROJECT_DIR:/workspace          # the only host files the agent sees
       - piso-agent-PROJ-SLUG:/root/.pi/agent   # pi sessions/npm persist
       - CA_DIR/ca.crt:/piso-ca.pem:ro   # trust the gateway's MITM CA
-      - CA_DIR/workers/PROJ-SLUG/placeholders.env:/etc/piso/placeholders.env:ro
+      - CA_DIR/workers/PROJ-SLUG:/etc/piso:ro   # dir mount: gateway rewrites files by atomic rename; workers see the new inode without a restart
       - CA_DIR/pi-profile/settings.json:/root/.pi/agent/settings.json:ro
       - CA_DIR/pi-profile/models.json:/root/.pi/agent/models.json:ro
     environment:

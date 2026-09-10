@@ -124,7 +124,7 @@ func TestWriteWorkerComposeRendersPerWorkerEnv(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "worker", "entrypoint.sh"), []byte("#!/bin/sh\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	tmpl := []byte("image: piso-worker\nPISO_WORKER_HASH: __WORKER_HASH__ CA_DIR/workers/PROJ-SLUG/placeholders.env WORKER_BUILD_CONTEXT\n")
+	tmpl := []byte("image: piso-worker\nPISO_WORKER_HASH: __WORKER_HASH__ CA_DIR/workers/PROJ-SLUG:/etc/piso:ro WORKER_BUILD_CONTEXT\n")
 	if err := os.WriteFile(filepath.Join(root, "compose", "worker.yaml.tmpl"), tmpl, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -150,8 +150,8 @@ func TestWriteWorkerComposeRendersPerWorkerEnv(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := string(b)
-	if !strings.Contains(got, "workers/demo/placeholders.env") {
-		t.Fatalf("compose missing per-worker env mount:\n%s", got)
+	if !strings.Contains(got, "workers/demo:/etc/piso:ro") {
+		t.Fatalf("compose missing per-worker env dir mount:\n%s", got)
 	}
 	if strings.Contains(got, "__WORKER_HASH__") {
 		t.Fatalf("hash placeholder not replaced:\n%s", got)

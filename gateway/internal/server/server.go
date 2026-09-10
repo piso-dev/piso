@@ -147,8 +147,14 @@ func (s *Server) routes(mux *http.ServeMux) {
 			writeJSON(w, 400, map[string]string{"error": "placeholder must start with " + model.PlaceholderPrefix})
 			return
 		}
-		if in.EnvKey != "" && !store.ValidEnvKey(in.EnvKey) {
-			writeJSON(w, 400, map[string]string{"error": "invalid envKey"})
+		// Auto-derive the worker env var name from the secret name when the
+		// dashboard/CLI leave it blank; a secret without an envKey is invisible
+		// to workers (SecretVisibleToWorker), which is why a derived default matters.
+		if in.EnvKey == "" {
+			in.EnvKey = store.DeriveEnvKey(in.Name)
+		}
+		if !store.ValidEnvKey(in.EnvKey) {
+			writeJSON(w, 400, map[string]string{"error": "invalid envKey (set one explicitly or use a name that derives a key)"})
 			return
 		}
 		rec := store.SecretRec{
@@ -161,6 +167,53 @@ func (s *Server) routes(mux *http.ServeMux) {
 			return
 		}
 		writeJSON(w, 201, storeRecToSummary(rec))
+	})
+
+	// PUT /api/v1/secrets/{id} — edit an existing secret (dashboard modal).
+	// The real value is never returned over GET, so an empty value means
+	// "keep the existing value". Placeholder and worker scoping are
+	// intentionally not editable here (substitution rules reference the
+	// placeholder; scoping is set at creation via add-monitor / the API).
+	mux.HandleFunc("PUT /api/v1/secrets/{id}", func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			Name         string   `json:"name"`
+			Value        string   `json:"value"` // empty = keep existing
+			EnvKey       string   `json:"envKey"`
+			AllowedHosts []string `json:"allowedHosts"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			writeJSON(w, 400, map[string]string{"error": "bad json"})
+			return
+		}
+		id := r.PathValue("id")
+		existing, ok := s.Store.SecretByID(id)
+		if !ok {
+			writeJSON(w, 404, map[string]string{"error": "not found"})
+			return
+		}
+		rec := existing
+		if in.Name != "" {
+			rec.Name = in.Name
+		}
+		if in.Value != "" {
+			rec.Value = in.Value
+		}
+		if in.EnvKey == "" {
+			in.EnvKey = store.DeriveEnvKey(rec.Name)
+		}
+		if !store.ValidEnvKey(in.EnvKey) {
+			writeJSON(w, 400, map[string]string{"error": "invalid envKey (set one explicitly or use a name that derives a key)"})
+			return
+		}
+		rec.EnvKey = in.EnvKey
+		// AllowedHosts is always sent by the modal ([] means "all hosts");
+		// it replaces the previous set wholesale.
+		rec.AllowedHosts = in.AllowedHosts
+		if err := s.Store.ReplaceSecret(rec); err != nil {
+			writeJSON(w, 500, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, 200, storeRecToSummary(rec))
 	})
 	mux.HandleFunc("DELETE /api/v1/secrets/{id}", func(w http.ResponseWriter, r *http.Request) {
 		if err := s.Store.DeleteSecret(r.PathValue("id")); err != nil {

@@ -36,7 +36,8 @@ func TestWorkerPostPortsCreatesAutoRoutes(t *testing.T) {
 		t.Fatalf("hints %+v ok=%v", hints, ok)
 	}
 	// origin + heartbeat serialize (dashboard depends on them)
-	body, _ := json.Marshal(s.Store.RouteByName("demo-8080"))
+	rec, _ := s.Store.RouteByName("demo-8080")
+	body, _ := json.Marshal(rec)
 	if !strings.Contains(string(body), `"origin":"auto"`) || !strings.Contains(string(body), `"lastSeenMs"`) {
 		t.Fatalf("route view missing fields: %s", body)
 	}

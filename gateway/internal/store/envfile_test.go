@@ -105,6 +105,30 @@ func TestWriteAllWorkerEnvsFiltersScope(t *testing.T) {
 	}
 }
 
+func TestDeriveEnvKey(t *testing.T) {
+	if got := DeriveEnvKey("anthropic"); got != "ANTHROPIC" {
+		t.Fatalf("basic: %q", got)
+	}
+	if got := DeriveEnvKey("CLD2 SSH"); got != "CLD2_SSH" {
+		t.Fatalf("spaces: %q", got)
+	}
+	if got := DeriveEnvKey("my-key-1"); got != "MY_KEY_1" {
+		t.Fatalf("dash: %q", got)
+	}
+	if got := DeriveEnvKey("not_"); got != "NOT" {
+		t.Fatalf("edge trim: %q", got)
+	}
+	if got := DeriveEnvKey("`` ``"); got != "" {
+		t.Fatalf("all-symbols should be empty: %q", got)
+	}
+	if got := DeriveEnvKey("1abc"); got != "_1ABC" {
+		t.Fatalf("leading digit: %q", got)
+	}
+	if !ValidEnvKey(DeriveEnvKey("CLD2 SSH")) {
+		t.Fatal("derived key must be valid")
+	}
+}
+
 func TestValidEnvKey(t *testing.T) {
 	if !ValidEnvKey("ANTHROPIC_API_KEY") || !ValidEnvKey("_X") {
 		t.Fatal("expected valid")

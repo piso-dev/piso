@@ -75,7 +75,7 @@ services:
       - ${PISO_DATA}/ca.crt:/piso-ca.pem:ro
       - ${PISO_DATA}/pi-profile/settings.json:/root/.pi/agent/settings.json:ro
       - ${PISO_DATA}/pi-profile/models.json:/root/.pi/agent/models.json:ro
-      - ${PISO_DATA}/workers/monitor/placeholders.env:/etc/piso/placeholders.env:ro
+      - ${PISO_DATA}/workers/monitor:/etc/piso:ro   # dir mount: env rewrites are visible live (atomic rename swaps the inode)
     environment:
       HTTPS_PROXY: http://gateway:8080
       HTTP_PROXY: http://gateway:8080
