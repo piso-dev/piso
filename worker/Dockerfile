@@ -16,7 +16,7 @@ FROM node:24-bookworm-slim
 # fails under cap_drop ALL. PISO_WORKER_HASH is applied after the install
 # layers so a hash-only change does not bust the apt/bun/npm cache.
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends bash ca-certificates git ripgrep curl unzip fd-find python3 make g++ \
+  && apt-get install -y --no-install-recommends bash ca-certificates git ripgrep curl unzip fd-find python3 make g++ openssh-client \
   && ln -sf /usr/bin/fdfind /usr/local/bin/fd \
   && rm -rf /var/lib/apt/lists/*
 
