@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -16,6 +17,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -616,8 +618,10 @@ func isRetryableUpstream(err error) bool {
 }
 
 // applySubstitution replaces placeholder tokens with real values in headers
-// and body. It re-reads the body passed from process (post-restore) — pass the
-// original body bytes here since process already read them.
+// and non-transcript body fields. The LLM messages[] transcript is never
+// rewritten: a whole-body ReplaceAll would leak the real secret to the model
+// whenever chat text mentioned the same piso_ token (including the provider
+// key sitting in Authorization). Pass the original body bytes from process.
 func applySubstitution(req *http.Request, origBody []byte, dec model.Decision, st *store.Store, scan scanner.Result) {
 	pm := placeholderMap(st)
 	if len(dec.Substituted) == 0 {
@@ -641,14 +645,68 @@ func applySubstitution(req *http.Request, origBody []byte, dec model.Decision, s
 			vals[i] = nv
 		}
 	}
-	if len(origBody) > 0 {
-		nb := origBody
+	if len(origBody) == 0 {
+		return
+	}
+	nb := origBody
+	if rewritten, ok := substituteJSONSkippingChat(origBody, sub); ok {
+		nb = rewritten
+	} else {
 		for tok, real := range sub {
 			nb = bytes.ReplaceAll(nb, []byte(tok), []byte(real))
 		}
-		req.Body = io.NopCloser(bytes.NewReader(nb))
-		req.ContentLength = int64(len(nb))
-		req.Header.Set("Content-Length", fmt.Sprint(len(nb)))
+	}
+	req.Body = io.NopCloser(bytes.NewReader(nb))
+	req.ContentLength = int64(len(nb))
+	req.Header.Set("Content-Length", fmt.Sprint(len(nb)))
+}
+
+// substituteJSONSkippingChat rewrites string values in a JSON body except
+// those under messages[]. Non-JSON input returns ok=false.
+func substituteJSONSkippingChat(body []byte, sub map[string]string) ([]byte, bool) {
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.UseNumber()
+	var raw any
+	if err := dec.Decode(&raw); err != nil {
+		return nil, false
+	}
+	rewritten := rewriteJSONSkippingChat(raw, "", sub)
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(rewritten); err != nil {
+		return nil, false
+	}
+	out := bytes.TrimSuffix(buf.Bytes(), []byte("\n"))
+	return out, true
+}
+
+func rewriteJSONSkippingChat(v any, path string, sub map[string]string) any {
+	switch t := v.(type) {
+	case map[string]any:
+		for k, cv := range t {
+			p := k
+			if path != "" {
+				p = path + "." + k
+			}
+			t[k] = rewriteJSONSkippingChat(cv, p, sub)
+		}
+		return t
+	case []any:
+		for i, cv := range t {
+			t[i] = rewriteJSONSkippingChat(cv, path+"["+strconv.Itoa(i)+"]", sub)
+		}
+		return t
+	case string:
+		if scanner.IsChatContent("json-body", path) {
+			return t
+		}
+		for tok, real := range sub {
+			t = strings.ReplaceAll(t, tok, real)
+		}
+		return t
+	default:
+		return t
 	}
 }
 

@@ -141,6 +141,26 @@ func TestJSONFieldPathTracking(t *testing.T) {
 	}
 }
 
+func TestIsChatContent(t *testing.T) {
+	cases := []struct {
+		loc, field string
+		want       bool
+	}{
+		{"json-body", "messages[0].content", true},
+		{"json-body", "messages[1].tool_calls[0].function.arguments", true},
+		{"body", "messages[0].content", true},
+		{"json-body", "api_key", false},
+		{"authorization", "Authorization", false},
+		{"json-body", "", false},
+		{"body", "", false},
+	}
+	for _, tc := range cases {
+		if got := IsChatContent(tc.loc, tc.field); got != tc.want {
+			t.Errorf("IsChatContent(%q, %q)=%v want %v", tc.loc, tc.field, got, tc.want)
+		}
+	}
+}
+
 func TestEmptyRequestAllowed(t *testing.T) {
 	req := newReq(t, "GET", "https://registry.npmjs.org/pkg", "", nil)
 	res := ScanRequest(req, Options{Patterns: testPatterns(t)})

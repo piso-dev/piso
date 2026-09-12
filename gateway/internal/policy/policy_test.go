@@ -304,6 +304,99 @@ func TestScopedSecretSubstitutesOnlyForAllowedWorker(t *testing.T) {
 	}
 }
 
+func TestChatOnlyVaultPlaceholderDoesNotSubstitute(t *testing.T) {
+	// A * rule must not rewrite piso_… sitting in messages[] — that is the
+	// leak that put a real github_pat into the model prompt.
+	ph := "piso_gh_abcdef"
+	sec := model.Secret{ID: "s1", Placeholder: ph, Value: "github_pat_REALVALUE"}
+	in := Input{
+		Method: "POST", Host: "routstr.ft.hn", Path: "/v1/chat/completions",
+		Scan: scanner.Result{Placeholders: []model.Finding{{
+			Kind: model.FindingPlaceholder, Token: ph,
+			Location: "json-body", Field: "messages[0].content",
+		}}},
+		SecretByPlaceholder: map[string]model.Secret{ph: sec},
+		Rules:               []model.Rule{{ID: "r1", SecretID: "s1", Host: "*", Placeholder: ph}},
+	}
+	d := Decide(in)
+	if d.Action != model.ActionAllow {
+		t.Fatalf("chat-only vault token must allow (not substitute), got %q %+v sub=%v", d.Action, d.Reasons, d.Substituted)
+	}
+	if len(d.Substituted) != 0 {
+		t.Fatalf("chat-only token must not be on the substitute list: %v", d.Substituted)
+	}
+}
+
+func TestChatOnlyVaultPlaceholderWithoutRuleDoesNotBlock(t *testing.T) {
+	ph := "piso_gh_abcdef"
+	in := Input{
+		Method: "POST", Host: "routstr.ft.hn", Path: "/v1/chat/completions",
+		Scan: scanner.Result{Placeholders: []model.Finding{{
+			Kind: model.FindingPlaceholder, Token: ph,
+			Location: "json-body", Field: "messages[3].tool_calls[0].function.arguments",
+		}}},
+		SecretByPlaceholder: map[string]model.Secret{ph: {ID: "s1", Placeholder: ph}},
+	}
+	d := Decide(in)
+	if d.Action != model.ActionAllow {
+		t.Fatalf("chat-only vault token without a rule must not no-secret-rule, got %q %+v", d.Action, d.Reasons)
+	}
+}
+
+func TestHeaderAndChatSameTokenStillSubstitutes(t *testing.T) {
+	ph := "piso_routstr_abc"
+	sec := model.Secret{ID: "s1", Placeholder: ph, Value: "sk-real"}
+	in := Input{
+		Method: "POST", Host: "routstr.ft.hn", Path: "/v1/chat/completions",
+		Scan: scanner.Result{Placeholders: []model.Finding{
+			{Kind: model.FindingPlaceholder, Token: ph, Location: "authorization", Field: "Authorization"},
+			{Kind: model.FindingPlaceholder, Token: ph, Location: "json-body", Field: "messages[0].content"},
+		}},
+		SecretByPlaceholder: map[string]model.Secret{ph: sec},
+		Rules:               []model.Rule{{ID: "r1", SecretID: "s1", Host: "routstr.ft.hn", Placeholder: ph}},
+	}
+	d := Decide(in)
+	if d.Action != model.ActionSubstitute || len(d.Substituted) != 1 || d.Substituted[0] != ph {
+		t.Fatalf("header occurrence must still substitute, got %q sub=%v %+v", d.Action, d.Substituted, d.Reasons)
+	}
+}
+
+func TestNonChatJSONFieldStillNeedsRule(t *testing.T) {
+	ph := "piso_gh_abcdef"
+	in := Input{
+		Method: "POST", Host: "api.example.com", Path: "/v1",
+		Scan: scanner.Result{Placeholders: []model.Finding{{
+			Kind: model.FindingPlaceholder, Token: ph,
+			Location: "json-body", Field: "api_key",
+		}}},
+		SecretByPlaceholder: map[string]model.Secret{ph: {ID: "s1", Placeholder: ph}},
+	}
+	d := Decide(in)
+	if d.Action != model.ActionBlock || d.Reasons[0] != model.ReasonNoSecretRule {
+		t.Fatalf("non-chat body field without a rule must block, got %q %+v", d.Action, d.Reasons)
+	}
+}
+
+func TestRealSecretInChatStillBlocks(t *testing.T) {
+	in := Input{
+		Method: "POST", Host: "routstr.ft.hn", Path: "/v1/chat/completions",
+		Scan: scanner.Result{
+			RealSecrets: []model.Finding{{
+				Kind: model.FindingRealSecret, SecretID: "s1",
+				Location: "json-body", Field: "messages[1].content",
+			}},
+			PatternHits: []model.Finding{{
+				Kind: model.FindingPatternSecret, PatternID: "github-fine-grained",
+				Location: "json-body", Field: "messages[1].content",
+			}},
+		},
+	}
+	d := Decide(in)
+	if d.Action != model.ActionBlock || d.Reasons[0] != model.ReasonRealSecret {
+		t.Fatalf("real secret in chat must still block, got %q %+v", d.Action, d.Reasons)
+	}
+}
+
 func TestScopedSecretStarOrEmptyAllowsAll(t *testing.T) {
 	for _, workers := range [][]string{nil, {"*"}} {
 		sec := model.Secret{

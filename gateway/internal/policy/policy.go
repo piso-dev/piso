@@ -104,6 +104,10 @@ func Decide(in Input) model.Decision {
 		substituted, ok := substituteAll(in)
 		if ok {
 			appendReason(model.ReasonAllowedDomain)
+			if len(substituted) == 0 {
+				// Chat-only / non-vault piso_… tokens: nothing to rewrite.
+				return model.Decision{Action: model.ActionAllow, Reasons: reasons}
+			}
 			return model.Decision{Action: model.ActionSubstitute, Reasons: reasons, Substituted: substituted}
 		}
 		appendReason(model.ReasonNoSecretRule)
@@ -115,25 +119,39 @@ func Decide(in Input) model.Decision {
 	return model.Decision{Action: model.ActionAllow, Reasons: reasons}
 }
 
-// substituteAll applies rules to every vault placeholder in the request.
-// Tokens that are not in the secret store (piso_vpc, piso_egress, chat
-// mentioning piso_…) are not credentials and do not fail the request.
-// It returns the substituted list and whether every vault placeholder resolved.
+// substituteAll applies rules to every vault placeholder in a credential
+// location (headers, query, non-messages JSON). Tokens that are not in the
+// secret store (piso_vpc, piso_egress) are not credentials and do not fail
+// the request. Vault placeholders that appear *only* in the LLM transcript
+// (messages[]) are left as text — substituting them leaks the real secret
+// to the model. They do not require a host rule and do not no-secret-rule.
+// It returns the substituted list and whether every credential-site vault
+// placeholder resolved.
 func substituteAll(in Input) ([]string, bool) {
 	seen := map[string]bool{}
-	var out []string
+	nonChat := map[string]bool{}
+	var tokens []string
 	for _, f := range in.Scan.Placeholders {
-		if seen[f.Token] {
-			continue
-		}
-		seen[f.Token] = true
 		if !isVaultPlaceholder(in, f.Token) {
 			continue
 		}
-		if _, ok := lookupRule(in, f.Token); ok && in.secretAllowedForWorker(f.Token) {
-			out = append(out, f.Token)
+		if !seen[f.Token] {
+			seen[f.Token] = true
+			tokens = append(tokens, f.Token)
+		}
+		if !scanner.IsChatContent(f.Location, f.Field) {
+			nonChat[f.Token] = true
+		}
+	}
+	var out []string
+	for _, tok := range tokens {
+		if !nonChat[tok] {
+			continue // transcript-only: do not substitute, do not block
+		}
+		if _, ok := lookupRule(in, tok); ok && in.secretAllowedForWorker(tok) {
+			out = append(out, tok)
 		} else {
-			return out, false // any unresolvable vault placeholder blocks
+			return out, false // any unresolvable credential-site vault placeholder blocks
 		}
 	}
 	return out, true
@@ -210,13 +228,9 @@ func egressPatternHits(s scanner.Result) []model.Finding {
 }
 
 // patternHitIsChatContent reports whether the hit is inside the LLM
-// messages[] transcript (content, tool_calls, function.arguments, …),
-// not a request-level credential field.
+// messages[] transcript, not a request-level credential field.
 func patternHitIsChatContent(hit model.Finding) bool {
-	if hit.Location != "json-body" && hit.Location != "body" {
-		return false
-	}
-	return strings.HasPrefix(hit.Field, "messages[")
+	return scanner.IsChatContent(hit.Location, hit.Field)
 }
 
 // patternHitIsPlaceholder reports whether a pattern finding is just a

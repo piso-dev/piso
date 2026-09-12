@@ -167,6 +167,17 @@ func redact(v string) string {
 	return v[:4] + "…" + v[len(v)-4:]
 }
 
+// IsChatContent reports whether a finding sits in the LLM transcript
+// (messages[].content, tool_calls, function.arguments, …) rather than a
+// credential field. Substituting vault tokens here leaks real secrets to
+// the model; pattern hits here are conversation, not an Authorization header.
+func IsChatContent(location, field string) bool {
+	if location != "json-body" && location != "body" {
+		return false
+	}
+	return strings.HasPrefix(field, "messages[")
+}
+
 // locationForHeader normalizes header names into stable location labels.
 func locationForHeader(name string) string {
 	switch http.CanonicalHeaderKey(name) {
