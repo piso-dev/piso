@@ -45,6 +45,25 @@ func TestFmtInterval(t *testing.T) {
 		}
 	}
 }
+func TestWorkerBuildArgsStampsHashAndHostNetwork(t *testing.T) {
+	got := workerBuildArgs("/tmp/worker-build", "f32a4fe097e79cc8")
+	want := []string{
+		"build",
+		"--network=host",
+		"-t", workerImageName,
+		"--build-arg", "PISO_WORKER_HASH=f32a4fe097e79cc8",
+		"/tmp/worker-build",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("workerBuildArgs len = %d, want %d (%q)", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("workerBuildArgs[%d] = %q, want %q (full %q)", i, got[i], want[i], got)
+		}
+	}
+}
+
 func TestUpdateDecision(t *testing.T) {
 	// pi changed → roll regardless of packages
 	if got := decideUpdate("0.84.4", "0.85.0", false, true, "aaa", "bbb"); got != updateDecisionRollPi {

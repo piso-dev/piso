@@ -188,9 +188,10 @@ func cmdUp(args []string) error {
 		return err
 	}
 	// 2. worker (per-project). The image is already built (step 0); just render
-	// the project's compose and create the container. `workerNeedsBuild()` is
-	// now false because step 0 built it, but keep --build when appropriate so a
-	// changed context rebuilds on the worker path too.
+	// the project's compose and create the container. After buildSharedWorker
+	// stamps piso.worker.hash, workerNeedsBuild() is false and we must not
+	// pass --build: compose uses a different cache key than a bare docker
+	// build unless networks match, and would redo apt/bun/npm.
 	composeEnv, err := dockerComposeEnv()
 	if err != nil {
 		return err
@@ -1222,8 +1223,23 @@ func rolloutWorkers(old, version string) error {
 	return nil
 }
 
-// buildSharedWorker rebuilds piso-worker from the staged context (the ARG
-// rewrite changed the hash, so compose --build fires).
+// workerBuildArgs is the `docker build` argv for the shared piso-worker image.
+// PISO_WORKER_HASH must be passed so the image label matches ContextHash;
+// otherwise workerNeedsBuild() stays true (label defaults to "dev") and
+// `piso up` runs a second compose --build. --network=host matches
+// compose/worker.yaml.tmpl so the two builders share BuildKit cache.
+func workerBuildArgs(buildDir, hash string) []string {
+	return []string{
+		"build",
+		"--network=host",
+		"-t", workerImageName,
+		"--build-arg", "PISO_WORKER_HASH=" + hash,
+		buildDir,
+	}
+}
+
+// buildSharedWorker rebuilds piso-worker from the staged context and stamps
+// piso.worker.hash so the next workerNeedsBuild() check is a no-op.
 func buildSharedWorker() error {
 	composeEnv, err := dockerComposeEnv()
 	if err != nil {
@@ -1233,8 +1249,11 @@ func buildSharedWorker() error {
 	if err != nil {
 		return err
 	}
-	// docker build -t piso-worker <staged context>
-	return runEnv("docker", []string{"build", "-t", "piso-worker", buildDir}, composeEnv)
+	hash, err := workerhash.ContextHash(buildDir)
+	if err != nil {
+		return fmt.Errorf("worker context hash: %w", err)
+	}
+	return runEnv("docker", workerBuildArgs(buildDir, hash), composeEnv)
 }
 
 // containerRunning reports whether a named container is up.
