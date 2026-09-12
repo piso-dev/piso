@@ -99,18 +99,7 @@ func (s *Server) resolveFailures(ctx context.Context, entries []ResolveEntry) ([
 			return nil, nil, err
 		}
 
-		for _, rec := range matchingRetryable(s.Store.Records(0), e.Placeholder, e.Host) {
-			if seenRetry[rec.ID] {
-				continue
-			}
-			seenRetry[rec.ID] = true
-			fresh, ok := s.Store.ReplayGet(rec.ID)
-			if !ok {
-				results = append(results, RetryResult{ID: rec.ID, Error: "gone"})
-				continue
-			}
-			results = append(results, s.replayOne(ctx, fresh))
-		}
+		results = append(results, s.replayMatches(ctx, seenRetry, e.Placeholder, e.Host)...)
 	}
 
 	envKeys := []string{}

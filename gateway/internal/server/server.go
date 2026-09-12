@@ -166,7 +166,19 @@ func (s *Server) routes(mux *http.ServeMux) {
 			writeJSON(w, 500, map[string]string{"error": err.Error()})
 			return
 		}
-		writeJSON(w, 201, storeRecToSummary(rec))
+		// AllowedHosts is authoritative: seed (or replace) the placeholder's
+		// substitution rules now, then auto-replay any captures that were
+		// blocked on this placeholder so adding a secret unblocks them.
+		if err := s.Store.SyncRulesForSecret(rec); err != nil {
+			writeJSON(w, 500, map[string]string{"error": err.Error()})
+			return
+		}
+		seenRetry := map[string]bool{}
+		retried := []RetryResult{}
+		for _, h := range store.CanonicalRuleHosts(rec.AllowedHosts) {
+			retried = append(retried, s.replayMatches(r.Context(), seenRetry, rec.Placeholder, h)...)
+		}
+		writeJSON(w, 201, map[string]any{"secret": storeRecToSummary(rec), "retried": retried})
 	})
 
 	// PUT /api/v1/secrets/{id} — edit an existing secret (dashboard modal).
@@ -207,13 +219,25 @@ func (s *Server) routes(mux *http.ServeMux) {
 		}
 		rec.EnvKey = in.EnvKey
 		// AllowedHosts is always sent by the modal ([] means "all hosts");
-		// it replaces the previous set wholesale.
+		// it replaces the previous set wholesale, and the placeholder's
+		// substitution rules are re-seeded to match. Matching retryable
+		// captures are replayed so an edit that newly allows a host also
+		// unblocks requests that were stuck on it.
 		rec.AllowedHosts = in.AllowedHosts
 		if err := s.Store.ReplaceSecret(rec); err != nil {
 			writeJSON(w, 500, map[string]string{"error": err.Error()})
 			return
 		}
-		writeJSON(w, 200, storeRecToSummary(rec))
+		if err := s.Store.SyncRulesForSecret(rec); err != nil {
+			writeJSON(w, 500, map[string]string{"error": err.Error()})
+			return
+		}
+		seenRetry := map[string]bool{}
+		retried := []RetryResult{}
+		for _, h := range store.CanonicalRuleHosts(rec.AllowedHosts) {
+			retried = append(retried, s.replayMatches(r.Context(), seenRetry, rec.Placeholder, h)...)
+		}
+		writeJSON(w, 200, map[string]any{"secret": storeRecToSummary(rec), "retried": retried})
 	})
 	mux.HandleFunc("DELETE /api/v1/secrets/{id}", func(w http.ResponseWriter, r *http.Request) {
 		if err := s.Store.DeleteSecret(r.PathValue("id")); err != nil {

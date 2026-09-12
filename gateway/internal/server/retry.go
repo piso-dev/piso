@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"strings"
 
 	"piso/gateway/internal/model"
@@ -86,6 +87,27 @@ func recordHasPattern(r store.Record, patternID string) bool {
 		}
 	}
 	return false
+}
+
+// replayMatches replays every captured retryable block that carries
+// placeholder (host "" or "*" = any host), oldest first, skipping ids already
+// in seen so batched callers (secret create/edit, resolve) never replay the
+// same capture twice. Results are in replay order.
+func (s *Server) replayMatches(ctx context.Context, seenRetry map[string]bool, placeholder, host string) []RetryResult {
+	var out []RetryResult
+	for _, rec := range matchingRetryable(s.Store.Records(0), placeholder, host) {
+		if seenRetry[rec.ID] {
+			continue
+		}
+		seenRetry[rec.ID] = true
+		fresh, ok := s.Store.ReplayGet(rec.ID)
+		if !ok {
+			out = append(out, RetryResult{ID: rec.ID, Error: "gone"})
+			continue
+		}
+		out = append(out, s.replayOne(ctx, fresh))
+	}
+	return out
 }
 
 func reasonStrings(rs []model.Reason) []string {

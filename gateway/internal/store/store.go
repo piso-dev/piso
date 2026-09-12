@@ -504,6 +504,53 @@ func (s *Store) HasRule(placeholder, host string) bool {
 	return false
 }
 
+// CanonicalRuleHosts normalizes a secret's AllowedHosts into rule host
+// values: empty/absent or a literal "*" means all hosts → one "*" rule;
+// otherwise unique trimmed hosts (case-insensitive dedupe, first-seen casing
+// preserved). "*" dominates any specific hosts because lookupRule matches
+// host == "*" anyway.
+func CanonicalRuleHosts(hosts []string) []string {
+	var out []string
+	seen := map[string]bool{}
+	any := false
+	for _, h := range hosts {
+		h = strings.TrimSpace(h)
+		if h == "" || h == "*" {
+			any = true
+			continue
+		}
+		if seen[strings.ToLower(h)] {
+			continue
+		}
+		seen[strings.ToLower(h)] = true
+		out = append(out, h)
+	}
+	if any || len(out) == 0 {
+		return []string{"*"}
+	}
+	return out
+}
+
+// SyncRulesForSecret makes the placeholder resolve on exactly the hosts in
+// rec.AllowedHosts (a single "*" rule when absent/empty = all hosts). Prior
+// rules for this placeholder are replaced; rules for other placeholders stay
+// untouched, so this is safe to call on every create/edit of a secret.
+func (s *Store) SyncRulesForSecret(rec SecretRec) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	hosts := CanonicalRuleHosts(rec.AllowedHosts)
+	s.state.Rules = filterRules(s.state.Rules, func(r RuleRec) bool { return r.Placeholder != rec.Placeholder })
+	seq := 0
+	for _, h := range hosts {
+		seq++
+		s.state.Rules = append(s.state.Rules, RuleRec{
+			ID: fmt.Sprintf("rule_%x%02d", time.Now().UnixNano(), seq),
+			SecretID: rec.ID, Host: h, Placeholder: rec.Placeholder,
+		})
+	}
+	return s.save()
+}
+
 func (s *Store) AddRule(rec RuleRec) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

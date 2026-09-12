@@ -575,10 +575,10 @@ func cmdSecrets(args []string) error {
 			b, _ := io.ReadAll(resp.Body)
 			return fmt.Errorf("gateway: %s", string(b))
 		}
-		fmt.Println("monitor secret added:", ph, "(scoped to workers: monitor)")
+		fmt.Println("monitor secret added:", ph, "(scoped to workers: monitor; rule:", host+")")
 		return nil
 	case "add":
-		if len(args) < 5 {
+		if len(args) < 4 {
 			return fmt.Errorf("usage: piso secrets add <name> <placeholder> <value> [host,...] [--workers a,b]")
 		}
 		name := args[1]
@@ -617,7 +617,11 @@ func cmdSecrets(args []string) error {
 		if len(workers) > 0 {
 			scope = " (workers: " + strings.Join(workers, ",") + ")"
 		}
-		fmt.Println("secret added:", ph, scope)
+		rule := "*"
+		if len(hosts) > 0 {
+			rule = strings.Join(hosts, ",")
+		}
+		fmt.Println("secret added:", ph, scope, "(rule:", rule+")")
 		return nil
 	case "rm":
 		if len(args) < 2 {
