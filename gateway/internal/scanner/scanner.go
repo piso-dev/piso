@@ -5,6 +5,7 @@ package scanner
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -59,6 +60,18 @@ func ScanRequest(req *http.Request, opts Options) Result {
 		loc := locationForHeader(name)
 		for _, v := range vals {
 			scanTextInto(&res, v, opts, loc, name)
+			// Basic credentials (git clone, OAuth client_credentials) wrap the
+			// payload in base64, which hides a piso_ marker from the plain
+			// PlaceholderRegex above. Scan the decoded text too, with the SAME
+			// location+field, so:
+			//   - Authorization: Basic <b64(piso_…)> is recognized as a
+			//     placeholder (and substitutes), instead of an opaque blob;
+			//   - policy.patternHitIsPlaceholder then drops the raw basic-auth
+			//     pattern hit for exactly that case. Payloads without a piso_
+			//     token still trip basic-auth → block, unchanged.
+			if payload, ok := BasicAuthPayload(v); ok {
+				scanTextInto(&res, payload, opts, loc, name)
+			}
 		}
 	}
 
@@ -83,6 +96,25 @@ func ScanRequest(req *http.Request, opts Options) Result {
 		scanTextInto(&res, string(body), opts, "body", "")
 	}
 	return res
+}
+
+// BasicAuthPayload extracts and decodes the payload of an
+// "Authorization: Basic <base64>" header value. ok=false (callers just scan
+// the raw value) when the value is not Basic, the payload is empty or
+// contains whitespace, or the payload is not valid base64.
+func BasicAuthPayload(v string) (string, bool) {
+	if len(v) < 7 || strings.ToLower(v[:6]) != "basic " {
+		return "", false
+	}
+	rest := v[6:]
+	if rest == "" || strings.Contains(rest, " ") {
+		return "", false
+	}
+	payload, err := base64.StdEncoding.DecodeString(rest)
+	if err != nil {
+		return "", false
+	}
+	return string(payload), true
 }
 
 // scanTextInto runs all three detectors on one text chunk.

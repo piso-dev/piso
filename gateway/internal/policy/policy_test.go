@@ -74,6 +74,47 @@ func TestRealSecretAlwaysBlocks(t *testing.T) {
 	}
 }
 
+func TestBasicAuthPlaceholderSubstitutes(t *testing.T) {
+	// git over HTTPS: scanner reports the decoded placeholder (authorization)
+	// alongside the raw basic-auth pattern hit. Substitution must win.
+	ph := "piso_gh_5ef1739b3cf1"
+	sec := model.Secret{ID: "s1", Placeholder: ph, Value: "github_pat_REAL0123456789", AllowedHosts: []string{"github.com"}}
+	in := Input{
+		Method: "GET", Host: "github.com", Path: "/o/r.git/info/refs?service=git-upload-pack",
+		Scan: scanner.Result{
+			Placeholders: []model.Finding{{Kind: model.FindingPlaceholder, Token: ph, Location: "authorization", Field: "Authorization"}},
+			PatternHits:  []model.Finding{{Kind: model.FindingPatternSecret, PatternID: "basic-auth", Token: "Basic bG9rMz…", Location: "authorization", Field: "Authorization"}},
+		},
+		SecretByPlaceholder: map[string]model.Secret{ph: sec},
+		Rules:               []model.Rule{{ID: "r1", SecretID: "s1", Host: "github.com", Placeholder: ph}},
+	}
+	d := Decide(in)
+	if d.Action != model.ActionSubstitute {
+		t.Fatalf("basic+placeholder must substitute, got %q %+v", d.Action, d.Reasons)
+	}
+	if len(d.Substituted) != 1 || d.Substituted[0] != ph {
+		t.Fatalf("wrong substituted list: %+v", d.Substituted)
+	}
+}
+
+func TestBasicAuthPlaceholderWithoutRuleBlocks(t *testing.T) {
+	// Same payload but no substitution rule for github.com: the placeholder
+	// cannot be resolved, so the request must still be refused.
+	ph := "piso_gh_5ef1739b3cf1"
+	in := Input{
+		Method: "GET", Host: "github.com", Path: "/o/r.git/info/refs",
+		Scan: scanner.Result{
+			Placeholders: []model.Finding{{Kind: model.FindingPlaceholder, Token: ph, Location: "authorization", Field: "Authorization"}},
+			PatternHits:  []model.Finding{{Kind: model.FindingPatternSecret, PatternID: "basic-auth", Token: "Basic bG9rMz…", Location: "authorization", Field: "Authorization"}},
+		},
+		SecretByPlaceholder: map[string]model.Secret{ph: {ID: "s1", Placeholder: ph}},
+	}
+	d := Decide(in)
+	if d.Action != model.ActionBlock || d.Reasons[0] != model.ReasonNoSecretRule {
+		t.Fatalf("want block+no-secret-rule, got %q %+v", d.Action, d.Reasons)
+	}
+}
+
 func TestBearerPlaceholderSubstitutes(t *testing.T) {
 	// Imported provider keys become long piso_ tokens. generic-bearer matches
 	// "Bearer " + 24 chars, so the scanner can flag both a pattern and a

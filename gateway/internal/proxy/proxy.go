@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -636,9 +637,25 @@ func applySubstitution(req *http.Request, origBody []byte, dec model.Decision, s
 	if len(sub) == 0 {
 		return
 	}
-	for _, vals := range req.Header {
+	for name, vals := range req.Header {
+		auth := http.CanonicalHeaderKey(name) == "Authorization"
 		for i, v := range vals {
 			nv := v
+			if auth {
+				// Authorization: Basic base64-wraps the payload, so a literal
+				// ReplaceAll on the raw value never reaches the placeholder.
+				// Decode, substitute inside the payload, re-encode.
+				if payload, ok := scanner.BasicAuthPayload(v); ok {
+					nd := payload
+					for tok, real := range sub {
+						nd = strings.ReplaceAll(nd, tok, real)
+					}
+					if nd != payload {
+						vals[i] = "Basic " + base64.StdEncoding.EncodeToString([]byte(nd))
+						continue
+					}
+				}
+			}
 			for tok, real := range sub {
 				nv = strings.ReplaceAll(nv, tok, real)
 			}
@@ -664,10 +681,27 @@ func applySubstitution(req *http.Request, origBody []byte, dec model.Decision, s
 // substituteJSONSkippingChat rewrites string values in a JSON body except
 // those under messages[]. Non-JSON input returns ok=false.
 func substituteJSONSkippingChat(body []byte, sub map[string]string) ([]byte, bool) {
+	// Only attempt the JSON rewrite when the body actually is JSON. The JSON
+	// decoder decodes a single leading value and ignores trailing input, so
+	// running it on arbitrary binary (e.g. a git pkt-line body whose 4-hex
+	// length prefix "0014…" is accepted as the number 0) would silently
+	// truncate the payload to that one decoded token. Gate on the first
+	// non-space byte being '{' or '[' and require the body to be exactly one
+	// JSON value before touching it — anything else falls through to the
+	// non-JSON caller path and is forwarded byte for byte.
+	t := bytes.TrimSpace(body)
+	if len(t) == 0 || (t[0] != '{' && t[0] != '[') {
+		return nil, false
+	}
 	dec := json.NewDecoder(bytes.NewReader(body))
 	dec.UseNumber()
 	var raw any
 	if err := dec.Decode(&raw); err != nil {
+		return nil, false
+	}
+	// Guarantee the body was exactly one JSON value (reject trailing data).
+	var extra any
+	if err := dec.Decode(&extra); err != io.EOF {
 		return nil, false
 	}
 	rewritten := rewriteJSONSkippingChat(raw, "", sub)

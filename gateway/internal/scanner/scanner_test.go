@@ -2,6 +2,7 @@ package scanner
 
 import (
 	"bytes"
+	"encoding/base64"
 	"net/http"
 	"strings"
 	"testing"
@@ -40,6 +41,58 @@ func TestDetectsPlaceholderInAuthAndBody(t *testing.T) {
 	}
 	if res.LooksCredential() {
 		t.Fatalf("placeholders should not look credential: %+v", res)
+	}
+}
+
+func TestBasicAuthPlaceholderDecoded(t *testing.T) {
+	// git over HTTPS: the piso_ marker is inside base64, invisible to the
+	// plain header scan — the decoded scan must surface it as a placeholder.
+	const ph = "piso_gh_5ef1739b3cf1"
+	payload := "ExampleUser:" + ph
+	b64 := base64.StdEncoding.EncodeToString([]byte(payload))
+	req := newReq(t, "GET", "https://github.com/o/r.git/info/refs?service=git-upload-pack", "", map[string]string{
+		"Authorization": "Basic " + b64,
+	})
+	res := ScanRequest(req, Options{Patterns: testPatterns(t)})
+	if len(res.Placeholders) != 1 || res.Placeholders[0].Token != ph {
+		t.Fatalf("want the basic-wrapped placeholder, got %+v", res.Placeholders)
+	}
+	if res.Placeholders[0].Location != "authorization" {
+		t.Fatalf("want location authorization, got %q", res.Placeholders[0].Location)
+	}
+	// The raw blob still trips basic-auth; sharing location+field with the
+	// decoded placeholder is what lets policy drop that hit (substitute),
+	// while real basic creds keep it (block).
+	if len(res.PatternHits) != 1 || res.PatternHits[0].PatternID != "basic-auth" {
+		t.Fatalf("want exactly the raw basic-auth hit, got %+v", res.PatternHits)
+	}
+}
+
+func TestBasicAuthRealTokenStillCredential(t *testing.T) {
+	// No piso_ marker inside the payload: decoded scan adds nothing, and the
+	// raw basic-auth pattern hit stands → still looks like a credential.
+	payload := "ExampleUser:sk-ant-api03-ABCDEFGHIJKLMNOPQRSTUVWX"
+	b64 := base64.StdEncoding.EncodeToString([]byte(payload))
+	req := newReq(t, "GET", "https://github.com/o/r.git/info/refs", "", map[string]string{
+		"Authorization": "Basic " + b64,
+	})
+	res := ScanRequest(req, Options{Patterns: testPatterns(t)})
+	if len(res.Placeholders) != 0 {
+		t.Fatalf("no placeholder expected, got %+v", res.Placeholders)
+	}
+	if !res.LooksCredential() {
+		t.Fatalf("real basic creds must look credential: %+v", res)
+	}
+}
+
+func TestBasicAuthMalformedIgnored(t *testing.T) {
+	// Missing payload / whitespace / invalid base64: no decode, raw scan only.
+	req := newReq(t, "GET", "https://example.com/", "", map[string]string{
+		"Authorization": "Basic not-a-valid-token",
+	})
+	res := ScanRequest(req, Options{Patterns: testPatterns(t)})
+	if len(res.Placeholders) != 0 {
+		t.Fatalf("no placeholder expected, got %+v", res.Placeholders)
 	}
 }
 

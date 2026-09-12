@@ -1,6 +1,8 @@
 package proxy
 
 import (
+	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -11,6 +13,33 @@ import (
 	"piso/gateway/internal/scanner"
 	"piso/gateway/internal/store"
 )
+
+func TestApplySubstitutionRewritesBasicAuth(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.New(dir+"/state.json", dir+"/log.jsonl", dir+"/patterns.json", dir+"/activities.db", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const ph = "piso_gh_5ef1739b3cf1"
+	const real = "github_pat_REAL0123456789abcdefgh"
+	if err := st.AddSecret(store.SecretRec{
+		ID: "s1", Name: "github", Placeholder: ph, Value: real,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	b64 := base64.StdEncoding.EncodeToString([]byte("ExampleUser:" + ph))
+	req, err := http.NewRequest("GET", "https://github.com/ExampleUser/o.git/info/refs?service=git-upload-pack", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Basic "+b64)
+	applySubstitution(req, []byte{}, model.Decision{Substituted: []string{ph}}, st, scanner.Result{})
+	got := req.Header.Get("Authorization")
+	want := "Basic " + base64.StdEncoding.EncodeToString([]byte("ExampleUser:"+real))
+	if got != want {
+		t.Fatalf("basic header: want %q got %q", want, got)
+	}
+}
 
 func TestSubstituteJSONSkippingChatLeavesMessages(t *testing.T) {
 	const ph = "piso_gh_abcdef"
@@ -94,5 +123,58 @@ func TestApplySubstitutionRewritesHeaderNotMessages(t *testing.T) {
 func TestSubstituteJSONSkippingChatNonJSON(t *testing.T) {
 	if _, ok := substituteJSONSkippingChat([]byte("not json piso_x_abcdef"), map[string]string{"piso_x_abcdef": "real"}); ok {
 		t.Fatal("non-JSON must not claim rewrite")
+	}
+}
+
+// A git smart-HTTP protocol-v2 body is pkt-line framed and starts with a
+// 4-hex length prefix (e.g. "0014command=ls-refs\n"). Its leading '0' is
+// a valid JSON number, so a lenient decoder accepts the prefix and ignores
+// the rest, silently truncating the payload to one byte. This must refuse
+// the JSON path so the body is forwarded byte for byte.
+func TestSubstituteJSONSkippingChatPktBody(t *testing.T) {
+	body := []byte("0014command=ls-refs\n0014agent=git/2.39.5\n0000")
+	if out, ok := substituteJSONSkippingChat(body, map[string]string{"piso_gh_abcdef": "real"}); ok {
+		t.Fatalf("pkt-line body accepted as JSON: %q", string(out))
+	}
+}
+
+// A standalone JSON number (or any non-object/array value) must never be
+// rewritten into a 1-byte document by the chat-substitution path.
+func TestSubstituteJSONSkippingChatRejectsPrimitive(t *testing.T) {
+	for _, b := range [][]byte{[]byte("0"), []byte("0014"), []byte("\n\t0\n"), []byte("\"bare string\"")} {
+		if out, ok := substituteJSONSkippingChat(b, map[string]string{"x": "y"}); ok {
+			t.Fatalf("primitive body accepted as JSON: %q -> %q", string(b), string(out))
+		}
+	}
+}
+
+// End to end: applySubstitution on a git upload-pack/ls-refs request must
+// leave the pkt-line body byte-identical (this is the clone-through-gateway
+// regression).
+func TestApplySubstitutionPreservesPktBody(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.New(dir+"/state.json", dir+"/log.jsonl", dir+"/patterns.json", dir+"/activities.db", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const ph = "piso_gh_abcdef"
+	if err := st.AddSecret(store.SecretRec{
+		ID: "s1", Name: "github", Placeholder: ph, Value: "github_pat_REAL0123456789abcdefgh",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	body := []byte("0014command=ls-refs\n0014agent=git/2.39.5\n0000")
+	req, err := http.NewRequest("POST", "https://github.com/ExampleUser/o.git/git-upload-pack", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Body = io.NopCloser(bytes.NewReader(body))
+	applySubstitution(req, body, model.Decision{Substituted: []string{ph}}, st, scanner.Result{})
+	got, err := io.ReadAll(req.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, body) {
+		t.Fatalf("pkt body mangled: want %d bytes got %d bytes", len(body), len(got))
 	}
 }
