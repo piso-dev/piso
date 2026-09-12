@@ -62,10 +62,52 @@ if [ -n "$target" ]; then
 fi
 body="$body}"
 
-code=$(curl -sS --max-time 3 -o /tmp/piso-informant-resp.json -w '%{http_code}' \
-  -X POST "${gw}/api/v1/worker/activity" \
-  -H 'Content-Type: application/json' \
-  -d "$body" || true)
+# Spool: local buffer for events that cannot reach the gateway right now.
+# piso-activity-watch drains it once the gateway is reachable again, so a
+# gateway blip never loses Tier B activity. Lives on the agent volume
+# (writable + persistent in every worker, incl. the read-only-rootfs
+# monitor). Bounded: the newest SPOOL_MAX lines win.
+SPOOL="${PISO_SPOOL_FILE:-/root/.pi/agent/spool/activity.jsonl}"
+SPOOL_MAX=200
 
-echo "informant ${code} $(tr -d '\n' < /tmp/piso-informant-resp.json 2>/dev/null)"
-[ "${code}" = "200" ] || [ "${code}" = "201" ]
+# spool_append appends one fully-built JSON body under the shared lock (the
+# same lock piso-activity-watch holds while draining).
+spool_append() {
+  mkdir -p "$(dirname "$SPOOL")" 2>/dev/null || return 1
+  {
+    if ! flock -w 3 9 2>/dev/null; then
+      printf '%s\n' "$1" >>"$SPOOL" 2>/dev/null || return 1
+      return 0
+    fi
+    printf '%s\n' "$1" >>"$SPOOL" 2>/dev/null || return 1
+    n=$(wc -l <"$SPOOL" 2>/dev/null || echo 0)
+    if [ "${n:-0}" -gt "$SPOOL_MAX" ]; then
+      tail -n "$SPOOL_MAX" "$SPOOL" >"$SPOOL.tmp" 2>/dev/null && mv "$SPOOL.tmp" "$SPOOL" 2>/dev/null || true
+    fi
+  } 9>"$SPOOL.lock"
+  return 0
+}
+
+# post_or_spool posts the event; on anything but 200/201 it buffers locally so
+# nothing is lost. Still exits 0 when spooled: the event is deferred, not lost,
+# and the board is advisory — the agent must keep going either way.
+post_or_spool() {
+  local code
+  code=$(curl -sS --max-time 3 --retry 1 --retry-connrefused --retry-delay 1 \
+    -o /tmp/piso-informant-resp.json -w '%{http_code}' \
+    -X POST "${gw}/api/v1/worker/activity" \
+    -H 'Content-Type: application/json' \
+    -d "$body" || true)
+  if [ "${code}" = "200" ] || [ "${code}" = "201" ]; then
+    echo "informant ${code} $(tr -d '\n' < /tmp/piso-informant-resp.json 2>/dev/null)"
+    return 0
+  fi
+  if spool_append "$body"; then
+    echo "informant ${code} (spooled; activity-watch will retry)"
+    return 0
+  fi
+  echo "informant ${code} (POST FAILED, spool unavailable: ${SPOOL})"
+  return 1
+}
+
+post_or_spool

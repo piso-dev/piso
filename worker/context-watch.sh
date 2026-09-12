@@ -20,7 +20,8 @@ worker="${PISO_WORKER_NAME:-}"
 slug="${PISO_WORKER_SLUG:-}"
 
 if [ -z "$gw" ] || [ -z "$worker" ] || [ -z "$slug" ]; then
-  exit 0
+  echo "piso-context-watch: GATEWAY_URL/PISO_WORKER_NAME/PISO_WORKER_SLUG must be set" >&2
+  exit 3
 fi
 
 # pi sanitizes the session cwd: /workspace → --workspace--

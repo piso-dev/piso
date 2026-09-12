@@ -19,7 +19,8 @@ worker="${PISO_WORKER_NAME:-}"
 slug="${PISO_WORKER_SLUG:-}"
 
 if [ -z "$gw" ] || [ -z "$worker" ] || [ -z "$slug" ]; then
-  exit 0
+  echo "piso-activity-watch: GATEWAY_URL/PISO_WORKER_NAME/PISO_WORKER_SLUG must be set" >&2
+  exit 3
 fi
 
 BEAT_SECS=60             # active beat at most every 1 min (board merges ≤ 3 min)
@@ -125,15 +126,87 @@ proj_ctx() {
   printf '%s' "$repo${branch:+ · $branch}${commit:+ @$commit}"
 }
 
-# post sends one activity; success iff the gateway accepted (200/201)
-post() {
-  local kind="$1" text="$2"
-  local code
+# Spool: shared buffer with piso-informant for events that could not reach
+# the gateway right now. On the agent volume: writable + persistent in every
+# worker (incl. the read-only-rootfs monitor). The informant appends, we
+# drain here once the gateway is reachable. Bounded: newest SPOOL_MAX lines.
+SPOOL="${PISO_SPOOL_FILE:-/root/.pi/agent/spool/activity.jsonl}"
+SPOOL_MAX=200
+DRAIN_CAP=25        # lines replayed per loop pass (bounds loop latency)
+
+# build_body renders a fully-escaped JSON payload from kind + text.
+build_body() {
+  printf '{"worker":"%s","slug":"%s","kind":"%s","text":"%s"}' \
+    "$(san "$worker")" "$(san "$slug")" "$1" "$(san "$2")"
+}
+
+# post_raw POSTs one fully-built payload; success iff the gateway accepted.
+post_raw() {
+  local body="$1" code
   code=$(curl -sS --max-time 3 -o /tmp/piso-activity-notify.json -w '%{http_code}' \
     -X POST "${gw}/api/v1/worker/activity" \
     -H 'Content-Type: application/json' \
-    -d "{\"worker\":\"$(san "$worker")\",\"slug\":\"$(san "$slug")\",\"kind\":\"$kind\",\"text\":\"$(san "$text")\"}" || true)
+    -d "$body" || true)
   [ "${code}" = "200" ] || [ "${code}" = "201" ]
+}
+
+# spool_append buffers one payload under the shared lock (same file and lock
+# the informant writes to). Drops oldest lines past SPOOL_MAX.
+spool_append() {
+  mkdir -p "$(dirname "$SPOOL")" 2>/dev/null || return 1
+  {
+    if ! flock -w 3 9 2>/dev/null; then
+      printf '%s\n' "$1" >>"$SPOOL" 2>/dev/null || return 1
+      return 0
+    fi
+    printf '%s\n' "$1" >>"$SPOOL" 2>/dev/null || return 1
+    n=$(wc -l <"$SPOOL" 2>/dev/null || echo 0)
+    if [ "${n:-0}" -gt "$SPOOL_MAX" ]; then
+      tail -n "$SPOOL_MAX" "$SPOOL" >"$SPOOL.tmp" 2>/dev/null && mv "$SPOOL.tmp" "$SPOOL" 2>/dev/null || true
+    fi
+  } 9>"$SPOOL.lock"
+  return 0
+}
+
+# drain_spool replays buffered events (informant spool + our own spooled
+# notes) once the gateway accepts them. Snapshot + truncate happen together
+# under the lock so concurrent appends are never clobbered; failed lines are
+# re-queued for the next pass. Replays are at-most-once per pass.
+drain_spool() {
+  [ -f "$SPOOL" ] || return 0
+  {
+    if ! flock -w 3 9 2>/dev/null; then
+      return 0
+    fi
+    cp "$SPOOL" "$SPOOL.drain" 2>/dev/null || return 0
+    : >"$SPOOL"
+  } 9>"$SPOOL.lock"
+  [ -s "$SPOOL.drain" ] || { rm -f "$SPOOL.drain"; return 0; }
+  local n=0 line
+  while IFS= read -r line && [ "$n" -lt "$DRAIN_CAP" ]; do
+    [ -n "$line" ] || continue
+    if ! post_raw "$line"; then
+      spool_append "$line" || true   # back to the spool; retried next pass
+    fi
+    n=$((n+1))
+  done <"$SPOOL.drain"
+  rm -f "$SPOOL.drain"
+}
+
+# post sends one activity; true iff accepted NOW. Durable kinds (notes, and
+# the informant's semantic events via the spool) are buffered on failure so a
+# gateway blip cannot lose them. Ephemeral "active" beats are never spooled:
+# they are alive-signals and replaying stale ones would mislead the board.
+post() {
+  local kind="$1" text="$2" body
+  body=$(build_body "$kind" "$text")
+  if post_raw "$body"; then
+    return 0
+  fi
+  if [ "$kind" != "active" ]; then
+    spool_append "$body" || true
+  fi
+  return 1
 }
 
 # session_recency outputs the newest mtime (unix secs) of any pi session file,
@@ -158,6 +231,7 @@ PY
 last_beat=0
 last_state=""   # "up" | "down"
 while true; do
+  drain_spool
   now=$(date +%s 2>/dev/null) || now=0
   status="$(pi_status)"
   state="down"
@@ -167,10 +241,13 @@ while true; do
 
   if [ "$state" != "$last_state" ]; then
     if [ "$state" = "up" ]; then
-      if post "note" "session started"; then last_state="$state"; fi
+      post "note" "session started" || true
     else
-      if post "note" "session ended"; then last_state="$state"; fi
+      post "note" "session ended" || true
     fi
+    # Advance regardless of delivery: a failed note was spooled (retained), so
+    # the boundary is recorded and the live loop must not re-fire it.
+    last_state="$state"
     last_beat=0   # force a fresh active beat after a boundary
   fi
 

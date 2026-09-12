@@ -95,6 +95,7 @@
   .tl-label { position:sticky; left:0; z-index:3; background:var(--panel); width:var(--tl-label-w); flex:0 0 var(--tl-label-w); margin-left:calc(0px - var(--tl-label-w)); padding:0 10px; border-right:1px solid var(--border); display:flex; flex-direction:column; justify-content:center; gap:2px; box-shadow:2px 0 4px rgba(0,0,0,.3); overflow:hidden }
   .tl-label.lbl-head { font-weight:600; color:var(--fg) }
   .tl-label .slug { font-weight:600; font-size:13px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis }
+  .tl-label .stale { color:#e6a23c; font-size:11px; font-weight:600; white-space:nowrap }
   .tl-label .meta { color:var(--muted); font-size:11px; white-space:normal; overflow-wrap:anywhere; word-break:break-word }
   .tl-lane { position:relative; flex:1 1 auto; width:0; min-height:34px; background:repeating-linear-gradient(90deg, transparent 0 calc(25% - 1px), rgba(255,255,255,.03) calc(25% - 1px) 25%) }
   .blk { position:absolute; top:50%; transform:translateY(-50%); height:26px; border-radius:4px; color:#0f1115; font-size:11px; font-weight:700; display:flex; align-items:center; justify-content:center; overflow:hidden; white-space:nowrap; cursor:default; border:1px solid rgba(0,0,0,.25); box-shadow:inset 0 -1px 0 rgba(0,0,0,.28) }
@@ -1094,6 +1095,17 @@ function bTrackLabel(slug) {
   return [c.project, c.branch ? '⎇ ' + c.branch : '', c.commit ? '@' + c.commit : ''].filter(Boolean).join(' · ');
 }
 
+// bStaleInfo reports how long since this project's worker last sent a live
+// Tier-A beat, so silence on the track reads as "feed stale" (amber) rather
+// than "no work". Returns "" while the feed is live (or unknown).
+const TRACK_STALE_MS = 10 * 60 * 1000;
+function bStaleInfo(slug, now) {
+  let last = 0;
+  bActs.forEach(a => { if (a.kind === 'active' && a.slug === slug && a.ts > last) last = a.ts; });
+  if (!last || now - last <= TRACK_STALE_MS) return '';
+  return 'last active ' + Math.max(Math.round((now - last) / 60000), 1) + 'm ago';
+}
+
 function bBuildFilters() {
   const kb = $('#bKindFilters'); kb.innerHTML = '';
   BOARD_KINDS.forEach(k => {
@@ -1193,6 +1205,8 @@ function bRender() {
     const row = el('div', 'tl-row', null); row.style.minHeight = '44px';
     const lab = el('div', 'tl-label', null);
     lab.append(el('span', 'slug', esc(slug)));
+    const stale = bStaleInfo(slug, now);
+    if (stale) lab.append(el('span', 'stale', esc(stale)));
     const meta = bTrackLabel(slug);
     if (meta) lab.append(el('span', 'meta', esc(meta)));
     row.append(lab);

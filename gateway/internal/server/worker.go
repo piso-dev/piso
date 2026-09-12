@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 	"strconv"
@@ -23,6 +24,7 @@ func (s *Server) WorkerHandler() http.Handler {
 	mux.HandleFunc("POST /api/v1/worker/planning", s.handleCreateIngress)
 	mux.HandleFunc("POST /api/v1/worker/planning/cancel", s.handleCancelIngress)
 	mux.HandleFunc("POST /api/v1/worker/context", s.handleWorkerPostContext)
+	mux.HandleFunc("POST /api/v1/worker/checkin", s.handleWorkerCheckin)
 	mux.HandleFunc("POST /api/v1/worker/ports", s.handleWorkerPostPorts)
 	mux.HandleFunc("POST /api/v1/worker/activity", s.handleWorkerPostActivity)
 	mux.HandleFunc("GET /api/v1/worker/activities", s.handleWorkerGetActivities)
@@ -72,7 +74,7 @@ func (s *Server) handleWorkerPostPorts(w http.ResponseWriter, r *http.Request) {
 	}
 	// A registered worker's source IP must match the reported identity.
 	if reg, ok := s.Store.WorkerByIP(requestIP(r)); ok && reg.Name != in.Worker {
-		writeJSON(w, 403, map[string]string{"error": "identity mismatch"})
+		identityMismatch(w, r, reg, in.Worker, in.Slug)
 		return
 	}
 	ports := make([]int, 0, len(in.Ports))
@@ -104,6 +106,86 @@ func requestIP(r *http.Request) string {
 		host = r.RemoteAddr
 	}
 	return host
+}
+
+// identityMismatch writes a 403 naming the registry's owner of the caller's
+// source IP vs the claimed identity, so operator logs show exactly what to
+// fix (re-run `piso up`, or redeploy the conflicting worker). piso-informant
+// prints this body, so the agent line reads as an actionable message.
+func identityMismatch(w http.ResponseWriter, r *http.Request, reg store.WorkerRec, name, slug string) {
+	detail := fmt.Sprintf("registered %s@%s; request claims worker=%s",
+		reg.Name, requestIP(r), name)
+	if slug != "" {
+		detail = detail + fmt.Sprintf(" slug=%s", slug)
+	}
+	writeJSON(w, 403, map[string]string{"error": "identity mismatch", "detail": detail})
+}
+
+// checkinIn is a worker's startup identity claim (self-healing registry).
+type checkinIn struct {
+	Worker string `json:"worker"`
+	Slug   string `json:"slug,omitempty"`
+}
+
+// handleWorkerCheckin claims the caller's source IP for its own worker
+// record, so a container recreate (new vpc IP) does not strand the registry
+// with a stale mapping that 403s every activity/ports/context POST. The vpc
+// bridge prevents source-IP spoofing and the claim is first-come (same trust
+// model as the host CLI's `piso up` registration), so this cannot be used to
+// squat another worker's identity:
+//   - IP already claimed by THIS worker (name+slug) → no-op, 200.
+//   - IP claimed by a DIFFERENT worker → 403 with detail (strict; the host
+//     must redeploy the conflicting worker or re-run `piso up`).
+//   - IP unclaimed → append the IP to this worker's record (merge, never
+//     clobber the registered IP set) and return the authoritative record.
+func (s *Server) handleWorkerCheckin(w http.ResponseWriter, r *http.Request) {
+	var in checkinIn
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeJSON(w, 400, map[string]string{"error": "bad json"})
+		return
+	}
+	in.Worker = strings.TrimSpace(in.Worker)
+	in.Slug = strings.TrimSpace(in.Slug)
+	if !workerNameRe.MatchString(in.Worker) {
+		writeJSON(w, 400, map[string]string{"error": "worker name required"})
+		return
+	}
+	if in.Slug == "" {
+		in.Slug = slugFromWorker(in.Worker)
+	}
+	if !workerNameRe.MatchString(in.Slug) {
+		writeJSON(w, 400, map[string]string{"error": "slug required"})
+		return
+	}
+	ip := requestIP(r)
+	reg, regOK := s.Store.WorkerByIP(ip)
+	if regOK && reg.Name == in.Worker && reg.Slug == in.Slug {
+		writeJSON(w, 200, reg) // already registered correctly; nothing to heal
+		return
+	}
+	if regOK {
+		identityMismatch(w, r, reg, in.Worker, in.Slug)
+		return
+	}
+	// IP unclaimed: append it to this worker's record, keeping any existing
+	// IPs (UpsertWorker replaces the IP set keyed by name, so merge first).
+	rec := store.WorkerRec{Name: in.Worker, Slug: in.Slug, IPs: make([]string, 0, 4)}
+	if existing, ok := s.Store.WorkerByName(in.Worker); ok {
+		rec.Dir = existing.Dir
+		rec.InternetDisabled = existing.InternetDisabled
+		for _, eip := range existing.IPs {
+			if eip != ip {
+				rec.IPs = append(rec.IPs, eip)
+			}
+		}
+	}
+	rec.IPs = append(rec.IPs, ip)
+	out, err := s.Store.UpsertWorker(rec)
+	if err != nil {
+		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, 200, out)
 }
 
 // activityIn is one informant report (or monitor poke) posted by a worker.
@@ -152,7 +234,7 @@ func (s *Server) handleWorkerPostActivity(w http.ResponseWriter, r *http.Request
 	}
 	// A registered worker's source IP must match the reported identity.
 	if reg, ok := s.Store.WorkerByIP(requestIP(r)); ok && (reg.Name != in.Worker || reg.Slug != in.Slug) {
-		writeJSON(w, 403, map[string]string{"error": "identity mismatch"})
+		identityMismatch(w, r, reg, in.Worker, in.Slug)
 		return
 	}
 	a := store.Activity{
@@ -177,7 +259,7 @@ func (s *Server) handleWorkerGetActivities(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	if reg, ok := s.Store.WorkerByIP(requestIP(r)); ok && reg.Name != worker {
-		writeJSON(w, 403, map[string]string{"error": "identity mismatch"})
+		identityMismatch(w, r, reg, worker, "")
 		return
 	}
 	f := store.ActivityFilter{
@@ -214,7 +296,7 @@ func (s *Server) handleWorkerRevokeActivity(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	if reg, ok := s.Store.WorkerByIP(requestIP(r)); ok && reg.Name != in.Worker {
-		writeJSON(w, 403, map[string]string{"error": "identity mismatch"})
+		identityMismatch(w, r, reg, in.Worker, "")
 		return
 	}
 	deleted, err := s.Store.DeleteOwnActivity(in.ID, in.Worker)

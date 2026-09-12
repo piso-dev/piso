@@ -16,7 +16,8 @@ port="${PLANNOTATOR_PORT:-19432}"
 fwd="${PISO_LOOPBACK_FORWARD:-/usr/local/bin/piso-loopback-forward}"
 
 if [ -z "$gw" ] || [ -z "$worker" ]; then
-  exit 0
+  echo "piso-planning-watch: GATEWAY_URL/PISO_WORKER_NAME must be set" >&2
+  exit 3
 fi
 
 posted=0

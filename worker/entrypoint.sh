@@ -4,6 +4,34 @@
 # (default: keep alive for `piso attach`).
 set -e
 
+# Persistent log dir for the background watchers. /var/log sits on the
+# read-only rootfs (every worker and the monitor are `read_only: true`) and
+# /tmp is tmpfs (lost on restart); the agent volume is the one writable,
+# persistent location in every container. Logs here survive container
+# restarts and are inspectable on the host via `piso exec`.
+PISO_LOG_DIR="${PISO_LOG_DIR:-/root/.pi/agent/logs}"
+mkdir -p "$PISO_LOG_DIR" 2>/dev/null || true
+
+# respawn keeps one background watcher alive, restarting it whenever it exits
+# and logging to a persistent path. Exit code 3 means a configuration error
+# (missing env / role mismatch) — back off 30s instead of hot-looping.
+respawn() {
+  local bin="$1" log="$2"
+  (
+    while true; do
+      "$bin" >>"$log" 2>&1
+      rc=$?
+      if [ "$rc" = "3" ]; then
+        echo "$(date -u +%FT%TZ) $bin config error (exit 3); retry in 30s" >>"$log"
+        sleep 30
+      else
+        echo "$(date -u +%FT%TZ) $bin exited ($rc); restarting in 3s" >>"$log"
+        sleep 3
+      fi
+    done
+  ) &
+}
+
 if [ -f /piso-ca.pem ]; then
   cp /piso-ca.pem /usr/local/share/ca-certificates/piso-gateway.crt 2>/dev/null || true
   update-ca-certificates >/dev/null 2>&1 || true
@@ -87,15 +115,34 @@ if [ "${PISO_ROLE:-}" != "monitor" ] && [ -f /opt/piso/INFORMANT.md ]; then
   fi
 fi
 
+# Self-heal the slug↔IP registry: claim this worker's identity on the
+# gateway so a recreated container (new vpc IP) is not hit with 403 "identity
+# mismatch" on every watcher/informant POST. Idempotent and non-fatal;
+# retries briefly to cover a cold compose start while the gateway warms up.
+if [ -n "${GATEWAY_URL:-}" ] && [ -n "${PISO_WORKER_NAME:-}" ] && [ -n "${PISO_WORKER_SLUG:-}" ]; then
+  for i in 1 2 3 4 5; do
+    code=$(curl -sS --max-time 2 -o /dev/null -w '%{http_code}' \
+      -X POST "${GATEWAY_URL}/api/v1/worker/checkin" \
+      -H 'Content-Type: application/json' \
+      -d "{\"worker\":\"${PISO_WORKER_NAME}\",\"slug\":\"${PISO_WORKER_SLUG}\"}" 2>/dev/null) || code=000
+    if [ "$code" = "200" ]; then
+      echo "piso: identity checkin ok"
+      break
+    fi
+    echo "piso: identity checkin http $code (retry $i/5)"
+    sleep 2
+  done
+fi
+
 # When /plan starts Plannotator, ask the host to approve an ingress URL.
 if [ -n "${GATEWAY_URL:-}" ] && [ -n "${PISO_WORKER_NAME:-}" ] && [ -x /usr/local/bin/piso-planning-watch ]; then
-  nohup /usr/local/bin/piso-planning-watch >/tmp/piso-planning-watch.log 2>&1 &
+  respawn /usr/local/bin/piso-planning-watch "$PISO_LOG_DIR/planning-watch.log"
 fi
 
 # Publish every reachable dev-server port as an auto <slug>-<port>.piso.local
 # route (the gateway reconciles the set; no host ceremony needed).
 if [ -n "${GATEWAY_URL:-}" ] && [ -n "${PISO_WORKER_NAME:-}" ] && [ -x /usr/local/bin/piso-ports-watch ]; then
-  nohup /usr/local/bin/piso-ports-watch >/tmp/piso-ports-watch.log 2>&1 &
+  respawn /usr/local/bin/piso-ports-watch "$PISO_LOG_DIR/ports-watch.log"
 fi
 
 # Tier A activity informant: coarse beats (session start/end, alive) for the
@@ -103,13 +150,13 @@ fi
 # own pi process is a manager, not work-in-a-project, so its "working on …"
 # beats would just be noise on its track (it has no project mount).
 if [ "${PISO_ROLE:-}" != "monitor" ] && [ -n "${GATEWAY_URL:-}" ] && [ -n "${PISO_WORKER_NAME:-}" ] && [ -x /usr/local/bin/piso-activity-watch ]; then
-  nohup /usr/local/bin/piso-activity-watch >/tmp/piso-activity-watch.log 2>&1 &
+  respawn /usr/local/bin/piso-activity-watch "$PISO_LOG_DIR/activity-watch.log"
 fi
 
 # Report the worker's live context (folder / git repo / branch / commit /
 # model) so the dashboard request log can label each row. Advisory only.
 if [ -n "${GATEWAY_URL:-}" ] && [ -n "${PISO_WORKER_NAME:-}" ] && [ -n "${PISO_WORKER_SLUG:-}" ] && [ -x /usr/local/bin/piso-context-watch ]; then
-  nohup /usr/local/bin/piso-context-watch >/tmp/piso-context-watch.log 2>&1 &
+  respawn /usr/local/bin/piso-context-watch "$PISO_LOG_DIR/context-watch.log"
 fi
 
 exec "$@"
