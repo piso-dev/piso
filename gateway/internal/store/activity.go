@@ -20,6 +20,7 @@ const (
 	ActivityKindPoke      = "poke"      // a nudge (monitor → target project)
 	ActivityKindActive    = "active"    // watcher heartbeat: worker is alive
 	ActivityKindWaiting   = "waiting"   // agent run ended; human input needed
+	ActivityKindHost      = "host"      // host action required (sandbox boundary)
 	ActivityKindNote      = "note"      // unstructured note
 )
 
@@ -27,7 +28,8 @@ const (
 func ValidActivityKind(k string) bool {
 	switch k {
 	case ActivityKindProgress, ActivityKindMilestone, ActivityKindReminder,
-		ActivityKindPoke, ActivityKindActive, ActivityKindWaiting, ActivityKindNote:
+		ActivityKindPoke, ActivityKindActive, ActivityKindWaiting,
+		ActivityKindHost, ActivityKindNote:
 		return true
 	}
 	return false

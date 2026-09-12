@@ -8,11 +8,18 @@
 #   piso-informant progress  "Started OAuth PKCE flow"
 #   piso-informant milestone "Auth refactor merged"
 #   piso-informant poke      "Blocked: OIDC discovery returns 404" [targetSlug]
+#   piso-informant host      "Clone git@github.com:org/repo.git -> /workspace/repo"
 #   piso-informant reminder  "Check PR by 5pm"
 #   piso-informant waiting   "Need you to approve the schema"
 #   piso-informant note      "spent the afternoon on the CQRS docs"
 #
-# Kinds are fixed (progress|milestone|reminder|poke|active|waiting|note); the text is
+# `host` is the Host Action Request protocol (see the CAPABILITIES section of
+# AGENTS.md): emit it for a step that is OUT OF BOUNDS for this sandboxed
+# worker (ssh, docker, any credential-bearing git, privileged writes) instead
+# of attempting it. Text should name the exact host command and where its
+# result will land in /workspace.
+#
+# Kinds are fixed (progress|milestone|reminder|poke|active|waiting|host|note); the text is
 # free-form but sanitized gateway-side. The helper enforces shape, not content.
 #
 # Optionally pass a target project slug as the 3rd argument for pokes/
@@ -37,8 +44,8 @@ text="${2:-}"
 target="${3:-}"
 
 case "$kind" in
-  progress|milestone|reminder|poke|active|waiting|note) ;;
-  *) echo "usage: piso-informant <progress|milestone|reminder|poke|active|waiting|note> <text> [targetSlug]" >&2; exit 2 ;;
+  progress|milestone|reminder|poke|active|waiting|host|note) ;;
+  *) echo "usage: piso-informant <progress|milestone|reminder|poke|active|waiting|host|note> <text> [targetSlug]" >&2; exit 2 ;;
 esac
 if [ -z "$text" ]; then
   echo "usage: piso-informant <kind> <text> [targetSlug]" >&2

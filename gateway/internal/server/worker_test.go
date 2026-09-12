@@ -128,6 +128,90 @@ func TestWorkerCheckinSlugMismatchRejected(t *testing.T) {
 	}
 }
 
+// getFrom issues a GET from a chosen source IP (mirrors postCheckin).
+func getFrom(t *testing.T, h http.Handler, ip, path string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest("GET", path, nil)
+	if ip != "" {
+		req.RemoteAddr = ip + ":12345"
+	}
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	return w
+}
+
+// The gateway reports LIVE boundaries: the internet kill-switch (already in
+// the registry) and which placeholders this worker's model actually sees.
+func TestWorkerCapabilitiesBasics(t *testing.T) {
+	s := testServer(t)
+	if w := doJSON(t, s.ControlHandler(), "POST", "/api/v1/workers", map[string]any{
+		"name": "piso-worker-demo", "slug": "demo", "ips": []string{"192.168.107.50"},
+	}); w.Code != 200 {
+		t.Fatalf("register %d %s", w.Code, w.Body.String())
+	}
+	// one secret scoped to demo, another to a different slug
+	if w := doJSON(t, s.ControlHandler(), "POST", "/api/v1/secrets", map[string]any{
+		"name": "demo-key", "placeholder": "piso_demo_key", "value": "sk-test", "envKey": "DEMO_KEY",
+		"workers": []string{"demo"},
+	}); w.Code != 201 {
+		t.Fatalf("add secret %d %s", w.Code, w.Body.String())
+	}
+	if w := doJSON(t, s.ControlHandler(), "POST", "/api/v1/secrets", map[string]any{
+		"name": "other-key", "placeholder": "piso_other_key", "value": "sk-test2", "envKey": "OTHER_KEY",
+		"workers": []string{"other"},
+	}); w.Code != 201 {
+		t.Fatalf("add secret %d %s", w.Code, w.Body.String())
+	}
+	wh := s.WorkerHandler()
+	w := getFrom(t, wh, "192.168.107.50", "/api/v1/worker/capabilities?worker=piso-worker-demo")
+	if w.Code != 200 {
+		t.Fatalf("capabilities %d %s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, `"internetEnabled":true`) || !strings.Contains(body, "piso_demo_key") {
+		t.Fatalf("capabilities body %s", body)
+	}
+	if strings.Contains(body, "piso_other_key") {
+		t.Fatalf("leaked unrelated secret scope: %s", body)
+	}
+	// kill the internet switch → the flag flips for the same worker
+	if w := doJSON(t, s.ControlHandler(), "POST", "/api/v1/workers/piso-worker-demo/internet", map[string]any{
+		"disabled": true,
+	}); w.Code != 200 {
+		t.Fatalf("toggle %d %s", w.Code, w.Body.String())
+	}
+	w = getFrom(t, wh, "192.168.107.50", "/api/v1/worker/capabilities?worker=piso-worker-demo")
+	if !strings.Contains(w.Body.String(), `"internetEnabled":false`) {
+		t.Fatalf("internet flag not flipped: %s", w.Body.String())
+	}
+}
+
+// Capability reads are identity-checked like every other worker-API call.
+func TestWorkerCapabilitiesIdentity(t *testing.T) {
+	s := testServer(t)
+	if w := doJSON(t, s.ControlHandler(), "POST", "/api/v1/workers", map[string]any{
+		"name": "piso-worker-demo", "slug": "demo", "ips": []string{"192.168.107.50"},
+	}); w.Code != 200 {
+		t.Fatalf("register %d %s", w.Code, w.Body.String())
+	}
+	w := getFrom(t, s.WorkerHandler(), "192.168.107.50", "/api/v1/worker/capabilities?worker=piso-worker-other")
+	if w.Code != 403 {
+		t.Fatalf("capabilities identity %d %s", w.Code, w.Body.String())
+	}
+}
+
+// The `host` kind is a valid activity kind (Host Action Request protocol).
+func TestWorkerActivityAcceptsHostKind(t *testing.T) {
+	s := testServer(t)
+	wh := s.WorkerHandler()
+	if w := doJSON(t, wh, "POST", "/api/v1/worker/activity", map[string]any{
+		"worker": "piso-worker-demo", "kind": "host",
+		"text": "Clone git@github.com:org/repo.git -> /workspace/repo",
+	}); w.Code != 201 {
+		t.Fatalf("host kind %d %s", w.Code, w.Body.String())
+	}
+}
+
 func TestWorkerCheckinValidation(t *testing.T) {
 	s := testServer(t)
 	wh := s.WorkerHandler()

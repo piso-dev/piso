@@ -22,6 +22,11 @@ Do this **briefly and often** — one short line, not prose:
 - **This run is done and you need the human's next input** (a question, an
   approval, a choice — not a background blocker):
   `piso-informant waiting "Need you to pick the auth approach"`
+- **A step is OUT OF BOUNDS for this sandboxed worker** (ssh, docker, any
+  credential-bearing git, privileged writes): do NOT attempt it — emit a
+  Host Action Request. See the CAPABILITIES section below for the format and
+  the boundary list.
+  `piso-informant host "git clone git@github.com:org/repo.git · result → /workspace/repo"`
 - **Any notable status the human should know**:
   `piso-informant note "spent the afternoon on the CQRS docs"`
 
@@ -45,3 +50,17 @@ The board's color-coded timeline (progress/milestone/reminder/poke) is built
 from these events. Without them, the board still shows you're alive (Tier A
 watcher), but not **what** you're doing. Your events are what make the
 dashboard a real project manager instead of a motion sensor.
+
+# CAPABILITIES — where the sandbox ends
+
+The full boundary contract (what this worker can/cannot do, the Host Action
+Request protocol, probe cautions) is appended below by the entrypoint from
+/opt/piso/CAPABILITIES.md on every boot — read it before attempting anything
+you suspect is out of bounds. Two things to internalize up front:
+
+- Never attempt ssh, docker, any credential-bearing git, or privileged
+  writes: emit `piso-informant host "<exact command> · result → /workspace/..."`
+  instead and check for the result at the rendezvous path later.
+- Fetch your live boundaries once per session with
+  `curl -s "$GATEWAY_URL/api/v1/worker/capabilities?worker=$PISO_WORKER_NAME"`;
+  if the fetch fails, treat capabilities as BLOCKED.

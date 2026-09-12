@@ -86,6 +86,7 @@ COPY ports-watch.sh /usr/local/bin/piso-ports-watch
 COPY activity-watch.sh /usr/local/bin/piso-activity-watch
 COPY informant-help.sh /usr/local/bin/piso-informant
 COPY INFORMANT.md /opt/piso/INFORMANT.md
+COPY CAPABILITIES.md /opt/piso/CAPABILITIES.md
 COPY MONITOR.md /opt/piso/MONITOR.md
 COPY monitor-loop.sh /usr/local/bin/piso-monitor-loop
 RUN chmod +x /usr/local/bin/piso-monitor-loop

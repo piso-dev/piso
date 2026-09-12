@@ -25,6 +25,7 @@ func (s *Server) WorkerHandler() http.Handler {
 	mux.HandleFunc("POST /api/v1/worker/planning/cancel", s.handleCancelIngress)
 	mux.HandleFunc("POST /api/v1/worker/context", s.handleWorkerPostContext)
 	mux.HandleFunc("POST /api/v1/worker/checkin", s.handleWorkerCheckin)
+	mux.HandleFunc("GET /api/v1/worker/capabilities", s.handleWorkerCapabilities)
 	mux.HandleFunc("POST /api/v1/worker/ports", s.handleWorkerPostPorts)
 	mux.HandleFunc("POST /api/v1/worker/activity", s.handleWorkerPostActivity)
 	mux.HandleFunc("GET /api/v1/worker/activities", s.handleWorkerGetActivities)
@@ -247,6 +248,47 @@ func (s *Server) handleWorkerPostActivity(w http.ResponseWriter, r *http.Request
 		return
 	}
 	writeJSON(w, 201, a)
+}
+
+// handleWorkerCapabilities reports the worker's LIVE sandbox boundaries that
+// the gateway is the source of truth for (static image facts — no ssh, no
+// docker, read-only rootfs — are declared in the CAPABILITIES section of
+// ~/.pi/agent/AGENTS.md instead). The agent fetches this at session start so
+// it knows BEFORE attempting a step whether a boundary blocks it: if a
+// capability is unclear or the fetch fails, treat it as BLOCKED and emit a
+// `host` activity requesting the step instead of probing blindly.
+func (s *Server) handleWorkerCapabilities(w http.ResponseWriter, r *http.Request) {
+	worker := strings.TrimSpace(r.URL.Query().Get("worker"))
+	if !workerNameRe.MatchString(worker) {
+		writeJSON(w, 400, map[string]string{"error": "worker required"})
+		return
+	}
+	if reg, ok := s.Store.WorkerByIP(requestIP(r)); ok && reg.Name != worker {
+		identityMismatch(w, r, reg, worker, "")
+		return
+	}
+	internet := true
+	slug := slugFromWorker(worker)
+	if reg, ok := s.Store.WorkerByName(worker); ok {
+		slug = reg.Slug
+		internet = !reg.InternetDisabled
+	}
+	// Which placeholders does this worker's model actually see? Same rule as
+	// the env-file renderer (SecretVisibleToWorker): empty/* Workers = all.
+	var scoped []string
+	for _, sec := range s.Store.Secrets() {
+		if store.SecretVisibleToWorker(sec, slug) {
+			scoped = append(scoped, sec.Placeholder)
+		}
+	}
+	writeJSON(w, 200, map[string]any{
+		"worker": worker,
+		"slug": slug,
+		"internetEnabled": internet,
+		"egressProxy": "gateway:8080",
+		"scopedPlaceholders": scoped,
+		"outOfBound": "emit a host activity request instead of attempting",
+	})
 }
 
 // handleWorkerGetActivities returns the activity feed. The monitor polls this;

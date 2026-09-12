@@ -35,6 +35,9 @@ func TestContextHashStableAndChanges(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "INFORMANT.md"), []byte("# informant\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(dir, "CAPABILITIES.md"), []byte("# capabilities\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(dir, "MONITOR.md"), []byte("# monitor\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
