@@ -70,6 +70,40 @@ RUN NODEVER="$(node -v | tr -d v)" \
   && mkdir -p /opt/piso/node-gyp \
   && cp -a "$CACHE/." /opt/piso/node-gyp/
 
+# bat/delta/glow: the hosted files-widget extension shells out to these (it
+# `which`-checks them at startup, then runs bat/delta/glow to render files).
+# Apt cannot cover them on bookworm: `bat` is 0.22.1 there (predates the
+# --wrap=auto/--terminal-width flags files-widget passes) and git-delta/glow
+# are not packaged at all. Pin the official static releases instead — the
+# same versions verified against files-widget's exact invocations. Ship
+# both arches since the image builds on arm64 or amd64 hosts.
+# Must run BEFORE HTTPS_PROXY=gateway: `docker build` has real network
+# (compose build network: host) but no `gateway` hostname, so curl would
+# fail with "Could not resolve proxy: gateway".
+RUN set -eu; \
+  case "$(uname -m)" in \
+    aarch64) RUST_ARCH=aarch64-unknown-linux-gnu; GLOW_ARCH=arm64; \
+             BAT_SHA=422eb73e11c854fddd99f5ca8461c2f1d6e6dce0a2a8c3d5daade5ffcb6564aa; \
+             DELTA_SHA=0bfce159a5cddd5feb3d6db4a616d883ff51253ce08ac7ec11cb1d208cfaab9e; \
+             GLOW_SHA=810c39f4691feb75e675a5f5f54b9fa091354e7599d9cf9c9fc9b97e47a99759 ;; \
+    x86_64)  RUST_ARCH=x86_64-unknown-linux-gnu; GLOW_ARCH=amd64; \
+             BAT_SHA=726f04c8f576a7fd18b7634f1bbf2f915c43494c1c0f013baa3287edb0d5a2a3; \
+             DELTA_SHA=8e695c5f586a8c53d6c3b01be0b4a422ed218bfed2a56191caebe373a1c18ab2; \
+             GLOW_SHA=13e05e4b2acc18d2aee44291aefe6325b077ec321b631a0cfa780e8e3bc33f78 ;; \
+    *) echo "unsupported arch: $(uname -m)" >&2; exit 1 ;; \
+  esac; \
+  D=/tmp/piso-tools; mkdir -p "$D"; cd "$D"; \
+  curl -fsSL -o bat.tgz "https://github.com/sharkdp/bat/releases/download/v0.26.1/bat-v0.26.1-${RUST_ARCH}.tar.gz"; \
+  curl -fsSL -o delta.tgz "https://github.com/dandavison/delta/releases/download/0.19.2/delta-0.19.2-${RUST_ARCH}.tar.gz"; \
+  curl -fsSL -o glow.tgz "https://github.com/charmbracelet/glow/releases/download/v3.0.0/glow_3.0.0_Linux_${GLOW_ARCH}.tar.gz"; \
+  echo "$BAT_SHA  bat.tgz" | sha256sum -c -; \
+  echo "$DELTA_SHA  delta.tgz" | sha256sum -c -; \
+  echo "$GLOW_SHA  glow.tgz" | sha256sum -c -; \
+  tar xzf bat.tgz --no-same-owner;   install -m 0755 "bat-v0.26.1-${RUST_ARCH}/bat" /usr/local/bin/bat; \
+  tar xzf delta.tgz --no-same-owner; install -m 0755 "delta-0.19.2-${RUST_ARCH}/delta" /usr/local/bin/delta; \
+  tar xzf glow.tgz --no-same-owner;  install -m 0755 "glow_3.0.0_Linux_${GLOW_ARCH}/glow" /usr/local/bin/glow; \
+  rm -rf "$D"
+
 # Egress: only via the gateway. NO_PROXY keeps internal services direct.
 ENV HTTPS_PROXY=http://gateway:8080 \
     HTTP_PROXY=http://gateway:8080 \
