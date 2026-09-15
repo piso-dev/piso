@@ -121,7 +121,9 @@ ENV HTTPS_PROXY=http://gateway:8080 \
     CURL_CA_BUNDLE=/piso-ca.pem \
     GIT_SSL_CAINFO=/piso-ca.pem \
     REQUESTS_CA_BUNDLE=/piso-ca.pem \
-    NODE_EXTRA_CA_CERTS=/piso-ca.pem
+    NODE_EXTRA_CA_CERTS=/piso-ca.pem \
+    TMPDIR=/root/.pi/agent/tmp \
+    NODE_COMPILE_CACHE=/root/.pi/agent/.node-compile-cache
 
 WORKDIR /workspace
 

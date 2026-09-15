@@ -58,6 +58,10 @@ services:
       # tmpfs-backed /tmp so review sessions can persist plans/history.
       PLANNOTATOR_DATA_DIR: /tmp/plannotator
       NPM_CONFIG_CACHE: /root/.pi/agent/.npm-cache
+      # docker exec does not inherit entrypoint exports. Keep compile caches
+      # on the agent volume (not RAM-backed /tmp) so first `pi` does not OOM.
+      TMPDIR: /root/.pi/agent/tmp
+      NODE_COMPILE_CACHE: /root/.pi/agent/.node-compile-cache
     cap_drop:
       - ALL
     security_opt:

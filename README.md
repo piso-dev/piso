@@ -47,7 +47,7 @@ make install                 # sudo if PREFIX=/usr/local is not writable
 # or: make install PREFIX=$HOME/.local   # then ensure ~/.local/bin is on PATH
 cd /path/to/your/project
 piso up          # ensure gateway + worker for the current dir
-piso attach      # enter the worker, run pi
+piso attach      # enter the worker, run pi (waits for extension seeding)
 piso attach --new  # start a fresh session instead of restoring
 piso attach --session <id>  # open a specific session
 piso dashboard   # open http://piso.local

@@ -4,13 +4,16 @@
 # /piso-ca.pem — the rootfs is read-only, so update-ca-certificates cannot run.
 set -e
 
-# Persistent log dir for the background watchers. /var/log sits on the
-# read-only rootfs (every worker and the monitor are `read_only: true`) and
-# /tmp is tmpfs (lost on restart); the agent volume is the one writable,
-# persistent location in every container. Logs here survive container
-# restarts and are inspectable on the host via `piso exec`.
+# Persistent dirs on the agent volume. /var/log sits on the read-only
+# rootfs and /tmp is tmpfs (RAM-backed, wiped on restart). First `pi` start
+# compiles host extensions (jiti) and would OOM the Docker VM if that cache
+# landed in /tmp — keep it on the volume. docker exec does not inherit these
+# exports; TMPDIR / NODE_COMPILE_CACHE are also image/compose ENV.
 PISO_LOG_DIR="${PISO_LOG_DIR:-/root/.pi/agent/logs}"
-mkdir -p "$PISO_LOG_DIR" 2>/dev/null || true
+TMPDIR="${TMPDIR:-/root/.pi/agent/tmp}"
+NODE_COMPILE_CACHE="${NODE_COMPILE_CACHE:-/root/.pi/agent/.node-compile-cache}"
+export TMPDIR NODE_COMPILE_CACHE
+mkdir -p "$PISO_LOG_DIR" "$TMPDIR" "$NODE_COMPILE_CACHE" 2>/dev/null || true
 
 # respawn keeps one background watcher alive, restarting it whenever it exits
 # and logging to a persistent path. Exit code 3 means a configuration error
@@ -165,5 +168,10 @@ fi
 if [ -n "${GATEWAY_URL:-}" ] && [ -n "${PISO_WORKER_NAME:-}" ] && [ -n "${PISO_WORKER_SLUG:-}" ] && [ -x /usr/local/bin/piso-context-watch ]; then
   respawn /usr/local/bin/piso-context-watch "$PISO_LOG_DIR/context-watch.log"
 fi
+
+# Signal that seeding is done so `piso up` / `piso attach` can wait. /run is
+# tmpfs; gone on restart, rewritten every boot. Attach before this exists
+# races the ~650MB extension copy and first-start compile (exit 137).
+: >/run/piso-ready 2>/dev/null || true
 
 exec "$@"

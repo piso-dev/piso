@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"time"
 
 	"piso/cli/internal/dockernet"
@@ -211,6 +212,12 @@ func cmdUp(args []string) error {
 	// Register the worker's slug↔IP identity with the gateway so request logs
 	// can be tagged with the project slug. Refreshed on every `piso up`.
 	_ = registerWorkerWithGateway(proj)
+	// Compose up returns when the container is created, NOT when the
+	// entrypoint has copied ~650MB of extensions into a fresh agent volume.
+	// Attach before that finishes is the first-start exit 137.
+	if err := waitWorkerReady(proj.WorkerName()); err != nil {
+		return err
+	}
 	fmt.Printf("piso: worker %s ready. Run `piso attach`.\n", proj.WorkerName())
 	return nil
 }
@@ -246,7 +253,7 @@ func registerWorkerWithGateway(proj pisoconfig.Project) error {
 		Name: proj.WorkerName(), Slug: proj.Slug, Dir: proj.Dir, IPs: ips,
 	})
 	gw := pisoconfig.GatewayURL()
-	resp, err := http.Post(gw + "/api/v1/workers", "application/json", bytes.NewReader(body))
+	resp, err := http.Post(gw+"/api/v1/workers", "application/json", bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
@@ -494,10 +501,45 @@ func cmdAttach(args []string) error {
 		// picker for the new project).
 		inner += `sd=/root/.pi/agent/sessions/--workspace--; if [ -d "$sd" ] && find "$sd" -name '*.jsonl' -print -quit 2>/dev/null | grep -q .; then exec pi -r; else exec pi; fi`
 	}
+	if err := waitWorkerReady(proj.WorkerName()); err != nil {
+		return err
+	}
 	cmdArgs := []string{"exec", "-it", proj.WorkerName(), "bash", "-lc", inner}
-	c := exec.Command("docker", cmdArgs...)
+	bin, err := dockernet.LookPath()
+	if err != nil {
+		return err
+	}
+	c := exec.Command(bin, cmdArgs...)
 	c.Stdin, c.Stdout, c.Stderr = os.Stdin, os.Stdout, os.Stderr
-	return c.Run()
+	return attachExecErr(c.Run())
+}
+
+// attachExecErr rewrites docker-exec deaths that are otherwise just
+// "exit status 137". 137 is 128+SIGKILL: the OOM killer, not a pi error.
+func attachExecErr(err error) error {
+	if err == nil {
+		return nil
+	}
+	if isKilled137(err) {
+		return fmt.Errorf("pi was killed (exit 137 / SIGKILL). First attach after a fresh worker often OOMs while ~650MB of extensions are still seeding; retry attach, or raise Docker's memory limit")
+	}
+	return err
+}
+
+func isKilled137(err error) bool {
+	var ee *exec.ExitError
+	if !errors.As(err, &ee) {
+		return false
+	}
+	// docker exec maps SIGKILL to 137 (128+9). A direct child reports the
+	// signal instead (ExitCode -1).
+	if ee.ExitCode() == 137 {
+		return true
+	}
+	if ws, ok := ee.Sys().(syscall.WaitStatus); ok {
+		return ws.Signaled() && ws.Signal() == syscall.SIGKILL
+	}
+	return false
 }
 
 // shq single-quotes s so it embeds losslessly in the worker's bash -lc
@@ -592,7 +634,7 @@ func cmdSecrets(args []string) error {
 			switch args[i] {
 			case "--workers":
 				if i+1 < len(args) {
-					workers = splitCSV(args[i+1:i+2])
+					workers = splitCSV(args[i+1 : i+2])
 					i++
 				}
 			default:
@@ -717,13 +759,14 @@ func syncIngressHosts() error {
 }
 
 // cmdSync reconciles /etc/hosts with the gateway's routes.
-//   piso sync                     one-shot reconcile
-//   piso sync --watch             foreground watch loop (SSE route events)
-//   piso sync daemon              same loop, as the managed service body
-//   piso sync daemon-status       pidfile+ps probe (no root needed)
-//   piso sync daemon-restart      install/reload the global service (root)
-//   piso sync daemon-stop         stop it (root)
-//   piso sync daemon-uninstall    stop + remove managed config (root)
+//
+//	piso sync                     one-shot reconcile
+//	piso sync --watch             foreground watch loop (SSE route events)
+//	piso sync daemon              same loop, as the managed service body
+//	piso sync daemon-status       pidfile+ps probe (no root needed)
+//	piso sync daemon-restart      install/reload the global service (root)
+//	piso sync daemon-stop         stop it (root)
+//	piso sync daemon-uninstall    stop + remove managed config (root)
 func cmdSync(args []string) error {
 	if len(args) == 0 {
 		if err := syncIngressHosts(); err != nil {
@@ -956,10 +999,11 @@ func rebuildGateway() error {
 // to proceed. Exported as a pure function so the logic is unit-testable without
 // npm/docker round-trips.
 type updateDecision int
+
 const (
-	updateDecisionNothing   = 0 // already current and nothing changed
-	updateDecisionPackages  = 1 // extensions changed — re-stage + rebuild
-	updateDecisionRollPi    = 2 // pi pin changed — normal rollout
+	updateDecisionNothing  = 0 // already current and nothing changed
+	updateDecisionPackages = 1 // extensions changed — re-stage + rebuild
+	updateDecisionRollPi   = 2 // pi pin changed — normal rollout
 )
 
 // decideUpdate decides the cmdUpdate gate: nothing to do vs proceed.
@@ -1004,7 +1048,7 @@ func cmdUpdate(args []string) error {
 	// build context — so the rebuilt image bakes the newer extension versions
 	// alongside the new pi. Best-effort: a failure here is a warning, not fatal
 	// (the pi pin itself can still roll out).
-	if ! *dryRun {
+	if !*dryRun {
 		if err := updateHostExtensions(); err != nil {
 			fmt.Fprintf(os.Stderr, "piso: warning: extension refresh failed: %v\n", err)
 		} else {
@@ -1357,6 +1401,55 @@ func waitGatewayHealthy() error {
 		time.Sleep(time.Second)
 	}
 	return fmt.Errorf("gateway did not become healthy within 30s")
+}
+
+const workerReadyTimeout = 2 * time.Minute
+
+// waitWorkerReady blocks until the entrypoint has finished seeding (extension
+// copy, node-gyp headers, identity checkin) and exec'd CMD. `docker compose up`
+// returns earlier; attaching during the copy is the first-start exit 137.
+func waitWorkerReady(name string) error {
+	deadline := time.Now().Add(workerReadyTimeout)
+	started := time.Now()
+	var announced bool
+	for time.Now().Before(deadline) {
+		if !containerRunning(name) {
+			if time.Since(started) > 5*time.Second {
+				return fmt.Errorf("worker %s is not running (run `piso up` first)", name)
+			}
+			time.Sleep(250 * time.Millisecond)
+			continue
+		}
+		if workerIsReady(name) {
+			return nil
+		}
+		if !announced {
+			fmt.Fprintf(os.Stderr, "piso: waiting for %s to finish seeding extensions\n", name)
+			announced = true
+		}
+		time.Sleep(400 * time.Millisecond)
+	}
+	return fmt.Errorf("worker %s did not finish seeding within %s; check `docker logs %s`", name, workerReadyTimeout, name)
+}
+
+// workerIsReady is true once /run/piso-ready exists (new images) or once the
+// entrypoint process has exec'd CMD (old images that never write the flag).
+func workerIsReady(name string) bool {
+	if _, err := dockerOutputLite("exec", name, "test", "-f", "/run/piso-ready"); err == nil {
+		return true
+	}
+	_, err := dockerOutputLite("exec", name, "python3", "-c", `import os, sys
+for p in os.listdir("/proc"):
+    if not p.isdigit():
+        continue
+    try:
+        cmd = open("/proc/%s/cmdline" % p, "rb").read().replace(b"\0", b" ").decode("utf-8", "replace")
+    except Exception:
+        continue
+    if "piso-entrypoint" in cmd:
+        sys.exit(1)
+`)
+	return err == nil
 }
 
 // dockerComposeEnv is required for compose interpolation of ${PISO_DATA}
