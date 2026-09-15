@@ -1360,7 +1360,7 @@ function bRender() {
   // group into per-project tracks; the monitor is never its own track, but
   // its pokes still colour the target project's track
   const by = {};
-  const ensure = s => { if (!by[s]) by[s] = { slug: s, items: [], last: 0 }; return by[s]; };
+  const ensure = s => { if (!by[s]) by[s] = { slug: s, items: [] }; return by[s]; };
   let count = 0;
   bActs.forEach(a => {
     if (!bOnKind.has(a.kind)) return;
@@ -1368,12 +1368,12 @@ function bRender() {
     // project's track; they never become their own track.
     const t = (a.targetSlug && a.targetSlug !== a.slug) ? a.targetSlug : a.slug;
     if (t === 'monitor') return;
-    const rec = ensure(t); rec.items.push(a); rec.last = Math.max(rec.last, a.ts); count++;
+    const rec = ensure(t); rec.items.push(a); count++;
   });
 
   const box = $('#boardTracks');
   box.innerHTML = '';
-  const slugs = Object.keys(by).filter(s => by[s].items.length).sort((x, y) => by[y].last - by[x].last);
+  const slugs = Object.keys(by).filter(s => by[s].items.length).sort((x, y) => x.localeCompare(y));
   $('#boardStatus').textContent = slugs.length + ' project' + (slugs.length === 1 ? '' : 's') + ' · ' + count + ' activities';
   box.style.width = total + 'px';
   if (slugs.length === 0) {
