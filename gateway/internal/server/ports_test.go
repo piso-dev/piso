@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"piso/gateway/internal/store"
 )
@@ -198,6 +199,242 @@ func TestWorkerActivityPostGetRevoke(t *testing.T) {
 	rev = doJSON(t, wh, "POST", "/api/v1/worker/activity/revoke", map[string]any{"id": act.ID, "worker": "piso-worker-demo"})
 	if rev.Code != 204 {
 		t.Fatalf("own revoke %d %s", rev.Code, rev.Body.String())
+	}
+}
+
+func TestWorkerActivityFeedSpanProjection(t *testing.T) {
+	s := testServer(t)
+	wh := s.WorkerHandler()
+	now := time.Now().UnixNano() / 1000000
+	// 4 beats 30s apart (one run) … a note … then a lone beat 20h earlier
+	for _, a := range []store.Activity{
+		store.Activity{Worker: "piso-worker-demo", Slug: "demo", Kind: store.ActivityKindActive, Text: "working on x", Ts: now - 0},
+		store.Activity{Worker: "piso-worker-demo", Slug: "demo", Kind: store.ActivityKindActive, Text: "working on x", Ts: now - 30000},
+		store.Activity{Worker: "piso-worker-demo", Slug: "demo", Kind: store.ActivityKindActive, Text: "working on x", Ts: now - 60000},
+		store.Activity{Worker: "piso-worker-demo", Slug: "demo", Kind: store.ActivityKindActive, Text: "working on x", Ts: now - 90000},
+		store.Activity{Worker: "piso-worker-demo", Slug: "demo", Kind: store.ActivityKindNote, Text: "keep me", Ts: now - 120000},
+		store.Activity{Worker: "piso-worker-demo", Slug: "demo", Kind: store.ActivityKindActive, Text: "working on x", Ts: now - 20*3600*1000},
+	} {
+		if _, err := s.Store.InsertActivity(a); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// raw feed: all 6 rows survive (store keeps full history)
+	raw := doJSON(t, wh, "GET", "/api/v1/worker/activities?worker=piso-worker-demo", nil)
+	var rawActs []store.Activity
+	_ = json.Unmarshal(raw.Body.Bytes(), &rawActs)
+	if raw.Code != 200 || len(rawActs) != 6 {
+		t.Fatalf("raw feed %d %d rows", raw.Code, len(rawActs))
+	}
+	// span projection: the 4-beat run fuses into one row; the 20h-later beat
+	// stays separate (gap > 10 min); the note is untouched
+	sp := doJSON(t, wh, "GET", "/api/v1/worker/activities?worker=piso-worker-demo&active=span", nil)
+	var acts []store.Activity
+	_ = json.Unmarshal(sp.Body.Bytes(), &acts)
+	if sp.Code != 200 || len(acts) != 3 {
+		t.Fatalf("span feed %d %d rows: %s", sp.Code, len(acts), sp.Body.String())
+	}
+	var note, lone, run int
+	for _, a := range acts {
+		if a.Kind == store.ActivityKindNote {
+			note += 1
+			if a.Text != "keep me" || a.ActiveBeats != 0 {
+				t.Fatalf("note mutated: %+v", a)
+			}
+		}
+		if a.Kind == store.ActivityKindActive {
+			if a.ActiveBeats >= 2 {
+				run += 1
+				if a.ActiveBeats != 4 || a.ActiveFromMs != now-90000 || !strings.Contains(a.Text, "· for 1 min") {
+					t.Fatalf("run row: %+v", a)
+				}
+			} else {
+				lone += 1
+			}
+		}
+	}
+	if note != 1 || run != 1 || lone != 1 {
+		t.Fatalf("note=%d run=%d lone=%d", note, run, lone)
+	}
+}
+
+func TestWorkerActivityFeedOmitsSessionStartedKeepsEndedAndIdle(t *testing.T) {
+	s := testServer(t)
+	wh := s.WorkerHandler()
+	now := time.Now().UnixNano() / 1000000
+	for _, a := range []store.Activity{
+		{Worker: "piso-worker-demo", Slug: "demo", Kind: store.ActivityKindNote, Text: "session started", Ts: now - 90000},
+		{Worker: "piso-worker-demo", Slug: "demo", Kind: store.ActivityKindProgress, Text: "real work", Ts: now - 60000},
+		{Worker: "piso-worker-demo", Slug: "demo", Kind: store.ActivityKindIdle, Text: "idle at prompt", Ts: now - 30000},
+		{Worker: "piso-worker-demo", Slug: "demo", Kind: store.ActivityKindNote, Text: "session ended", Ts: now},
+	} {
+		if _, err := s.Store.InsertActivity(a); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// monitor feed: session started omitted; ended + idle + work stay
+	feed := doJSON(t, wh, "GET", "/api/v1/worker/activities?worker=piso-worker-demo", nil)
+	var acts []store.Activity
+	_ = json.Unmarshal(feed.Body.Bytes(), &acts)
+	if feed.Code != 200 || len(acts) != 3 {
+		t.Fatalf("feed %d %d rows: %s", feed.Code, len(acts), feed.Body.String())
+	}
+	have := map[string]bool{}
+	for _, a := range acts {
+		have[a.Text] = true
+		if a.Text == "session started" {
+			t.Fatalf("session started leaked into feed: %s", feed.Body.String())
+		}
+	}
+	for _, want := range []string{"real work", "idle at prompt", "session ended"} {
+		if !have[want] {
+			t.Fatalf("missing %q in %s", want, feed.Body.String())
+		}
+	}
+	// host board keeps the Tier-A floor: started is still visible there
+	ctrl := doJSON(t, s.ControlHandler(), "GET", "/api/v1/activities", nil)
+	if ctrl.Code != 200 || !strings.Contains(ctrl.Body.String(), "session started") || !strings.Contains(ctrl.Body.String(), "session ended") {
+		t.Fatalf("control feed %d %s", ctrl.Code, ctrl.Body.String())
+	}
+}
+
+func TestWorkerActivityFeedTimeLimitedToJudgement(t *testing.T) {
+	s := testServer(t)
+	wh := s.WorkerHandler()
+	now := time.Now().UnixNano() / 1000000
+	// demo history: old events … the monitor pokes demo … more work … then the
+	// monitor curates demo (its NEWEST judgement for demo), and only work that
+	// lands after THAT is post-judgement
+	old := now - 3600 * 1000
+	waiting := now - 1800 * 1000
+	poke := now - 900 * 1000
+	fresh := now - 600 * 1000
+	curate := now - 120 * 1000
+	newest := now - 60 * 1000
+	// another project the monitor never judged: its old events stay visible
+	other := now - 7200 * 1000
+	for _, a := range []store.Activity{
+		{Worker: "piso-worker-demo", Slug: "demo", Kind: store.ActivityKindProgress, Text: "old work", Ts: old},
+		{Worker: "piso-worker-demo", Slug: "demo", Kind: store.ActivityKindWaiting, Text: "old waiting", Ts: waiting},
+		{Worker: "piso-worker-monitor", Slug: "monitor", Kind: store.ActivityKindPoke, TargetSlug: "demo", Text: "human needed", Ts: poke},
+		{Worker: "piso-worker-demo", Slug: "demo", Kind: store.ActivityKindProgress, Text: "fresh work", Ts: fresh},
+		{Worker: "piso-worker-monitor", Slug: "monitor", Kind: store.ActivityKindNote, TargetSlug: "demo", Text: "curation", Ts: curate},
+		{Worker: "piso-worker-demo", Slug: "demo", Kind: store.ActivityKindProgress, Text: "newest work", Ts: newest},
+		{Worker: "piso-worker-other", Slug: "other", Kind: store.ActivityKindProgress, Text: "other work", Ts: other},
+	} {
+		if _, err := s.Store.InsertActivity(a); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// monitor reads its feed: demo's pre-judgement history is cut, everything
+	// the monitor posted itself is retained, and unjudged projects are intact
+	feed := doJSON(t, wh, "GET", "/api/v1/worker/activities?worker=piso-worker-monitor", nil)
+	var acts []store.Activity
+	_ = json.Unmarshal(feed.Body.Bytes(), &acts)
+	if feed.Code != 200 || len(acts) != 4 {
+		t.Fatalf("feed %d %d rows: %s", feed.Code, len(acts), feed.Body.String())
+	}
+	var haveOld bool
+	have := map[string]bool{}
+	for _, a := range acts {
+		have[a.Text] = true
+		if a.Text == "old work" || a.Text == "old waiting" || a.Text == "fresh work" {
+			haveOld = true
+		}
+	}
+	if haveOld {
+		t.Fatalf("pre-judgement demo history still in feed: %s", feed.Body.String())
+	}
+	for _, want := range []string{"newest work", "human needed", "curation", "other work"} {
+		if !have[want] {
+			t.Fatalf("missing %q in %s", want, feed.Body.String())
+		}
+	}
+	// demo's own (non-monitor) read keeps its full history: the derived window
+	// only cuts rows for projects the REQUESTING worker judged, and demo never
+	// aimed anything at a project (its map holds only its own ""), so nothing cuts
+	own := doJSON(t, wh, "GET", "/api/v1/worker/activities?worker=piso-worker-demo", nil)
+	var ownActs []store.Activity
+	_ = json.Unmarshal(own.Body.Bytes(), &ownActs)
+	if own.Code != 200 || len(ownActs) != 7 {
+		t.Fatalf("demo own feed %d %d rows: %s", own.Code, len(ownActs), own.Body.String())
+	}
+	// explicit `since` overrides the derived window
+	since := doJSON(t, wh, "GET", "/api/v1/worker/activities?worker=piso-worker-monitor&since="+strconv.FormatInt(fresh, 10), nil)
+	var sinceActs []store.Activity
+	_ = json.Unmarshal(since.Body.Bytes(), &sinceActs)
+	if since.Code != 200 || len(sinceActs) != 3 {
+		t.Fatalf("since feed %d %d rows: %s", since.Code, len(sinceActs), since.Body.String())
+	}
+	for _, a := range sinceActs {
+		if a.Ts < fresh {
+			t.Fatalf("row older than explicit since: %+v", a)
+		}
+	}
+}
+
+func TestWorkerActivityFeedTrackIncludesAimedPokes(t *testing.T) {
+	s := testServer(t)
+	wh := s.WorkerHandler()
+	now := time.Now().UnixNano() / 1000000
+	// poke first, then the project works after being judged (pre-judgement
+	// history is vetoed by the judgement window, so both surviving rows are
+	// post-poke: the project's own work AND the poke aimed at it)
+	for _, a := range []store.Activity{
+		{Worker: "piso-worker-monitor", Slug: "monitor", Kind: store.ActivityKindPoke, TargetSlug: "demo", Text: "human needed", Ts: now - 60000},
+		{Worker: "piso-worker-demo", Slug: "demo", Kind: store.ActivityKindProgress, Text: "real work", Ts: now - 30000},
+		{Worker: "piso-worker-other", Slug: "other", Kind: store.ActivityKindProgress, Text: "other work", Ts: now},
+	} {
+		if _, err := s.Store.InsertActivity(a); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// the project track carries both its own events and pokes aimed at it,
+	// newest first
+	track := doJSON(t, wh, "GET", "/api/v1/worker/activities?worker=piso-worker-monitor&slug=demo", nil)
+	var acts []store.Activity
+	_ = json.Unmarshal(track.Body.Bytes(), &acts)
+	if track.Code != 200 || len(acts) != 2 {
+		t.Fatalf("track %d %d rows: %s", track.Code, len(acts), track.Body.String())
+	}
+	if acts[0].Text != "real work" || acts[1].Text != "human needed" || acts[1].TargetSlug != "demo" {
+		t.Fatalf("track rows: %s", track.Body.String())
+	}
+	// kind filter applies to aimed rows too
+	kf := doJSON(t, wh, "GET", "/api/v1/worker/activities?worker=piso-worker-monitor&slug=demo&kind=poke", nil)
+	var kacts []store.Activity
+	_ = json.Unmarshal(kf.Body.Bytes(), &kacts)
+	if kf.Code != 200 || len(kacts) != 1 || kacts[0].Kind != store.ActivityKindPoke {
+		t.Fatalf("kind filter %d %d rows: %s", kf.Code, len(kacts), kf.Body.String())
+	}
+	// a project nobody poked has only its own rows
+	other := doJSON(t, wh, "GET", "/api/v1/worker/activities?worker=piso-worker-monitor&slug=other", nil)
+	var oacts []store.Activity
+	_ = json.Unmarshal(other.Body.Bytes(), &oacts)
+	if other.Code != 200 || len(oacts) != 1 || oacts[0].Text != "other work" {
+		t.Fatalf("other track %d %d rows: %s", other.Code, len(oacts), other.Body.String())
+	}
+}
+
+func TestWorkerActivityFeedTrackDedupesSelfPoke(t *testing.T) {
+	s := testServer(t)
+	wh := s.WorkerHandler()
+	// a worker poking itself stores slug==targetSlug, so the row matches both
+	// sides of the track query; it must still appear exactly once (work is
+	// newer than the poke so the judgement window keeps it)
+	for _, a := range []store.Activity{
+		{Worker: "piso-worker-demo", Slug: "demo", Kind: store.ActivityKindPoke, TargetSlug: "demo", Text: "self poke", Ts: 1000},
+		{Worker: "piso-worker-demo", Slug: "demo", Kind: store.ActivityKindProgress, Text: "work", Ts: 2000},
+	} {
+		if _, err := s.Store.InsertActivity(a); err != nil {
+			t.Fatal(err)
+		}
+	}
+	track := doJSON(t, wh, "GET", "/api/v1/worker/activities?worker=piso-worker-demo&slug=demo", nil)
+	var acts []store.Activity
+	_ = json.Unmarshal(track.Body.Bytes(), &acts)
+	if track.Code != 200 || len(acts) != 2 {
+		t.Fatalf("track %d %d rows: %s", track.Code, len(acts), track.Body.String())
 	}
 }
 

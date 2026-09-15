@@ -508,7 +508,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 		if acts == nil {
 			acts = []store.Activity{}
 		}
-		writeJSON(w, 200, acts)
+		writeJSON(w, 200, feedView(acts, time.Now().UnixNano()/1000000))
 	})
 
 	// worker registry (slug↔IP), populated by the host CLI at `piso up`

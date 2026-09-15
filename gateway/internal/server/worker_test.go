@@ -212,6 +212,17 @@ func TestWorkerActivityAcceptsHostKind(t *testing.T) {
 	}
 }
 
+func TestWorkerActivityAcceptsIdleKind(t *testing.T) {
+	s := testServer(t)
+	wh := s.WorkerHandler()
+	if w := doJSON(t, wh, "POST", "/api/v1/worker/activity", map[string]any{
+		"worker": "piso-worker-demo", "kind": "idle",
+		"text": "idle at prompt · workspace",
+	}); w.Code != 201 {
+		t.Fatalf("idle kind %d %s", w.Code, w.Body.String())
+	}
+}
+
 func TestWorkerCheckinValidation(t *testing.T) {
 	s := testServer(t)
 	wh := s.WorkerHandler()

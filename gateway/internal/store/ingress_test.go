@@ -55,7 +55,7 @@ func TestApproveIngressCreatesRouteAndClearsPending(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rec.ID != "ing_a" || route.Name != "plan-demo" || route.Worker != "piso-worker-demo" || route.Port != 19432 || route.Origin != AutoRouteOriginExpose {
+	if rec.ID != "ing_a" || route.Name != "plan-demo" || route.Worker != "piso-worker-demo" || route.Port != 19432 || route.Origin != AutoRouteOriginPlan || route.LastSeenMs <= 0 {
 		t.Fatalf("rec=%+v route=%+v", rec, route)
 	}
 	if len(st.PendingIngress()) != 0 {
@@ -64,6 +64,59 @@ func TestApproveIngressCreatesRouteAndClearsPending(t *testing.T) {
 	got, ok := st.RouteByName("plan-demo")
 	if !ok || got.ID != "route_a" {
 		t.Fatalf("route: %+v ok=%v", got, ok)
+	}
+}
+
+// TestPlanRouteSweptByGC: an approved plan route is Origin=plan, so the lazy
+// stale sweep in Routes() drops it once it ages past AutoRouteGraceMs with no
+// heartbeat (the planning port is never watcher-reported).
+func TestPlanRouteSweptByGC(t *testing.T) {
+	st := testStore(t)
+	if _, _, err := st.UpsertPendingIngress(IngressRequestRec{
+		ID: "ing_gc", Kind: IngressKindPlanning, Worker: "piso-worker-demo", Port: 19432, Name: "plan-demo",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := st.ApproveIngress("ing_gc", "route_gc"); err != nil {
+		t.Fatal(err)
+	}
+	routes := st.Routes()
+	if len(routes) != 1 || routes[0].Name != "plan-demo" || routes[0].Origin != AutoRouteOriginPlan {
+		t.Fatalf("expected one plan route, got %+v", routes)
+	}
+	// Age the route past the grace and confirm the next Routes() sweeps it.
+	aged := routes[0].LastSeenMs + AutoRouteGraceMs + 1
+	orig := timeNowMs
+	timeNowMs = func() int64 { return aged }
+	defer func() { timeNowMs = orig }()
+	if got := st.Routes(); len(got) != 0 {
+		t.Fatalf("expected plan route swept by GC, got %+v", got)
+	}
+}
+
+// TestCancelRemovesLivePlanRouteOnly: cancel tears down the worker's live
+// plan route but leaves its dev-server auto routes (and expose routes)
+// untouched — the plan- prefix guard must not catch demo-9090.
+func TestCancelRemovesLivePlanRouteOnly(t *testing.T) {
+	st := testStore(t)
+	if _, _, err := st.UpsertPendingIngress(IngressRequestRec{
+		ID: "ing_c", Kind: IngressKindPlanning, Worker: "piso-worker-demo", Slug: "demo", Port: 19432, Name: "plan-demo",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := st.ApproveIngress("ing_c", "route_c"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.SyncWorkerPorts("piso-worker-demo", "demo", []int{9090}); err != nil {
+		t.Fatal(err)
+	}
+	n := st.CancelPendingIngress("piso-worker-demo", IngressKindPlanning)
+	if n != 1 {
+		t.Fatalf("expected 1 removal (live plan route), got %d", n)
+	}
+	got := st.Routes()
+	if len(got) != 1 || got[0].Name != "demo-9090" || got[0].Origin != AutoRouteOriginAuto {
+		t.Fatalf("expected only auto route demo-9090 to survive, got %+v", got)
 	}
 }
 

@@ -315,19 +315,25 @@ type UnreachablePort struct {
 	Note string `json:"note,omitempty"`
 }
 
+// timeNowMs returns the current wall clock in milliseconds. Package-level
+// seam so tests can age routes past AutoRouteGraceMs without sleeping.
+var timeNowMs = func() int64 { return time.Now().UnixNano() / 1000000 }
+
 func (s *Store) Routes() []RouteRec {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	// Lazy GC: auto routes are only kept alive by the watcher heartbeat. A
-	// port that stopped being reported (or a worker that died entirely)
-	// leaves its route stale; sweep it after the down-grace. Expose routes
-	// never expire. Deletions are broadcast so `piso sync --watch` and the
-	// dashboard drop them promptly.
+	// Lazy GC: auto and plan routes are only kept alive by a heartbeat (the
+	// watcher for auto; the one-shot approval timestamp for plan). A port that
+	// stopped being reported (or a worker that died entirely) leaves its route
+	// stale; sweep it after the down-grace. Expose routes never expire.
+	// Deletions are broadcast so `piso sync --watch` and the dashboard drop
+	// them promptly.
 	out := s.state.Routes[:0]
 	changed := false
-	now := time.Now().UnixNano()/1000000
+	now := timeNowMs()
 	for _, r := range s.state.Routes {
-		if r.Origin == AutoRouteOriginAuto && r.LastSeenMs > 0 && now - r.LastSeenMs > AutoRouteGraceMs {
+		if r.LastSeenMs > 0 && now - r.LastSeenMs > AutoRouteGraceMs &&
+			(r.Origin == AutoRouteOriginAuto || r.Origin == AutoRouteOriginPlan) {
 			changed = true
 			s.broadcastRoute(r)
 			continue
@@ -741,11 +747,16 @@ func (s *Store) SetRouteDisabled(id string, disabled bool) (RouteRec, error) {
 }
 
 // SetWorkerUnreachable replaces the transient listener hints for a worker
-// (the watcher posts the full set each time, so: wholesale replace).
+// (the watcher posts the full set each time, so: wholesale replace). Passing
+// nil clears the entry so WorkerUnreachable reports it absent.
 func (s *Store) SetWorkerUnreachable(worker string, ports []UnreachablePort) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.unreachable[worker] = ports
+	if ports == nil {
+		delete(s.unreachable, worker)
+	} else {
+		s.unreachable[worker] = ports
+	}
 }
 
 // WorkerUnreachable returns the transient listener hints for a worker.

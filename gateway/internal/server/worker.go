@@ -243,11 +243,12 @@ func (s *Server) handleWorkerPostActivity(w http.ResponseWriter, r *http.Request
 		TargetSlug: sanitizeLabel(in.TargetSlug, 63),
 		Text:       sanitizeLabel(in.Text, 500),
 	}
-	if err := s.Store.InsertActivity(a); err != nil {
+	stored, err := s.Store.InsertActivity(a)
+	if err != nil {
 		writeJSON(w, 500, map[string]string{"error": err.Error()})
 		return
 	}
-	writeJSON(w, 201, a)
+	writeJSON(w, 201, stored)
 }
 
 // handleWorkerCapabilities reports the worker's LIVE sandbox boundaries that
@@ -291,9 +292,154 @@ func (s *Server) handleWorkerCapabilities(w http.ResponseWriter, r *http.Request
 	})
 }
 
+// activityView is one feed row as the monitor/loop consume it: the stored
+// activity plus read-time age fields, so judging never requires timestamp
+// arithmetic. All rows of one response share the same `now`.
+type activityView struct {
+	store.Activity
+	AgeMin   int    `json:"ageMin"`
+	AgeLabel string `json:"ageLabel"`
+}
+
+// activityAge renders the age of tsMs against nowMs ("just now", "N min ago",
+// "N h M min ago", "Nd ago") plus the floor of elapsed minutes.
+func activityAge(tsMs, nowMs int64) (int, string) {
+	if nowMs <= tsMs {
+		return 0, "just now"
+	}
+	sec := (nowMs - tsMs) / 1000
+	if sec < 90 {
+		return 0, "just now"
+	}
+	min := sec / 60
+	if min < 60 {
+		return int(min), fmt.Sprintf("%d min ago", min)
+	}
+	h := min / 60
+	if h < 24 {
+		r := min % 60
+		if r != 0 {
+			return int(min), fmt.Sprintf("%d h %d min ago", h, r)
+		}
+		return int(min), fmt.Sprintf("%d h ago", h)
+	}
+	return int(min), fmt.Sprintf("%dd ago", h / 24)
+}
+
+// feedView attaches the age fields to one feed read.
+func feedView(rows []store.Activity, nowMs int64) []activityView {
+	var out []activityView
+	for _, a := range rows {
+		m, lab := activityAge(a.Ts, nowMs)
+		out = append(out, activityView{Activity: a, AgeMin: m, AgeLabel: lab})
+	}
+	return out
+}
+
+// activeSpanGapMs is the largest gap between consecutive beats that still
+// counts as the same working run (matches the digest's break rule).
+const activeSpanGapMs = 10 * 60 * 1000
+
+// collapseActiveSpans fuses each worker's consecutive kind=active rows into
+// one synthesized row per working run: same worker+slug+text with consecutive
+// beats ≤ activeSpanGapMs apart. The synthesized row keeps the NEWEST beat's
+// ts/id, and carries activeFromMs (run start) + activeBeats (beat count); its
+// text gains " · for N min" for multi-beat runs. Read-side ONLY — nothing is
+// deleted or rewritten; the store keeps every beat. Input is newest-first and
+// the output preserves that order.
+func collapseActiveSpans(rows []store.Activity) []store.Activity {
+	out := make([]store.Activity, 0, len(rows))
+	type run struct {
+		act    store.Activity
+		lastTs int64 // ts of the most recent beat processed (newest boundary)
+		fromTs int64 // oldest beat ts in the run
+		count  int
+	}
+	var cur *run
+	flush := func() {
+		if cur == nil {
+			return
+		}
+		if cur.count > 1 || cur.act.Ts-cur.fromTs > 60000 {
+			min := (cur.act.Ts - cur.fromTs) / 60000
+			if min < 1 {
+				min = 1
+			}
+			cur.act.Text = cur.act.Text + " · for " + strconv.FormatInt(min, 10) + " min"
+			cur.act.ActiveFromMs = cur.fromTs
+			cur.act.ActiveBeats = cur.count
+		}
+		out = append(out, cur.act)
+		cur = nil
+	}
+	for _, a := range rows {
+		if a.Kind != store.ActivityKindActive {
+			flush()
+			out = append(out, a)
+			continue
+		}
+		if cur != nil && a.Worker == cur.act.Worker && a.Slug == cur.act.Slug && a.Text == cur.act.Text && (cur.lastTs-a.Ts) <= activeSpanGapMs {
+			cur.count += 1
+			cur.fromTs = a.Ts
+			cur.lastTs = a.Ts
+			continue
+		}
+		flush()
+		cur = &run{act: a, lastTs: a.Ts, fromTs: a.Ts, count: 1}
+	}
+	flush()
+	return out
+}
+
+// dropSessionStartedNotes removes the Tier-A watcher's "session started" notes.
+// Those are noise for the monitor (a start is visible as the first active/idle
+// row). "session ended" is KEPT: it is how the judge knows pi is gone, so an
+// earlier idle is not left as the latest event.
+func dropSessionStartedNotes(rows []store.Activity) []store.Activity {
+	if len(rows) == 0 {
+		return rows
+	}
+	out := rows[:0]
+	for _, a := range rows {
+		if a.Kind == store.ActivityKindNote && a.Text == "session started" {
+			continue
+		}
+		out = append(out, a)
+	}
+	return out
+}
+
+// limitToLastJudgment time-limits each project's rows to events at/after the
+// requesting worker's last own posting aimed at that project (its judgement;
+// last maps project slug → newest ts). Projects the worker never judged, and
+// the worker's own rows (their slug is not a judgement target), are kept in
+// full — so the monitor still sees its own poke history and only its judged
+// projects' pre-judgement history is suppressed.
+func limitToLastJudgment(rows []store.Activity, last map[string]int64) []store.Activity {
+	if len(last) == 0 {
+		return rows
+	}
+	out := rows[:0]
+	for _, a := range rows {
+		if t, ok := last[a.Slug]; ok && a.Ts < t {
+			continue
+		}
+		out = append(out, a)
+	}
+	return out
+}
+
 // handleWorkerGetActivities returns the activity feed. The monitor polls this;
 // any registered worker may read the whole feed (it is scrubbed: sanitized
 // text only). Caller identity is verified like the ports handler.
+//
+// Two read-side decisions shape the series of events returned (nothing is
+// deleted; the store keeps full history):
+//   - "session started" notes are omitted; "session ended" is kept (pi gone).
+//   - Unless an explicit `since` is given, each project's rows are time-limited
+//     to events newer than the requesting worker's last judgement aimed at that
+//     project (the monitor never re-judges history it already acted on).
+//   - `active=span` then fuses consecutive beats into one row per working run.
 func (s *Server) handleWorkerGetActivities(w http.ResponseWriter, r *http.Request) {
 	worker := strings.TrimSpace(r.URL.Query().Get("worker"))
 	if !workerNameRe.MatchString(worker) {
@@ -309,15 +455,73 @@ func (s *Server) handleWorkerGetActivities(w http.ResponseWriter, r *http.Reques
 		Slug:    strings.TrimSpace(r.URL.Query().Get("slug")),
 		Limit:   atoiDefault(r.URL.Query().Get("limit"), 500),
 	}
+	// Explicit `since` (unix ms) overrides the derived judgement window.
+	explicitSince := ""
+	if v := strings.TrimSpace(r.URL.Query().Get("since")); v != "" {
+		explicitSince = v
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
+			f.SinceMs = n
+		}
+	}
 	acts, err := s.Store.QueryActivities(f)
 	if err != nil {
 		writeJSON(w, 500, map[string]string{"error": err.Error()})
 		return
 	}
+	// Track semantics for `slug=`: a project's timeline is not only its own
+	// rows — pokes/reminders/notes AIMED at it (monitor-sourced rows carry
+	// targetSlug, not the reporter's slug) belong on its track. The board
+	// renders them there (targetSlug wins over slug); the feed must do the
+	// same or a per-project read misses the pokes on its track.
+	if f.Slug != "" {
+		aimed, aerr := s.Store.QueryActivities(store.ActivityFilter{
+			TargetSlug: f.Slug, Kind: f.Kind, SinceMs: f.SinceMs, Limit: f.Limit,
+		})
+		if aerr != nil {
+			writeJSON(w, 500, map[string]string{"error": aerr.Error()})
+			return
+		}
+		if len(aimed) > 0 {
+			merged := make([]store.Activity, 0, len(acts)+len(aimed))
+			seen := make(map[string]bool)
+			i, j := 0, 0 // both queries return newest-first
+			for i < len(acts) || j < len(aimed) {
+				var p store.Activity
+				if j >= len(aimed) || (i < len(acts) && acts[i].Ts >= aimed[j].Ts) {
+					p = acts[i]
+					i += 1
+				} else {
+					p = aimed[j]
+					j += 1
+				}
+				if !seen[p.ID] { // a self-poke (slug==target) matches both sides
+					seen[p.ID] = true
+					merged = append(merged, p)
+				}
+			}
+			if len(merged) > f.Limit {
+				merged = merged[:f.Limit]
+			}
+			acts = merged
+		}
+	}
 	if acts == nil {
 		acts = []store.Activity{}
 	}
-	writeJSON(w, 200, acts)
+	acts = dropSessionStartedNotes(acts)
+	if explicitSince == "" {
+		if last, err := s.Store.NewestTsByTarget(worker); err == nil && len(last) > 0 {
+			acts = limitToLastJudgment(acts, last)
+		}
+	}
+	// active=span collapses each worker's consecutive beats (same slug+text,
+	// ≤ activeSpanGapMs apart) into one synthesized row per working run. This
+	// is a READ projection: the store keeps every beat; the monitor gets the
+	// compact view without timestamp arithmetic.
+	if strings.TrimSpace(r.URL.Query().Get("active")) == "span" {
+		acts = collapseActiveSpans(acts)
+	}
+	writeJSON(w, 200, feedView(acts, time.Now().UnixNano()/1000000))
 }
 
 // handleWorkerRevokeActivity removes one of the caller's own activity rows

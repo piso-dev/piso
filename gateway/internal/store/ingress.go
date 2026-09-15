@@ -15,12 +15,14 @@ import (
 // (the planning namespace plan-<slug> stays separate). A route's Origin+LastSeen
 // drive the dashboard live/down badge and the stale sweep in Routes().
 const (
-	AutoRouteOriginExpose = "expose" // host-created (`piso expose` / UI) — sticky
+	AutoRouteOriginExpose = "expose" // host-created (`piso expose` / UI) — sticky, never swept
 	AutoRouteOriginAuto   = "auto"   // worker-published — rate-capped, swept
+	AutoRouteOriginPlan   = "plan"   // approved planning route — GC'd like auto (no heartbeat source)
 	// Down threshold for the live badge: no watcher heartbeat for 45s.
 	AutoRouteDownMs = 45000
-	// Stale sweep: an auto route disappears after 10 min with no heartbeat
-	// for its port (dev servers restart constantly — never delete on a blip).
+	// Stale sweep: an auto or plan route disappears after 10 min with no
+	// heartbeat for its port (dev servers restart constantly — never delete
+	// on a blip). Expose routes are sticky and never swept.
 	AutoRouteGraceMs = 600000
 	MaxAutoRoutesPerWorker = 20
 )
@@ -185,6 +187,7 @@ func (s *Store) UpsertPendingIngress(rec IngressRequestRec) (IngressRequestRec, 
 func (s *Store) ApproveIngress(id, routeID string) (IngressRequestRec, RouteRec, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	now := timeNowMs()
 	idx := -1
 	var rec IngressRequestRec
 	for i, r := range s.state.IngressRequests {
@@ -205,7 +208,10 @@ func (s *Store) ApproveIngress(id, routeID string) (IngressRequestRec, RouteRec,
 	if routeID == "" {
 		return IngressRequestRec{}, RouteRec{}, fmt.Errorf("route id required")
 	}
-	out := RouteRec{ID: routeID, Name: rec.Name, Worker: rec.Worker, Port: rec.Port, Note: rec.Note, Origin: AutoRouteOriginExpose}
+	// Plan routes are Origin=plan: GC'd by the stale sweep (no watcher ever
+	// heartbeats the planning port, so LastSeen is set once here and the route
+	// expires AutoRouteGraceMs after approval unless cancelled/deleted sooner).
+	out := RouteRec{ID: routeID, Name: rec.Name, Worker: rec.Worker, Port: rec.Port, Note: rec.Note, Origin: AutoRouteOriginPlan, LastSeenMs: now}
 	replaced := false
 	for i, route := range s.state.Routes {
 		if route.Name != rec.Name {
@@ -246,7 +252,11 @@ func (s *Store) DismissIngress(id string) error {
 	return s.save()
 }
 
-// CancelPendingIngress drops pending rows for worker + kind (port went down).
+// CancelPendingIngress is the full teardown for a worker's planning surface:
+// it drops the pending inbox row(s) for worker + kind AND removes the already-
+// live plan route (plan-<slug>) belonging to that worker, broadcasting each
+// removal so the host sync drops the DNS entry promptly. Returns the number
+// of rows + routes removed.
 func (s *Store) CancelPendingIngress(worker, kind string) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -262,10 +272,24 @@ func (s *Store) CancelPendingIngress(worker, kind string) int {
 		}
 		out = append(out, r)
 	}
+	s.state.IngressRequests = out
+	// Also drop the worker's live plan route(s). Match by owner + the plan-
+	// prefix so we never touch a dev-server auto route with the same slug.
+	if kind == IngressKindPlanning {
+		rt := s.state.Routes[:0]
+		for _, r := range s.state.Routes {
+			if r.Worker == worker && strings.HasPrefix(r.Name, "plan-") {
+				s.broadcastRoute(r)
+				n++
+				continue
+			}
+			rt = append(rt, r)
+		}
+		s.state.Routes = rt
+	}
 	if n == 0 {
 		return 0
 	}
-	s.state.IngressRequests = out
 	_ = s.save()
 	return n
 }

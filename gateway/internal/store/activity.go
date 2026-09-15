@@ -20,6 +20,7 @@ const (
 	ActivityKindPoke      = "poke"      // a nudge (monitor → target project)
 	ActivityKindActive    = "active"    // watcher heartbeat: worker is alive
 	ActivityKindWaiting   = "waiting"   // agent run ended; human input needed
+	ActivityKindIdle      = "idle"      // Tier A: pi is up but not working (at the prompt)
 	ActivityKindHost      = "host"      // host action required (sandbox boundary)
 	ActivityKindNote      = "note"      // unstructured note
 )
@@ -29,7 +30,7 @@ func ValidActivityKind(k string) bool {
 	switch k {
 	case ActivityKindProgress, ActivityKindMilestone, ActivityKindReminder,
 		ActivityKindPoke, ActivityKindActive, ActivityKindWaiting,
-		ActivityKindHost, ActivityKindNote:
+		ActivityKindIdle, ActivityKindHost, ActivityKindNote:
 		return true
 	}
 	return false
@@ -39,15 +40,21 @@ func ValidActivityKind(k string) bool {
 // monitor on behalf of another project). It is the unit the PM board renders
 // on a project track. Stored in SQLite (activities.db): durable, queryable,
 // and out-of-band from state.json (so adding activities needs no state
-// migration).
+// migration). The store keeps FULL history — surfaces (monitor feed, loop
+// digest, board) compress/aggregate at read time, never here.
 type Activity struct {
 	ID         string `json:"id"`
-	Worker     string `json:"worker"` // container name of the reporter
-	Slug       string `json:"slug"`   // project slug of the reporter
+	Worker     string `json:"worker"`   // container name of the reporter
+	Slug       string `json:"slug"`     // project slug of the reporter
 	Kind       string `json:"kind"`
 	TargetSlug string `json:"targetSlug,omitempty"` // for pokes/reminders: which project's track
 	Text       string `json:"text"`
-	Ts         int64  `json:"ts"` // unix ms
+	Ts         int64  `json:"ts"`      // unix ms
+	// ActiveFromMs / ActiveBeats are READ-side decorations: the worker feed's
+	// active=span projection fills them when it fuses a run of beats into one
+	// synthesized row. Never persisted.
+	ActiveFromMs int64 `json:"activeFromMs,omitempty"`
+	ActiveBeats  int   `json:"activeBeats,omitempty"`
 }
 
 // ActivityFilter narrows QueryActivities. Empty fields are not filters.
@@ -105,8 +112,9 @@ func (s *Store) Close() error {
 }
 
 // InsertActivity stores one activity and broadcasts it to SSE subscribers.
-// Ts/ID/Kind defaults are filled when absent.
-func (s *Store) InsertActivity(a Activity) error {
+// Ts/ID/Kind defaults are filled when absent. Returns the stored row (with
+// its server-assigned ID) so callers can hand it back (e.g. the POST response).
+func (s *Store) InsertActivity(a Activity) (Activity, error) {
 	if a.ID == "" {
 		a.ID = "act_" + randID()
 	}
@@ -117,17 +125,17 @@ func (s *Store) InsertActivity(a Activity) error {
 		a.Kind = ActivityKindNote
 	}
 	if !ValidActivityKind(a.Kind) {
-		return fmt.Errorf("unknown activity kind %q", a.Kind)
+		return Activity{}, fmt.Errorf("unknown activity kind %q", a.Kind)
 	}
 	_, err := s.activitiesDB.Exec(
 		`INSERT INTO activities (id, worker, slug, kind, target_slug, text, ts) VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		a.ID, a.Worker, a.Slug, a.Kind, a.TargetSlug, a.Text, a.Ts,
 	)
 	if err != nil {
-		return err
+		return Activity{}, err
 	}
 	s.broadcastActivity(a)
-	return nil
+	return a, nil
 }
 
 // QueryActivities returns activities matching f, newest first, limited by
@@ -171,6 +179,33 @@ func (s *Store) QueryActivities(f ActivityFilter) ([]Activity, error) {
 			return nil, err
 		}
 		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+// NewestTsByTarget returns, per target_slug, the newest ts of any activity
+// posted by worker (rows with no target map to ""). The worker feed uses
+// this to time-limit each project's rows to events since the requesting
+// worker's last posting aimed at that project — for the monitor, its last
+// judgement (poke/note/reminder) about the project. Nothing is deleted; this
+// is a read-side window like the span projection below.
+func (s *Store) NewestTsByTarget(worker string) (map[string]int64, error) {
+	rows, err := s.activitiesDB.Query(
+		`SELECT COALESCE(target_slug, ''), MAX(ts) FROM activities WHERE worker = ? GROUP BY COALESCE(target_slug, '')`,
+		worker,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make(map[string]int64)
+	for rows.Next() {
+		var target string
+		var ts int64
+		if err := rows.Scan(&target, &ts); err != nil {
+			return nil, err
+		}
+		out[target] = ts
 	}
 	return out, rows.Err()
 }

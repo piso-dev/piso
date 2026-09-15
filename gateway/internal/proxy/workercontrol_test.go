@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"net"
 	"net/http"
 	"path/filepath"
 	"testing"
@@ -20,7 +21,12 @@ func testHandler(t *testing.T) (*Handler, *store.Store) {
 	h := &Handler{
 		Store: st,
 		Worker: func(r *http.Request) string {
-			rec, ok := st.WorkerByIP(r.RemoteAddr)
+			// strip the port like production workerIdentityFn (main.go)
+			host, _, err := net.SplitHostPort(r.RemoteAddr)
+			if err != nil {
+				host = r.RemoteAddr
+			}
+			rec, ok := st.WorkerByIP(host)
 			if !ok {
 				return ""
 			}

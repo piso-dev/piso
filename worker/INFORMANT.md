@@ -30,6 +30,21 @@ Do this **briefly and often** — one short line, not prose:
 - **Any notable status the human should know**:
   `piso-informant note "spent the afternoon on the CQRS docs"`
 
+## Pacing: eager updates, short lines
+
+The board should feel LIVE. Update eagerly — but every event stays one short
+factual line. Concretely:
+
+- **Progress the moment it happens, not at the end.** When a task has
+  several substantial steps (a multi-file refactor, a long migration, a
+  debugging session), drop a `progress` line when you START each step, not
+  just once at task start.
+- **Note the road** — a `note` when the approach changed, a blocker turned
+  out smaller than expected, a milestone landed mid-run, or you switched to
+  a different area than the one you announced. One line, plain facts.
+- **Never per tool call, never per output.** Coarse enough to read at a
+  glance; eager enough that the board never sits stale for minutes.
+
 ## Rules
 
 - Use the **exact kinds**: `progress | milestone | reminder | poke | active | waiting | note`.
@@ -38,8 +53,9 @@ Do this **briefly and often** — one short line, not prose:
 - For a poke/reminder aimed at **another** project, pass its slug as the 3rd
   arg: `piso-informant poke "Backend PR awaits review" backend-proj`. Omit it
   to put the item on your own track.
-- **Do NOT** emit for: every keystroke, trivial sub-steps, or anything that
-  would flood the board. One progress per task, one milestone per delivery,
+- **Never flood**: no per-tool-call lines, no per-output lines. At
+  minimum one `progress` per task; for long tasks one `progress` per
+  substantial step plus `note`s at real forks. One milestone per delivery,
   one poke while blocked (repeat only if the blocker changes).
 - The helper validates the kind and sanitizes the text. If it fails (exit
   != 0), treat it as non-fatal and continue — the board is advisory.
