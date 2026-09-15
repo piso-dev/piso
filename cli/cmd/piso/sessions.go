@@ -11,12 +11,58 @@ import (
 	"piso/cli/internal/pisoconfig"
 )
 
+const (
+	monitorWorkerName = "piso-worker-monitor"
+	monitorSlug       = "monitor"
+)
+
 // activePiSession describes a worker that currently has a live pi process.
 type activePiSession struct {
-	Worker string `json:"worker"`
-	Slug   string `json:"slug,omitempty"`
+	Worker string   `json:"worker"`
+	Slug   string   `json:"slug,omitempty"`
 	PIDs   []string `json:"pids"`
-	Uptime string `json:"uptime"` // human interval, e.g. "12m", "3h2m"
+	Uptime string   `json:"uptime"` // human interval, e.g. "12m", "3h2m"
+}
+
+// isMonitorWorker reports the shared project-manager container. It lives in
+// the gateway compose project (no per-project Dir) and runs pi -p on a wake
+// loop — not a user attach session.
+func isMonitorWorker(name, slug string) bool {
+	return slug == monitorSlug || name == monitorWorkerName
+}
+
+// blockingSessions are user attaches that must stop `piso update`.
+// Monitor pi is excluded: the monitor is rolled with the shared image and
+// its in-flight pi -p is killed by the recreate.
+func blockingSessions(sessions []activePiSession) []activePiSession {
+	var out []activePiSession
+	for _, s := range sessions {
+		if !isMonitorWorker(s.Worker, s.Slug) {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+func monitorSessions(sessions []activePiSession) []activePiSession {
+	var out []activePiSession
+	for _, s := range sessions {
+		if isMonitorWorker(s.Worker, s.Slug) {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// ensureMonitorRec appends the monitor registry entry if the gateway has not
+// checkin'd it yet, so the session scan still sees a running monitor.
+func ensureMonitorRec(recs []pisoconfig.WorkerRec) []pisoconfig.WorkerRec {
+	for _, w := range recs {
+		if isMonitorWorker(w.Name, w.Slug) {
+			return recs
+		}
+	}
+	return append(recs, pisoconfig.WorkerRec{Name: monitorWorkerName, Slug: monitorSlug})
 }
 
 // scanActivePiSessions probes each RUNNING worker from recs for live pi

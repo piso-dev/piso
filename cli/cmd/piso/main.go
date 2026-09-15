@@ -98,7 +98,8 @@ Usage:
   piso setup [--rebuild] import leftover data and (with --rebuild) recreate the gateway
   piso update [version] [--dry-run] [--force]  refresh host extensions, pin a pi version,
                          rebuild the shared worker image once, and recreate every worker
-                         (confirm before applying)
+                         including the monitor (its in-flight pi is killed; user attaches
+                         still block). Confirm before applying.
 
 Host ports default to 8080 (proxy) and 80 (single web port: dashboard at
 http://piso.local AND every route at http://<label>.piso.local, dispatched by
@@ -1053,24 +1054,34 @@ func cmdUpdate(args []string) error {
 	}
 
 	// 2b. fail-closed session guard: probe every running worker for a live pi.
-	// An in-flight turn dies when the container is recreated, so abort before
-	// any build or confirm rather than interrupting a live session. In dry-run
-	// the same scan runs but only reports (exit 0).
+	// An in-flight user attach dies when the container is recreated, so abort
+	// before any build or confirm. The monitor's pi -p is not a user session:
+	// it shares the worker image and must be recreated, so it is killed as
+	// part of the rollout. --force does not override a user attach (there is
+	// no --kill-sessions). In dry-run the same scan runs but only reports.
 	var recs []pisoconfig.WorkerRec
 	if err := getJSON(pisoconfig.GatewayURL()+"/api/v1/workers", &recs); err != nil {
 		return fmt.Errorf("list workers: %w", err)
 	}
+	recs = ensureMonitorRec(recs)
 	sessions := scanActivePiSessions(recs)
-	if len(sessions) > 0 {
+	busy := blockingSessions(sessions)
+	if mons := monitorSessions(sessions); len(mons) > 0 {
+		fmt.Println("piso: monitor pi will be restarted with the new image:")
+		for _, s := range mons {
+			fmt.Printf("  %s (%s): pi PIDs %s, up %s\n", s.Worker, s.Slug, strings.Join(s.PIDs, ","), s.Uptime)
+		}
+	}
+	if len(busy) > 0 {
 		fmt.Println("piso: active pi session(s) detected:")
-		for _, s := range sessions {
+		for _, s := range busy {
 			fmt.Printf("  %s (%s): pi PIDs %s, up %s\n", s.Worker, s.Slug, strings.Join(s.PIDs, ","), s.Uptime)
 		}
 		if *dryRun {
-			fmt.Printf("piso: --dry-run: would NOT proceed (%d worker(s) busy)\n", len(sessions))
+			fmt.Printf("piso: --dry-run: would NOT proceed (%d worker(s) busy)\n", len(busy))
 			return nil
 		}
-		return fmt.Errorf("active pi session(s) in %d worker(s); close pi and re-run (no --force)", len(sessions))
+		return fmt.Errorf("active pi session(s) in %d worker(s); close pi and re-run (--force does not kill user sessions)", len(busy))
 	}
 
 	if *dryRun {
@@ -1078,7 +1089,7 @@ func cmdUpdate(args []string) error {
 		if enough == updateDecisionPackages {
 			what += " + refreshed extension packages"
 		}
-		fmt.Printf("piso: --dry-run: would %s, rebuild piso-worker, recreate %d workers\n", what, len(recs))
+		fmt.Printf("piso: --dry-run: would %s, rebuild piso-worker, recreate workers including monitor\n", what)
 		return nil
 	}
 
@@ -1184,19 +1195,15 @@ func confirm(prompt string) bool {
 }
 
 // rolloutWorkers enumerates registered workers, builds the shared worker image
-// once (the staged ARG change makes workerNeedsBuild fire), and recreates each
-// worker via its compose file. Skips workers that aren't running (nothing to
-// recreate) and warns if a running worker has a live pi process (session) — a
-// recreate resets the pi runtime mid-session.
+// once (the staged ARG change makes workerNeedsBuild fire), recreates each
+// project worker via its compose file, then recreates the monitor (same image,
+// gateway compose). Skips workers that aren't running. User attaches were
+// already gated in cmdUpdate; the monitor's pi -p is killed by the recreate.
 func rolloutWorkers(old, version string) error {
 	// enumerate registered workers
 	var recs []pisoconfig.WorkerRec
 	if err := getJSON(pisoconfig.GatewayURL()+"/api/v1/workers", &recs); err != nil {
 		return fmt.Errorf("list workers: %w", err)
-	}
-	if len(recs) == 0 {
-		fmt.Println("piso: no registered workers to update")
-		return nil
 	}
 
 	// build the shared image once (hash change → --build)
@@ -1205,9 +1212,12 @@ func rolloutWorkers(old, version string) error {
 	}
 	fmt.Printf("piso: built piso-worker (pi %s → %s)\n", old, version)
 
-	// recreate each registered running worker
+	// recreate each registered running project worker
 	updated := 0
 	for _, w := range recs {
+		if isMonitorWorker(w.Name, w.Slug) {
+			continue // gateway compose, not a per-project file; see recreateMonitor
+		}
 		if w.Dir == "" {
 			fmt.Printf("  %s: no project dir registered, skipping\n", w.Name)
 			continue
@@ -1221,6 +1231,14 @@ func rolloutWorkers(old, version string) error {
 			continue
 		}
 		fmt.Printf("  %s: recreated\n", w.Name)
+		updated++
+	}
+	if !containerRunning("piso-gateway") {
+		fmt.Printf("  %s: gateway not running, skipping\n", monitorWorkerName)
+	} else if err := recreateMonitor(); err != nil {
+		fmt.Printf("  %s: recreate failed: %v\n", monitorWorkerName, err)
+	} else {
+		fmt.Printf("  %s: recreated\n", monitorWorkerName)
 		updated++
 	}
 	fmt.Printf("piso: rollout complete (%d workers recreated)\n", updated)
@@ -1277,6 +1295,27 @@ func recreateWorker(w pisoconfig.WorkerRec) error {
 	}
 	file := filepath.Join(w.Dir, ".piso", "worker-"+w.Slug+".yaml")
 	return runEnv("docker", []string{"compose", "-f", file, "-p", "piso-" + w.Slug, "up", "-d", "-t", "0"}, composeEnv)
+}
+
+// recreateMonitor replaces the project-manager container from the gateway
+// compose project. --no-deps leaves piso-gateway alone; --force-recreate +
+// -t 0 picks up the rebuilt piso-worker image and kills any in-flight pi -p.
+func recreateMonitor() error {
+	if err := pisoconfig.EnsureWorkerPlaceholdersEnv(monitorSlug); err != nil {
+		return err
+	}
+	gatewayFile, err := pisoconfig.GatewayCompose()
+	if err != nil {
+		return err
+	}
+	composeEnv, err := dockerComposeEnv()
+	if err != nil {
+		return err
+	}
+	return runEnv("docker", []string{
+		"compose", "-f", gatewayFile, "-p", "piso",
+		"up", "-d", "-t", "0", "--no-deps", "--force-recreate", "monitor",
+	}, composeEnv)
 }
 
 // ---- shared helpers ----

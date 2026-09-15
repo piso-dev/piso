@@ -86,3 +86,52 @@ func TestUpdateDecision(t *testing.T) {
 		t.Fatalf("unhashable before → %d", got)
 	}
 }
+
+func TestIsMonitorWorker(t *testing.T) {
+	if !isMonitorWorker("piso-worker-monitor", "monitor") {
+		t.Fatal("name+slug")
+	}
+	if !isMonitorWorker("piso-worker-monitor", "") {
+		t.Fatal("name only")
+	}
+	if !isMonitorWorker("", "monitor") {
+		t.Fatal("slug only")
+	}
+	if isMonitorWorker("piso-worker-piso", "piso") {
+		t.Fatal("project worker is not monitor")
+	}
+}
+
+func TestBlockingSessionsExcludesMonitor(t *testing.T) {
+	sessions := []activePiSession{
+		{Worker: "piso-worker-monitor", Slug: "monitor", PIDs: []string{"1"}},
+		{Worker: "piso-worker-piso", Slug: "piso", PIDs: []string{"2"}},
+	}
+	busy := blockingSessions(sessions)
+	if len(busy) != 1 || busy[0].Slug != "piso" {
+		t.Fatalf("blocking = %+v", busy)
+	}
+	mons := monitorSessions(sessions)
+	if len(mons) != 1 || mons[0].Slug != "monitor" {
+		t.Fatalf("monitor = %+v", mons)
+	}
+	if len(blockingSessions(mons)) != 0 {
+		t.Fatal("monitor-only must not block update")
+	}
+}
+
+func TestEnsureMonitorRec(t *testing.T) {
+	got := ensureMonitorRec(nil)
+	if len(got) != 1 || got[0].Name != monitorWorkerName || got[0].Slug != monitorSlug {
+		t.Fatalf("empty → %+v", got)
+	}
+	already := []pisoconfig.WorkerRec{{Name: monitorWorkerName, Slug: monitorSlug}}
+	if len(ensureMonitorRec(already)) != 1 {
+		t.Fatal("must not duplicate")
+	}
+	proj := []pisoconfig.WorkerRec{{Name: "piso-worker-piso", Slug: "piso", Dir: "/tmp"}}
+	mixed := ensureMonitorRec(proj)
+	if len(mixed) != 2 || !isMonitorWorker(mixed[1].Name, mixed[1].Slug) {
+		t.Fatalf("append → %+v", mixed)
+	}
+}
