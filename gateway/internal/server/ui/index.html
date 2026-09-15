@@ -30,12 +30,29 @@
   #tab-log th:nth-child(4), #tab-log td:nth-child(4) { width:7.5rem }
   #tab-log .log-url { display:block; overflow-wrap:anywhere; word-break:break-word }
   #tab-log .log-detail { display:block; margin-top:4px; color:var(--muted); font-size:12px }
+  /* gateway↔workers topology diagram (top of Request log) */
+  .topo { margin:0 0 14px; overflow:hidden }
+  #topoSvg { display:block; width:100%; height:auto }
+  /* spine (trunk) is drawn once and stays static; each worker owns only its
+     own stub+drop segments, so no lines stack and flashes never bleed onto
+     other workers' paths. */
+  .tspine, .tlink { fill:none; stroke:var(--muted); stroke-width:2; stroke-linecap:round; stroke-linejoin:round; opacity:1 }
+  .tlink.flash { animation: topoLinkFlash 1.4s ease-out forwards }
+  @keyframes topoLinkFlash { 0%, 70% { stroke:var(--ok); stroke-width:3.4; opacity:1 } 100% { stroke:var(--muted); stroke-width:2; opacity:1 } }
+  .tnode rect { fill:var(--panel); stroke:var(--border); stroke-width:1.2; rx:8 }
+  .tnode text { font:600 12.5px -apple-system,"Segoe UI",Roboto,sans-serif; fill:var(--fg); text-anchor:middle }
+  .tnode.flash rect { animation: topoNodeFlash 1.4s ease-out forwards }
+  @keyframes topoNodeFlash { 0%, 70% { stroke:var(--ok); stroke-width:2.6 } 100% { stroke:var(--border); stroke-width:1.2 } }
+  .tgw rect { fill:var(--panel); stroke:var(--accent); stroke-width:1.6; rx:8 }
+  .tgw text { font:700 13px -apple-system,"Segoe UI",Roboto,sans-serif; fill:var(--fg); text-anchor:middle }
+  .tempty { font:500 12px -apple-system,"Segoe UI",Roboto,sans-serif; fill:var(--muted); text-anchor:middle }
   .logbar { display:flex; align-items:center; gap:12px; margin-bottom:12px; flex-wrap:wrap }
   .logbar .muted { font-size:12px }
   .logbar input[type="text"] { min-width:220px; background:var(--panel); border:1px solid var(--border); color:var(--fg); padding:7px 10px; border-radius:6px; font-size:13px }
   .modal { display:none; position:fixed; inset:0; background:rgba(0,0,0,.55); z-index:20; align-items:center; justify-content:center; padding:16px }
   .modal.open { display:flex }
-  .modal-card { background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:20px; width:100%; max-width:100%; max-height:90vh; overflow-x:hidden; overflow-y:auto }
+  .modal-card { background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:20px; width:100%; max-width:520px; max-height:90vh; overflow-x:hidden; overflow-y:auto }
+  .modal-card.sheet { width:80%; max-width:80% }
   .fail-group { border:1px solid var(--border); border-radius:8px; padding:12px; margin:10px 0; width:100%; display:flex; flex-direction:column; gap:8px }
   .fail-group .meta { font-size:12px; color:var(--muted); margin:0; overflow-wrap:anywhere; word-break:break-word }
   .modal-card h3 { margin:0 0 8px; font-size:15px }
@@ -43,8 +60,8 @@
   #failGroups { width:100%; min-width:0 }
   #failForm input:not([type="checkbox"]):not([type="hidden"]) { width:100%; min-width:0; max-width:100% }
   #failForm input[type="checkbox"] { width:auto; min-width:0; flex:0 0 auto }
-  .fail-actions { display:flex; gap:8px; flex-wrap:wrap; width:100% }
-  .fail-actions .btn { flex:1 1 10rem; min-width:0 }
+  .fail-actions { display:flex; gap:8px; flex-wrap:wrap; width:100%; justify-content:flex-end }
+  .fail-actions .btn, .modal-actions .btn { flex:0 0 auto; min-width:7rem }
   .fail-secret { display:none; flex-direction:column; gap:8px; width:100% }
   .fail-group.is-secret .fail-secret { display:flex }
   #failModalHint, #failStatus { overflow-wrap:anywhere; word-break:break-word }
@@ -81,10 +98,19 @@
   .board-toolbar { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:12px; padding:10px 12px; background:var(--panel); border:1px solid var(--border); border-radius:8px }
   .board-toolbar > label { display:flex; align-items:center; gap:6px; color:var(--muted); font-size:12px }
   .board-toolbar select { background:var(--bg); border:1px solid var(--border); color:var(--fg); padding:4px 8px; border-radius:5px; font-size:12px }
-  .kf { display:flex; align-items:center; gap:8px; flex-wrap:wrap; padding-left:10px; border-left:1px solid var(--border) }
-  .kf label { display:flex; align-items:center; gap:5px; color:var(--muted); font-size:12px; cursor:pointer; white-space:nowrap }
-  .kf input { margin:0 }
-  .kap { width:10px; height:10px; border-radius:2px; display:inline-block }
+  .kf { display:flex; align-items:center; gap:6px; flex-wrap:wrap; padding-left:10px; border-left:1px solid var(--border) }
+  .kf-btn { display:inline-flex; align-items:center; gap:6px; background:transparent; color:var(--muted); border:1px solid var(--border); padding:4px 9px; border-radius:6px; cursor:pointer; font-size:12px; white-space:nowrap }
+  .kf-btn.on { color:var(--fg); background:rgba(255,255,255,.07) }
+  .kap { width:10px; height:10px; border-radius:2px; display:inline-block; flex:0 0 auto }
+  .card-head { display:flex; justify-content:space-between; align-items:flex-start; gap:12px; margin-bottom:12px }
+  .card-head h3 { margin:0 0 6px }
+  .card-head .muted { margin:0; font-size:12px }
+  #tab-workers th:nth-child(5), #tab-workers td:nth-child(5),
+  #tab-workers th:nth-child(6), #tab-workers td:nth-child(6) { white-space:nowrap; overflow-wrap:normal; word-break:normal }
+  #tab-workers th:nth-child(5), #tab-workers td:nth-child(5) { min-width:6.5rem; width:6.5rem }
+  #tab-workers th:nth-child(6), #tab-workers td:nth-child(6) { min-width:7.5rem; width:7.5rem }
+  #tab-patterns form { width:100% }
+  #tab-patterns form input { flex:1 1 160px }
   .board-wrap { overflow:auto; border:1px solid var(--border); border-radius:8px; background:var(--panel); position:relative; max-height:72vh; padding-top:6px }
   #boardTracks { position:relative }
   /* padding-left is a left gutter the width of the overlay labels: at scrollLeft=0
@@ -98,13 +124,15 @@
   .tl-label .stale { color:#e6a23c; font-size:11px; font-weight:600; white-space:nowrap }
   .tl-label .meta { color:var(--muted); font-size:11px; white-space:normal; overflow-wrap:anywhere; word-break:break-word }
   .tl-lane { position:relative; flex:1 1 auto; width:0; min-height:34px; background:repeating-linear-gradient(90deg, transparent 0 calc(25% - 1px), rgba(255,255,255,.03) calc(25% - 1px) 25%) }
-  .blk { position:absolute; top:50%; transform:translateY(-50%); height:26px; border-radius:4px; color:#0f1115; font-size:11px; font-weight:700; display:flex; align-items:center; justify-content:center; overflow:hidden; white-space:nowrap; cursor:default; border:1px solid rgba(0,0,0,.25); box-shadow:inset 0 -1px 0 rgba(0,0,0,.28) }
+  .blk { position:absolute; top:10%; bottom:10%; height:auto; border-radius:3px; color:#0f1115; font-size:10px; font-weight:700; display:flex; align-items:center; justify-content:center; overflow:hidden; white-space:nowrap; cursor:default; border:1px solid rgba(0,0,0,.25); box-shadow:inset 0 -1px 0 rgba(0,0,0,.28) }
   .blk.k-progress { background:var(--accent) }
   .blk.k-milestone { background:var(--ok) }
   .blk.k-reminder { background:var(--warn); color:#1a1a1a }
   .blk.k-poke { background:var(--bad) }
   .blk.k-active { background:#7a8ba0 }
   .blk.k-waiting { background:#e67e22 }
+  .blk.k-idle { background:#cc8a3a }
+  .blk.k-host { background:#c6588d }
   .blk.k-note { background:#9a7fd4 }
   .blk:hover { outline:2px solid #fff; outline-offset:1px; z-index:6 }
   .pop { position:fixed; z-index:60; max-width:340px; background:#0d1117; border:1px solid var(--border); border-radius:8px; padding:10px 12px; box-shadow:0 6px 24px rgba(0,0,0,.55); pointer-events:none; font-size:12px; line-height:1.45 }
@@ -157,7 +185,6 @@
         </select>
       </label>
       <div class="kf" id="bKindFilters" title="filter event kinds"></div>
-      <div class="kf" id="bProjectFilters" title="filter projects"></div>
       <button type="button" class="btn small" id="bReset">Reset</button>
       <button type="button" class="btn small" id="bJump">Now</button>
       <span class="muted" id="boardStatus"></span>
@@ -170,6 +197,9 @@
 
   <!-- REQUEST LOG -->
   <section class="tab active" id="tab-log">
+    <div class="topo" id="topo">
+      <svg id="topoSvg" role="img" aria-label="gateway to workers topology"></svg>
+    </div>
     <div class="logbar">
       <button type="button" class="btn" id="openFailModal">Blocked secrets (<span id="failCount">0</span>)</button>
       <input type="text" id="logFilter" placeholder="filter by worker or URL…" autocomplete="off">
@@ -182,17 +212,16 @@
 
   <!-- SECRETS -->
   <section class="tab" id="tab-secrets">
-    <div class="grid">
-      <div class="card">
-        <h3>Secrets</h3>
-        <p class="muted" style="margin:0 0 10px; font-size:12px">Real values are stored only in the gateway and never leave it. Placeholders are what the worker uses.</p>
+    <div class="card">
+      <div class="card-head">
+        <div>
+          <h3>Secrets</h3>
+          <p class="muted">Real values are stored only in the gateway and never leave it. Placeholders are what the worker uses.</p>
+        </div>
         <button type="button" class="btn" id="openSecretModal">+ Add secret</button>
       </div>
-      <div class="card">
-        <h3>Secrets (summaries only)</h3>
-        <table><thead><tr><th>Name</th><th>Env</th><th>Placeholder</th><th>Hosts</th><th></th></tr></thead>
-        <tbody id="secretrows"></tbody></table>
-      </div>
+      <table><thead><tr><th>ID</th><th>Name</th><th>Env</th><th>Placeholder</th><th>Hosts</th><th></th></tr></thead>
+      <tbody id="secretrows"></tbody></table>
     </div>
   </section>
 
@@ -214,21 +243,17 @@
 
   <!-- PATTERNS -->
   <section class="tab" id="tab-patterns">
-    <div class="grid">
-      <div class="card">
-        <h3>Credential-looking patterns</h3>
-        <p class="muted" style="font-size:12px; margin-top:0">Anything matching an enabled pattern is treated as a real credential and <b>blocked + flagged</b>. The library is comprehensive and user-extendable.</p>
-        <form id="patternForm">
-          <input name="name" placeholder="name">
-          <input name="regex" placeholder="regex (RE2)" style="min-width:280px" required>
-          <input name="description" placeholder="description">
-          <button type="submit">Add pattern</button>
-        </form>
-      </div>
-      <div class="card">
-        <table><thead><tr><th>Name</th><th>Regex</th><th>Sev</th><th>On/off</th><th></th></tr></thead>
-        <tbody id="patternrows"></tbody></table>
-      </div>
+    <div class="card">
+      <h3>Credential-looking patterns</h3>
+      <p class="muted" style="font-size:12px; margin-top:0">Anything matching an enabled pattern is treated as a real credential and <b>blocked + flagged</b>. The library is comprehensive and user-extendable.</p>
+      <form id="patternForm">
+        <input name="name" placeholder="name">
+        <input name="regex" placeholder="regex (RE2)" required>
+        <input name="description" placeholder="description">
+        <button type="submit">Add pattern</button>
+      </form>
+      <table><thead><tr><th>Name</th><th>Regex</th><th>Sev</th><th>On/off</th><th></th></tr></thead>
+      <tbody id="patternrows"></tbody></table>
     </div>
   </section>
 
@@ -292,7 +317,7 @@
   </section>
 </main>
 <div id="planModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="planModalTitle">
-  <div class="modal-card">
+  <div class="modal-card sheet">
     <h3 id="planModalTitle">Plan review</h3>
     <p class="muted">The worker asked to publish a planning UI. Open plan creates the ingress route and opens it. Nothing is reachable until you approve.</p>
     <div id="planGroups"></div>
@@ -303,7 +328,7 @@
   </div>
 </div>
 <div id="failModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="failModalTitle">
-  <div class="modal-card">
+  <div class="modal-card sheet">
     <h3 id="failModalTitle">Blocked secrets</h3>
     <p class="muted" id="failModalHint">Leave a pattern blocked, allow it on that host, or set an env var. Empty secret values are skipped. Allow does not waive other patterns or real secrets.</p>
     <form id="failForm">
@@ -366,6 +391,10 @@ function activateTab(name) {
   // Board tab is display:none until active; measure viewport only after it is shown.
   if (name === 'board' && typeof bRender === 'function') {
     bRender();
+  }
+  // The topology svg has zero width while hidden; re-measure once shown.
+  if (name === 'log' && typeof topoRelayout === 'function') {
+    topoRelayout();
   }
 }
 function tabFromHash() {
@@ -770,9 +799,9 @@ async function loadLog() {
 }
 function streamLog() {
   const es = new EventSource('/api/v1/requests/stream');
-  es.addEventListener('record', ev => { const r = JSON.parse(ev.data); logRow(r); });
+  es.addEventListener('record', ev => { const r = JSON.parse(ev.data); logRow(r); topoFlash(r); });
   es.addEventListener('planning', ev => { loadPlanning().catch(() => {}); });
-  es.addEventListener('route', ev => { loadRoutes().catch(() => {}); });
+  es.addEventListener('route', ev => { loadRoutes().catch(() => {}); loadTopo().catch(() => {}); });
   es.addEventListener('activity', ev => { loadBoard().catch(() => {}); });
   es.onerror = () => {};
 }
@@ -781,6 +810,142 @@ $('#logFilter').oninput = ev => {
   clearTimeout(logDebounce);
   logDebounce = setTimeout(() => { loadLog().catch(() => {}); }, 150);
 };
+
+// ---- gateway↔worker topology (top of Request log) ----
+// A small orthogonal tree: one Gateway node centered on top, one box per
+// registered worker below (grid: left→right, then top→bottom), each box tied
+// to the gateway by right-angle segments: a shared trunk + bus drawn once
+// (static spine), then per-worker horizontal stub + vertical drop. Every new
+// log record flashes only that worker's own segments (stub, drop, box) in
+// green via topoFlash (called from the live SSE handler, not the initial load).
+const topoWorkers = [];  // [{name, slug, key, path?, group?}] — path/group filled at render
+let topoDirty = true;    // DOM or measured width is stale → needs re-render
+let topoResizeT = null;
+let topoPolled = false;
+
+function topoKey(name, slug) {
+  return (slug && slug !== 'worker') ? slug : name;
+}
+function topoListFrom(ws) {
+  return (ws || []).map(w => ({ name: String(w.name || ''), slug: String(w.slug || ''), key: topoKey(w.name, w.slug) }));
+}
+function topoOutdated(next) {
+  if (next.length !== topoWorkers.length) { return true; }
+  return next.some((w, i) => w.key !== topoWorkers[i].key);
+}
+
+// Called from loadWorkers (boot + route events) and the 10s light poll so the
+// diagram tracks the worker registry; re-renders only when the set changed or
+// the DOM is stale (e.g. the tab was hidden during boot).
+function topoSync(ws) {
+  const next = topoListFrom(ws);
+  if (topoOutdated(next)) {
+    topoWorkers.length = 0;
+    topoWorkers.push(...next);
+    topoDirty = true;
+  }
+  if (topoDirty) { topoRelayout(); }
+}
+
+async function loadTopo() {
+  try {
+    const ws = await api('/api/v1/workers');
+    topoSync(ws);
+  } catch (e) { /* registry read can wait for the next tick */ }
+}
+function ensureTopoPoll() {
+  if (topoPolled) { return; }
+  topoPolled = true;
+  setInterval(() => { loadTopo().catch(() => {}); }, 10000);
+}
+
+// Re-measure/re-draw now. The svg has zero width while #tab-log is hidden, so
+// skip and stay dirty; activateTab('log') and window resize call this again.
+function topoRelayout() {
+  if (!$('#tab-log').classList.contains('active')) { topoDirty = true; return; }
+  topoDirty = false;
+  renderTopo();
+}
+
+function renderTopo() {
+  const svg = $('#topoSvg');
+  const W = Math.floor($('#topo').clientWidth);
+  if (!svg || W < 200) { topoDirty = true; return; }
+  while (svg.firstChild) { svg.removeChild(svg.firstChild); }
+  const NS = 'http://www.w3.org/2000/svg';
+  const mk = (tag, attrs, text) => {
+    const e = document.createElementNS(NS, tag);
+    for (const k in (attrs || {})) { e.setAttribute(k, String(attrs[k])); }
+    if (text != null) { e.textContent = String(text); }
+    return e;
+  };
+  const GW = 170, GH = 44, BW = 150, BH = 40;   // box sizes
+  const TOP = 12, TRUNK = 66, DROP = 30,        // vertical rhythm
+        ROWGAP = 12, BOT = 14, PAD = 22, GAP = 24; // spacing
+  const gwCx = W / 2, gwTop = TOP, gwBottom = gwTop + GH;
+  const busY = gwBottom + TRUNK;
+
+  const gw = mk('g', { class: 'tgw' });
+  gw.append(mk('rect', { x: Math.round(gwCx - GW/2), y: gwTop, width: GW, height: GH }));
+  gw.append(mk('text', { x: gwCx, y: gwTop + GH/2 + 4.5 }, 'Gateway'));
+  svg.append(gw);
+
+  let H;
+  const n = topoWorkers.length;
+  if (n === 0) {
+    svg.append(mk('text', { class: 'tempty', x: gwCx, y: gwBottom + 34 }, 'no workers connected'));
+    H = gwBottom + 60;
+  } else {
+    const cols = Math.max(1, Math.floor((W - 2*PAD + GAP) / (BW + GAP)));
+    const gridW = cols*BW + (cols - 1)*GAP;
+    const x0 = (W - gridW) / 2;
+    // Shared trunk: gateway bottom → bus level. Drawn once so nothing stacks.
+    svg.append(mk('path', {
+      class: 'tspine',
+      d: `M ${Math.round(gwCx)} ${gwBottom} L ${Math.round(gwCx)} ${busY}`
+    }));
+    topoWorkers.forEach((w, i) => {
+      const col = i % cols, row = Math.floor(i / cols);
+      const cx = x0 + col*(BW + GAP) + BW/2;
+      const boxTop = busY + DROP + row*(BH + ROWGAP);
+      // The worker's own segments: horizontal stub from the trunk to its
+      // column, then a vertical drop into the box. This geometry never
+      // overlaps any other worker's, so it can flash alone.
+      const path = mk('path', {
+        class: 'tlink',
+        d: `M ${Math.round(gwCx)} ${busY} L ${Math.round(cx)} ${busY} L ${Math.round(cx)} ${boxTop}`
+      });
+      svg.append(path);
+      const grp = mk('g', { class: 'tnode' });
+      const label = w.key || 'worker';
+      grp.append(mk('rect', { x: Math.round(cx - BW/2), y: boxTop, width: BW, height: BH }));
+      grp.append(mk('text', { x: cx, y: boxTop + BH/2 + 4.5, 'font-size': label.length > 16 ? 11 : 12.5 }, label));
+      grp.append(mk('title', {}, w.name || w.key));
+      svg.append(grp);
+      w.path = path;
+      w.group = grp;
+    });
+    const rows = Math.ceil(n / cols);
+    H = TOP + GH + TRUNK + DROP + (rows - 1)*(BH + ROWGAP) + BH + BOT;
+  }
+  svg.setAttribute('viewBox', `0 0 ${W} ${Math.ceil(H)}`);
+}
+
+// Light up the connecting path (+ box) of the worker a log record belongs to.
+// Matches by slug first, falling back to the registry worker name; records
+// with no registry node (internal gateway traffic) simply don't flash.
+function topoFlash(r) {
+  if (topoWorkers.length === 0) { return; }
+  const slug = r.slug, worker = r.worker;
+  const hit = topoWorkers.find(w =>
+    (slug && slug !== 'worker' && slug === w.slug) || (worker && worker === w.name));
+  if (!hit || !hit.path) { return; }
+  [hit.path, hit.group].forEach(node => {
+    node.classList.remove('flash');
+    void node.getBoundingClientRect();  // force reflow so the animation restarts
+    node.classList.add('flash');
+  });
+}
 
 // ---- secrets ----
 let secretMode = 'add';   // 'add' | 'edit'
@@ -880,7 +1045,7 @@ $('#secretModalForm').onsubmit = async ev => {
 async function loadSecrets() {
   const ss = await api('/api/v1/secrets');
   $('#secretrows').innerHTML = '';
-  ss.forEach(s => $('#secretrows').append(el('tr', '', `<td>${esc(s.name)}</td><td class="mono">${esc(s.envKey||'')}</td>
+  ss.forEach(s => $('#secretrows').append(el('tr', '', `<td class="mono">${esc(s.id)}</td><td>${esc(s.name)}</td><td class="mono">${esc(s.envKey||'')}</td>
     <td class="mono">${esc(s.placeholder)}</td>
     <td><span class="mono">${esc((s.allowedHosts||[]).join(', '))}</span></td>
     <td><button class="btn small" onclick="editSecret('${s.id}')">edit</button>
@@ -974,9 +1139,10 @@ async function loadRoutes() {
     const url = routeURL(r.name);
     const origin = r.origin === 'auto'
       ? `<span class="badge" style="background:rgba(79,140,255,.12);color:var(--accent)">auto</span>`
-      : (r.origin === 'expose' ? '<span class="badge ok">expose</span>' : '');
+      : (r.origin === 'plan' ? '<span class="badge" style="background:rgba(180,120,255,.14);color:#c9a6ff">plan</span>'
+        : (r.origin === 'expose' ? '<span class="badge ok">expose</span>' : ''));
     let state = '';
-    if (r.origin === 'auto' && !r.disabled) {
+    if ((r.origin === 'auto' || r.origin === 'plan') && !r.disabled) {
       const age = r.lastSeenMs ? Date.now() - r.lastSeenMs : Infinity;
       state = age > 45000 ? ' <span class="badge block">down</span>' : ' <span class="badge ok">live</span>';
     }
@@ -986,7 +1152,8 @@ async function loadRoutes() {
     <td class="mono">${esc(r.worker)}</td><td>${r.port}</td>
     <td><button class="btn small" onclick="window.open('${esc(url)}','_blank')">open</button>
     <label class="toggle" title="block / allow this route"><input type="checkbox" ${!r.disabled?'checked':''}
-      onchange="setRouteDisabled('${r.id}', !this.checked)"><span></span></label></td>`));
+      onchange="setRouteDisabled('${r.id}', !this.checked)"><span></span></label>
+    <button class="btn small danger" onclick="delRoute('${r.id}','${esc(r.name)}')">del</button></td>`));
   });
 }
 
@@ -994,6 +1161,16 @@ async function loadRoutes() {
 async function setRouteDisabled(id, disabled) {
   try {
     await api(`/api/v1/routes/${id}/disabled`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({disabled})});
+  } catch (e) { alert(e.message); }
+  loadRoutes();
+}
+
+// delRoute permanently removes a route (auto/plan/expose alike). The gateway
+// broadcasts the deletion, so `piso sync --watch` drops the /etc/hosts entry.
+async function delRoute(id, name) {
+  if (!confirm('Delete route ' + name + '?')) return;
+  try {
+    await api(`/api/v1/routes/${id}`, {method:'DELETE'});
   } catch (e) { alert(e.message); }
   loadRoutes();
 }
@@ -1011,17 +1188,17 @@ function ensureRoutesPoll() {
 
 
 // ---- PM board: multi-track bus-style timeline (monitor not shown as a track) ----
-const BOARD_KINDS = ['progress','milestone','reminder','poke','active','waiting','host','note'];
-const KIND_COLOR = { progress:'var(--accent)', milestone:'var(--ok)', reminder:'var(--warn)', poke:'var(--bad)', active:'#7a8ba0', waiting:'#e67e22', host:'#c6588d', note:'#9a7fd4' };
+const BOARD_KINDS = ['progress','milestone','reminder','poke','active','waiting','idle','host','note'];
+const KIND_COLOR = { progress:'var(--accent)', milestone:'var(--ok)', reminder:'var(--warn)', poke:'var(--bad)', active:'#7a8ba0', waiting:'#e67e22', idle:'#cc8a3a', host:'#c6588d', note:'#9a7fd4' };
 const MERGE_MS = 3 * 60 * 1000;    // merge consecutive same-kind events only if the gap is ≤ 3 min
-const MIN_BLK = 16;                // min block width (px) so single events stay visible
+const MIN_BLK = 8;                 // min block width (px); clusters shrink toward this
+const BLK_GAP = 2;                 // px gap between adjacent blocks on the same line
 const TL_LABEL_W = 200;            // must match --tl-label-w; left gutter so t=start can sit clear of labels
 
 let bActs = [];
 let bWorkers = [];
 let bView = { scaleH: 1, rangeH: 24 };        // scaleH = hours per viewport, rangeH = total history length
 let bOnKind = new Set(BOARD_KINDS);           // kind filter
-let bOnSlug = null;                           // project filter: Set, or null = all
 let bPinned = true;                           // auto-scroll to most-recent hour until user scrolls back
 let boardPolled = false;
 let boardClocked = false;
@@ -1049,6 +1226,39 @@ function bMergeRuns(items) {
     }
   }
   return runs;
+}
+
+// bPackRuns lays every run on ONE line. Overlaps are resolved by shrinking
+// (down to MIN_BLK) then, if still colliding, sliding the later block right
+// so neighbors stay visible without stacking tracks.
+function bPackRuns(runs, timelineW, now) {
+  const items = runs.map(run => {
+    const x1 = bTimeToPx(run.start, timelineW, now), x2 = bTimeToPx(run.end, timelineW, now);
+    let w = Math.max(x2 - x1, MIN_BLK), x = x1;
+    if (w === MIN_BLK) x = x2 - MIN_BLK;
+    return { run, x, w };
+  }).sort((a, b) => a.x - b.x || a.w - b.w);
+  for (let i = 1; i < items.length; i++) {
+    const prev = items[i - 1], cur = items[i];
+    const need = prev.x + prev.w + BLK_GAP;
+    if (cur.x >= need) continue;
+    const extra = prev.w - MIN_BLK;
+    if (extra > 0) {
+      const cut = Math.min(extra, need - cur.x);
+      prev.w -= cut;
+    }
+    const need2 = prev.x + prev.w + BLK_GAP;
+    if (cur.x < need2) {
+      const shift = need2 - cur.x;
+      cur.x += shift;
+      // keep a min width; if this would run into the next natural gap, shrink
+      if (cur.w > MIN_BLK && i + 1 < items.length) {
+        const room = items[i + 1].x - BLK_GAP - cur.x;
+        if (room > 0 && cur.w > room) cur.w = Math.max(MIN_BLK, room);
+      }
+    }
+  }
+  return items;
 }
 
 function bPopShow(ev, run) {
@@ -1103,38 +1313,36 @@ function bStaleInfo(slug, now) {
   let last = 0;
   bActs.forEach(a => { if (a.kind === 'active' && a.slug === slug && a.ts > last) last = a.ts; });
   if (!last || now - last <= TRACK_STALE_MS) return '';
-  return 'last active ' + Math.max(Math.round((now - last) / 60000), 1) + 'm ago';
+  return 'last active ' + bFmtAge(now - last) + ' ago';
+}
+
+// bFmtAge renders a duration with units that grow with the gap ("12m",
+// "3h 45m", "5d 3h") instead of a raw minute count.
+function bFmtAge(ms) {
+  const min = Math.max(Math.round(ms / 60000), 1);
+  if (min < 60) return min + 'm';
+  const h = Math.floor(min / 60), r = min % 60;
+  if (h < 24) return r ? (h + 'h ' + r + 'm') : (h + 'h');
+  const d = Math.floor(h / 24), rh = h % 24;
+  return rh ? (d + 'd ' + rh + 'h') : (d + 'd');
 }
 
 function bBuildFilters() {
   const kb = $('#bKindFilters'); kb.innerHTML = '';
   BOARD_KINDS.forEach(k => {
-    const lab = document.createElement('label');
-    const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = bOnKind.has(k);
-    cb.onchange = () => { cb.checked ? bOnKind.add(k) : bOnKind.delete(k); bRender(); };
+    const on = bOnKind.has(k);
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'kf-btn' + (on ? ' on' : '');
+    btn.title = on ? ('hide ' + k) : ('show ' + k);
     const sw = el('span', 'kap', null); sw.style.background = KIND_COLOR[k];
-    lab.append(cb, sw, ' ' + k); kb.append(lab);
-  });
-  const pb = $('#bProjectFilters'); pb.innerHTML = '';
-  const slugs = [...new Set(bActs.map(a => a.slug).filter(s => s && s !== 'monitor'))].sort();
-  if (slugs.length <= 1) { pb.style.display = 'none'; return; }
-  pb.style.display = '';
-  const mk = (name, on) => {
-    const lab = document.createElement('label');
-    const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = on;
-    lab.append(cb, ' ' + name); pb.append(lab);
-    return cb;
-  };
-  const all = mk('all', !bOnSlug);
-  all.onchange = () => { bOnSlug = all.checked ? null : new Set(slugs); bBuildFilters(); bRender(); };
-  const cbs = slugs.map(s => mk(s, bOnSlug ? bOnSlug.has(s) : true));
-  cbs.forEach((cb, i) => {
-    cb.onchange = () => {
-      if (!bOnSlug) bOnSlug = new Set(slugs);
-      cb.checked ? bOnSlug.add(slugs[i]) : bOnSlug.delete(slugs[i]);
-      if (bOnSlug.size === slugs.length) bOnSlug = null;
+    btn.append(sw, document.createTextNode(k));
+    if (on) btn.style.borderColor = KIND_COLOR[k];
+    btn.onclick = () => {
+      if (bOnKind.has(k)) bOnKind.delete(k); else bOnKind.add(k);
       bBuildFilters(); bRender();
     };
+    kb.append(btn);
   });
 }
 
@@ -1156,10 +1364,10 @@ function bRender() {
   let count = 0;
   bActs.forEach(a => {
     if (!bOnKind.has(a.kind)) return;
-    if (a.slug === 'monitor') return;
+    // Monitor-sourced events carry targetSlug and render on the target
+    // project's track; they never become their own track.
     const t = (a.targetSlug && a.targetSlug !== a.slug) ? a.targetSlug : a.slug;
     if (t === 'monitor') return;
-    if (bOnSlug && !bOnSlug.has(t)) return;
     const rec = ensure(t); rec.items.push(a); rec.last = Math.max(rec.last, a.ts); count++;
   });
 
@@ -1201,7 +1409,7 @@ function bRender() {
 
   slugs.forEach(slug => {
     const t = by[slug];
-    const runs = bMergeRuns(t.items);
+    const packed = bPackRuns(bMergeRuns(t.items), timelineW, now);
     const row = el('div', 'tl-row', null); row.style.minHeight = '44px';
     const lab = el('div', 'tl-label', null);
     lab.append(el('span', 'slug', esc(slug)));
@@ -1211,15 +1419,12 @@ function bRender() {
     if (meta) lab.append(el('span', 'meta', esc(meta)));
     row.append(lab);
     const lane = el('div', 'tl-lane', null);
-    runs.forEach(run => {
-      const x1 = bTimeToPx(run.start, timelineW, now), x2 = bTimeToPx(run.end, timelineW, now);
-      let w = Math.max(x2 - x1, MIN_BLK), x = x1;
-      if (w === MIN_BLK) x = x2 - MIN_BLK; // anchor min-width to the event time
-      const b = el('div', 'blk k-' + esc(run.kind), run.items.length > 1 ? String(run.items.length) : '');
-      b.style.cssText = `left:${x.toFixed(1)}px;width:${w.toFixed(1)}px`;
-      b.addEventListener('mousemove', ev => bPopShow(ev, run));
-      b.addEventListener('mouseleave', bPopHide);
-      lane.append(b);
+    packed.forEach(b => {
+      const blk = el('div', 'blk k-' + esc(b.run.kind), b.run.items.length > 1 ? String(b.run.items.length) : '');
+      blk.style.cssText = `left:${b.x.toFixed(1)}px;width:${b.w.toFixed(1)}px`;
+      blk.addEventListener('mousemove', ev => bPopShow(ev, b.run));
+      blk.addEventListener('mouseleave', bPopHide);
+      lane.append(blk);
     });
     row.append(lane);
     box.append(row);
@@ -1264,10 +1469,14 @@ function ensureBoardClock() {
 // toolbar + scroll wiring
 $('#bScale').onchange = e => { bView.scaleH = parseFloat(e.target.value); bPinned = true; bRender(); };
 $('#bRange').onchange = e => { bView.rangeH = parseFloat(e.target.value); bPinned = true; bRender(); };
-$('#bReset').onclick = () => { bView = { scaleH: 1, rangeH: 24 }; bOnKind = new Set(BOARD_KINDS); bOnSlug = null; bPinned = true; bBuildFilters(); bRender(); };
+$('#bReset').onclick = () => { bView = { scaleH: 1, rangeH: 24 }; bOnKind = new Set(BOARD_KINDS); bPinned = true; bBuildFilters(); bRender(); };
 $('#bJump').onclick = () => { bPinned = true; bRender(); };
 window.addEventListener('resize', () => {
   if ($('#tab-board').classList.contains('active')) bRender();
+  if ($('#tab-log').classList.contains('active')) {
+    clearTimeout(topoResizeT);
+    topoResizeT = setTimeout(topoRelayout, 150);
+  }
 });
 (() => {
   const wrap = $('#boardWrap');
@@ -1295,6 +1504,7 @@ window.addEventListener('resize', () => {
 
 async function loadWorkers() {
   const ws = await api('/api/v1/workers');
+  topoSync(ws);
   $('#workerrows').innerHTML = '';
   (ws || []).forEach(w => {
     const c = w.context || {};
@@ -1563,6 +1773,7 @@ $('#planModal').addEventListener('click', (ev) => {
   ensureRoutesPoll();
   ensureBoardPoll();
   ensureBoardClock();
+  ensureTopoPoll();
   activateTab(tabFromHash() || 'board');
   setInterval(() => {
     loadPlanning().catch(() => {});
