@@ -79,7 +79,17 @@ services:
     environment:
       HTTPS_PROXY: http://gateway:8080
       HTTP_PROXY: http://gateway:8080
+      ALL_PROXY: http://gateway:8080
+      https_proxy: http://gateway:8080
+      http_proxy: http://gateway:8080
+      all_proxy: http://gateway:8080
       NO_PROXY: gateway,localhost,127.0.0.1,*.piso.local
+      no_proxy: gateway,localhost,127.0.0.1,*.piso.local
+      SSL_CERT_FILE: /piso-ca.pem
+      CURL_CA_BUNDLE: /piso-ca.pem
+      GIT_SSL_CAINFO: /piso-ca.pem
+      REQUESTS_CA_BUNDLE: /piso-ca.pem
+      NODE_EXTRA_CA_CERTS: /piso-ca.pem
       GATEWAY_URL: http://gateway:8083
       PISO_WORKER_NAME: piso-worker-monitor
       PISO_WORKER_SLUG: monitor

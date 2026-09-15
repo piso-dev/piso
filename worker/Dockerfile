@@ -1,8 +1,8 @@
 # piso worker — the AI agent's home. Runs pi (on Bun) with egress ONLY through
 # the gateway (compose sets HTTPS_PROXY; piso_vpc is a Docker internal network).
-# The gateway's CA is injected read-only by compose and installed into the
-# system trust store by entrypoint.sh so everything (curl/git/node/bun) accepts
-# the MITM cert.
+# The gateway's CA is bind-mounted at /piso-ca.pem. Workers are read-only, so
+# update-ca-certificates cannot run; SSL_CERT_FILE / GIT_SSL_CAINFO / etc.
+# point at that file. Every HTTPS hop is MITM'd, so the piso CA is sufficient.
 #
 # WHY BUN: pi's CLI is a node shebang, but Node's fetch (undici) does NOT honor
 # HTTPS_PROXY. Bun's native fetch does (verified empirically). Running pi under
@@ -104,10 +104,23 @@ RUN set -eu; \
   tar xzf glow.tgz --no-same-owner;  install -m 0755 "glow_3.0.0_Linux_${GLOW_ARCH}/glow" /usr/local/bin/glow; \
   rm -rf "$D"
 
-# Egress: only via the gateway. NO_PROXY keeps internal services direct.
+# Egress: only via the gateway. NO_PROXY keeps vpc services (worker API) direct.
+# Lowercase + ALL_PROXY cover clients that ignore the uppercase pair.
+# CA vars must be image/compose ENV (not entrypoint export): docker exec does
+# not inherit the entrypoint's shell. Set after all RUN curls so build still
+# uses the public trust store.
 ENV HTTPS_PROXY=http://gateway:8080 \
     HTTP_PROXY=http://gateway:8080 \
+    ALL_PROXY=http://gateway:8080 \
+    https_proxy=http://gateway:8080 \
+    http_proxy=http://gateway:8080 \
+    all_proxy=http://gateway:8080 \
     NO_PROXY=gateway,localhost,127.0.0.1,*.piso.local \
+    no_proxy=gateway,localhost,127.0.0.1,*.piso.local \
+    SSL_CERT_FILE=/piso-ca.pem \
+    CURL_CA_BUNDLE=/piso-ca.pem \
+    GIT_SSL_CAINFO=/piso-ca.pem \
+    REQUESTS_CA_BUNDLE=/piso-ca.pem \
     NODE_EXTRA_CA_CERTS=/piso-ca.pem
 
 WORKDIR /workspace
