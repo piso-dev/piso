@@ -161,7 +161,7 @@ func (s *Server) handleWorkerCheckin(w http.ResponseWriter, r *http.Request) {
 	ip := requestIP(r)
 	reg, regOK := s.Store.WorkerByIP(ip)
 	if regOK && reg.Name == in.Worker && reg.Slug == in.Slug {
-		writeJSON(w, 200, reg) // already registered correctly; nothing to heal
+		writeCheckinOK(w, reg) // already registered correctly; nothing to heal
 		return
 	}
 	if regOK {
@@ -186,7 +186,31 @@ func (s *Server) handleWorkerCheckin(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 500, map[string]string{"error": err.Error()})
 		return
 	}
-	writeJSON(w, 200, out)
+	writeCheckinOK(w, out)
+}
+
+// checkinOut is the worker-visible identity after a successful checkin.
+// Host-only fields (Dir, InternetDisabled, UpdatedAt) stay off this
+// response — Dir is the host project path and must not enter the worker.
+type checkinOut struct {
+	Name string   `json:"name"`
+	Slug string   `json:"slug"`
+	IPs  []string `json:"ips,omitempty"`
+}
+
+func writeCheckinOK(w http.ResponseWriter, rec store.WorkerRec) {
+	writeJSON(w, 200, checkinOut{Name: rec.Name, Slug: rec.Slug, IPs: rec.IPs})
+}
+
+const (
+	monitorSlug       = "monitor"
+	monitorWorkerName = "piso-worker-monitor"
+)
+
+// isMonitorWorker reports the project-manager container, which is the only
+// worker allowed to read the full activity board.
+func isMonitorWorker(name, slug string) bool {
+	return slug == monitorSlug || name == monitorWorkerName
 }
 
 // activityIn is one informant report (or monitor poke) posted by a worker.
@@ -283,12 +307,12 @@ func (s *Server) handleWorkerCapabilities(w http.ResponseWriter, r *http.Request
 		}
 	}
 	writeJSON(w, 200, map[string]any{
-		"worker": worker,
-		"slug": slug,
-		"internetEnabled": internet,
-		"egressProxy": "gateway:8080",
+		"worker":             worker,
+		"slug":               slug,
+		"internetEnabled":    internet,
+		"egressProxy":        "gateway:8080",
 		"scopedPlaceholders": scoped,
-		"outOfBound": "emit a host activity request instead of attempting",
+		"outOfBound":         "emit a host activity request instead of attempting",
 	})
 }
 
@@ -323,7 +347,7 @@ func activityAge(tsMs, nowMs int64) (int, string) {
 		}
 		return int(min), fmt.Sprintf("%d h ago", h)
 	}
-	return int(min), fmt.Sprintf("%dd ago", h / 24)
+	return int(min), fmt.Sprintf("%dd ago", h/24)
 }
 
 // feedView attaches the age fields to one feed read.
@@ -429,9 +453,10 @@ func limitToLastJudgment(rows []store.Activity, last map[string]int64) []store.A
 	return out
 }
 
-// handleWorkerGetActivities returns the activity feed. The monitor polls this;
-// any registered worker may read the whole feed (it is scrubbed: sanitized
-// text only). Caller identity is verified like the ports handler.
+// handleWorkerGetActivities returns the activity feed. The monitor (slug
+// "monitor") polls the full board. Every other worker is scoped to its own
+// project track (own slug + rows aimed at it). Caller identity is verified
+// like the ports handler.
 //
 // Two read-side decisions shape the series of events returned (nothing is
 // deleted; the store keeps full history):
@@ -450,10 +475,22 @@ func (s *Server) handleWorkerGetActivities(w http.ResponseWriter, r *http.Reques
 		identityMismatch(w, r, reg, worker, "")
 		return
 	}
+	callerSlug := slugFromWorker(worker)
+	if reg, ok := s.Store.WorkerByName(worker); ok && reg.Slug != "" {
+		callerSlug = reg.Slug
+	}
 	f := store.ActivityFilter{
-		Kind:    strings.TrimSpace(r.URL.Query().Get("kind")),
-		Slug:    strings.TrimSpace(r.URL.Query().Get("slug")),
-		Limit:   atoiDefault(r.URL.Query().Get("limit"), 500),
+		Kind:  strings.TrimSpace(r.URL.Query().Get("kind")),
+		Slug:  strings.TrimSpace(r.URL.Query().Get("slug")),
+		Limit: atoiDefault(r.URL.Query().Get("limit"), 500),
+	}
+	// Non-monitor workers cannot read another project's track.
+	if !isMonitorWorker(worker, callerSlug) {
+		if f.Slug != "" && f.Slug != callerSlug {
+			writeJSON(w, 403, map[string]string{"error": "slug out of scope"})
+			return
+		}
+		f.Slug = callerSlug
 	}
 	// Explicit `since` (unix ms) overrides the derived judgement window.
 	explicitSince := ""

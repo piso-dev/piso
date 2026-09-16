@@ -1337,7 +1337,10 @@ func recreateWorker(w pisoconfig.WorkerRec) error {
 	if err != nil {
 		return err
 	}
-	file := filepath.Join(w.Dir, ".piso", "worker-"+w.Slug+".yaml")
+	file, err := pisoconfig.WriteWorkerCompose(pisoconfig.Project{Dir: w.Dir, Slug: w.Slug})
+	if err != nil {
+		return err
+	}
 	return runEnv("docker", []string{"compose", "-f", file, "-p", "piso-" + w.Slug, "up", "-d", "-t", "0"}, composeEnv)
 }
 

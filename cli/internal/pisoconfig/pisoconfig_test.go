@@ -141,9 +141,24 @@ func TestWriteWorkerComposeRendersPerWorkerEnv(t *testing.T) {
 		}
 	}
 	proj := Project{Dir: t.TempDir(), Slug: "demo"}
+	legacyDir := filepath.Join(proj.Dir, ".piso")
+	if err := os.MkdirAll(legacyDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	legacy := filepath.Join(legacyDir, "worker-demo.yaml")
+	if err := os.WriteFile(legacy, []byte("leaked host paths\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	path, err := WriteWorkerCompose(proj)
 	if err != nil {
 		t.Fatal(err)
+	}
+	wantPath := filepath.Join(data, "compose", "worker-demo.yaml")
+	if path != wantPath {
+		t.Fatalf("compose path %s, want %s", path, wantPath)
+	}
+	if strings.HasPrefix(path, proj.Dir) {
+		t.Fatalf("compose file must not live in the project share: %s", path)
 	}
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -167,6 +182,9 @@ func TestWriteWorkerComposeRendersPerWorkerEnv(t *testing.T) {
 	}
 	if !strings.Contains(got, "image: piso-worker") {
 		t.Fatalf("compose must pin the shared worker image:\n%s", got)
+	}
+	if _, err := os.Stat(legacy); !os.IsNotExist(err) {
+		t.Fatalf("legacy in-share compose must be removed, stat: %v", err)
 	}
 }
 

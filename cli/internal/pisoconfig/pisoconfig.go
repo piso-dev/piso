@@ -133,8 +133,21 @@ func GatewayCompose() (string, error) {
 	return p, nil
 }
 
+// WorkerComposePath is $PISO_DATA/compose/worker-<slug>.yaml. Host-side only:
+// the file contains absolute host paths, so it must not live under the project
+// mount (/workspace) or under workers/<slug>/ (that directory is bind-mounted
+// at /etc/piso inside the worker).
+func WorkerComposePath(slug string) (string, error) {
+	dir, err := DataDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "compose", "worker-"+slug+".yaml"), nil
+}
+
 // WriteWorkerCompose renders the worker compose template with this project's
-// values into <project>/.piso/worker-<slug>.yaml.
+// values into WorkerComposePath. A leftover copy under <project>/.piso is
+// removed so it cannot leak host paths through the share.
 func WriteWorkerCompose(p Project) (string, error) {
 	home, err := Home()
 	if err != nil {
@@ -170,14 +183,20 @@ func WriteWorkerCompose(p Project) (string, error) {
 	out = strings.ReplaceAll(out, "CA_DIR", dataDir)
 	out = strings.ReplaceAll(out, "GATEWAY_CONTROL", GatewayURL())
 
-	pisoDir := filepath.Join(p.Dir, ".piso")
-	if err := os.MkdirAll(pisoDir, 0o700); err != nil {
+	dest, err := WorkerComposePath(p.Slug)
+	if err != nil {
 		return "", err
 	}
-	dest := filepath.Join(pisoDir, "worker-"+p.Slug+".yaml")
+	if err := os.MkdirAll(filepath.Dir(dest), 0o700); err != nil {
+		return "", err
+	}
 	if err := os.WriteFile(dest, []byte(out), 0o600); err != nil {
 		return "", err
 	}
+	// Scrub the old in-share copy from earlier piso versions.
+	legacyDir := filepath.Join(p.Dir, ".piso")
+	_ = os.Remove(filepath.Join(legacyDir, "worker-"+p.Slug+".yaml"))
+	_ = os.Remove(legacyDir) // only succeeds when empty
 	return dest, nil
 }
 
@@ -401,11 +420,11 @@ type RouteIn struct {
 // the CLI can list the `name.piso.local → worker:port` routes targeting each
 // worker. Fields match store.RouteRec in the gateway (id/name/worker/port).
 type RouteRec struct {
-	ID	   string `json:"id"`
-	Name	 string `json:"name"`
-	Worker	 string `json:"worker"`
-	Port	   int	  `json:"port"`
-	Note	   string `json:"note,omitempty"`
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	Worker string `json:"worker"`
+	Port   int    `json:"port"`
+	Note   string `json:"note,omitempty"`
 }
 
 // WorkerIn is the host-CLI registration payload for the slug↔IP registry.

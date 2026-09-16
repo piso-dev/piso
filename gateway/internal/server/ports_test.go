@@ -305,14 +305,14 @@ func TestWorkerActivityFeedTimeLimitedToJudgement(t *testing.T) {
 	// demo history: old events … the monitor pokes demo … more work … then the
 	// monitor curates demo (its NEWEST judgement for demo), and only work that
 	// lands after THAT is post-judgement
-	old := now - 3600 * 1000
-	waiting := now - 1800 * 1000
-	poke := now - 900 * 1000
-	fresh := now - 600 * 1000
-	curate := now - 120 * 1000
-	newest := now - 60 * 1000
+	old := now - 3600*1000
+	waiting := now - 1800*1000
+	poke := now - 900*1000
+	fresh := now - 600*1000
+	curate := now - 120*1000
+	newest := now - 60*1000
 	// another project the monitor never judged: its old events stay visible
-	other := now - 7200 * 1000
+	other := now - 7200*1000
 	for _, a := range []store.Activity{
 		{Worker: "piso-worker-demo", Slug: "demo", Kind: store.ActivityKindProgress, Text: "old work", Ts: old},
 		{Worker: "piso-worker-demo", Slug: "demo", Kind: store.ActivityKindWaiting, Text: "old waiting", Ts: waiting},
@@ -350,14 +350,20 @@ func TestWorkerActivityFeedTimeLimitedToJudgement(t *testing.T) {
 			t.Fatalf("missing %q in %s", want, feed.Body.String())
 		}
 	}
-	// demo's own (non-monitor) read keeps its full history: the derived window
-	// only cuts rows for projects the REQUESTING worker judged, and demo never
-	// aimed anything at a project (its map holds only its own ""), so nothing cuts
+	// demo's own (non-monitor) read is scoped to its project track: own rows
+	// plus pokes/notes aimed at it. Cross-project "other work" stays off the
+	// feed. The derived judgement window does not cut demo's history (demo
+	// never aimed anything at a project).
 	own := doJSON(t, wh, "GET", "/api/v1/worker/activities?worker=piso-worker-demo", nil)
 	var ownActs []store.Activity
 	_ = json.Unmarshal(own.Body.Bytes(), &ownActs)
-	if own.Code != 200 || len(ownActs) != 7 {
+	if own.Code != 200 || len(ownActs) != 6 {
 		t.Fatalf("demo own feed %d %d rows: %s", own.Code, len(ownActs), own.Body.String())
+	}
+	for _, a := range ownActs {
+		if a.Text == "other work" {
+			t.Fatalf("cross-project row leaked into demo feed: %s", own.Body.String())
+		}
 	}
 	// explicit `since` overrides the derived window
 	since := doJSON(t, wh, "GET", "/api/v1/worker/activities?worker=piso-worker-monitor&since="+strconv.FormatInt(fresh, 10), nil)
@@ -435,6 +441,41 @@ func TestWorkerActivityFeedTrackDedupesSelfPoke(t *testing.T) {
 	_ = json.Unmarshal(track.Body.Bytes(), &acts)
 	if track.Code != 200 || len(acts) != 2 {
 		t.Fatalf("track %d %d rows: %s", track.Code, len(acts), track.Body.String())
+	}
+}
+
+func TestWorkerActivityFeedScopedToCaller(t *testing.T) {
+	s := testServer(t)
+	wh := s.WorkerHandler()
+	now := time.Now().UnixNano() / 1000000
+	for _, a := range []store.Activity{
+		{Worker: "piso-worker-other", Slug: "other", Kind: store.ActivityKindProgress, Text: "secret other", Ts: now - 30000},
+		{Worker: "piso-worker-monitor", Slug: "monitor", Kind: store.ActivityKindPoke, TargetSlug: "demo", Text: "nudge demo", Ts: now - 20000},
+		{Worker: "piso-worker-demo", Slug: "demo", Kind: store.ActivityKindProgress, Text: "demo work", Ts: now - 10000},
+	} {
+		if _, err := s.Store.InsertActivity(a); err != nil {
+			t.Fatal(err)
+		}
+	}
+	demo := doJSON(t, wh, "GET", "/api/v1/worker/activities?worker=piso-worker-demo", nil)
+	var demoActs []store.Activity
+	_ = json.Unmarshal(demo.Body.Bytes(), &demoActs)
+	if demo.Code != 200 || len(demoActs) != 2 {
+		t.Fatalf("demo feed %d %d rows: %s", demo.Code, len(demoActs), demo.Body.String())
+	}
+	for _, a := range demoActs {
+		if a.Text == "secret other" {
+			t.Fatalf("cross-project leak: %s", demo.Body.String())
+		}
+	}
+	if w := doJSON(t, wh, "GET", "/api/v1/worker/activities?worker=piso-worker-demo&slug=other", nil); w.Code != 403 {
+		t.Fatalf("cross-slug read %d %s", w.Code, w.Body.String())
+	}
+	mon := doJSON(t, wh, "GET", "/api/v1/worker/activities?worker=piso-worker-monitor", nil)
+	var monActs []store.Activity
+	_ = json.Unmarshal(mon.Body.Bytes(), &monActs)
+	if mon.Code != 200 || len(monActs) != 3 {
+		t.Fatalf("monitor feed %d %d rows: %s", mon.Code, len(monActs), mon.Body.String())
 	}
 }
 

@@ -58,9 +58,10 @@ services:
   # Project manager: a special worker that reads activity and decides pokes/
   # reminders. Host-scoped (watches all projects), so it lives with the
   # gateway — same lifecycle, same sandboxing (internal vpc, cap_drop,
-  # no project mount, read-only rootfs). Its slug is "monitor", but nothing
-  # in the codebase treats it differently — it is an ordinary worker whose
-  # LLM access is a scoped secret (Workers: [monitor]).
+  # no project mount, read-only rootfs). Its slug is "monitor". The worker
+  # API treats it as the project-manager lens for GET /activities (full
+  # board); everything else is an ordinary sandboxed worker whose LLM key
+  # is a scoped secret (Workers: [monitor]).
   monitor:
     image: piso-worker
     container_name: piso-worker-monitor

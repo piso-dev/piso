@@ -223,6 +223,29 @@ func TestWorkerActivityAcceptsIdleKind(t *testing.T) {
 	}
 }
 
+// Checkin must not echo the host project directory (username/path recon).
+func TestWorkerCheckinOmitsHostDir(t *testing.T) {
+	s := testServer(t)
+	if w := doJSON(t, s.ControlHandler(), "POST", "/api/v1/workers", map[string]any{
+		"name": "piso-worker-demo", "slug": "demo",
+		"dir": "/Users/ExampleUser/code/np/piso",
+		"ips": []string{"192.168.107.50"},
+	}); w.Code != 200 {
+		t.Fatalf("register %d %s", w.Code, w.Body.String())
+	}
+	w := postCheckin(t, s.WorkerHandler(), "192.168.107.50", "piso-worker-demo", "demo")
+	if w.Code != 200 {
+		t.Fatalf("checkin %d %s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	if strings.Contains(body, "/Users/") || strings.Contains(body, "ExampleUser") || strings.Contains(body, `"dir"`) {
+		t.Fatalf("checkin leaked host dir: %s", body)
+	}
+	if !strings.Contains(body, `"name":"piso-worker-demo"`) || !strings.Contains(body, `"slug":"demo"`) {
+		t.Fatalf("checkin missing identity: %s", body)
+	}
+}
+
 func TestWorkerCheckinValidation(t *testing.T) {
 	s := testServer(t)
 	wh := s.WorkerHandler()
