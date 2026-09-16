@@ -110,7 +110,11 @@ func Decide(in Input) model.Decision {
 			}
 			return model.Decision{Action: model.ActionSubstitute, Reasons: reasons, Substituted: substituted}
 		}
-		appendReason(model.ReasonNoSecretRule)
+		if placeholderNeedsMcpAuth(in) {
+			appendReason(model.ReasonMcpAuthRequired)
+		} else {
+			appendReason(model.ReasonNoSecretRule)
+		}
 		return model.Decision{Action: model.ActionBlock, Reasons: reasons}
 	}
 
@@ -149,6 +153,10 @@ func substituteAll(in Input) ([]string, bool) {
 			continue // transcript-only: do not substitute, do not block
 		}
 		if _, ok := lookupRule(in, tok); ok && in.secretAllowedForWorker(tok) {
+			sec, has := in.SecretByPlaceholder[tok]
+			if !has || strings.TrimSpace(sec.Value) == "" {
+				return out, false // vault slot exists but login has not filled it
+			}
 			out = append(out, tok)
 		} else {
 			return out, false // any unresolvable credential-site vault placeholder blocks
@@ -178,6 +186,24 @@ func (in Input) secretAllowedForWorker(token string) bool {
 func isVaultPlaceholder(in Input, token string) bool {
 	_, ok := in.SecretByPlaceholder[token]
 	return ok
+}
+
+// placeholderNeedsMcpAuth reports a vault placeholder whose secret value is
+// still empty (MCP dashboard login has not completed).
+func placeholderNeedsMcpAuth(in Input) bool {
+	for _, f := range in.Scan.Placeholders {
+		if scanner.IsChatContent(f.Location, f.Field) {
+			continue
+		}
+		sec, ok := in.SecretByPlaceholder[f.Token]
+		if !ok || strings.TrimSpace(sec.Value) != "" {
+			continue
+		}
+		if _, has := lookupRule(in, f.Token); has && in.secretAllowedForWorker(f.Token) {
+			return true
+		}
+	}
+	return false
 }
 
 // lookupRule finds a substitution rule for placeholder on this host.

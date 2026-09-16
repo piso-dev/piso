@@ -749,7 +749,7 @@ func syncIngressHosts() error {
 	if err := getJSON(pisoconfig.GatewayURL()+"/api/v1/routes", &routes); err != nil {
 		return err
 	}
-	names := make([]string, 0, len(routes))
+	names := []string{"mcp-oauth"}
 	for _, r := range routes {
 		if r.Name != "" {
 			names = append(names, r.Name)

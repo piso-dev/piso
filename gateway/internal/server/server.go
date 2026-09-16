@@ -31,6 +31,8 @@ type Server struct {
 	Patterns *patterns.Compiled
 	Proxy    *proxy.Handler
 	CA       *proxy.CA
+	// HTTP is used for MCP OAuth discovery/DCR/token (tests inject).
+	HTTP *http.Client
 	// DenyPeer overrides worker-vpc detection on the control plane (tests).
 	DenyPeer denyPeerFunc
 }
@@ -75,6 +77,10 @@ func (s *Server) WebHandler() http.Handler {
 			writeJSON(w, 403, map[string]string{"error": "control plane is host-only"})
 			return
 		}
+		if mcpOAuthHost(r) {
+			s.handleMcpOAuthHTTP(w, r)
+			return
+		}
 		if isWebRouteRequest(r) {
 			s.ingress(w, r)
 			return
@@ -87,7 +93,13 @@ func (s *Server) WebHandler() http.Handler {
 // separate listener (host ingress port) for backward compatibility; WebHandler
 // is the canonical entrypoint.
 func (s *Server) IngressHandler() http.Handler {
-	return http.HandlerFunc(s.ingress)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if mcpOAuthHost(r) {
+			s.handleMcpOAuthHTTP(w, r)
+			return
+		}
+		s.ingress(w, r)
+	})
 }
 
 // ui serves the embedded dashboard.
@@ -248,6 +260,11 @@ func (s *Server) routes(mux *http.ServeMux) {
 	})
 
 	// rules (substitution)
+	mux.HandleFunc("GET /api/v1/mcp", s.handleListMCP)
+	mux.HandleFunc("GET /api/v1/mcp/pending", s.handlePendingMCP)
+	mux.HandleFunc("POST /api/v1/mcp/{id}/authorize", s.handleAuthorizeMCP)
+	mux.HandleFunc("POST /api/v1/mcp/{id}/revoke", s.handleRevokeMCP)
+
 	mux.HandleFunc("GET /api/v1/rules", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, s.Store.Rules())
 	})
@@ -495,10 +512,10 @@ func (s *Server) routes(mux *http.ServeMux) {
 	// the monitor uses the worker API on :8083 instead).
 	mux.HandleFunc("GET /api/v1/activities", func(w http.ResponseWriter, r *http.Request) {
 		f := store.ActivityFilter{
-			Kind: strings.TrimSpace(r.URL.Query().Get("kind")),
-			Slug: strings.TrimSpace(r.URL.Query().Get("slug")),
+			Kind:       strings.TrimSpace(r.URL.Query().Get("kind")),
+			Slug:       strings.TrimSpace(r.URL.Query().Get("slug")),
 			TargetSlug: strings.TrimSpace(r.URL.Query().Get("target")),
-			Limit: atoiDefault(r.URL.Query().Get("limit"), 500),
+			Limit:      atoiDefault(r.URL.Query().Get("limit"), 500),
 		}
 		acts, err := s.Store.QueryActivities(f)
 		if err != nil {
@@ -556,6 +573,7 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 	subIng := s.Store.SubIngress()
 	subRoutes := s.Store.SubRoutes()
 	subActs := s.Store.SubActivities()
+	subMcp := s.Store.SubMcp()
 	ctx := r.Context()
 	tick := time.NewTicker(20 * time.Second)
 	defer tick.Stop()
@@ -579,6 +597,11 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 		case act := <-subActs:
 			if b, err := json.Marshal(act); err == nil {
 				fmt.Fprintf(w, "event: activity\ndata: %s\n\n", b)
+				fl.Flush()
+			}
+		case mcp := <-subMcp:
+			if b, err := json.Marshal(mcp.ToSummary()); err == nil {
+				fmt.Fprintf(w, "event: mcp\ndata: %s\n\n", b)
 				fl.Flush()
 			}
 		case <-tick.C:
@@ -609,7 +632,7 @@ func (s *Server) ingress(w http.ResponseWriter, r *http.Request) {
 		if port != 80 {
 			dest = host + fmt.Sprintf(":%d", port) + next.RequestURI()
 		}
-		http.Redirect(w, r, "http://" + dest, http.StatusFound)
+		http.Redirect(w, r, "http://"+dest, http.StatusFound)
 		return
 	}
 	name := ingressRouteName(r)

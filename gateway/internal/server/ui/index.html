@@ -14,8 +14,8 @@
   #errbar { display:none; background:#3a1d1d; color:#ffb4b4; padding:8px 20px; font-size:13px }
   header h1 { font-size:16px; margin:0; font-weight:600 }
   header .sub { color:var(--muted); font-size:12px }
-  header .btn { margin-left: auto }
-  header .btn.plan-hot { background:var(--warn); color:#1a1a1a }
+  header .actions { margin-left: auto; display:flex; align-items:center; gap:8px }
+  header .btn.plan-hot, header .btn.mcp-hot { background:var(--warn); color:#1a1a1a }
   nav { display:flex; gap:4px; padding:10px 20px; border-bottom:1px solid var(--border); flex-wrap:wrap }
   nav button { background:transparent; color:var(--muted); border:1px solid transparent; padding:6px 14px; border-radius:6px; cursor:pointer; font-size:13px }
   nav button.active { background:var(--panel); color:var(--fg); border-color:var(--border) }
@@ -157,12 +157,16 @@
   <h1>piso gateway</h1>
   <span class="sub">secrets · substitution rules · credential detection · request log</span>
   <span class="sub" id="health"></span>
-  <button type="button" class="btn" id="openPlanModal">Plan review (<span id="planCount">0</span>)</button>
+  <div class="actions">
+    <button type="button" class="btn" id="openPlanModal">Plan review (<span id="planCount">0</span>)</button>
+    <button type="button" class="btn" id="openMcpModal">MCP login (<span id="mcpCount">0</span>)</button>
+  </div>
 </header>
 <div id="errbar"></div>
 <nav id="tabs">
   <button data-tab="board">Board</button>
   <button data-tab="log" class="active">Request log</button>
+  <button data-tab="mcp">MCP</button>
   <button data-tab="secrets">Secrets</button>
   <button data-tab="rules">Rules</button>
   <button data-tab="patterns">Patterns</button>
@@ -218,6 +222,20 @@
       <thead><tr><th>When</th><th>Method</th><th>Request</th><th>Verdict</th></tr></thead>
       <tbody id="logrows"></tbody>
     </table>
+  </section>
+
+  <!-- MCP -->
+  <section class="tab" id="tab-mcp">
+    <div class="card">
+      <div class="card-head">
+        <div>
+          <h3>MCP</h3>
+          <p class="muted">OAuth login is completed here. Workers only ever see a <span class="mono">piso_mcp_…</span> placeholder.</p>
+        </div>
+      </div>
+      <table><thead><tr><th>Name</th><th>Worker</th><th>URL</th><th>Placeholder</th><th>Status</th><th></th></tr></thead>
+      <tbody id="mcprows"></tbody></table>
+    </div>
   </section>
 
   <!-- SECRETS -->
@@ -334,6 +352,17 @@
     <p class="muted" id="planStatus"></p>
     <div class="modal-actions">
       <button type="button" class="btn danger" id="planClose">Close</button>
+    </div>
+  </div>
+</div>
+<div id="mcpModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="mcpModalTitle">
+  <div class="modal-card sheet">
+    <h3 id="mcpModalTitle">MCP login</h3>
+    <p class="muted">Authorize an MCP server. The host browser talks to the identity provider; the worker only ever gets a placeholder.</p>
+    <div id="mcpGroups"></div>
+    <p class="muted" id="mcpStatus"></p>
+    <div class="modal-actions">
+      <button type="button" class="btn danger" id="mcpClose">Close</button>
     </div>
   </div>
 </div>
@@ -813,6 +842,7 @@ function streamLog() {
   es.addEventListener('planning', ev => { loadPlanning().catch(() => {}); });
   es.addEventListener('route', ev => { loadRoutes().catch(() => {}); loadTopo().catch(() => {}); });
   es.addEventListener('activity', ev => { loadBoard().catch(() => {}); });
+  es.addEventListener('mcp', ev => { loadMCP().catch(() => {}); });
   es.onerror = () => {};
 }
 $('#logFilter').oninput = ev => {
@@ -1886,6 +1916,108 @@ $('#openPlanModal').onclick = () => {
   renderPlanGroups();
   $('#planModal').classList.add('open');
 };
+// ---- MCP inbox + tab ----
+let mcpItems = [];
+let mcpPending = [];
+let mcpSeen = new Set();
+let mcpSeeded = false;
+
+async function loadMCP() {
+  const rows = await api('/api/v1/mcp');
+  mcpItems = Array.isArray(rows) ? rows : [];
+  const pending = await api('/api/v1/mcp/pending');
+  mcpPending = Array.isArray(pending) ? pending : [];
+  const n = mcpPending.length;
+  const count = $('#mcpCount');
+  const btn = $('#openMcpModal');
+  if (count) count.textContent = String(n);
+  if (btn) btn.classList.toggle('mcp-hot', n > 0);
+  const fresh = mcpPending.filter(p => p.id && !mcpSeen.has(p.id));
+  mcpPending.forEach(p => { if (p.id) mcpSeen.add(p.id); });
+  if (mcpSeeded && fresh.length > 0) {
+    $('#mcpModal').classList.add('open');
+  }
+  mcpSeeded = true;
+  renderMCPTab();
+  if ($('#mcpModal').classList.contains('open')) renderMCPPending();
+}
+
+function renderMCPTab() {
+  const box = $('#mcprows');
+  if (!box) return;
+  box.innerHTML = '';
+  if (!mcpItems.length) {
+    box.append(el('tr', '', '<td colspan="6" class="muted">No MCP servers. Ask a worker to add one.</td>'));
+    return;
+  }
+  mcpItems.forEach((item) => {
+    const tr = el('tr', '', `<td>${esc(item.name||'')}</td><td class="mono">${esc(item.slug||item.worker||'')}</td>
+      <td class="mono">${esc(item.url||'')}</td>
+      <td class="mono">${esc(item.placeholder||'')}</td>
+      <td>${esc(item.status||'')}</td>
+      <td></td>`);
+    const td = tr.lastElementChild;
+    const auth = el('button', 'btn small', item.status === 'ok' ? 'Re-auth' : 'Authorize');
+    auth.onclick = () => authorizeMCP(item.id, auth);
+    td.append(auth);
+    if (item.status === 'ok') {
+      const rev = el('button', 'btn small danger', 'Revoke');
+      rev.style.marginLeft = '6px';
+      rev.onclick = () => revokeMCP(item.id, rev);
+      td.append(rev);
+    }
+    box.append(tr);
+  });
+}
+
+function renderMCPPending() {
+  const box = $('#mcpGroups');
+  box.innerHTML = '';
+  if (!mcpPending.length) {
+    box.append(el('p', 'muted', 'No MCP servers waiting for login.'));
+    return;
+  }
+  mcpPending.forEach((item) => {
+    const wrap = el('div', 'fail-group', `<p class="meta">${esc((item.slug || item.worker || '') + ' · ' + (item.name || ''))}</p>
+      <p class="mono">${esc(item.url || '')}</p>
+      <div class="fail-actions"></div>`);
+    const actions = wrap.querySelector('.fail-actions');
+    const auth = el('button', 'btn', 'Authorize');
+    auth.onclick = () => authorizeMCP(item.id, auth);
+    actions.append(auth);
+    box.append(wrap);
+  });
+}
+
+async function authorizeMCP(id, btn) {
+  if (btn) btn.disabled = true;
+  try {
+    const out = await api('/api/v1/mcp/' + encodeURIComponent(id) + '/authorize', {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'});
+    if (out && out.url) window.open(out.url, '_blank', 'noopener');
+    await loadMCP();
+  } catch (e) {
+    alert(e.message);
+  }
+  if (btn) btn.disabled = false;
+}
+
+async function revokeMCP(id, btn) {
+  if (btn) btn.disabled = true;
+  try {
+    await api('/api/v1/mcp/' + encodeURIComponent(id) + '/revoke', {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'});
+    await loadMCP();
+  } catch (e) {
+    alert(e.message);
+  }
+  if (btn) btn.disabled = false;
+}
+
+$('#openMcpModal').onclick = () => { renderMCPPending(); $('#mcpModal').classList.add('open'); };
+$('#mcpClose').onclick = () => $('#mcpModal').classList.remove('open');
+$('#mcpModal').addEventListener('click', (ev) => {
+  if (ev.target === $('#mcpModal')) $('#mcpModal').classList.remove('open');
+});
+
 $('#planClose').onclick = () => $('#planModal').classList.remove('open');
 $('#planModal').addEventListener('click', (ev) => {
   if (ev.target === $('#planModal')) {
@@ -1906,7 +2038,7 @@ $('#planModal').addEventListener('click', (ev) => {
     showErr('control API unreachable at ' + location.origin + ' — try http://127.0.0.1 (piso.local IPv6 needs ::1 published)');
     return;
   }
-  const loaders = [loadBoard, loadSecrets, loadRules, loadPatterns, loadExceptions, loadDomains, loadRoutes, loadWorkers, loadPlanning, loadLog];
+  const loaders = [loadBoard, loadMCP, loadSecrets, loadRules, loadPatterns, loadExceptions, loadDomains, loadRoutes, loadWorkers, loadPlanning, loadLog];
   for (const fn of loaders) {
     try {
       await fn();
@@ -1922,6 +2054,7 @@ $('#planModal').addEventListener('click', (ev) => {
   activateTab(tabFromHash() || 'board');
   setInterval(() => {
     loadPlanning().catch(() => {});
+    loadMCP().catch(() => {});
   }, 2000);
 })();
 </script>

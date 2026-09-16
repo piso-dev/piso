@@ -43,6 +43,38 @@ func TestPlaceholderSubstitutesWithRule(t *testing.T) {
 	}
 }
 
+func TestEmptyMCPSecretBlocksAuthRequired(t *testing.T) {
+	sec := model.Secret{ID: "s1", Placeholder: "piso_mcp_demo_ai-boost", Value: ""}
+	in := Input{
+		Method: "POST", Host: "mcp.example.com", Path: "/mcp",
+		Scan: scanner.Result{Placeholders: []model.Finding{{
+			Kind: model.FindingPlaceholder, Token: "piso_mcp_demo_ai-boost", Location: "authorization",
+		}}},
+		SecretByPlaceholder: map[string]model.Secret{"piso_mcp_demo_ai-boost": sec},
+		Rules:               []model.Rule{{ID: "r1", SecretID: "s1", Host: "mcp.example.com", Placeholder: "piso_mcp_demo_ai-boost"}},
+	}
+	d := Decide(in)
+	if d.Action != model.ActionBlock || len(d.Reasons) == 0 || d.Reasons[0] != model.ReasonMcpAuthRequired {
+		t.Fatalf("want block+mcp-auth-required, got %q %+v", d.Action, d.Reasons)
+	}
+}
+
+func TestFilledMCPSecretSubstitutes(t *testing.T) {
+	sec := model.Secret{ID: "s1", Placeholder: "piso_mcp_demo_ai-boost", Value: "tok-real"}
+	in := Input{
+		Method: "POST", Host: "mcp.example.com", Path: "/mcp",
+		Scan: scanner.Result{Placeholders: []model.Finding{{
+			Kind: model.FindingPlaceholder, Token: "piso_mcp_demo_ai-boost", Location: "authorization",
+		}}},
+		SecretByPlaceholder: map[string]model.Secret{"piso_mcp_demo_ai-boost": sec},
+		Rules:               []model.Rule{{ID: "r1", SecretID: "s1", Host: "mcp.example.com", Placeholder: "piso_mcp_demo_ai-boost"}},
+	}
+	d := Decide(in)
+	if d.Action != model.ActionSubstitute {
+		t.Fatalf("want substitute, got %q %+v", d.Action, d.Reasons)
+	}
+}
+
 func TestPlaceholderWithoutRuleBlocks(t *testing.T) {
 	in := Input{
 		Method: "POST", Host: "api.anthropic.com", Path: "/v1/messages",

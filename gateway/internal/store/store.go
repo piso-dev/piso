@@ -20,7 +20,7 @@ import (
 
 // CurrentStateVersion is written into state.json. Bump when adding a
 // migration in applyMigrations.
-const CurrentStateVersion = 4
+const CurrentStateVersion = 5
 
 // State is the persisted configuration.
 type State struct {
@@ -33,6 +33,7 @@ type State struct {
 	IngressRequests []IngressRequestRec `json:"ingressRequests,omitempty"`
 	Workers         []WorkerRec         `json:"workers,omitempty"`
 	Contexts        []WorkerCtx         `json:"contexts,omitempty"`
+	McpServers      []McpServerRec      `json:"mcpServers,omitempty"`
 }
 
 // JSON-friendly records (this package owns persistence shape).
@@ -96,10 +97,10 @@ type RouteRec struct {
 // The proxy resolves a request's origin IP to a worker slug via IPs, so logs
 // are marked with the project slug rather than a generic "worker".
 type WorkerRec struct {
-	Name             string    `json:"name"`    // container name, e.g. "piso-worker-demo"
-	Slug             string    `json:"slug"`    // project slug, e.g. "demo"
-	Dir              string    `json:"dir,omitempty"` // host project dir mounted at /workspace
-	IPs              []string  `json:"ips,omitempty"` // vpc IP addresses of the container
+	Name             string    `json:"name"`                       // container name, e.g. "piso-worker-demo"
+	Slug             string    `json:"slug"`                       // project slug, e.g. "demo"
+	Dir              string    `json:"dir,omitempty"`              // host project dir mounted at /workspace
+	IPs              []string  `json:"ips,omitempty"`              // vpc IP addresses of the container
 	InternetDisabled bool      `json:"internetDisabled,omitempty"` // true = gateway refuses egress
 	UpdatedAt        time.Time `json:"updatedAt"`
 }
@@ -108,8 +109,8 @@ type WorkerRec struct {
 // snapshotted onto each request-log row by AppendLog (labels describe the
 // request's origin worker at that moment; advisory only).
 type WorkerCtx struct {
-	Worker  string    `json:"worker"`     // container name
-	Slug    string    `json:"slug"`       // project slug (unique key)
+	Worker  string    `json:"worker"`            // container name
+	Slug    string    `json:"slug"`              // project slug (unique key)
 	Folder  string    `json:"folder,omitempty"`  // host path / worker cwd, e.g. /workspace
 	Project string    `json:"project,omitempty"` // repo name or folder basename
 	Branch  string    `json:"branch,omitempty"`  // git branch, "" when detached/absent
@@ -164,6 +165,9 @@ type Store struct {
 
 	// route changes (auto-published dev servers + host routes)
 	onRoute chan RouteRec // broadcast for SSE
+
+	// MCP OAuth rows (dashboard chip + tab)
+	onMcp chan McpServerRec // broadcast for SSE
 
 	// transient listener hints: worker → ports the watcher reported but the
 	// gateway cannot route to (loopback / specific-IP / v6-only binds)
@@ -228,6 +232,7 @@ func New(path, logPath, patternsPath, activitiesPath string, maxLog int) (*Store
 		onIngress:   make(chan IngressRequestRec, 64),
 		onRoute:     make(chan RouteRec, 64),
 		onActivity:  make(chan Activity, 64),
+		onMcp:       make(chan McpServerRec, 64),
 		unreachable: map[string][]UnreachablePort{},
 	}
 	if err := s.load(); err != nil {
@@ -307,6 +312,7 @@ func (s *Store) Exceptions() []ExceptionRec {
 	defer s.mu.RUnlock()
 	return copyExceptionRecs(s.state.Exceptions)
 }
+
 // UnreachablePort is a listener the worker reported but the gateway cannot
 // route to (loopback / specific-IP / IPv6-only bind). Advisory UI hint only;
 // never persisted.
@@ -332,7 +338,7 @@ func (s *Store) Routes() []RouteRec {
 	changed := false
 	now := timeNowMs()
 	for _, r := range s.state.Routes {
-		if r.LastSeenMs > 0 && now - r.LastSeenMs > AutoRouteGraceMs &&
+		if r.LastSeenMs > 0 && now-r.LastSeenMs > AutoRouteGraceMs &&
 			(r.Origin == AutoRouteOriginAuto || r.Origin == AutoRouteOriginPlan) {
 			changed = true
 			s.broadcastRoute(r)
@@ -550,7 +556,7 @@ func (s *Store) SyncRulesForSecret(rec SecretRec) error {
 	for _, h := range hosts {
 		seq++
 		s.state.Rules = append(s.state.Rules, RuleRec{
-			ID: fmt.Sprintf("rule_%x%02d", time.Now().UnixNano(), seq),
+			ID:       fmt.Sprintf("rule_%x%02d", time.Now().UnixNano(), seq),
 			SecretID: rec.ID, Host: h, Placeholder: rec.Placeholder,
 		})
 	}

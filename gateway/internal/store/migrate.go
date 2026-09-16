@@ -60,5 +60,13 @@ func applyMigrations(st *State) bool {
 		st.Version = 4
 		changed = true
 	}
+	// v4→v5: gateway-brokered MCP OAuth rows.
+	if st.Version < 5 {
+		if st.McpServers == nil {
+			st.McpServers = []McpServerRec{}
+		}
+		st.Version = 5
+		changed = true
+	}
 	return changed
 }

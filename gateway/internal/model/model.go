@@ -124,6 +124,7 @@ type Reason string
 
 const (
 	ReasonNoSecretRule     Reason = "no-secret-rule"       // placeholder present, no substitution rule
+	ReasonMcpAuthRequired  Reason = "mcp-auth-required"    // MCP placeholder present, vault empty until dashboard login
 	ReasonRealSecret       Reason = "real-secret-detected" // exact known credential found
 	ReasonSecretPattern    Reason = "credential-pattern"   // looks like a credential (regex hit)
 	ReasonDeniedDomain     Reason = "denied-domain"        // host on deny list
@@ -131,6 +132,30 @@ const (
 	ReasonAllowedException Reason = "allowed-exception"    // user exception; informational, not a block
 	ReasonAllowedDomain    Reason = "allowed-domain"       // informational
 )
+
+// MCP server status values (gateway-brokered OAuth).
+const (
+	McpStatusNeedsAuth = "needs-auth"
+	McpStatusOK        = "ok"
+	McpStatusExpired   = "expired"
+	McpStatusRevoked   = "revoked"
+)
+
+// McpServer is the log-safe view of a gateway-brokered MCP server.
+// Real OAuth tokens never appear here.
+type McpServer struct {
+	ID          string     `json:"id"`
+	Worker      string     `json:"worker"`
+	Slug        string     `json:"slug"`
+	Name        string     `json:"name"`
+	URL         string     `json:"url"`
+	Placeholder string     `json:"placeholder"`
+	Status      string     `json:"status"`
+	Host        string     `json:"host,omitempty"`
+	ExpiresAt   *time.Time `json:"expiresAt,omitempty"`
+	CreatedAt   time.Time  `json:"createdAt"`
+	UpdatedAt   time.Time  `json:"updatedAt"`
+}
 
 // RequestRecord is the request log entry. Retryable requests carry the full
 // captured request so the gateway can replay them after a rule is added.
