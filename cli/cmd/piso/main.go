@@ -156,6 +156,9 @@ func cmdUp(args []string) error {
 	if err := pisoconfig.EnsurePiProfileFiles(); err != nil {
 		return err
 	}
+	if err := pisoconfig.EnsureCAFiles(); err != nil {
+		return err
+	}
 	// If our control plane is already healthy, the host ports are ours.
 	// Otherwise fail before compose if something else owns them.
 	if !healthy(pisoconfig.ControlAPIURL()) {
@@ -994,6 +997,12 @@ func rebuildGateway() error {
 	if err := pisoconfig.EnsureWorkerPlaceholdersEnv("monitor"); err != nil {
 		return err
 	}
+	if err := pisoconfig.EnsurePiProfileFiles(); err != nil {
+		return err
+	}
+	if err := pisoconfig.EnsureCAFiles(); err != nil {
+		return err
+	}
 	if err := startGateway(true); err != nil {
 		return err
 	}
@@ -1418,14 +1427,17 @@ func startGateway(forceRecreate bool) error {
 func waitGatewayHealthy() error {
 	gw := pisoconfig.ControlAPIURL()
 	dash := pisoconfig.DashboardURL()
+	var last string
 	for i := 0; i < 30; i++ {
-		if healthy(gw) {
+		ok, why := healthStatus(gw)
+		if ok {
 			fmt.Printf("piso: gateway live — dashboard: %s\n", dash)
 			return nil
 		}
+		last = why
 		time.Sleep(time.Second)
 	}
-	return fmt.Errorf("gateway did not become healthy within 30s")
+	return fmt.Errorf("gateway did not become healthy within 30s (%s → %s). Check: docker logs piso-gateway; docker port piso-gateway", gw+"/api/v1/health", last)
 }
 
 const workerReadyTimeout = 2 * time.Minute
@@ -1495,12 +1507,21 @@ func dockerComposeEnv() (map[string]string, error) {
 }
 
 func healthy(gw string) bool {
-	resp, err := http.Get(gw + "/api/v1/health")
+	ok, _ := healthStatus(gw)
+	return ok
+}
+
+func healthStatus(gw string) (bool, string) {
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Get(gw + "/api/v1/health")
 	if err != nil {
-		return false
+		return false, err.Error()
 	}
 	defer resp.Body.Close()
-	return resp.StatusCode == 200
+	if resp.StatusCode != 200 {
+		return false, fmt.Sprintf("HTTP %d", resp.StatusCode)
+	}
+	return true, ""
 }
 
 func getJSON(url string, v any) error {

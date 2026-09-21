@@ -213,6 +213,27 @@ func TestEnsureWorkerPlaceholdersEnvCreatesFile(t *testing.T) {
 	}
 }
 
+func TestEnsureCAFilesReplacesDockerDir(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("PISO_DATA", dir)
+	crt := filepath.Join(dir, "ca.crt")
+	if err := os.Mkdir(crt, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := EnsureCAFiles(); err != nil {
+		t.Fatal(err)
+	}
+	st, err := os.Stat(crt)
+	if err != nil || st.IsDir() {
+		t.Fatalf("ca.crt must be a file, stat=%v err=%v", st, err)
+	}
+	key := filepath.Join(dir, "ca.key")
+	st, err = os.Stat(key)
+	if err != nil || st.IsDir() {
+		t.Fatalf("ca.key must be a file, stat=%v err=%v", st, err)
+	}
+}
+
 func TestEnsurePlaceholdersEnvCreatesFile(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("PISO_DATA", dir)

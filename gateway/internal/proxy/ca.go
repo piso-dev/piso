@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"bytes"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
@@ -36,7 +37,7 @@ type leafEntry struct {
 func LoadCA(certFile, keyFile string) (*CA, error) {
 	certPEM, err1 := os.ReadFile(certFile)
 	keyPEM, err2 := os.ReadFile(keyFile)
-	if err1 == nil && err2 == nil {
+	if err1 == nil && err2 == nil && len(bytes.TrimSpace(certPEM)) > 0 && len(bytes.TrimSpace(keyPEM)) > 0 {
 		ca, err := parseCA(certPEM, keyPEM)
 		if err != nil {
 			return nil, err

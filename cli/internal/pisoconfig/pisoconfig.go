@@ -343,6 +343,39 @@ func EnsureWorkerPlaceholdersEnv(slug string) error {
 	return ensurePlaceholderFile(path)
 }
 
+// EnsureCAFiles makes ~/.piso/ca.crt and ca.key real files. Docker creates a
+// directory when a file bind-mount source is missing; the monitor mounts
+// ca.crt before the gateway can generate it, which yields
+// `open /data/ca.crt: is a directory`. Empty files are fine: LoadCA treats
+// them as missing and writes the real PEM.
+func EnsureCAFiles() error {
+	dir, err := DataDir()
+	if err != nil {
+		return err
+	}
+	for _, name := range []string{"ca.crt", "ca.key"} {
+		if err := ensureFileNotDir(filepath.Join(dir, name)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func ensureFileNotDir(path string) error {
+	st, err := os.Stat(path)
+	if err == nil {
+		if !st.IsDir() {
+			return nil
+		}
+		if err := os.RemoveAll(path); err != nil {
+			return fmt.Errorf("%s is a directory (docker bind-mount of a missing file); remove failed: %w", path, err)
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	return os.WriteFile(path, nil, 0o600)
+}
+
 // EnsurePiProfileFiles creates empty profile files so Docker bind-mounts files.
 func EnsurePiProfileFiles() error {
 	dir, err := DataDir()

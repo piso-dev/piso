@@ -3,6 +3,7 @@ package proxy
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -11,6 +12,29 @@ import (
 // cached leaf returned the CA's own private key, breaking every connection
 // after the first to the same hostname ("error decrypting message" /
 // RSA "first octet invalid" handshakes).
+func TestLoadCAEmptyFilesGenerate(t *testing.T) {
+	dir := t.TempDir()
+	crt := filepath.Join(dir, "ca.crt")
+	key := filepath.Join(dir, "ca.key")
+	if err := os.WriteFile(crt, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(key, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ca, err := LoadCA(crt, key)
+	if err != nil {
+		t.Fatalf("LoadCA empty files: %v", err)
+	}
+	if ca == nil || ca.cert == nil {
+		t.Fatal("expected generated CA")
+	}
+	st, err := os.Stat(crt)
+	if err != nil || st.Size() == 0 {
+		t.Fatalf("ca.crt should be written, size=%v err=%v", st, err)
+	}
+}
+
 func TestCACacheKeyMatchesCert(t *testing.T) {
 	dir := t.TempDir()
 	ca, err := LoadCA(filepath.Join(dir, "ca.crt"), filepath.Join(dir, "ca.key"))
