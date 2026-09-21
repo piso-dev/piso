@@ -42,22 +42,27 @@ COPY package.json /opt/piso/npm/package.json
 RUN cd /opt/piso/npm \
   && npm install --omit=dev --ignore-scripts --no-audit --no-fund \
        --fetch-retries=5 --fetch-retry-mintimeout=20000 \
-  && npm rebuild node-pty \
+  && if [ -d node_modules/node-pty ]; then npm rebuild node-pty; fi \
   && if grep -qE '"dependencies"[[:space:]]*:[[:space:]]*\{[[:space:]]*"' package.json && [ ! -d node_modules ]; then \
        echo "piso: npm install produced no node_modules" >&2; exit 1; \
      fi \
   && sha256sum package.json | awk '{print substr($1,1,16)}' > .piso-pkg-hash
 
-# node-pty ships no linux prebuild. Ship the pty.node that `npm rebuild
-# node-pty` just compiled so ANY runtime reinstall (pi's extension manager
-# reinstalls into this tree) short-circuits at prebuild.js with exit 0 and
-# never calls node-gyp. Inside a hardened worker (cap_drop ALL) node-gyp's
-# header-tarball extraction attempts fchown for tarball uid/gid, which the
-# kernel denies (EPERM) — this is the `TAR_ENTRY_ERROR EPERM: fchown` seen
-# at image runtime.
-RUN PB="node_modules/node-pty/prebuilds/$(node -e 'process.stdout.write(process.platform + "-" + process.arch)')" \
-  && mkdir -p "/opt/piso/npm/$PB" \
-  && cp "/opt/piso/npm/node_modules/node-pty/build/Release/pty.node" "/opt/piso/npm/$PB/pty.node"
+# node-pty ships no linux prebuild. When an extension pulled it in, ship the
+# pty.node that `npm rebuild node-pty` just compiled so ANY runtime reinstall
+# (pi's extension manager reinstalls into this tree) short-circuits at
+# prebuild.js with exit 0 and never calls node-gyp. Inside a hardened worker
+# (cap_drop ALL) node-gyp's header-tarball extraction attempts fchown for
+# tarball uid/gid, which the kernel denies (EPERM) — this is the
+# `TAR_ENTRY_ERROR EPERM: fchown` seen at image runtime.
+# A fresh machine with empty host extensions has no node-pty: skip.
+RUN if [ -d /opt/piso/npm/node_modules/node-pty ]; then \
+      cd /opt/piso/npm \
+      && test -f node_modules/node-pty/build/Release/pty.node \
+      && PB="node_modules/node-pty/prebuilds/$(node -e 'process.stdout.write(process.platform + "-" + process.arch)')" \
+      && mkdir -p "$PB" \
+      && cp node_modules/node-pty/build/Release/pty.node "$PB/pty.node"; \
+    fi
 
 # Bake node-gyp's dev headers for the image's exact node version so a native
 # configure can skip the header-tarball download+extract (whose fchown is
