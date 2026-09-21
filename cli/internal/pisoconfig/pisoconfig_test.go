@@ -18,6 +18,19 @@ func writeTree(t *testing.T, root string) {
 	}
 }
 
+func TestComposeHostPathForwardSlashes(t *testing.T) {
+	if filepath.Separator != '\\' {
+		if got := ComposeHostPath("/home/foo/.piso"); got != "/home/foo/.piso" {
+			t.Fatalf("unix path: %q", got)
+		}
+		return
+	}
+	got := ComposeHostPath(`C:\Users\foo\.piso`)
+	if strings.Contains(got, `\`) {
+		t.Fatalf("backslash remains: %q", got)
+	}
+}
+
 func TestHomePrefersPISO_HOME(t *testing.T) {
 	root := t.TempDir()
 	writeTree(t, root)

@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 )
@@ -14,9 +15,10 @@ import (
 // http://piso.local (no port). In-container listen ports stay 8080/8081/8082
 // so the worker's HTTP_PROXY=gateway:8080 does not change.
 const (
-	DefaultProxyPort   = 8080
-	DefaultControlPort = 80
-	DefaultIngressPort = 8082
+	DefaultProxyPort          = 8080
+	DefaultControlPort        = 80
+	DefaultControlPortWindows = 8081
+	DefaultIngressPort        = 8082
 )
 
 // DashboardHost is the browser hostname for the control-plane UI.
@@ -29,9 +31,14 @@ type HostPorts struct {
 	Ingress int `json:"ingressPort"`
 }
 
-// DefaultHostPorts returns the built-in 8080/8081/8082 mapping.
+// DefaultHostPorts returns the built-in mapping. Control is 80 everywhere
+// except Windows, where 80 is often reserved (IIS / Hyper-V excluded ranges).
 func DefaultHostPorts() HostPorts {
-	return HostPorts{Proxy: DefaultProxyPort, Control: DefaultControlPort, Ingress: DefaultIngressPort}
+	ctrl := DefaultControlPort
+	if runtime.GOOS == "windows" {
+		ctrl = DefaultControlPortWindows
+	}
+	return HostPorts{Proxy: DefaultProxyPort, Control: ctrl, Ingress: DefaultIngressPort}
 }
 
 // ResolveHostPorts merges, in order: defaults, ~/.piso/ports.json, process

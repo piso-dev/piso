@@ -56,6 +56,33 @@ piso expose 5173 --name preview   # reverse-proxy a worker dev server
 
 `make install` (including `sudo make install` over an existing copy) replaces `$(PREFIX)/bin/piso` and `$(PREFIX)/share/piso`, then runs `piso setup --rebuild` as the login user. That imports any leftover repo `.piso` files that `~/.piso` does not already have, rebuilds the gateway image, recreates the container, and migrates `state.json` on startup. Live secrets in `~/.piso` are kept. Gateway secrets/CA/logs live in `~/.piso` (`PISO_DATA` overrides). Override the share tree with `PISO_HOME`. Secrets filled in the dashboard **Blocked secrets** modal are stored in the gateway; the next `piso attach` exports placeholders only (`ANTHROPIC_API_KEY=piso_…`) from `~/.piso/placeholders.env`. Existing workers need one `piso up` to mount that file.
 
+### Windows
+
+The worker and gateway are still Linux containers. Native `piso.exe` talks to Docker Desktop (Linux engine). Cloning inside WSL2 and following the Unix install above is simpler and faster for project bind-mounts; use this path when you want a Windows CLI.
+
+Prereqs: Git for Windows, Go (see `go.mod`), Docker Desktop **Linux containers**, Windows Terminal.
+
+```powershell
+git clone <this-repo>
+cd piso
+.\scripts\install.ps1
+cd \path\to\your\project
+piso up
+piso attach
+piso dashboard
+```
+
+`install.ps1` builds `piso.exe`, copies it to `%LOCALAPPDATA%\piso\` (`bin\` + `share\piso\`), adds that bin dir to your user PATH, and runs `piso setup --rebuild`. Open a new terminal after the first install so PATH is picked up.
+
+- First `piso up` bakes the Linux worker image (minutes) and may prompt Docker Desktop to share the drive that holds your project.
+- Control port defaults to **8081** on Windows (port 80 is often reserved). Dashboard: `http://piso.local:8081` or `http://127.0.0.1:8081`.
+- Writing `C:\Windows\System32\drivers\etc\hosts` needs an elevated terminal (`piso sync`). Without it, `piso up` still starts; use the loopback URL.
+- There is no hosts-sync Windows service yet; re-run elevated `piso sync` when auto-expose adds a route.
+- For `https://*.piso.local` in Edge/Chrome, trust the MITM CA:
+  `certutil -addstore -user Root $env:USERPROFILE\.piso\ca.crt`
+- Bind-mounting `C:\...` into Linux is slower than a WSL ext4 path. Prefer WSL checkouts if pi feels disk-bound.
+- `.gitattributes` forces LF for shell scripts copied into the Linux image. Do not recrlf them.
+
 The dashboard is **http://piso.local** (host port 80 → container 8081). `piso up` adds `127.0.0.1 piso.local` to `/etc/hosts` when it can; otherwise it prints the line to add. If port 80 is taken:
 
 ```bash

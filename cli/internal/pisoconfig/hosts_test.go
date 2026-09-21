@@ -3,6 +3,7 @@ package pisoconfig
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -113,13 +114,13 @@ func TestReconcilePreservesNonPisoLines(t *testing.T) {
 
 func TestReconcileIdempotent(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "hosts")
+	old := HostsPath
+	HostsPath = path
+	t.Cleanup(func() { HostsPath = old })
 	if err := os.WriteFile(path, []byte("127.0.0.1 localhost\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := ReconcileIngressHosts([]string{"demo-8080", "bad-name"}); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, []byte("127.0.0.1 localhost\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := ReconcileIngressHosts([]string{"demo-8080", "bad-name"}); err != nil {
@@ -134,5 +135,47 @@ func TestReconcileIdempotent(t *testing.T) {
 	}
 	if strings.Count(string(b), "demo-8080.piso.local") != 2 {
 		t.Fatalf("reconcile not idempotent:\n%s", string(b))
+	}
+}
+
+func TestDefaultHostsPath(t *testing.T) {
+	p := defaultHostsPath()
+	if runtime.GOOS == "windows" {
+		lower := strings.ToLower(p)
+		if !strings.Contains(lower, "drivers") || !strings.Contains(lower, "hosts") {
+			t.Fatalf("windows hosts path: %s", p)
+		}
+		return
+	}
+	if p != "/etc/hosts" {
+		t.Fatalf("unix hosts path: %s", p)
+	}
+}
+
+func TestReplaceFileOverwrites(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "hosts")
+	if err := os.WriteFile(path, []byte("old\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := replaceFile(path, []byte("new\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(b) != "new\n" {
+		t.Fatalf("got %q", b)
+	}
+}
+
+func TestSplitHostsLinesCRLF(t *testing.T) {
+	lines := splitHostsLines("127.0.0.1 localhost\r\n::1 localhost\r\n")
+	if len(lines) < 2 || strings.Contains(lines[0], "\r") {
+		t.Fatalf("lines: %#v", lines)
+	}
+	if !hostsHasName("127.0.0.1 piso.local # managed by piso\r\n", "127.0.0.1", DashboardHost) {
+		t.Fatal("CRLF hostsHasName missed piso.local")
 	}
 }

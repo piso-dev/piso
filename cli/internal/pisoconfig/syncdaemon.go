@@ -31,8 +31,18 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
+
+// ErrSyncDaemonUnsupported is returned on Windows: launchd/nohup are not
+// available, and writing the hosts file still needs an elevated `piso sync`.
+var ErrSyncDaemonUnsupported = fmt.Errorf("hosts-sync daemon is not supported on Windows; run an elevated `piso sync` after routes change, or add the printed hosts lines manually")
+
+// SyncDaemonSupported is false on Windows (no launchd/nohup service).
+func SyncDaemonSupported() bool {
+	return runtime.GOOS != "windows"
+}
 
 const syncDaemonLabel = "com.piso.sync"
 const syncPidFile    = "sync.pid"
@@ -86,6 +96,9 @@ func daemonAlive(pid string) bool {
 // starts it. Idempotent: an already-running daemon is replaced. Escalates to
 // root for the privileged parts.
 func SyncDaemonInstallRestart() error {
+	if !SyncDaemonSupported() {
+		return ErrSyncDaemonUnsupported
+	}
 	if err := ensureRoot("daemon-restart"); err != nil {
 		return err
 	}
@@ -94,6 +107,9 @@ func SyncDaemonInstallRestart() error {
 
 // SyncDaemonStop stops the managed service. Idempotent.
 func SyncDaemonStop() error {
+	if !SyncDaemonSupported() {
+		return ErrSyncDaemonUnsupported
+	}
 	if err := ensureRoot("daemon-stop"); err != nil {
 		return err
 	}
@@ -103,6 +119,9 @@ func SyncDaemonStop() error {
 // SyncDaemonUninstall stops the service and removes the managed config
 // (launchd plist / nohup entry + pidfile). The user's data dir is kept.
 func SyncDaemonUninstall() error {
+	if !SyncDaemonSupported() {
+		return ErrSyncDaemonUnsupported
+	}
 	if err := ensureRoot("daemon-uninstall"); err != nil {
 		return err
 	}

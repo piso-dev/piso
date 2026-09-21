@@ -1,0 +1,15 @@
+# Worker scripts are COPY'd into a Linux image. CRLF shebangs (`#!/bin/bash\r`)
+# fail in ways that look like Docker bugs. Keep the image-bound text LF even
+# on a default Git-for-Windows checkout.
+* text=auto
+*.sh text eol=lf
+*.py text eol=lf
+Dockerfile text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.tmpl text eol=lf
+go.mod text eol=lf
+go.sum text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+*.ps1 text eol=lf

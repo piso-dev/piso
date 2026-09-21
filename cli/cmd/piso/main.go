@@ -18,7 +18,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"syscall"
 	"time"
 
 	"piso/cli/internal/dockernet"
@@ -105,10 +104,12 @@ Usage:
 Host ports default to 8080 (proxy) and 80 (single web port: dashboard at
 http://piso.local AND every route at http://<label>.piso.local, dispatched by
 Host — no port in any URL). 8082 remains as the legacy ingress alias.
+On Windows the control port defaults to 8081 (port 80 is often reserved).
 If a port is taken, piso up exits with the flag to override
 (--proxy-port, --ctrl-port, --ingress-port). Env: PISO_*_PORT.
-make install runs piso setup --rebuild so an existing install is replaced
-in place (binaries, share tree, gateway image, and state.json schema).
+make install (Unix) or scripts/install.ps1 (Windows) runs piso setup --rebuild
+so an existing install is replaced in place (binaries, share tree, gateway
+image, and state.json schema).
 `)
 }
 
@@ -132,12 +133,16 @@ func cmdUp(args []string) error {
 	}
 	fmt.Printf("piso: project %q (slug %s)\n", proj.Dir, proj.Slug)
 
+	if err := dockernet.AssertLinuxEngine(); err != nil {
+		return err
+	}
 	ports, err := pisoconfig.ResolveHostPorts(cliPorts)
 	if err != nil {
 		return err
 	}
 	if err := pisoconfig.EnsurePisoLocal(); err != nil {
-		return err
+		fmt.Fprintf(os.Stderr, "piso: warning: %v\n", err)
+		fmt.Fprintf(os.Stderr, "piso: dashboard loopback: %s\n", pisoconfig.ControlAPIURL())
 	}
 	if err := pisoconfig.EnsureWorkerPlaceholdersEnv(proj.Slug); err != nil {
 		return err
@@ -532,14 +537,11 @@ func isKilled137(err error) bool {
 		return false
 	}
 	// docker exec maps SIGKILL to 137 (128+9). A direct child reports the
-	// signal instead (ExitCode -1).
+	// signal instead (ExitCode -1). processSignaledKill is Unix-only.
 	if ee.ExitCode() == 137 {
 		return true
 	}
-	if ws, ok := ee.Sys().(syscall.WaitStatus); ok {
-		return ws.Signaled() && ws.Signal() == syscall.SIGKILL
-	}
-	return false
+	return processSignaledKill(ee)
 }
 
 // shq single-quotes s so it embeds losslessly in the worker's bash -lc
@@ -823,6 +825,9 @@ func cmdSync(args []string) error {
 // service. Running → leave it; stopped → install/restart it. Errors are the
 // caller's to downgrade (piso up warns instead of failing).
 func ensureSyncDaemon() error {
+	if !pisoconfig.SyncDaemonSupported() {
+		return pisoconfig.ErrSyncDaemonUnsupported
+	}
 	st, err := pisoconfig.SyncDaemonStatus()
 	if err != nil {
 		return err
@@ -908,6 +913,8 @@ func cmdDashboard(args []string) error {
 		cmd = exec.Command("open", gw)
 	case "linux":
 		cmd = exec.Command("xdg-open", gw)
+	case "windows":
+		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", gw)
 	default:
 		return fmt.Errorf("unsupported platform: %s", runtime.GOOS)
 	}
@@ -964,6 +971,9 @@ func cmdSetup(args []string) error {
 // container. The gateway store migrates state.json on startup. Workers
 // are left running.
 func rebuildGateway() error {
+	if err := dockernet.AssertLinuxEngine(); err != nil {
+		return err
+	}
 	ports := pisoconfig.LoadHostPorts()
 	if !healthy(pisoconfig.ControlAPIURL()) {
 		if err := pisoconfig.CheckHostPortsFree(ports); err != nil {
@@ -991,7 +1001,19 @@ func rebuildGateway() error {
 		return err
 	}
 	fmt.Println("piso: gateway rebuilt")
+	printTrustCAHint()
 	return nil
+}
+
+func printTrustCAHint() {
+	if runtime.GOOS != "windows" {
+		return
+	}
+	dir, err := pisoconfig.DataDir()
+	if err != nil {
+		return
+	}
+	fmt.Printf("piso: trust the MITM CA in Windows (needed for https://*.piso.local):\n  certutil -addstore -user Root %s\n", filepath.Join(dir, "ca.crt"))
 }
 
 // updateDecision is the cmdUpdate gate: for a given pinned/current pi version,
@@ -1465,7 +1487,7 @@ func dockerComposeEnv() (map[string]string, error) {
 	p := pisoconfig.LoadHostPorts()
 	return map[string]string{
 		"DOCKER_BUILDKIT":   "1",
-		"PISO_DATA":         data,
+		"PISO_DATA":         pisoconfig.ComposeHostPath(data),
 		"PISO_PROXY_PORT":   fmt.Sprintf("%d", p.Proxy),
 		"PISO_CTRL_PORT":    fmt.Sprintf("%d", p.Control),
 		"PISO_INGRESS_PORT": fmt.Sprintf("%d", p.Ingress),

@@ -3,6 +3,7 @@ package pisoconfig
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -13,6 +14,12 @@ func daemonTestDir(t *testing.T) string {
 	dir := t.TempDir()
 	t.Setenv("PISO_DATA", dir)
 	return dir
+}
+
+func TestSyncDaemonSupported(t *testing.T) {
+	if SyncDaemonSupported() == (runtime.GOOS == "windows") {
+		t.Fatalf("SyncDaemonSupported()=%v on %s", SyncDaemonSupported(), runtime.GOOS)
+	}
 }
 
 func TestSyncDaemonStatusStoppedWithoutPidfile(t *testing.T) {

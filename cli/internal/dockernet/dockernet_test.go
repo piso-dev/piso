@@ -2,6 +2,7 @@ package dockernet
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -33,6 +34,28 @@ func TestIsMissingNetwork(t *testing.T) {
 	}
 	if isMissingNetwork("", nil) {
 		t.Fatal("nil error is not missing")
+	}
+}
+
+func TestDockerCandidatesWindows(t *testing.T) {
+	got := dockerCandidates("windows", `C:\Users\x`, `C:\Program Files`)
+	joined := strings.Join(got, "\n")
+	if !strings.Contains(joined, "docker.exe") {
+		t.Fatalf("expected docker.exe, got %v", got)
+	}
+	if strings.Contains(joined, "orbstack") {
+		t.Fatal("orbstack should not be a windows candidate")
+	}
+}
+
+func TestDockerCandidatesUnix(t *testing.T) {
+	got := dockerCandidates("linux", "/home/u", "")
+	joined := strings.Join(got, "\n")
+	if !strings.Contains(joined, "orbstack") {
+		t.Fatalf("expected orbstack candidate, got %v", got)
+	}
+	if strings.Contains(joined, "docker.exe") {
+		t.Fatal("docker.exe should not be a unix candidate")
 	}
 }
 

@@ -33,7 +33,8 @@ services:
     volumes:
       # Machine-level state (secrets, CA, log). The CLI sets PISO_DATA
       # (default ~/.piso) so an installed binary does not need a writable repo.
-      - ${PISO_DATA}:/data
+      # Quoted so Windows `C:/Users/...` survives YAML.
+      - "${PISO_DATA}:/data"
     environment:
       PISO_STATE_FILE: /data/state.json
       PISO_PATTERNS_FILE: /data/patterns.json
@@ -73,10 +74,10 @@ services:
     command: /usr/local/bin/piso-monitor-loop
     volumes:
       - piso-agent-monitor:/root/.pi/agent   # own session volume; NO project mount
-      - ${PISO_DATA}/ca.crt:/piso-ca.pem:ro
-      - ${PISO_DATA}/pi-profile/settings.json:/root/.pi/agent/settings.json:ro
-      - ${PISO_DATA}/pi-profile/models.json:/root/.pi/agent/models.json:ro
-      - ${PISO_DATA}/workers/monitor:/etc/piso:ro   # dir mount: env rewrites are visible live (atomic rename swaps the inode)
+      - "${PISO_DATA}/ca.crt:/piso-ca.pem:ro"
+      - "${PISO_DATA}/pi-profile/settings.json:/root/.pi/agent/settings.json:ro"
+      - "${PISO_DATA}/pi-profile/models.json:/root/.pi/agent/models.json:ro"
+      - "${PISO_DATA}/workers/monitor:/etc/piso:ro"   # dir mount: env rewrites are visible live (atomic rename swaps the inode)
     environment:
       HTTPS_PROXY: http://gateway:8080
       HTTP_PROXY: http://gateway:8080

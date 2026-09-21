@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -101,29 +102,65 @@ func isMissingNetwork(out string, err error) bool {
 // LookPath finds the docker CLI. `sudo make install` drops privileges with a
 // thin PATH, so we also probe common Desktop / OrbStack locations.
 func LookPath() (string, error) {
-	if p, err := exec.LookPath("docker"); err == nil {
-		return p, nil
+	names := []string{"docker"}
+	if runtime.GOOS == "windows" {
+		names = []string{"docker.exe", "docker"}
 	}
-	var candidates []string
-	if home, err := os.UserHomeDir(); err == nil {
-		candidates = append(candidates,
-			filepath.Join(home, ".orbstack", "bin", "docker"),
-			filepath.Join(home, ".docker", "bin", "docker"),
-		)
+	for _, name := range names {
+		if p, err := exec.LookPath(name); err == nil {
+			return p, nil
+		}
 	}
-	candidates = append(candidates,
-		"/usr/local/bin/docker",
-		"/opt/homebrew/bin/docker",
-		"/usr/bin/docker",
-	)
-	for _, c := range candidates {
+	home, _ := os.UserHomeDir()
+	for _, c := range dockerCandidates(runtime.GOOS, home, os.Getenv("ProgramFiles")) {
 		info, err := os.Stat(c)
 		if err != nil || info.IsDir() {
 			continue
 		}
 		return c, nil
 	}
+	if runtime.GOOS == "windows" {
+		return "", fmt.Errorf("docker not found in PATH; install Docker Desktop and switch it to Linux containers")
+	}
 	return "", fmt.Errorf("docker not found in PATH; install Docker Desktop or OrbStack")
+}
+
+func dockerCandidates(goos, home, programFiles string) []string {
+	var out []string
+	if goos == "windows" {
+		if home != "" {
+			out = append(out, filepath.Join(home, ".docker", "bin", "docker.exe"))
+		}
+		if programFiles != "" {
+			out = append(out, filepath.Join(programFiles, "Docker", "Docker", "resources", "bin", "docker.exe"))
+		}
+		return out
+	}
+	if home != "" {
+		out = append(out,
+			filepath.Join(home, ".orbstack", "bin", "docker"),
+			filepath.Join(home, ".docker", "bin", "docker"),
+		)
+	}
+	return append(out,
+		"/usr/local/bin/docker",
+		"/opt/homebrew/bin/docker",
+		"/usr/bin/docker",
+	)
+}
+
+// AssertLinuxEngine fails when Docker is missing or is running Windows
+// containers. The worker image is Debian; Windows containers cannot run it.
+func AssertLinuxEngine() error {
+	out, err := dockerOutput("info", "--format", "{{.OSType}}")
+	if err != nil {
+		return fmt.Errorf("docker info: %s: %w", out, err)
+	}
+	osType := strings.TrimSpace(out)
+	if !strings.EqualFold(osType, "linux") {
+		return fmt.Errorf("Docker is using %q containers; switch Docker Desktop to Linux containers", osType)
+	}
+	return nil
 }
 
 // dockerOutput runs `docker args...` and returns trimmed combined output.

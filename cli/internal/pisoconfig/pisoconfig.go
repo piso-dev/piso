@@ -62,6 +62,12 @@ func slug(dir string) string {
 // template's container_name).
 func (p Project) WorkerName() string { return "piso-worker-" + p.Slug }
 
+// ComposeHostPath is a docker-compose-safe host path (forward slashes).
+// Windows bind mounts in unquoted YAML break on `C:\Users` (`\U` is an escape).
+func ComposeHostPath(p string) string {
+	return filepath.ToSlash(p)
+}
+
 // Home is the piso share/repo root: compose/, worker/, gateway/.
 // Resolution order: PISO_HOME, a checkout walked from the cwd (so `piso up`
 // inside this repo uses the local Dockerfile, not a stale make-install copy),
@@ -164,7 +170,7 @@ func WriteWorkerCompose(p Project) (string, error) {
 	}
 	out := string(raw)
 	out = strings.ReplaceAll(out, "PROJ-SLUG", p.Slug)
-	out = strings.ReplaceAll(out, "PROJECT_DIR", p.Dir)
+	out = strings.ReplaceAll(out, "PROJECT_DIR", ComposeHostPath(p.Dir))
 	// Staged under PISO_DATA so host extension package.json is not written
 	// into the repo / make-install share tree.
 	workerDir, err := WorkerBuildDir()
@@ -175,12 +181,12 @@ func WriteWorkerCompose(p Project) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("worker context hash: %w (run piso up so the build context is staged)", err)
 	}
-	out = strings.ReplaceAll(out, "WORKER_BUILD_CONTEXT", workerDir)
+	out = strings.ReplaceAll(out, "WORKER_BUILD_CONTEXT", ComposeHostPath(workerDir))
 	// __WORKER_HASH__ must not be a substring of PISO_WORKER_HASH (ReplaceAll
 	// of WORKER_HASH previously rewrote the ARG name and the label stayed "dev").
 	out = strings.ReplaceAll(out, "__WORKER_HASH__", hash)
 	// CA is written by the gateway into the machine-level data dir, not the project.
-	out = strings.ReplaceAll(out, "CA_DIR", dataDir)
+	out = strings.ReplaceAll(out, "CA_DIR", ComposeHostPath(dataDir))
 	out = strings.ReplaceAll(out, "GATEWAY_CONTROL", GatewayURL())
 
 	dest, err := WorkerComposePath(p.Slug)

@@ -12,7 +12,7 @@ services:
     # worse, bake an empty stub and then npm-install through the gateway).
     image: piso-worker
     build:
-      context: WORKER_BUILD_CONTEXT
+      context: "WORKER_BUILD_CONTEXT"
       network: host
       args:
         PISO_WORKER_HASH: __WORKER_HASH__
@@ -23,12 +23,12 @@ services:
     stdin_open: true
     tty: true
     volumes:
-      - PROJECT_DIR:/workspace          # the only host files the agent sees
+      - "PROJECT_DIR:/workspace"          # the only host files the agent sees
       - piso-agent-PROJ-SLUG:/root/.pi/agent   # pi sessions/npm persist
-      - CA_DIR/ca.crt:/piso-ca.pem:ro   # trust the gateway's MITM CA
-      - CA_DIR/workers/PROJ-SLUG:/etc/piso:ro   # dir mount: gateway rewrites files by atomic rename; workers see the new inode without a restart
-      - CA_DIR/pi-profile/settings.json:/root/.pi/agent/settings.json:ro
-      - CA_DIR/pi-profile/models.json:/root/.pi/agent/models.json:ro
+      - "CA_DIR/ca.crt:/piso-ca.pem:ro"   # trust the gateway's MITM CA
+      - "CA_DIR/workers/PROJ-SLUG:/etc/piso:ro"   # dir mount: gateway rewrites files by atomic rename; workers see the new inode without a restart
+      - "CA_DIR/pi-profile/settings.json:/root/.pi/agent/settings.json:ro"
+      - "CA_DIR/pi-profile/models.json:/root/.pi/agent/models.json:ro"
     environment:
       # Explicit proxy (enforcement is piso_vpc internal: true). Lowercase and
       # ALL_PROXY cover clients that ignore HTTPS_PROXY. CA vars point at the

@@ -1,4 +1,4 @@
-.PHONY: build test gw-run smoke isolation install setup-install uninstall
+.PHONY: build test gw-run smoke isolation install setup-install uninstall windows
 
 BIN ?= bin
 # Default matches /usr/local/bin on PATH. Use PREFIX=$$HOME/.local to avoid sudo,
@@ -28,6 +28,10 @@ build:
 	$(AS_USER) env HOME="$(REAL_HOME)" PATH="$(USER_PATH)" go mod tidy
 	$(AS_USER) env HOME="$(REAL_HOME)" PATH="$(USER_PATH)" go build -o $(BIN)/piso ./cli/cmd/piso
 	$(AS_USER) env HOME="$(REAL_HOME)" PATH="$(USER_PATH)" go build -o $(BIN)/gateway ./gateway/cmd/gateway
+
+# Cross-compile the Windows CLI. The gateway stays a Linux image.
+windows:
+	GOOS=windows GOARCH=amd64 go build -o $(BIN)/piso.exe ./cli/cmd/piso
 
 # Install (or replace) a global `piso` and the Docker build context it needs:
 #   $(PREFIX)/bin/piso
