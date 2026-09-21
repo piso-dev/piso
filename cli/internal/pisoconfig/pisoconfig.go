@@ -395,12 +395,13 @@ func EnsurePiProfileFiles() error {
 func writeFileIfMissing(path string, body []byte) error {
 	st, err := os.Stat(path)
 	if err == nil {
-		if st.IsDir() {
-			return fmt.Errorf("%s is a directory; remove it so piso can mount a file", path)
+		if !st.IsDir() {
+			return nil
 		}
-		return nil
-	}
-	if !os.IsNotExist(err) {
+		if err := os.RemoveAll(path); err != nil {
+			return fmt.Errorf("%s is a directory (docker bind-mount of a missing file); remove failed: %w", path, err)
+		}
+	} else if !os.IsNotExist(err) {
 		return err
 	}
 	return os.WriteFile(path, body, 0o600)
@@ -416,20 +417,10 @@ func EnsurePlaceholdersEnv() error {
 }
 
 func ensurePlaceholderFile(path string) error {
-	st, err := os.Stat(path)
-	if err == nil {
-		if st.IsDir() {
-			return fmt.Errorf("%s is a directory; remove it so piso can mount a file", path)
-		}
-		return nil
-	}
-	if !os.IsNotExist(err) {
-		return err
-	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	return os.WriteFile(path, []byte("# piso placeholders only — never real secrets.\n"), 0o600)
+	return writeFileIfMissing(path, []byte("# piso placeholders only — never real secrets.\n"))
 }
 
 // API shapes mirror the gateway's model (safe on the client side; the

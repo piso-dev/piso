@@ -213,6 +213,22 @@ func TestEnsureWorkerPlaceholdersEnvCreatesFile(t *testing.T) {
 	}
 }
 
+func TestEnsurePiProfileFilesReplacesDockerDir(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("PISO_DATA", dir)
+	prof := filepath.Join(dir, "pi-profile")
+	if err := os.MkdirAll(filepath.Join(prof, "settings.json"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := EnsurePiProfileFiles(); err != nil {
+		t.Fatal(err)
+	}
+	st, err := os.Stat(filepath.Join(prof, "settings.json"))
+	if err != nil || st.IsDir() {
+		t.Fatalf("settings.json must be a file: %v", err)
+	}
+}
+
 func TestEnsureCAFilesReplacesDockerDir(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("PISO_DATA", dir)
