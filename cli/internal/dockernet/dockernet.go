@@ -90,13 +90,18 @@ func parseInternal(out string) bool {
 	return strings.EqualFold(strings.TrimSpace(out), "true")
 }
 
-// isMissingNetwork reports a docker inspect/rm "No such network" failure.
+// isMissingNetwork reports a docker inspect/rm failure for a network that
+// does not exist. Classic Docker says "No such network"; Engine / OrbStack
+// often say "network <name> not found".
 func isMissingNetwork(out string, err error) bool {
 	if err == nil {
 		return false
 	}
 	blob := strings.ToLower(out + " " + err.Error())
-	return strings.Contains(blob, "no such network")
+	if strings.Contains(blob, "no such network") {
+		return true
+	}
+	return strings.Contains(blob, "network") && strings.Contains(blob, "not found")
 }
 
 // LookPath finds the docker CLI. `sudo make install` drops privileges with a

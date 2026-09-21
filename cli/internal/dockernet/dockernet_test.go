@@ -29,8 +29,14 @@ func TestIsMissingNetwork(t *testing.T) {
 	if !isMissingNetwork("Error: No such network: piso_vpc", err) {
 		t.Fatal("expected missing-network match")
 	}
+	if !isMissingNetwork("Error response from daemon: network piso_vpc not found", err) {
+		t.Fatal("expected OrbStack/engine 'not found' match")
+	}
 	if isMissingNetwork("permission denied", err) {
 		t.Fatal("did not expect missing-network match")
+	}
+	if isMissingNetwork("Cannot connect to the Docker daemon", err) {
+		t.Fatal("daemon-down is not a missing network")
 	}
 	if isMissingNetwork("", nil) {
 		t.Fatal("nil error is not missing")
