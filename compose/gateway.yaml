@@ -75,8 +75,7 @@ services:
     volumes:
       - piso-agent-monitor:/root/.pi/agent   # own session volume; NO project mount
       - "${PISO_DATA}/ca.crt:/piso-ca.pem:ro"
-      - "${PISO_DATA}/pi-profile/settings.json:/root/.pi/agent/settings.json:ro"
-      - "${PISO_DATA}/pi-profile/models.json:/root/.pi/agent/models.json:ro"
+      - "${PISO_DATA}/pi-profile:/opt/piso/pi-profile:ro"
       - "${PISO_DATA}/workers/monitor:/etc/piso:ro"   # dir mount: env rewrites are visible live (atomic rename swaps the inode)
     environment:
       HTTPS_PROXY: http://gateway:8080

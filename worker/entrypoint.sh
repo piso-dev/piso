@@ -15,6 +15,20 @@ NODE_COMPILE_CACHE="${NODE_COMPILE_CACHE:-/root/.pi/agent/.node-compile-cache}"
 export TMPDIR NODE_COMPILE_CACHE
 mkdir -p "$PISO_LOG_DIR" "$TMPDIR" "$NODE_COMPILE_CACHE" 2>/dev/null || true
 
+# Host pi-profile is a directory mount at /opt/piso/pi-profile. Do not bind-mount
+# settings.json / models.json as files: if they are missing, Docker creates host
+# directories, then later "mount a directory onto a file" fails against the
+# agent volume. Symlink from the dir mount into the volume.
+if [ -d /opt/piso/pi-profile ]; then
+  mkdir -p /root/.pi/agent
+  for f in settings.json models.json; do
+    if [ -e "/opt/piso/pi-profile/$f" ]; then
+      rm -rf "/root/.pi/agent/$f"
+      ln -sfn "/opt/piso/pi-profile/$f" "/root/.pi/agent/$f"
+    fi
+  done
+fi
+
 # respawn keeps one background watcher alive, restarting it whenever it exits
 # and logging to a persistent path. Exit code 3 means a configuration error
 # (missing env / role mismatch) — back off 30s instead of hot-looping.
