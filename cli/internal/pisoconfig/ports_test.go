@@ -1,6 +1,7 @@
 package pisoconfig
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -54,5 +55,16 @@ func TestValidatePortsRejectsCollision(t *testing.T) {
 	err := validatePorts(HostPorts{Proxy: 8080, Control: 8080, Ingress: 8082})
 	if err == nil {
 		t.Fatal("expected collision error")
+	}
+}
+
+func TestIsUnprobeablePermissionDenied(t *testing.T) {
+	err := fmt.Errorf("listen tcp4 127.0.0.1:80: bind: permission denied")
+	if !isUnprobeable(err) {
+		t.Fatal("permission denied must be unprobeable")
+	}
+	inUse := fmt.Errorf("listen tcp4 127.0.0.1:80: bind: address already in use")
+	if isUnprobeable(inUse) {
+		t.Fatal("address already in use must still fail the probe")
 	}
 }

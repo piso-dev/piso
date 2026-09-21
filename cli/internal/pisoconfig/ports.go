@@ -109,6 +109,8 @@ func (e PortInUseError) Error() string {
 func (e PortInUseError) Unwrap() error { return e.Err }
 
 // CheckHostPortsFree listens on each host port and closes immediately.
+// Permission errors are ignored: unprivileged processes cannot bind ports
+// below 1024, but Docker Desktop / OrbStack still can publish them.
 func CheckHostPortsFree(p HostPorts) error {
 	checks := []struct {
 		name string
@@ -129,10 +131,13 @@ func CheckHostPortsFree(p HostPorts) error {
 
 func probePort(port int) error {
 	if err := tryListen("tcp4", net.JoinHostPort("127.0.0.1", strconv.Itoa(port))); err != nil {
+		if isUnprobeable(err) {
+			return nil
+		}
 		return err
 	}
 	err := tryListen("tcp6", net.JoinHostPort("::1", strconv.Itoa(port)))
-	if err == nil || isUnusableIPv6(err) {
+	if err == nil || isUnusableIPv6(err) || isUnprobeable(err) {
 		return nil
 	}
 	return err
@@ -144,6 +149,20 @@ func tryListen(network, addr string) error {
 		return err
 	}
 	return ln.Close()
+}
+
+// isUnprobeable reports a bind the current process is not allowed to make
+// (EACCES/EPERM). That is not "port in use": Docker may still publish it.
+func isUnprobeable(err error) bool {
+	if err == nil {
+		return false
+	}
+	if os.IsPermission(err) {
+		return true
+	}
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "permission denied") ||
+		strings.Contains(s, "operation not permitted")
 }
 
 // isUnusableIPv6 reports a machine that cannot bind ::1 at all (not "in use").
