@@ -39,8 +39,16 @@ RUN npm install -g --ignore-scripts @earendil-works/pi-coding-agent@${PISO_PI_VE
 COPY package.json /opt/piso/npm/package.json
 # --ignore-scripts skips postinstall downloads (pi-browser Chromium, etc.)
 # that hang `docker build`. node-pty still needs a compile.
+# legacy-peer-deps: host extensions independently pin @earendil-works/pi-ai
+# (often as peerOptional). npm 7+ ERESOLVE-fails the bake when one package
+# (e.g. pi-mcp-adapter@2.36) allows ^0.84–^0.86 while another already
+# resolved 0.87. The host already runs this set; the worker must too.
+# .npmrc is copied into the agent volume so a runtime reinstall does not
+# hit the same conflict.
 RUN cd /opt/piso/npm \
+  && printf 'legacy-peer-deps=true\n' > .npmrc \
   && npm install --omit=dev --ignore-scripts --no-audit --no-fund \
+       --legacy-peer-deps \
        --fetch-retries=5 --fetch-retry-mintimeout=20000 \
   && if [ -d node_modules/node-pty ]; then npm rebuild node-pty; fi \
   && if grep -qE '"dependencies"[[:space:]]*:[[:space:]]*\{[[:space:]]*"' package.json && [ ! -d node_modules ]; then \
