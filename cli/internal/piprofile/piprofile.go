@@ -3,6 +3,7 @@
 package piprofile
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -119,7 +120,18 @@ func SanitizeModelsJSON(raw []byte, placeholders map[string]string) ([]byte, err
 	return out, nil
 }
 
+// HostOrDest prefers a non-empty host file. Missing/empty host keeps dest
+// (the worker profile a user may have written by hand when pi is not installed).
+func HostOrDest(host []byte, hostErr error, dest []byte) (src []byte, fromHost bool) {
+	if hostErr == nil && len(bytes.TrimSpace(host)) > 0 {
+		return host, true
+	}
+	return dest, false
+}
+
 // WriteProfile writes settings.json and sanitized models.json under dest.
+// Empty models do not clobber an existing dest models.json — that file is the
+// source of truth on machines with no host ~/.pi/agent/models.json.
 func WriteProfile(dest string, settings, models []byte) error {
 	if err := os.MkdirAll(dest, 0o700); err != nil {
 		return err
@@ -127,13 +139,17 @@ func WriteProfile(dest string, settings, models []byte) error {
 	if len(settings) == 0 {
 		settings = []byte("{}\n")
 	}
-	if len(models) == 0 {
-		models = []byte("{\n  \"providers\": {}\n}\n")
-	}
 	if err := os.WriteFile(filepath.Join(dest, "settings.json"), settings, 0o600); err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(dest, "models.json"), models, 0o600)
+	modelsPath := filepath.Join(dest, "models.json")
+	if len(models) == 0 {
+		if st, err := os.Stat(modelsPath); err == nil && st.Size() > 0 {
+			return nil
+		}
+		models = []byte("{\n  \"providers\": {}\n}\n")
+	}
+	return os.WriteFile(modelsPath, models, 0o600)
 }
 
 // ReadSettingsPackages returns settings.json "packages" (npm:name entries).

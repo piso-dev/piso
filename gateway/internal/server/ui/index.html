@@ -1174,7 +1174,7 @@ function routeURL(name) {
 }
 
 async function loadRoutes() {
-  const rs = await api('/api/v1/routes'); $('#routerows').innerHTML='';
+  const rs = await api('/api/v1/routes') || []; $('#routerows').innerHTML='';
   rs.forEach(r => {
     const url = routeURL(r.name);
     const origin = r.origin === 'auto'

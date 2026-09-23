@@ -350,7 +350,11 @@ func (s *Store) Routes() []RouteRec {
 		s.state.Routes = out
 		_ = s.save()
 	}
-	return out
+	// Never return a nil slice: encoding/json emits null for nil, and the
+	// dashboard does rs.forEach without a null guard.
+	cp := make([]RouteRec, len(out))
+	copy(cp, out)
+	return cp
 }
 func (s *Store) RouteByName(name string) (RouteRec, bool) {
 	s.mu.RLock()

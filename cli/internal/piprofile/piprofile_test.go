@@ -1,6 +1,9 @@
 package piprofile
 
 import (
+	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -98,5 +101,41 @@ func TestEnsureInformantPromptsHandlesEmptyAndExistingStrings(t *testing.T) {
 	out := EnsureInformantPrompts([]byte(`{"prompts":["/a.md"]}`))
 	if strings.Count(string(out), informantPromptPath) != 1 {
 		t.Fatalf("[]string form: %s", out)
+	}
+}
+
+func TestHostOrDestPrefersHost(t *testing.T) {
+	src, fromHost := HostOrDest([]byte(`{"providers":{}}`), nil, []byte(`keep-me`))
+	if !fromHost || !strings.Contains(string(src), "providers") {
+		t.Fatalf("fromHost=%v src=%s", fromHost, src)
+	}
+}
+
+func TestHostOrDestKeepsDestWhenHostMissing(t *testing.T) {
+	src, fromHost := HostOrDest(nil, errors.New("no such file"), []byte(`keep-me`))
+	if fromHost || string(src) != "keep-me" {
+		t.Fatalf("fromHost=%v src=%s", fromHost, src)
+	}
+	src, fromHost = HostOrDest([]byte("  \n"), nil, []byte(`keep-me`))
+	if fromHost || string(src) != "keep-me" {
+		t.Fatalf("empty host: fromHost=%v src=%s", fromHost, src)
+	}
+}
+
+func TestWriteProfileDoesNotClobberExistingModels(t *testing.T) {
+	dir := t.TempDir()
+	want := []byte("{\n  \"providers\": {\"routstr\": {\"apiKey\": \"piso_x\"}}\n}\n")
+	if err := os.WriteFile(filepath.Join(dir, "models.json"), want, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteProfile(dir, []byte(`{"theme":"dark"}`), nil); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(dir, "models.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(want) {
+		t.Fatalf("clobbered models.json:\n%s", got)
 	}
 }

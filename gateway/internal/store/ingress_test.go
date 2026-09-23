@@ -1,6 +1,7 @@
 package store
 
 import (
+	"encoding/json"
 	"errors"
 	"path/filepath"
 	"strings"
@@ -16,6 +17,24 @@ func testStore(t *testing.T) *Store {
 		t.Fatal(err)
 	}
 	return st
+}
+
+func TestRoutesEmptyJSONIsArray(t *testing.T) {
+	st := testStore(t)
+	got := st.Routes()
+	if got == nil {
+		t.Fatal("Routes() must not return nil on a fresh store")
+	}
+	if len(got) != 0 {
+		t.Fatalf("expected no routes, got %+v", got)
+	}
+	raw, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != "[]" {
+		t.Fatalf("JSON want [] got %s", raw)
+	}
 }
 
 func TestUpsertPendingIngressIdempotent(t *testing.T) {

@@ -339,15 +339,20 @@ func syncPiProfile() error {
 		return err
 	}
 	dest := piprofile.ProfileDir(dataDir)
-	settings, _ := os.ReadFile(piprofile.SettingsPath(agent))
+	hostSettings, settingsErr := os.ReadFile(piprofile.SettingsPath(agent))
+	destSettings, _ := os.ReadFile(filepath.Join(dest, "settings.json"))
+	settings, _ := piprofile.HostOrDest(hostSettings, settingsErr, destSettings)
 	// Inject the informant prompt template so the worker's pi loads the Tier B
 	// convention automatically (emit progress/milestone/etc.). Preserves the
 	// user's other settings; dedupes.
 	settings = piprofile.EnsureInformantPrompts(settings)
 	rawModels, modelsErr := os.ReadFile(piprofile.ModelsPath(agent))
+	destModels, _ := os.ReadFile(filepath.Join(dest, "models.json"))
+	srcModels, fromHost := piprofile.HostOrDest(rawModels, modelsErr, destModels)
 	placeholders := map[string]string{}
-	if modelsErr == nil {
-		keys, err := piprofile.ExtractProviderKeys(rawModels)
+	var models []byte
+	if fromHost {
+		keys, err := piprofile.ExtractProviderKeys(srcModels)
 		if err != nil {
 			return err
 		}
@@ -359,19 +364,19 @@ func syncPiProfile() error {
 			placeholders[r.Name] = r.Placeholder
 			fmt.Printf("piso: imported %s → %s on %s\n", r.Name, r.Placeholder, r.Host)
 		}
-	}
-	var models []byte
-	if modelsErr == nil {
-		models, err = piprofile.SanitizeModelsJSON(rawModels, placeholders)
+		models, err = piprofile.SanitizeModelsJSON(srcModels, placeholders)
 		if err != nil {
 			return err
 		}
-		extracted, _ := piprofile.ExtractProviderKeys(rawModels)
+		extracted, _ := piprofile.ExtractProviderKeys(srcModels)
 		for _, k := range extracted {
 			if k.APIKey != "" && strings.Contains(string(models), k.APIKey) {
 				return fmt.Errorf("refusing to write profile: real key would leak")
 			}
 		}
+	} else {
+		// No host ~/.pi/agent/models.json: keep a hand-written dest profile.
+		models = srcModels
 	}
 	return piprofile.WriteProfile(dest, settings, models)
 }
