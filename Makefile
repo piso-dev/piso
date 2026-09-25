@@ -35,7 +35,7 @@ windows:
 
 # Install (or replace) a global `piso` and the Docker build context it needs:
 #   $(PREFIX)/bin/piso
-#   $(PREFIX)/share/piso/{compose,worker,gateway,go.mod}
+#   $(PREFIX)/share/piso/{compose,worker,gateway,internal,go.mod}
 # Safe to re-run over an existing install: binaries and share files are
 # overwritten, then `piso setup --rebuild` recreates the gateway so the new
 # image loads ~/.piso/state.json and migrates it. When invoked via sudo,
@@ -43,8 +43,8 @@ windows:
 install: build
 	install -d $(PREFIX)/bin $(SHARE)
 	install -m 755 $(BIN)/piso $(PREFIX)/bin/piso
-	rm -rf $(SHARE)/compose $(SHARE)/worker $(SHARE)/gateway
-	cp -R compose worker gateway $(SHARE)/
+	rm -rf $(SHARE)/compose $(SHARE)/worker $(SHARE)/gateway $(SHARE)/internal $(SHARE)/third_party
+	cp -R compose worker gateway internal $(SHARE)/
 	install -m 644 go.mod $(SHARE)/go.mod
 	install -m 644 go.sum $(SHARE)/go.sum
 	if [ -f .dockerignore ]; then install -m 644 .dockerignore $(SHARE)/.dockerignore; fi

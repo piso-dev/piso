@@ -56,6 +56,8 @@ func main() {
 		err = cmdLogs(args)
 	case "dashboard":
 		err = cmdDashboard(args)
+	case "gateway":
+		err = cmdGateway(args)
 	case "setup":
 		err = cmdSetup(args)
 	case "update":
@@ -95,6 +97,9 @@ Usage:
                            piso up; run restart manually after a sudo make install)
   piso logs [--follow]   tail the gateway request log (SSE when --follow)
   piso dashboard         open the gateway web UI (http://piso.local)
+  piso gateway launch [--name n] [--server url]
+                         pair this machine with server.com (QR/URL, phone approves)
+  piso gateway status    show technocore enrollment
   piso setup [--rebuild] import leftover data and (with --rebuild) recreate the gateway
   piso update [version] [--dry-run] [--force]  refresh host extensions, pin a pi version,
                          rebuild the shared worker image once, and recreate every worker

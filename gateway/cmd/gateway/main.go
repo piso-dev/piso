@@ -11,11 +11,13 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"time"
 
 	"piso/gateway/internal/proxy"
 	"piso/gateway/internal/server"
 	"piso/gateway/internal/store"
+	"piso/gateway/internal/technocore"
 )
 
 // workerIdentityFn returns the proxy's request→worker-identity callback. It
@@ -81,6 +83,7 @@ func main() {
 
 	h := proxy.New(ca, st, pat, workerIdentityFn(st))
 	srv := server.New(st, pat, h, ca)
+	go technocore.Run(st, filepath.Dir(*statePath))
 
 	// WebHandler is the single host web entrypoint (dashboard + ingress on the
 	// same port, dispatched by Host). The old ControlHandler is kept for tests;

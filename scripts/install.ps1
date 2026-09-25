@@ -38,7 +38,7 @@ $share = Join-Path $prefix 'share\piso'
 Write-Host "piso: installing to $prefix"
 New-Item -ItemType Directory -Force -Path $binDir, $share | Out-Null
 Copy-Item -Force (Join-Path $root 'bin\piso.exe') (Join-Path $binDir 'piso.exe')
-foreach ($name in @('compose', 'worker', 'gateway')) {
+foreach ($name in @('compose', 'worker', 'gateway', 'internal')) {
     $dest = Join-Path $share $name
     if (Test-Path $dest) { Remove-Item -Recurse -Force $dest }
     Copy-Item -Recurse (Join-Path $root $name) $dest
