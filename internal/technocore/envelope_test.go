@@ -50,6 +50,22 @@ func TestEnvelopeWrongRecipient(t *testing.T) {
 	}
 }
 
+func TestWrapBlobLength(t *testing.T) {
+	id, err := Generate("https://s", "n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dek := make([]byte, 32)
+	wrap, err := WrapDEK(id.EncryptionPublicKey, dek)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const want = 1 + 32 + 12 + 32 + 16
+	if len(wrap) != want {
+		t.Fatalf("len %d want %d", len(wrap), want)
+	}
+}
+
 func TestWrapRejectsBadPubKey(t *testing.T) {
 	if _, err := WrapDEK("00", make([]byte, 32)); err == nil {
 		t.Fatal("expected error")

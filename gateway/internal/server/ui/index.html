@@ -157,6 +157,7 @@
   <h1>piso gateway</h1>
   <span class="sub">secrets · substitution rules · credential detection · request log</span>
   <span class="sub" id="health"></span>
+  <span class="sub" id="tcchip">technocore: …</span>
   <div class="actions">
     <button type="button" class="btn" id="openPlanModal">Plan review (<span id="planCount">0</span>)</button>
     <button type="button" class="btn" id="openMcpModal">MCP login (<span id="mcpCount">0</span>)</button>
@@ -2032,6 +2033,14 @@ $('#planModal').addEventListener('click', (ev) => {
     $('#health').textContent = 'live @ ' + String(h.time).slice(11, 19);
     if (typeof h.ingressPort === 'number' && h.ingressPort > 0) {
       ingressPort = h.ingressPort;
+    }
+    try {
+      const tc = await api('/api/v1/technocore');
+      let label = 'technocore: ' + (tc.status || 'unpaired');
+      if (tc.fingerprint) label += ' ' + tc.fingerprint;
+      $('#tcchip').textContent = label;
+    } catch (e) {
+      $('#tcchip').textContent = 'technocore: unknown';
     }
   } catch (e) {
     $('#health').textContent = 'offline';

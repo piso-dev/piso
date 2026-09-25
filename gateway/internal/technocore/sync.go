@@ -58,6 +58,7 @@ func Run(st *store.Store, dataDir string) {
 		ready, err := connectSession(st, id)
 		if err != nil {
 			log.Printf("technocore: websocket: %v", err)
+			setLive(func(s *Status) { s.LastError = err.Error() })
 		}
 		if ready {
 			backoff = time.Second
@@ -137,16 +138,40 @@ func syncSecrets(st *store.Store, id tc.Identity) error {
 	if err := json.Unmarshal(raw, &out); err != nil {
 		return err
 	}
+	seen := map[string]bool{}
 	applied := 0
+	skipped := 0
 	for _, obj := range out.Objects {
+		secretID := "tc_" + obj.ResourceID
 		if err := applyEnvelope(st, id, obj); err != nil {
 			log.Printf("technocore: skip %s: %v", obj.ResourceID, err)
+			skipped++
 			continue
 		}
+		seen[secretID] = true
 		applied++
 	}
-	if applied > 0 {
-		log.Printf("technocore: applied %d envelopes", applied)
+	removed := 0
+	for _, rec := range st.Secrets() {
+		if !strings.HasPrefix(rec.ID, "tc_") {
+			continue
+		}
+		if seen[rec.ID] {
+			continue
+		}
+		if err := st.DeleteSecret(rec.ID); err != nil {
+			log.Printf("technocore: delete %s: %v", rec.ID, err)
+			continue
+		}
+		removed++
+	}
+	setLive(func(s *Status) {
+		s.LastSync = time.Now().UTC()
+		s.LastError = ""
+		s.EnvelopeSkip = skipped
+	})
+	if applied > 0 || removed > 0 {
+		log.Printf("technocore: applied %d envelopes, removed %d", applied, removed)
 	}
 	return nil
 }

@@ -83,7 +83,8 @@ func main() {
 
 	h := proxy.New(ca, st, pat, workerIdentityFn(st))
 	srv := server.New(st, pat, h, ca)
-	go technocore.Run(st, filepath.Dir(*statePath))
+	srv.DataDir = filepath.Dir(*statePath)
+	go technocore.Run(st, srv.DataDir)
 
 	// WebHandler is the single host web entrypoint (dashboard + ingress on the
 	// same port, dispatched by Host). The old ControlHandler is kept for tests;

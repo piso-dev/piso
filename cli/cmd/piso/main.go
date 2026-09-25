@@ -88,7 +88,9 @@ Usage:
                          --new forces a fresh one, --session opens a specific
                          one, --shell drops into bash)
   piso status            show gateway + worker state
-  piso secrets list|add|rm   manage gateway secrets (real values never leave it)
+  piso secrets list|add|rm|share|publish
+                         manage gateway secrets (real values never leave it;
+                         share/publish wrap ciphertext for other gateways)
   piso expose <port> [--name n]  reverse-proxy a worker port as https://n.piso.local
   piso sync [--watch]     reconcile /etc/hosts with gateway routes; --watch keeps
                            syncing live as auto routes appear/expire
@@ -97,8 +99,8 @@ Usage:
                            piso up; run restart manually after a sudo make install)
   piso logs [--follow]   tail the gateway request log (SSE when --follow)
   piso dashboard         open the gateway web UI (http://piso.local)
-  piso gateway launch [--name n] [--server url]
-                         pair this machine with server.com (QR/URL, phone approves)
+  piso gateway launch [--name n] [--server url] [--no-qr]
+                         pair this machine (QR + fingerprint; phone approves)
   piso gateway status    show technocore enrollment
   piso setup [--rebuild] import leftover data and (with --rebuild) recreate the gateway
   piso update [version] [--dry-run] [--force]  refresh host extensions, pin a pi version,
@@ -610,6 +612,10 @@ func cmdSecrets(args []string) error {
 		return nil
 	}
 	switch args[0] {
+	case "share":
+		return cmdSecretsShare(args[1:])
+	case "publish":
+		return cmdSecretsPublish(args[1:])
 	case "add-monitor":
 		// One-command provisioning of the monitor's scoped model key:
 		//   piso secrets add-monitor api.anthropic.com sk-ant-...

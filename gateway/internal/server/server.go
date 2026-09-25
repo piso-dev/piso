@@ -31,6 +31,8 @@ type Server struct {
 	Patterns *patterns.Compiled
 	Proxy    *proxy.Handler
 	CA       *proxy.CA
+	// DataDir is the host-mounted gateway data directory (identity.json).
+	DataDir string
 	// HTTP is used for MCP OAuth discovery/DCR/token (tests inject).
 	HTTP *http.Client
 	// DenyPeer overrides worker-vpc detection on the control plane (tests).
@@ -121,6 +123,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 			"ingressPort": ingressHostPort(),
 		})
 	})
+	s.registerTechnocore(mux)
 
 	// CA cert for distribution
 	mux.HandleFunc("GET /api/v1/ca.pem", func(w http.ResponseWriter, r *http.Request) {

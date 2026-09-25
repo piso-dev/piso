@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	qrcode "github.com/skip2/go-qrcode"
+
 	"piso/cli/internal/pisoconfig"
 	"piso/internal/technocore"
 )
@@ -37,8 +39,9 @@ func cmdGatewayLaunch(args []string) error {
 	fs.SetOutput(io.Discard)
 	name := fs.String("name", "", "gateway display name")
 	server := fs.String("server", strings.TrimSpace(os.Getenv("PISO_SERVER_URL")), "technocore server URL")
+	noQR := fs.Bool("no-qr", false, "print the approve URL without a terminal QR")
 	if err := fs.Parse(args); err != nil || fs.NArg() != 0 {
-		return errors.New("usage: piso gateway launch [--name name] [--server url]")
+		return errors.New("usage: piso gateway launch [--name name] [--server url] [--no-qr]")
 	}
 	if *server == "" {
 		*server = defaultTechnocoreServer
@@ -68,8 +71,17 @@ func cmdGatewayLaunch(args []string) error {
 		}
 	}
 
+	approveURL := fmt.Sprintf("%s/pair/%s/", id.ServerURL, id.PairingID)
 	fmt.Printf("piso: fingerprint %s\n", id.Fingerprint())
-	fmt.Printf("piso: approve on your phone (logged in):\n  %s/pair/%s/\n", id.ServerURL, id.PairingID)
+	fmt.Printf("piso: approve on your phone (logged in if needed):\n  %s\n", approveURL)
+	if !*noQR {
+		if err := printApproveQR(approveURL); err != nil {
+			fmt.Fprintf(os.Stderr, "piso: qr: %v\n", err)
+		}
+	}
+	if !healthy(pisoconfig.ControlAPIURL()) {
+		fmt.Println("piso: local gateway is not up; run `piso up` so it can connect after approval")
+	}
 	fmt.Println("piso: waiting for approval...")
 
 	deadline := time.Now().Add(15 * time.Minute)
@@ -119,6 +131,15 @@ func cmdGatewayStatus() error {
 	if id.PrincipalID != "" {
 		fmt.Printf("principal:   %s\n", id.PrincipalID)
 	}
+	return nil
+}
+
+func printApproveQR(url string) error {
+	q, err := qrcode.New(url, qrcode.Medium)
+	if err != nil {
+		return err
+	}
+	fmt.Print(q.ToSmallString(false))
 	return nil
 }
 
