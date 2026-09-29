@@ -99,7 +99,7 @@ RUN set -eu; \
              BAT_SHA=422eb73e11c854fddd99f5ca8461c2f1d6e6dce0a2a8c3d5daade5ffcb6564aa; \
              DELTA_SHA=0bfce159a5cddd5feb3d6db4a616d883ff51253ce08ac7ec11cb1d208cfaab9e; \
              GLOW_SHA=810c39f4691feb75e675a5f5f54b9fa091354e7599d9cf9c9fc9b97e47a99759 ;; \
-    x86_64)  RUST_ARCH=x86_64-unknown-linux-gnu; GLOW_ARCH=amd64; \
+    x86_64)  RUST_ARCH=x86_64-unknown-linux-gnu; GLOW_ARCH=x86_64; \
              BAT_SHA=726f04c8f576a7fd18b7634f1bbf2f915c43494c1c0f013baa3287edb0d5a2a3; \
              DELTA_SHA=8e695c5f586a8c53d6c3b01be0b4a422ed218bfed2a56191caebe373a1c18ab2; \
              GLOW_SHA=13e05e4b2acc18d2aee44291aefe6325b077ec321b631a0cfa780e8e3bc33f78 ;; \
