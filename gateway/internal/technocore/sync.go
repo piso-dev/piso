@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -55,7 +56,7 @@ func Run(st *store.Store, dataDir string) {
 			continue
 		}
 		log.Printf("technocore: connecting %s", id.ServerURL)
-		ready, err := connectSession(st, id)
+		ready, err := connectSession(st, dataDir, id)
 		if err != nil {
 			log.Printf("technocore: websocket: %v", err)
 			setLive(func(s *Status) { s.LastError = err.Error() })
@@ -207,6 +208,13 @@ func applyEnvelope(st *store.Store, id tc.Identity, obj envelope) error {
 	envKey, _ := obj.Metadata["envKey"].(string)
 	hosts := stringSlice(obj.Metadata["allowedHosts"])
 	secretID := "tc_" + obj.ResourceID
+	if local, ok := st.SecretByPlaceholder(placeholder); ok && local.ID != secretID {
+		if local.Name == obj.Name && local.Value == string(plaintext) &&
+			local.EnvKey == envKey && slices.Equal(local.AllowedHosts, hosts) {
+			return nil
+		}
+		return fmt.Errorf("conflict for placeholder %s; keeping local secret", placeholder)
+	}
 	rec := store.SecretRec{
 		ID:           secretID,
 		Name:         obj.Name,

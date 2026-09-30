@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 
@@ -137,6 +138,30 @@ func fetchGateways(id tc.Identity) ([]remoteGateway, error) {
 		return nil, err
 	}
 	return out.Gateways, nil
+}
+
+// publishAllSecrets reconciles every locally-created secret with Technocore.
+// Synced tc_ records are excluded so receiving an envelope never creates a
+// publication loop. A failure is deliberately non-fatal: log it and continue
+// with the remaining secrets.
+func publishAllSecrets(st *store.Store, dataDir string) {
+	for _, rec := range st.Secrets() {
+		if strings.HasPrefix(rec.ID, "tc_") || rec.Value == "" {
+			continue
+		}
+		_, err := Share(st, dataDir, ShareInput{
+			Name:         rec.Name,
+			Placeholder:  rec.Placeholder,
+			EnvKey:       rec.EnvKey,
+			AllowedHosts: rec.AllowedHosts,
+			Plaintext:    rec.Value,
+		})
+		if err != nil {
+			log.Printf("technocore: publish %s: %v", rec.Placeholder, err)
+			continue
+		}
+		log.Printf("technocore: published %s", rec.Placeholder)
+	}
 }
 
 // PublishPlaceholder wraps an existing local vault secret for other gateways.

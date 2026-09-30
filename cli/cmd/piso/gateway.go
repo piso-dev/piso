@@ -98,7 +98,7 @@ func cmdGatewayLaunch(args []string) error {
 				return err
 			}
 			fmt.Printf("piso: gateway enrolled (%s)\n", principal)
-			fmt.Println("piso: leave the gateway running (`piso up`); it will connect and sync secrets")
+			fmt.Println("piso: leave the gateway running; it will connect and sync secrets")
 			return nil
 		case "rejected":
 			return errors.New("pairing rejected")

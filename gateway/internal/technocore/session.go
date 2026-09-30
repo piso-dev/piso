@@ -37,7 +37,7 @@ func originFor(serverURL string) string {
 	}
 }
 
-func connectSession(st *store.Store, id tc.Identity) (ready bool, err error) {
+func connectSession(st *store.Store, dataDir string, id tc.Identity) (ready bool, err error) {
 	wsURL := httpToWS(id.ServerURL) + "/ws/gateway/"
 	dialer := websocket.Dialer{HandshakeTimeout: 20 * time.Second}
 	header := http.Header{}
@@ -104,10 +104,13 @@ func connectSession(st *store.Store, id tc.Identity) (ready bool, err error) {
 			if err := syncSecrets(st, id); err != nil {
 				log.Printf("technocore: sync: %v", err)
 			}
+			publishAllSecrets(st, dataDir)
 		case "envelopes_changed":
 			if err := syncSecrets(st, id); err != nil {
 				log.Printf("technocore: sync: %v", err)
 			}
+		case "gateways_changed":
+			publishAllSecrets(st, dataDir)
 		case "pong", "ack", "hello":
 		case "error":
 			return ready, fmt.Errorf("server error: %v", msg["error"])
