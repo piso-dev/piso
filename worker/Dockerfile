@@ -37,6 +37,12 @@ RUN npm install -g --ignore-scripts @earendil-works/pi-coding-agent@${PISO_PI_VE
 # Must run BEFORE HTTPS_PROXY=gateway or `docker build` npm would target
 # a proxy that does not exist yet.
 COPY package.json /opt/piso/npm/package.json
+
+# Piso-owned extensions are kept separate from host-installed npm packages.
+# The entrypoint symlinks these into the persistent global extensions dir so
+# pi auto-discovers them and /reload can reload them.
+COPY routstr-models.ts /opt/piso/extensions/routstr-models.ts
+
 # --ignore-scripts skips postinstall downloads (pi-browser Chromium, etc.)
 # that hang `docker build`. node-pty still needs a compile.
 # legacy-peer-deps: host extensions independently pin @earendil-works/pi-ai

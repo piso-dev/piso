@@ -61,7 +61,18 @@ if [ ! -e /root/.pi/agent/bin/fd ]; then
   fi
 fi
 
-# Seed baked extensions into the agent volume. The volume hides anything
+# Seed piso-owned global extensions. Keep these separate from the host npm
+# extension tree: they ship with the worker image and are always available,
+# while the symlink leaves the source on the read-only image filesystem.
+if [ -d /opt/piso/extensions ]; then
+  mkdir -p /root/.pi/agent/extensions
+  for ext in /opt/piso/extensions/*.ts /opt/piso/extensions/*.js; do
+    [ -e "$ext" ] || continue
+    ln -sfn "$ext" "/root/.pi/agent/extensions/$(basename "$ext")"
+  done
+fi
+
+# Seed baked host extensions into the agent volume. The volume hides anything
 # the image left under /root/.pi/agent, so the install lives in /opt/piso/npm.
 if [ -f /opt/piso/npm/.piso-pkg-hash ]; then
   want=$(cat /opt/piso/npm/.piso-pkg-hash)
