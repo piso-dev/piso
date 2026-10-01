@@ -8,7 +8,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"slices"
 	"strings"
 	"time"
 
@@ -148,13 +147,13 @@ func syncSecrets(st *store.Store, id tc.Identity) error {
 	applied := 0
 	skipped := 0
 	for _, obj := range out.Objects {
-		secretID := "tc_" + obj.ResourceID
-		if err := applyEnvelope(st, id, obj); err != nil {
+		kept, err := applyEnvelope(st, id, obj)
+		if err != nil {
 			log.Printf("technocore: skip %s: %v", obj.ResourceID, err)
 			skipped++
 			continue
 		}
-		seen[secretID] = true
+		seen[kept] = true
 		applied++
 	}
 	removed := 0
@@ -182,25 +181,25 @@ func syncSecrets(st *store.Store, id tc.Identity) error {
 	return nil
 }
 
-func applyEnvelope(st *store.Store, id tc.Identity, obj envelope) error {
+func applyEnvelope(st *store.Store, id tc.Identity, obj envelope) (string, error) {
 	if obj.Algorithm != "" && obj.Algorithm != tc.EnvelopeAlg {
-		return fmt.Errorf("unsupported algorithm %q", obj.Algorithm)
+		return "", fmt.Errorf("unsupported algorithm %q", obj.Algorithm)
 	}
 	ct, err := base64.StdEncoding.DecodeString(obj.Ciphertext)
 	if err != nil {
-		return err
+		return "", err
 	}
 	nonce, err := base64.StdEncoding.DecodeString(obj.Nonce)
 	if err != nil {
-		return err
+		return "", err
 	}
 	wrap, err := base64.StdEncoding.DecodeString(obj.WrappedDataKey)
 	if err != nil {
-		return err
+		return "", err
 	}
 	plaintext, err := tc.OpenEnvelope(id, wrap, nonce, ct)
 	if err != nil {
-		return err
+		return "", err
 	}
 	placeholder, _ := obj.Metadata["placeholder"].(string)
 	if placeholder == "" {
@@ -213,33 +212,75 @@ func applyEnvelope(st *store.Store, id tc.Identity, obj envelope) error {
 	envKey, _ := obj.Metadata["envKey"].(string)
 	hosts := stringSlice(obj.Metadata["allowedHosts"])
 	secretID := "tc_" + obj.ResourceID
-	if local, ok := st.SecretByPlaceholder(placeholder); ok && local.ID != secretID {
-		if local.Name == obj.Name && local.Value == string(plaintext) &&
-			local.EnvKey == envKey && slices.Equal(local.AllowedHosts, hosts) {
-			return nil
+	plain := string(plaintext)
+	hash := plaintextHash(plain)
+
+	local, found := matchLocalSecret(st, obj.ResourceID, secretID, placeholder, plain)
+	if found {
+		if local.Value != plain {
+			return "", fmt.Errorf("conflict for placeholder %s; keeping local secret", local.Placeholder)
 		}
-		return fmt.Errorf("conflict for placeholder %s; keeping local secret", placeholder)
+		if local.ID == secretID {
+			// Coordinator-owned row: refresh metadata from the envelope.
+			local.Name = obj.Name
+			local.Placeholder = placeholder
+			local.EnvKey = envKey
+			local.AllowedHosts = hosts
+			local.Value = plain
+		}
+		// Local-origin rows keep their id and placeholder so workers and rules stay valid.
+		if local.TechnocoreID == "" {
+			local.TechnocoreID = obj.ResourceID
+		}
+		if local.PublishedHash == "" {
+			local.PublishedHash = hash
+		}
+		if err := st.ReplaceSecret(local); err != nil {
+			return "", err
+		}
+		return local.ID, st.SyncRulesForSecret(local)
 	}
+
 	rec := store.SecretRec{
-		ID:           secretID,
-		Name:         obj.Name,
-		Placeholder:  placeholder,
-		Value:        string(plaintext),
-		EnvKey:       envKey,
-		AllowedHosts: hosts,
-		CreatedAt:    time.Now().UTC(),
+		ID:            secretID,
+		Name:          obj.Name,
+		Placeholder:   placeholder,
+		Value:         plain,
+		EnvKey:        envKey,
+		AllowedHosts:  hosts,
+		CreatedAt:     time.Now().UTC(),
+		TechnocoreID:  obj.ResourceID,
+		PublishedHash: hash,
 	}
-	if existing, ok := st.SecretByID(secretID); ok {
-		rec.CreatedAt = existing.CreatedAt
-		if err := st.ReplaceSecret(rec); err != nil {
-			return err
-		}
-	} else {
-		if err := st.AddSecret(rec); err != nil {
-			return err
+	if err := st.AddSecret(rec); err != nil {
+		return "", err
+	}
+	return rec.ID, st.SyncRulesForSecret(rec)
+}
+
+// matchLocalSecret finds a vault row that is the same coordinator secret:
+// stamped resource id, synced tc_ id, placeholder, or identical plaintext.
+// Matching by value is what stops independently minted piso_ suffixes from
+// becoming a second local row after inbound sync.
+func matchLocalSecret(st *store.Store, resourceID, secretID, placeholder, plain string) (store.SecretRec, bool) {
+	if rec, ok := st.SecretByTechnocoreID(resourceID); ok {
+		return rec, true
+	}
+	if rec, ok := st.SecretByID(secretID); ok {
+		return rec, true
+	}
+	if rec, ok := st.SecretByPlaceholder(placeholder); ok {
+		return rec, true
+	}
+	if plain == "" {
+		return store.SecretRec{}, false
+	}
+	for _, rec := range st.Secrets() {
+		if rec.Value == plain {
+			return rec, true
 		}
 	}
-	return st.SyncRulesForSecret(rec)
+	return store.SecretRec{}, false
 }
 
 func stringSlice(v any) []string {

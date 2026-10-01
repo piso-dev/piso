@@ -1,6 +1,7 @@
 package technocore
 
 import (
+	"encoding/base64"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -95,5 +96,115 @@ func TestSyncSecretsRejectsUnparseableBody(t *testing.T) {
 	}
 	if _, ok := st.SecretByID("tc_keepme"); !ok {
 		t.Fatal("vault wiped on bad JSON")
+	}
+}
+
+func testEnvelope(t *testing.T, id tc.Identity, resourceID, name, placeholder, value string) envelope {
+	t.Helper()
+	dek, nonce, ct, err := tc.SealPayload([]byte(value))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrap, err := tc.WrapDEK(id.EncryptionPublicKey, dek)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return envelope{
+		ResourceID:     resourceID,
+		Name:           name,
+		Metadata:       map[string]any{"placeholder": placeholder, "envKey": "K"},
+		Algorithm:      tc.EnvelopeAlg,
+		ContentHash:    plaintextHash(value),
+		Ciphertext:     base64.StdEncoding.EncodeToString(ct),
+		Nonce:          base64.StdEncoding.EncodeToString(nonce),
+		WrappedDataKey: base64.StdEncoding.EncodeToString(wrap),
+	}
+}
+
+func TestApplyEnvelopeAdoptsMatchingValueDifferentPlaceholder(t *testing.T) {
+	st := testStore(t)
+	id, err := tc.Generate("https://s", "gw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AddSecret(store.SecretRec{
+		ID:          "local1",
+		Name:        "GitHub PAT",
+		Placeholder: "piso_github_pat_aaa",
+		Value:       "ghp_secret",
+		CreatedAt:   time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	obj := testEnvelope(t, id, "rid-1", "GitHub PAT", "piso_github_pat_bbb", "ghp_secret")
+	kept, err := applyEnvelope(st, id, obj)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kept != "local1" {
+		t.Fatalf("kept %s", kept)
+	}
+	if len(st.Secrets()) != 1 {
+		t.Fatalf("duplicated local row: %d", len(st.Secrets()))
+	}
+	got, _ := st.SecretByID("local1")
+	if got.Placeholder != "piso_github_pat_aaa" {
+		t.Fatalf("placeholder rewritten: %s", got.Placeholder)
+	}
+	if got.TechnocoreID != "rid-1" {
+		t.Fatalf("not stamped: %+v", got)
+	}
+}
+
+func TestApplyEnvelopeStampsMatchingPlaceholder(t *testing.T) {
+	st := testStore(t)
+	id, err := tc.Generate("https://s", "gw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AddSecret(store.SecretRec{
+		ID:          "local1",
+		Name:        "GitHub PAT",
+		Placeholder: "piso_github_pat_aaa",
+		Value:       "ghp_secret",
+		CreatedAt:   time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	obj := testEnvelope(t, id, "rid-1", "GitHub PAT", "piso_github_pat_aaa", "ghp_secret")
+	if _, err := applyEnvelope(st, id, obj); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := st.SecretByID("local1")
+	if got.TechnocoreID != "rid-1" || got.PublishedHash == "" {
+		t.Fatalf("not stamped: %+v", got)
+	}
+	if _, ok := st.SecretByID("tc_rid-1"); ok {
+		t.Fatal("added a tc_ duplicate")
+	}
+}
+
+func TestApplyEnvelopeConflictDifferentValue(t *testing.T) {
+	st := testStore(t)
+	id, err := tc.Generate("https://s", "gw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AddSecret(store.SecretRec{
+		ID:          "local1",
+		Name:        "GitHub PAT",
+		Placeholder: "piso_github_pat_aaa",
+		Value:       "old-value",
+		CreatedAt:   time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	obj := testEnvelope(t, id, "rid-1", "GitHub PAT", "piso_github_pat_aaa", "new-value")
+	if _, err := applyEnvelope(st, id, obj); err == nil {
+		t.Fatal("expected conflict")
+	}
+	got, _ := st.SecretByID("local1")
+	if got.Value != "old-value" {
+		t.Fatalf("local overwritten: %+v", got)
 	}
 }

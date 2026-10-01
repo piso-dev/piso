@@ -48,6 +48,14 @@ type SecretRec struct {
 	AllowedHosts []string  `json:"allowedHosts,omitempty"`
 	Workers      []string  `json:"workers,omitempty"` // empty or "*" = all workers
 	CreatedAt    time.Time `json:"createdAt"`
+	// TechnocoreID is the coordinator Resource UUID after the first successful
+	// share (or inbound envelope). Empty means never published.
+	TechnocoreID string `json:"technocoreId,omitempty"`
+	// PublishedHash is hex SHA-256 of the plaintext last accepted by the
+	// coordinator. Combined with PublishedRecipients to skip republish.
+	PublishedHash string `json:"publishedHash,omitempty"`
+	// PublishedRecipients are principal IDs wrapped on the last share.
+	PublishedRecipients []string `json:"publishedRecipients,omitempty"`
 }
 
 type RuleRec struct {
@@ -481,6 +489,22 @@ func (s *Store) SecretByPlaceholder(placeholder string) (SecretRec, bool) {
 	defer s.mu.RUnlock()
 	for _, rec := range s.state.Secrets {
 		if rec.Placeholder == placeholder {
+			return rec, true
+		}
+	}
+	return SecretRec{}, false
+}
+
+// SecretByTechnocoreID returns the first secret stamped with this coordinator
+// resource UUID. Empty id never matches.
+func (s *Store) SecretByTechnocoreID(id string) (SecretRec, bool) {
+	if id == "" {
+		return SecretRec{}, false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, rec := range s.state.Secrets {
+		if rec.TechnocoreID == id {
 			return rec, true
 		}
 	}
