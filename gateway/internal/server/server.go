@@ -83,6 +83,10 @@ func (s *Server) WebHandler() http.Handler {
 			s.handleMcpOAuthHTTP(w, r)
 			return
 		}
+		if githubAppHost(r) || strings.HasPrefix(r.URL.Path, "/github-app/") {
+			s.handleGithubAppHTTP(w, r)
+			return
+		}
 		if isWebRouteRequest(r) {
 			s.ingress(w, r)
 			return
@@ -98,6 +102,10 @@ func (s *Server) IngressHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if mcpOAuthHost(r) {
 			s.handleMcpOAuthHTTP(w, r)
+			return
+		}
+		if githubAppHost(r) || strings.HasPrefix(r.URL.Path, "/github-app/") {
+			s.handleGithubAppHTTP(w, r)
 			return
 		}
 		s.ingress(w, r)
@@ -124,6 +132,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 		})
 	})
 	s.registerTechnocore(mux)
+	s.registerGithubApp(mux)
 
 	// CA cert for distribution
 	mux.HandleFunc("GET /api/v1/ca.pem", func(w http.ResponseWriter, r *http.Request) {
@@ -577,6 +586,7 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 	subRoutes := s.Store.SubRoutes()
 	subActs := s.Store.SubActivities()
 	subMcp := s.Store.SubMcp()
+	subGithub := s.Store.SubGithub()
 	ctx := r.Context()
 	tick := time.NewTicker(20 * time.Second)
 	defer tick.Stop()
@@ -605,6 +615,11 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 		case mcp := <-subMcp:
 			if b, err := json.Marshal(mcp.ToSummary()); err == nil {
 				fmt.Fprintf(w, "event: mcp\ndata: %s\n\n", b)
+				fl.Flush()
+			}
+		case gha := <-subGithub:
+			if b, err := json.Marshal(gha.ToSummary()); err == nil {
+				fmt.Fprintf(w, "event: github\ndata: %s\n\n", b)
 				fl.Flush()
 			}
 		case <-tick.C:
@@ -686,7 +701,7 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func storeRecToSummary(rc store.SecretRec) model.SecretSummary {
 	return model.SecretSummary{
-		ID: rc.ID, Name: rc.Name, Placeholder: rc.Placeholder, EnvKey: rc.EnvKey,
+		ID: rc.ID, Name: rc.Name, Placeholder: rc.Placeholder, Kind: rc.Kind, EnvKey: rc.EnvKey,
 		AllowedHosts: rc.AllowedHosts, Workers: rc.Workers, CreatedAt: rc.CreatedAt,
 	}
 }

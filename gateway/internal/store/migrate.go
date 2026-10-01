@@ -68,5 +68,13 @@ func applyMigrations(st *State) bool {
 		st.Version = 5
 		changed = true
 	}
+	// v5→v6: GitHub App rows (PEM + installations).
+	if st.Version < 6 {
+		if st.GithubApps == nil {
+			st.GithubApps = []GithubAppRec{}
+		}
+		st.Version = 6
+		changed = true
+	}
 	return changed
 }

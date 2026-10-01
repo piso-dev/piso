@@ -22,6 +22,7 @@ import (
 	"strings"
 	"time"
 
+	"piso/gateway/internal/githubapp"
 	"piso/gateway/internal/model"
 	"piso/gateway/internal/patterns"
 	"piso/gateway/internal/policy"
@@ -43,12 +44,19 @@ const streamTimeout = 10 * time.Minute
 // would hold SSE tokens in the gateway until the buffer filled.
 const streamCopyBuf = 1024
 
+// TokenMinter resolves a github-app placeholder to an installation token.
+type TokenMinter interface {
+	Mint(placeholder, host, path, body string) (string, error)
+	LiveTokens() []string
+}
+
 // Handler is the egress MITM proxy.
 type Handler struct {
 	CA       *CA
 	Patterns *patterns.Compiled
 	Store    *store.Store
 	Worker   func(*http.Request) string // request -> worker identity
+	Minter   TokenMinter
 
 	client *http.Client
 }
@@ -71,6 +79,7 @@ func New(ca *CA, st *store.Store, pat *patterns.Compiled, workerFn func(*http.Re
 		Store:    st,
 		Patterns: pat,
 		Worker:   workerFn,
+		Minter:   githubapp.NewPlaceholderMinter(st, githubapp.NewClient(nil)),
 		client: &http.Client{
 			Transport: tr,
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
@@ -278,8 +287,8 @@ func (h *Handler) Replay(ctx context.Context, rec store.Record) (*http.Response,
 	}
 	if dec.Action == model.ActionSubstitute {
 		applySubstitution(req, body, dec, h.Store, scanner.ScanRequest(req, scanner.Options{
-			Worker: h.workerID(req), Secrets: knownSecrets(h.Store), Patterns: h.Patterns,
-		}))
+			Worker: h.workerID(req), Secrets: h.scanSecrets(), Patterns: h.Patterns,
+		}), h.Minter)
 	}
 	out, err := h.forward(ctx, req, rec.Scheme)
 	return out, dec, err
@@ -288,16 +297,17 @@ func (h *Handler) Replay(ctx context.Context, rec store.Record) (*http.Response,
 // decide is the scan + policy step shared by process and Replay.
 func (h *Handler) decide(req *http.Request, scheme string, body []byte) model.Decision {
 	scan := scanner.ScanRequest(req, scanner.Options{
-		Worker: h.workerID(req), Secrets: knownSecrets(h.Store), Patterns: h.Patterns,
+		Worker: h.workerID(req), Secrets: h.scanSecrets(), Patterns: h.Patterns,
 	})
 	return policy.Decide(policy.Input{
 		Method: req.Method, Schema: scheme, Host: req.URL.Hostname(), Path: req.URL.Path,
 		Body: string(body), Scan: scan,
-		SecretByPlaceholder: placeholderMap(h.Store),
-		Rules:               recRules(h.Store),
-		Domains:             recDomains(h.Store),
-		Exceptions:          recExceptions(h.Store),
-		Worker:              h.workerID(req),
+		SecretByPlaceholder:    placeholderMap(h.Store),
+		Rules:                  recRules(h.Store),
+		Domains:                recDomains(h.Store),
+		Exceptions:             recExceptions(h.Store),
+		Worker:                 h.workerID(req),
+		GithubAppByPlaceholder: h.Store.GithubAppViews(),
 	})
 }
 
@@ -329,7 +339,7 @@ func (h *Handler) process(ctx context.Context, req *http.Request, scheme string)
 
 	dec := h.decide(req, scheme, body)
 	scan := scanner.ScanRequest(req, scanner.Options{
-		Worker: h.workerID(req), Secrets: knownSecrets(h.Store), Patterns: h.Patterns,
+		Worker: h.workerID(req), Secrets: h.scanSecrets(), Patterns: h.Patterns,
 	})
 
 	reqID := newID()
@@ -373,7 +383,7 @@ func (h *Handler) process(ctx context.Context, req *http.Request, scheme string)
 		return resp, false
 
 	case model.ActionSubstitute:
-		applySubstitution(req, body, dec, h.Store, scan)
+		applySubstitution(req, body, dec, h.Store, scan, h.Minter)
 		rec.Action = string(model.ActionSubstitute)
 		rec.Status = http.StatusOK
 		rec.Reasons = toStrings(dec.Reasons)
@@ -623,14 +633,37 @@ func isRetryableUpstream(err error) bool {
 // rewritten: a whole-body ReplaceAll would leak the real secret to the model
 // whenever chat text mentioned the same piso_ token (including the provider
 // key sitting in Authorization). Pass the original body bytes from process.
-func applySubstitution(req *http.Request, origBody []byte, dec model.Decision, st *store.Store, scan scanner.Result) {
+func applySubstitution(req *http.Request, origBody []byte, dec model.Decision, st *store.Store, scan scanner.Result, mint TokenMinter) {
 	pm := placeholderMap(st)
 	if len(dec.Substituted) == 0 {
 		return
 	}
+	host := ""
+	path := ""
+	if req.URL != nil {
+		host = req.URL.Hostname()
+		path = req.URL.Path
+	}
+	body := string(origBody)
 	sub := map[string]string{}
 	for _, tok := range dec.Substituted {
-		if s, ok := pm[tok]; ok {
+		s, ok := pm[tok]
+		if !ok {
+			continue
+		}
+		if s.Kind == model.SecretKindGithubApp {
+			if mint == nil {
+				continue
+			}
+			real, err := mint.Mint(tok, host, path, body)
+			if err != nil || real == "" {
+				log.Printf("proxy: github-app mint %s: %v", tok, err)
+				continue
+			}
+			sub[tok] = real
+			continue
+		}
+		if s.Value != "" {
 			sub[tok] = s.Value
 		}
 	}
@@ -757,13 +790,28 @@ func knownSecrets(st *store.Store) []scanner.KnownSecret {
 	return out
 }
 
+func (h *Handler) scanSecrets() []scanner.KnownSecret {
+	out := knownSecrets(h.Store)
+	for _, app := range h.Store.GithubApps() {
+		if app.PrivateKey != "" {
+			out = append(out, scanner.KnownSecret{ID: "gha-pem-" + app.ID, Value: app.PrivateKey})
+		}
+	}
+	if h.Minter != nil {
+		for i, tok := range h.Minter.LiveTokens() {
+			out = append(out, scanner.KnownSecret{ID: fmt.Sprintf("ghs-%d", i), Value: tok})
+		}
+	}
+	return out
+}
+
 func placeholderMap(st *store.Store) map[string]model.Secret {
 	recs := st.Secrets()
 	out := make(map[string]model.Secret, len(recs))
 	for _, r := range recs {
 		if r.Placeholder != "" {
 			out[r.Placeholder] = model.Secret{
-				ID: r.ID, Name: r.Name, Placeholder: r.Placeholder, Value: r.Value,
+				ID: r.ID, Name: r.Name, Placeholder: r.Placeholder, Value: r.Value, Kind: r.Kind,
 			}
 		}
 	}

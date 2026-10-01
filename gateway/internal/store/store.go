@@ -20,7 +20,7 @@ import (
 
 // CurrentStateVersion is written into state.json. Bump when adding a
 // migration in applyMigrations.
-const CurrentStateVersion = 5
+const CurrentStateVersion = 6
 
 // State is the persisted configuration.
 type State struct {
@@ -34,6 +34,7 @@ type State struct {
 	Workers         []WorkerRec         `json:"workers,omitempty"`
 	Contexts        []WorkerCtx         `json:"contexts,omitempty"`
 	McpServers      []McpServerRec      `json:"mcpServers,omitempty"`
+	GithubApps      []GithubAppRec      `json:"githubApps,omitempty"`
 }
 
 // JSON-friendly records (this package owns persistence shape).
@@ -42,6 +43,7 @@ type SecretRec struct {
 	Name         string    `json:"name"`
 	Placeholder  string    `json:"placeholder"`
 	Value        string    `json:"value"`
+	Kind         string    `json:"kind,omitempty"` // "" opaque | "github-app"
 	EnvKey       string    `json:"envKey,omitempty"`
 	AllowedHosts []string  `json:"allowedHosts,omitempty"`
 	Workers      []string  `json:"workers,omitempty"` // empty or "*" = all workers
@@ -169,6 +171,9 @@ type Store struct {
 	// MCP OAuth rows (dashboard chip + tab)
 	onMcp chan McpServerRec // broadcast for SSE
 
+	// GitHub App rows (dashboard chip + tab)
+	onGithub chan GithubAppRec
+
 	// transient listener hints: worker → ports the watcher reported but the
 	// gateway cannot route to (loopback / specific-IP / v6-only binds)
 	unreachable map[string][]UnreachablePort
@@ -233,6 +238,7 @@ func New(path, logPath, patternsPath, activitiesPath string, maxLog int) (*Store
 		onRoute:     make(chan RouteRec, 64),
 		onActivity:  make(chan Activity, 64),
 		onMcp:       make(chan McpServerRec, 64),
+		onGithub:    make(chan GithubAppRec, 64),
 		unreachable: map[string][]UnreachablePort{},
 	}
 	if err := s.load(); err != nil {
@@ -432,6 +438,13 @@ func (s *Store) DeleteSecret(id string) error {
 	s.state.Secrets = out
 	// drop rules referencing it
 	s.state.Rules = filterRules(s.state.Rules, func(r RuleRec) bool { return r.SecretID != id })
+	apps := s.state.GithubApps[:0]
+	for _, a := range s.state.GithubApps {
+		if a.SecretID != id {
+			apps = append(apps, a)
+		}
+	}
+	s.state.GithubApps = apps
 	if err := s.save(); err != nil {
 		return err
 	}
