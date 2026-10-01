@@ -80,9 +80,9 @@ dump_feed() {
   code=$(curl -sS --max-time 20 -o "$FEED_FILE" -w '%{http_code}' \
     "${FEED_URL}&limit=${FEED_LIMIT}" 2>/dev/null || echo 000)
   if [ "$code" != "200" ] || [ ! -s "$FEED_FILE" ]; then
-    echo "  fetch failed: HTTP ${code} (pi will retry its own read; if the"
-    echo "  gateway was just down, informant posts may be spooled, not lost)"
-    return 0
+    echo "  fetch failed: HTTP ${code} (skipping this wake; do not judge an empty file)"
+    echo "  (if the gateway was just down, informant posts may be spooled, not lost)"
+    return 1
   fi
   python3 - "$FEED_FILE" "$FEED_LIMIT" <<'PY'
 import json, sys, time
@@ -204,7 +204,12 @@ wake() {
   echo "$HDR"
   echo "monitor     : ${worker} (slug=${slug})"
   echo "feed        : ${FEED_URL}&limit=${FEED_LIMIT}"
-  dump_feed
+  if ! dump_feed; then
+    echo "$SEP"
+    echo "-- decision skipped (feed unavailable) ------------------------"
+    echo "-- end of wake ----------------------------------------------------"
+    return 1
+  fi
   echo "$SEP"
   echo "-- decision (pi, per MONITOR.md — printed every wake, even silent) -"
   out="$("$piBin" -p "Run your project-manager routine now: read the activity feed per $(basename "$PROMPT"), decide, emit any pokes/reminders/notes via piso-informant, and ALWAYS print your Wake Report to stdout (same shape every wake, including when you stay silent). Be conservative: usually the right call is NO new events." 2>&1)"

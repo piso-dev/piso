@@ -123,17 +123,20 @@ RUN set -eu; \
   tar xzf glow.tgz --no-same-owner;  install -m 0755 "glow_3.0.0_Linux_${GLOW_ARCH}/glow" /usr/local/bin/glow; \
   rm -rf "$D"
 
-# Egress: only via the gateway. NO_PROXY keeps vpc services (worker API) direct.
-# Lowercase + ALL_PROXY cover clients that ignore the uppercase pair.
-# CA vars must be image/compose ENV (not entrypoint export): docker exec does
-# not inherit the entrypoint's shell. Set after all RUN curls so build still
-# uses the public trust store.
-ENV HTTPS_PROXY=http://gateway:8080 \
-    HTTP_PROXY=http://gateway:8080 \
-    ALL_PROXY=http://gateway:8080 \
-    https_proxy=http://gateway:8080 \
-    http_proxy=http://gateway:8080 \
-    all_proxy=http://gateway:8080 \
+# Egress: HTTP(S)_PROXY is the local retry forwarder (entrypoint). It dials
+# PISO_EGRESS_UPSTREAM (gateway:8080) and does not replay after the gateway
+# accepts. NO_PROXY keeps vpc services (worker API) direct. Lowercase +
+# ALL_PROXY cover clients that ignore the uppercase pair. CA vars must be
+# image/compose ENV (not entrypoint export): docker exec does not inherit the
+# entrypoint's shell. Set after all RUN curls so build still uses the public
+# trust store.
+ENV HTTPS_PROXY=http://127.0.0.1:18080 \
+    HTTP_PROXY=http://127.0.0.1:18080 \
+    ALL_PROXY=http://127.0.0.1:18080 \
+    https_proxy=http://127.0.0.1:18080 \
+    http_proxy=http://127.0.0.1:18080 \
+    all_proxy=http://127.0.0.1:18080 \
+    PISO_EGRESS_UPSTREAM=gateway:8080 \
     NO_PROXY=gateway,localhost,127.0.0.1,*.piso.local \
     no_proxy=gateway,localhost,127.0.0.1,*.piso.local \
     SSL_CERT_FILE=/piso-ca.pem \
@@ -153,6 +156,9 @@ COPY context-watch.sh /usr/local/bin/piso-context-watch
 COPY ports-watch.sh /usr/local/bin/piso-ports-watch
 COPY activity-watch.sh /usr/local/bin/piso-activity-watch
 COPY informant-help.sh /usr/local/bin/piso-informant
+COPY checkin-watch.sh /usr/local/bin/piso-checkin-watch
+COPY egress-forward.py /usr/local/bin/piso-egress-forward
+COPY gateway-post.sh /usr/local/lib/piso-gateway-post.sh
 COPY INFORMANT.md /opt/piso/INFORMANT.md
 COPY CAPABILITIES.md /opt/piso/CAPABILITIES.md
 COPY MONITOR.md /opt/piso/MONITOR.md
@@ -160,7 +166,7 @@ COPY monitor-loop.sh /usr/local/bin/piso-monitor-loop
 RUN chmod +x /usr/local/bin/piso-monitor-loop
 # make the monitor loop invocable as a plain name (and pi can call it too)
 RUN ln -sf /usr/local/bin/piso-monitor-loop /usr/local/bin/piso-monitor
-RUN chmod +x /usr/local/bin/piso-entrypoint /usr/local/bin/piso-planning-watch /usr/local/bin/piso-loopback-forward /usr/local/bin/piso-context-watch /usr/local/bin/piso-ports-watch /usr/local/bin/piso-activity-watch /usr/local/bin/piso-informant
+RUN chmod +x /usr/local/bin/piso-entrypoint /usr/local/bin/piso-planning-watch /usr/local/bin/piso-loopback-forward /usr/local/bin/piso-context-watch /usr/local/bin/piso-ports-watch /usr/local/bin/piso-activity-watch /usr/local/bin/piso-informant /usr/local/bin/piso-checkin-watch /usr/local/bin/piso-egress-forward /usr/local/lib/piso-gateway-post.sh
 # piso-informant is CALLED by the agent (not a background watcher); ensure it
 # is on PATH (entrypoint runs at /usr/local/bin which is on the default PATH).
 ENV PATH=/usr/local/bin:$PATH

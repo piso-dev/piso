@@ -78,12 +78,13 @@ services:
       - "${PISO_DATA}/pi-profile:/opt/piso/pi-profile:ro"
       - "${PISO_DATA}/workers/monitor:/etc/piso:ro"   # dir mount: env rewrites are visible live (atomic rename swaps the inode)
     environment:
-      HTTPS_PROXY: http://gateway:8080
-      HTTP_PROXY: http://gateway:8080
-      ALL_PROXY: http://gateway:8080
-      https_proxy: http://gateway:8080
-      http_proxy: http://gateway:8080
-      all_proxy: http://gateway:8080
+      HTTPS_PROXY: http://127.0.0.1:18080
+      HTTP_PROXY: http://127.0.0.1:18080
+      ALL_PROXY: http://127.0.0.1:18080
+      https_proxy: http://127.0.0.1:18080
+      http_proxy: http://127.0.0.1:18080
+      all_proxy: http://127.0.0.1:18080
+      PISO_EGRESS_UPSTREAM: gateway:8080
       NO_PROXY: gateway,localhost,127.0.0.1,*.piso.local
       no_proxy: gateway,localhost,127.0.0.1,*.piso.local
       SSL_CERT_FILE: /piso-ca.pem

@@ -14,6 +14,7 @@
   #errbar { display:none; background:#3a1d1d; color:#ffb4b4; padding:8px 20px; font-size:13px }
   header h1 { font-size:16px; margin:0; font-weight:600 }
   header .sub { color:var(--muted); font-size:12px }
+  #tcchip { max-width:42vw; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; display:inline-block; vertical-align:bottom }
   header .actions { margin-left: auto; display:flex; align-items:center; gap:8px }
   header .btn.plan-hot, header .btn.mcp-hot, header .btn.github-hot { background:var(--warn); color:#1a1a1a }
   nav { display:flex; gap:4px; padding:10px 20px; border-bottom:1px solid var(--border); flex-wrap:wrap }
@@ -446,6 +447,36 @@ function showErr(msg) {
   const b = $('#errbar');
   b.style.display = 'block';
   b.textContent = msg;
+}
+function ageLabel(iso) {
+  if (!iso) return '';
+  const t = Date.parse(iso);
+  if (!Number.isFinite(t)) return '';
+  const sec = Math.max(0, Math.round((Date.now() - t) / 1000));
+  if (sec < 10) return 'just now';
+  if (sec < 60) return sec + 's ago';
+  const min = Math.round(sec / 60);
+  if (min < 60) return min + 'm ago';
+  return Math.round(min / 60) + 'h ago';
+}
+async function refreshTechnocore() {
+  const chip = $('#tcchip');
+  if (!chip) return;
+  try {
+    const tc = await api('/api/v1/technocore');
+    let label = 'technocore: ' + (tc.status || 'unpaired');
+    if (tc.fingerprint) label += ' ' + tc.fingerprint;
+    if (tc.lastError) {
+      label += ' · err ' + String(tc.lastError).replace(/\s+/g, ' ').slice(0, 80);
+    } else if (tc.lastSync) {
+      const age = ageLabel(tc.lastSync);
+      if (age) label += ' · sync ' + age;
+    }
+    chip.textContent = label;
+    chip.title = [tc.lastError, tc.lastSync].filter(Boolean).join(' · ') || label;
+  } catch (e) {
+    chip.textContent = 'technocore: unknown';
+  }
 }
 
 // tabs — hash-routed: each tab updates location.hash (#/<name>) so the
@@ -2203,14 +2234,7 @@ $('#planModal').addEventListener('click', (ev) => {
     if (typeof h.ingressPort === 'number' && h.ingressPort > 0) {
       ingressPort = h.ingressPort;
     }
-    try {
-      const tc = await api('/api/v1/technocore');
-      let label = 'technocore: ' + (tc.status || 'unpaired');
-      if (tc.fingerprint) label += ' ' + tc.fingerprint;
-      $('#tcchip').textContent = label;
-    } catch (e) {
-      $('#tcchip').textContent = 'technocore: unknown';
-    }
+    await refreshTechnocore();
   } catch (e) {
     $('#health').textContent = 'offline';
     showErr('control API unreachable at ' + location.origin + ' — try http://127.0.0.1 (piso.local IPv6 needs ::1 published)');
@@ -2233,7 +2257,8 @@ $('#planModal').addEventListener('click', (ev) => {
   setInterval(() => {
     loadPlanning().catch(() => {});
     loadMCP().catch(() => {});
-  }, 2000);
+    refreshTechnocore();
+  }, 5000);
 })();
 </script>
 </body>

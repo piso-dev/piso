@@ -11,7 +11,6 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"piso/gateway/internal/store"
 	tc "piso/internal/technocore"
 )
 
@@ -37,7 +36,10 @@ func originFor(serverURL string) string {
 	}
 }
 
-func connectSession(st *store.Store, dataDir string, id tc.Identity) (ready bool, err error) {
+func connectSession(id tc.Identity, nudge func()) (ready bool, err error) {
+	if nudge == nil {
+		nudge = func() {}
+	}
 	wsURL := httpToWS(id.ServerURL) + "/ws/gateway/"
 	dialer := websocket.Dialer{HandshakeTimeout: 20 * time.Second}
 	header := http.Header{}
@@ -101,16 +103,10 @@ func connectSession(st *store.Store, dataDir string, id tc.Identity) (ready bool
 		case "ready":
 			ready = true
 			log.Printf("technocore: websocket ready")
-			if err := syncSecrets(st, id); err != nil {
-				log.Printf("technocore: sync: %v", err)
-			}
-			publishAllSecrets(st, dataDir)
-		case "envelopes_changed":
-			if err := syncSecrets(st, id); err != nil {
-				log.Printf("technocore: sync: %v", err)
-			}
-		case "gateways_changed":
-			publishAllSecrets(st, dataDir)
+			// HTTP reconcile runs on its own goroutine. Do not block this read loop.
+			nudge()
+		case "envelopes_changed", "gateways_changed":
+			nudge()
 		case "pong", "ack", "hello":
 		case "error":
 			return ready, fmt.Errorf("server error: %v", msg["error"])

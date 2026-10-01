@@ -15,6 +15,8 @@
 #   read by container root, hence `-c safe.directory=*` on every git call.
 set -u
 
+. /usr/local/lib/piso-gateway-post.sh
+
 gw="${GATEWAY_URL:-}"
 worker="${PISO_WORKER_NAME:-}"
 slug="${PISO_WORKER_SLUG:-}"
@@ -160,10 +162,7 @@ ctx() {
 notify() {
   local payload="$1"
   local code
-  code=$(curl -sS --max-time 3 -o /tmp/piso-context-notify.json -w '%{http_code}' \
-    -X POST "${gw}/api/v1/worker/context" \
-    -H 'Content-Type: application/json' \
-    -d "$payload" || true)
+  code=$(piso_gateway_post "${gw}/api/v1/worker/context" "$payload" /tmp/piso-context-notify.json)
   echo "notify ${code} $(tr -d '\n' < /tmp/piso-context-notify.json 2>/dev/null)"
   [ "${code}" = "200" ] || [ "${code}" = "201" ]
 }

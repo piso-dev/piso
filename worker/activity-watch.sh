@@ -15,6 +15,8 @@
 # - Sanitization identical to context-watch (control chars → space, cap len).
 set -u
 
+. /usr/local/lib/piso-gateway-post.sh
+
 gw="${GATEWAY_URL:-}"
 worker="${PISO_WORKER_NAME:-}"
 slug="${PISO_WORKER_SLUG:-}"
@@ -147,13 +149,12 @@ build_body() {
 }
 
 # post_raw POSTs one fully-built payload; success iff the gateway accepted.
+# POST_CODE is the status from the last attempt (000 on transport failure).
+# A 403 identity mismatch is checkin-and-retried once inside the helper.
 post_raw() {
-  local body="$1" code
-  code=$(curl -sS --max-time 3 -o /tmp/piso-activity-notify.json -w '%{http_code}' \
-    -X POST "${gw}/api/v1/worker/activity" \
-    -H 'Content-Type: application/json' \
-    -d "$body" || true)
-  [ "${code}" = "200" ] || [ "${code}" = "201" ]
+  local body="$1"
+  POST_CODE=$(piso_gateway_post "${gw}/api/v1/worker/activity" "$body" /tmp/piso-activity-notify.json)
+  [ "$POST_CODE" = "200" ] || [ "$POST_CODE" = "201" ]
 }
 
 # spool_append buffers one payload under the shared lock (same file and lock
@@ -191,7 +192,11 @@ drain_spool() {
   local n=0 line
   while IFS= read -r line && [ "$n" -lt "$DRAIN_CAP" ]; do
     [ -n "$line" ] || continue
-    if ! post_raw "$line"; then
+    if post_raw "$line"; then
+      :
+    elif [ "${POST_CODE:-}" = "400" ]; then
+      echo "activity 400 (dropped, not retried)"
+    else
       spool_append "$line" || true   # back to the spool; retried next pass
     fi
     n=$((n+1))
@@ -208,6 +213,10 @@ post() {
   body=$(build_body "$kind" "$text")
   if post_raw "$body"; then
     return 0
+  fi
+  if [ "${POST_CODE:-}" = "400" ]; then
+    echo "activity 400 (not spooled)"
+    return 1
   fi
   if [ "$kind" != "active" ]; then
     spool_append "$body" || true

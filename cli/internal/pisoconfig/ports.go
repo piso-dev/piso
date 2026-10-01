@@ -13,7 +13,8 @@ import (
 
 // Default host-published ports. Control defaults to 80 so the dashboard is
 // http://piso.local (no port). In-container listen ports stay 8080/8081/8082
-// so the worker's HTTP_PROXY=gateway:8080 does not change.
+// so the worker's upstream MITM stays gateway:8080. Workers dial it through
+// a local retry forwarder; that listen port is not this host publish port.
 const (
 	DefaultProxyPort          = 8080
 	DefaultControlPort        = 80

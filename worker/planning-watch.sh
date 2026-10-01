@@ -9,6 +9,8 @@
 # (vpc_ip:19432 → 127.0.0.1:19432).
 set -u
 
+. /usr/local/lib/piso-gateway-post.sh
+
 gw="${GATEWAY_URL:-}"
 worker="${PISO_WORKER_NAME:-}"
 slug="${PISO_WORKER_SLUG:-}"
@@ -57,11 +59,9 @@ stop_fwd() {
 }
 
 notify() {
-  code=$(curl -sS --max-time 3 -o /tmp/piso-planning-notify.json -w '%{http_code}' \
-    -X POST "${gw}/api/v1/worker/planning" \
-    -H 'Content-Type: application/json' \
-    -d "{\"kind\":\"planning\",\"worker\":\"${worker}\",\"slug\":\"${slug}\",\"port\":${port}}" \
-    || true)
+  code=$(piso_gateway_post "${gw}/api/v1/worker/planning" \
+    "{\"kind\":\"planning\",\"worker\":\"${worker}\",\"slug\":\"${slug}\",\"port\":${port}}" \
+    /tmp/piso-planning-notify.json)
   echo "notify ${code} $(tr -d '\n' < /tmp/piso-planning-notify.json 2>/dev/null)"
   if [ "${code}" = "200" ] || [ "${code}" = "201" ]; then
     return 0

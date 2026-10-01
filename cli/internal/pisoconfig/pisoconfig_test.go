@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"piso/cli/internal/workerhash"
 )
 
 func writeTree(t *testing.T, root string) {
@@ -148,7 +150,7 @@ func TestWriteWorkerComposeRendersPerWorkerEnv(t *testing.T) {
 	if err := os.MkdirAll(build, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"Dockerfile", "entrypoint.sh", "routstr-models.ts", "planning-watch.sh", "loopback-forward.py", "context-watch.sh", "ports-watch.sh", "activity-watch.sh", "informant-help.sh", "INFORMANT.md", "CAPABILITIES.md", "MONITOR.md", "monitor-loop.sh", "package.json"} {
+	for _, name := range workerhash.Files {
 		if err := os.WriteFile(filepath.Join(build, name), []byte("x\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}

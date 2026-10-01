@@ -150,23 +150,25 @@ if [ -s "$ctx" ]; then
 fi
 rm -f "$ctx"
 
-# Self-heal the slug↔IP registry: claim this worker's identity on the
-# gateway so a recreated container (new vpc IP) is not hit with 403 "identity
-# mismatch" on every watcher/informant POST. Idempotent and non-fatal;
-# retries briefly to cover a cold compose start while the gateway warms up.
-if [ -n "${GATEWAY_URL:-}" ] && [ -n "${PISO_WORKER_NAME:-}" ] && [ -n "${PISO_WORKER_SLUG:-}" ]; then
-  for i in 1 2 3 4 5; do
-    code=$(curl -sS --max-time 2 -o /dev/null -w '%{http_code}' \
-      -X POST "${GATEWAY_URL}/api/v1/worker/checkin" \
-      -H 'Content-Type: application/json' \
-      -d "{\"worker\":\"${PISO_WORKER_NAME}\",\"slug\":\"${PISO_WORKER_SLUG}\"}" 2>/dev/null) || code=000
-    if [ "$code" = "200" ]; then
-      echo "piso: identity checkin ok"
-      break
-    fi
-    echo "piso: identity checkin http $code (retry $i/5)"
-    sleep 2
+# Local egress proxy: retries the dial to gateway:8080 for ~45s so a
+# gateway recreate does not fail in-flight model calls. Must be up before
+# exec. HTTP(S)_PROXY points at 127.0.0.1:18080; this process dials the
+# real gateway and does not replay a request the gateway has already accepted.
+if [ -x /usr/local/bin/piso-egress-forward ]; then
+  respawn /usr/local/bin/piso-egress-forward "$PISO_LOG_DIR/egress-forward.log"
+  # HTTP_PROXY already points here; wait briefly so the first pi call is not
+  # a connection-refused race against the just-spawned listener.
+  for _i in 1 2 3 4 5 6 7 8 9 10; do
+    (echo >/dev/tcp/127.0.0.1/18080) >/dev/null 2>&1 && break
+    sleep 0.2
   done
+fi
+
+# Self-heal the slug↔IP registry for the life of the container, not just
+# five tries at boot. A worker that starts while the gateway is rebuilding
+# would otherwise 403 every later post until it was recreated.
+if [ -n "${GATEWAY_URL:-}" ] && [ -n "${PISO_WORKER_NAME:-}" ] && [ -n "${PISO_WORKER_SLUG:-}" ] && [ -x /usr/local/bin/piso-checkin-watch ]; then
+  respawn /usr/local/bin/piso-checkin-watch "$PISO_LOG_DIR/checkin-watch.log"
 fi
 
 # When /plan starts Plannotator, ask the host to approve an ingress URL.

@@ -34,6 +34,8 @@ type envelope struct {
 // envelopes_changed.
 func Run(st *store.Store, dataDir string) {
 	path := tc.Path(dataDir)
+	rec := newReconciler(st, dataDir)
+	go rec.loop()
 	backoff := time.Second
 	for {
 		id, err := tc.Load(path)
@@ -56,7 +58,7 @@ func Run(st *store.Store, dataDir string) {
 			continue
 		}
 		log.Printf("technocore: connecting %s", id.ServerURL)
-		ready, err := connectSession(st, dataDir, id)
+		ready, err := connectSession(id, rec.Nudge)
 		if err != nil {
 			log.Printf("technocore: websocket: %v", err)
 			setLive(func(s *Status) { s.LastError = err.Error() })
@@ -97,7 +99,7 @@ func poll(id tc.Identity) (string, string, error) {
 		return "", "", err
 	}
 	req.Header.Set(tc.HeaderPollToken, id.PollToken)
-	res, err := http.DefaultClient.Do(req)
+	res, err := serverHTTP.Do(req)
 	if err != nil {
 		return "", "", err
 	}
@@ -116,6 +118,9 @@ func poll(id tc.Identity) (string, string, error) {
 	return out.Status, out.PrincipalID, nil
 }
 
+// syncSecrets replaces the local tc_ snapshot with a complete coordinator
+// response. A non-200, a transport error, or a body that does not parse
+// returns before any delete, so a restart blip cannot wipe the vault.
 func syncSecrets(st *store.Store, id tc.Identity) error {
 	req, err := http.NewRequest(http.MethodGet, strings.TrimRight(id.ServerURL, "/")+"/api/v1/sync/secrets", nil)
 	if err != nil {
@@ -124,7 +129,7 @@ func syncSecrets(st *store.Store, id tc.Identity) error {
 	if err := tc.SignRequest(req, id, nil); err != nil {
 		return err
 	}
-	res, err := http.DefaultClient.Do(req)
+	res, err := serverHTTP.Do(req)
 	if err != nil {
 		return err
 	}

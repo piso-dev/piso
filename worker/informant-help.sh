@@ -30,6 +30,8 @@
 # the host control plane. NO_PROXY covers "gateway" so curl goes direct.
 set -u
 
+. /usr/local/lib/piso-gateway-post.sh
+
 gw="${GATEWAY_URL:-}"
 worker="${PISO_WORKER_NAME:-}"
 slug="${PISO_WORKER_SLUG:-}"
@@ -100,13 +102,13 @@ spool_append() {
 # and the board is advisory — the agent must keep going either way.
 post_or_spool() {
   local code
-  code=$(curl -sS --max-time 3 --retry 1 --retry-connrefused --retry-delay 1 \
-    -o /tmp/piso-informant-resp.json -w '%{http_code}' \
-    -X POST "${gw}/api/v1/worker/activity" \
-    -H 'Content-Type: application/json' \
-    -d "$body" || true)
+  code=$(piso_gateway_post "${gw}/api/v1/worker/activity" "$body" /tmp/piso-informant-resp.json)
   if [ "${code}" = "200" ] || [ "${code}" = "201" ]; then
     echo "informant ${code} $(tr -d '\n' < /tmp/piso-informant-resp.json 2>/dev/null)"
+    return 0
+  fi
+  if [ "${code}" = "400" ]; then
+    echo "informant 400 (not retried: $(tr -d '\n' < /tmp/piso-informant-resp.json 2>/dev/null))"
     return 0
   fi
   if spool_append "$body"; then

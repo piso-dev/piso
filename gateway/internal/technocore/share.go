@@ -97,7 +97,7 @@ func Share(st *store.Store, dataDir string, in ShareInput) (map[string]any, erro
 	if err := tc.SignRequest(req, id, body); err != nil {
 		return nil, err
 	}
-	res, err := http.DefaultClient.Do(req)
+	res, err := serverHTTP.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -122,7 +122,7 @@ func fetchGateways(id tc.Identity) ([]remoteGateway, error) {
 	if err := tc.SignRequest(req, id, nil); err != nil {
 		return nil, err
 	}
-	res, err := http.DefaultClient.Do(req)
+	res, err := serverHTTP.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -142,9 +142,10 @@ func fetchGateways(id tc.Identity) ([]remoteGateway, error) {
 
 // publishAllSecrets reconciles every locally-created secret with Technocore.
 // Synced tc_ records are excluded so receiving an envelope never creates a
-// publication loop. A failure is deliberately non-fatal: log it and continue
-// with the remaining secrets.
-func publishAllSecrets(st *store.Store, dataDir string) {
+// publication loop. One secret's failure does not stop the rest; the first
+// error is returned so the reconcile loop backs off and tries again.
+func publishAllSecrets(st *store.Store, dataDir string) error {
+	var first error
 	for _, rec := range st.Secrets() {
 		if strings.HasPrefix(rec.ID, "tc_") || rec.Value == "" {
 			continue
@@ -158,10 +159,14 @@ func publishAllSecrets(st *store.Store, dataDir string) {
 		})
 		if err != nil {
 			log.Printf("technocore: publish %s: %v", rec.Placeholder, err)
+			if first == nil {
+				first = err
+			}
 			continue
 		}
 		log.Printf("technocore: published %s", rec.Placeholder)
 	}
+	return first
 }
 
 // PublishPlaceholder wraps an existing local vault secret for other gateways.
