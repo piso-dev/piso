@@ -15,21 +15,39 @@ import (
 
 var (
 	workerNameIn  io.Reader = os.Stdin
-	workerNameOut io.Writer = os.Stdout
+	workerNameOut io.Writer = os.Stderr
 )
 
-func stdinIsTTY() bool {
-	f, err := os.Stdin.Stat()
+func openTTY() (*os.File, error) {
+	if runtime.GOOS == "windows" {
+		return os.OpenFile("CONIN$", os.O_RDWR, 0)
+	}
+	return os.OpenFile("/dev/tty", os.O_RDWR, 0)
+}
+
+func canPrompt() bool {
+	if workerNameIn != os.Stdin {
+		return true
+	}
+	f, err := openTTY()
 	if err != nil {
 		return false
 	}
-	return f.Mode()&os.ModeCharDevice != 0
+	_ = f.Close()
+	return true
 }
 
 func promptWorkerName(proposed string) string {
 	fmt.Fprintf(workerNameOut, "piso: worker piso-worker-%s does not exist yet\n", proposed)
 	fmt.Fprintf(workerNameOut, "piso: worker name [%s]: ", proposed)
-	sc := bufio.NewScanner(workerNameIn)
+	r := workerNameIn
+	if workerNameIn == os.Stdin {
+		if f, err := openTTY(); err == nil {
+			defer f.Close()
+			r = f
+		}
+	}
+	sc := bufio.NewScanner(r)
 	if !sc.Scan() {
 		return proposed
 	}
@@ -41,18 +59,34 @@ func promptWorkerName(proposed string) string {
 }
 
 func existingSlugForDir(dir string) string {
-	if slug, ok := pisoconfig.ComposeSlugForDir(dir); ok {
+	return existingSlugFromContainers(dir, dockernet.ListNames("piso-worker-"), dockernet.ContainerWorkspace)
+}
+
+func existingSlugFromContainers(dir string, names []string, workspace func(string) (string, bool)) string {
+	for _, name := range names {
+		slug, ok := slugFromWorkerContainer(name)
+		if !ok {
+			continue
+		}
+		ws, ok := workspace(name)
+		if !ok || !pathsEqual(ws, dir) {
+			continue
+		}
 		return slug
 	}
-	legacy := pisoconfig.SlugFromDir(dir)
-	ws, ok := dockernet.ContainerWorkspace("piso-worker-" + legacy)
-	if !ok {
-		return ""
+	return ""
+}
+
+func slugFromWorkerContainer(name string) (string, bool) {
+	const prefix = "piso-worker-"
+	if !strings.HasPrefix(name, prefix) {
+		return "", false
 	}
-	if !pathsEqual(ws, dir) {
-		return ""
+	slug := strings.TrimPrefix(name, prefix)
+	if slug == "" || pisoconfig.ReservedSlug(slug) {
+		return "", false
 	}
-	return legacy
+	return slug, true
 }
 
 func pathsEqual(a, b string) bool {
@@ -81,16 +115,22 @@ func slugTaken(slug, dir string) bool {
 }
 
 func chooseWorkerSlug(dir, nameFlag string) (string, error) {
-	saved, _ := pisoconfig.LoadProjectSlug(dir)
-	existing := ""
-	if saved == "" {
-		existing = existingSlugForDir(dir)
+	existing := existingSlugForDir(dir)
+	if existing != "" {
+		if err := rejectNameFlag(nameFlag, existing); err != nil {
+			return "", err
+		}
+		_ = pisoconfig.SaveProjectSlug(dir, existing)
+		fmt.Fprintf(workerNameOut, "piso: worker piso-worker-%s already exists\n", existing)
+		return existing, nil
 	}
-	proposed := ""
-	if saved == "" && existing == "" {
+
+	saved, _ := pisoconfig.LoadProjectSlug(dir)
+	proposed := saved
+	if proposed == "" {
 		proposed = pisoconfig.DefaultSlug(dir)
 	}
-	interactive := nameFlag == "" && saved == "" && existing == "" && stdinIsTTY()
+	interactive := nameFlag == "" && canPrompt()
 	typed := ""
 	if interactive {
 		typed = promptWorkerName(proposed)
@@ -98,8 +138,6 @@ func chooseWorkerSlug(dir, nameFlag string) (string, error) {
 	slug, err := pisoconfig.DecideWorkerSlug(pisoconfig.NameDecision{
 		Dir:         dir,
 		NameFlag:    nameFlag,
-		Saved:       saved,
-		Existing:    existing,
 		Proposed:    proposed,
 		Interactive: interactive,
 		Typed:       typed,
@@ -107,11 +145,19 @@ func chooseWorkerSlug(dir, nameFlag string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if saved == "" && existing == "" && slugTaken(slug, dir) {
+	if slugTaken(slug, dir) {
 		return "", fmt.Errorf("worker name %q is already used by another project", slug)
 	}
 	if err := pisoconfig.SaveProjectSlug(dir, slug); err != nil {
 		return "", err
 	}
 	return slug, nil
+}
+
+func rejectNameFlag(nameFlag, locked string) error {
+	flag := pisoconfig.NormalizeWorkerName(nameFlag)
+	if flag != "" && flag != locked {
+		return fmt.Errorf("worker already named %q (--name is only when that worker does not exist)", locked)
+	}
+	return nil
 }

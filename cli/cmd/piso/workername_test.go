@@ -23,6 +23,24 @@ func TestParseUpArgsNameAndDir(t *testing.T) {
 	}
 }
 
+func TestExistingSlugFromContainers(t *testing.T) {
+	ws := map[string]string{
+		"piso-worker-monitor": "/tmp/monitor",
+		"piso-worker-demo":    "/tmp/proj",
+	}
+	lookup := func(name string) (string, bool) {
+		p, ok := ws[name]
+		return p, ok
+	}
+	got := existingSlugFromContainers("/tmp/proj", []string{"piso-worker-monitor", "piso-worker-demo"}, lookup)
+	if got != "demo" {
+		t.Fatalf("got %q, want demo", got)
+	}
+	if existingSlugFromContainers("/tmp/other", []string{"piso-worker-demo"}, lookup) != "" {
+		t.Fatal("other dir must not match")
+	}
+}
+
 func TestPromptWorkerName(t *testing.T) {
 	var out bytes.Buffer
 	oldIn, oldOut := workerNameIn, workerNameOut

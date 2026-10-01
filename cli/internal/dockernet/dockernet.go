@@ -179,6 +179,16 @@ func dockerOutput(args ...string) (string, error) {
 	return strings.TrimSpace(string(out)), err
 }
 
+// ListNames returns `docker ps -a` names matching a docker name filter
+// (substring match, same as docker --filter name=).
+func ListNames(nameFilter string) []string {
+	out, err := dockerOutput("ps", "-a", "--format", "{{.Names}}", "--filter", "name="+nameFilter)
+	if err != nil || out == "" {
+		return nil
+	}
+	return strings.Fields(out)
+}
+
 // ContainerWorkspace is the host path bind-mounted at /workspace, if any.
 func ContainerWorkspace(name string) (string, bool) {
 	out, err := dockerOutput("inspect", "-f",

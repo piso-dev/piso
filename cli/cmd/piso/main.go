@@ -83,7 +83,7 @@ Usage:
   piso up [dir] [--name n] [--proxy-port N] [--ctrl-port N] [--ingress-port N]
                          ensure gateway + worker for [dir] (default: cwd).
                          Name defaults to the git origin repo, else the folder.
-                         First up confirms the name (or --name); after that it is locked.
+                         Confirms the name when that worker does not exist (--name skips).
   piso down              stop this project's worker (gateway stays up)
   piso attach [--shell] [--new] [--session <id|path>]
                          enter the worker and run pi (new session if none exist;
