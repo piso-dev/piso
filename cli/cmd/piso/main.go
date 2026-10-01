@@ -80,8 +80,10 @@ func usage() {
 	fmt.Print(`piso — isolate an AI agent in a Docker worker behind a MITM gateway
 
 Usage:
-  piso up [dir] [--proxy-port N] [--ctrl-port N] [--ingress-port N]
-                         ensure gateway + worker for [dir] (default: cwd)
+  piso up [dir] [--name n] [--proxy-port N] [--ctrl-port N] [--ingress-port N]
+                         ensure gateway + worker for [dir] (default: cwd).
+                         Name defaults to the git origin repo, else the folder.
+                         First up confirms the name (or --name); after that it is locked.
   piso down              stop this project's worker (gateway stays up)
   piso attach [--shell] [--new] [--session <id|path>]
                          enter the worker and run pi (new session if none exist;
@@ -123,11 +125,11 @@ image, and state.json schema).
 // ---- up / down ----
 
 func cmdUp(args []string) error {
-	dir, cliPorts, err := parseUpArgs(args)
+	opts, err := parseUpArgs(args)
 	if err != nil {
 		return err
 	}
-	abs, err := filepath.Abs(dir)
+	abs, err := filepath.Abs(opts.Dir)
 	if err != nil {
 		return err
 	}
@@ -135,6 +137,11 @@ func cmdUp(args []string) error {
 	if err != nil {
 		return err
 	}
+	slug, err := chooseWorkerSlug(proj.Dir, opts.Name)
+	if err != nil {
+		return err
+	}
+	proj.Slug = slug
 	if home, err := pisoconfig.Home(); err == nil {
 		fmt.Printf("piso: using %s\n", home)
 	}
@@ -143,7 +150,7 @@ func cmdUp(args []string) error {
 	if err := dockernet.AssertLinuxEngine(); err != nil {
 		return err
 	}
-	ports, err := pisoconfig.ResolveHostPorts(cliPorts)
+	ports, err := pisoconfig.ResolveHostPorts(opts.Ports)
 	if err != nil {
 		return err
 	}
@@ -237,23 +244,30 @@ func cmdUp(args []string) error {
 	return nil
 }
 
-// parseUpArgs reads `piso up [dir] [--proxy-port N] [--ctrl-port N] [--ingress-port N]`.
+type upOpts struct {
+	Dir   string
+	Name  string
+	Ports pisoconfig.HostPorts
+}
+
+// parseUpArgs reads `piso up [dir] [--name n] [--proxy-port N] [--ctrl-port N] [--ingress-port N]`.
 // Port flags of 0 mean "keep saved / default".
-func parseUpArgs(args []string) (string, pisoconfig.HostPorts, error) {
+func parseUpArgs(args []string) (upOpts, error) {
 	fs := flag.NewFlagSet("up", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	var ports pisoconfig.HostPorts
-	fs.IntVar(&ports.Proxy, "proxy-port", 0, "host port for the egress proxy")
-	fs.IntVar(&ports.Control, "ctrl-port", 0, "host port for the dashboard / control API")
-	fs.IntVar(&ports.Ingress, "ingress-port", 0, "host port for name.piso.local ingress")
+	var opts upOpts
+	fs.StringVar(&opts.Name, "name", "", "worker slug (first piso up only)")
+	fs.IntVar(&opts.Ports.Proxy, "proxy-port", 0, "host port for the egress proxy")
+	fs.IntVar(&opts.Ports.Control, "ctrl-port", 0, "host port for the dashboard / control API")
+	fs.IntVar(&opts.Ports.Ingress, "ingress-port", 0, "host port for name.piso.local ingress")
 	if err := fs.Parse(args); err != nil {
-		return "", pisoconfig.HostPorts{}, err
+		return upOpts{}, err
 	}
-	dir := "."
+	opts.Dir = "."
 	if rest := fs.Args(); len(rest) > 0 {
-		dir = rest[0]
+		opts.Dir = rest[0]
 	}
-	return dir, ports, nil
+	return opts, nil
 }
 
 // registerWorkerWithGateway tells the gateway this worker's name/slug and its

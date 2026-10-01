@@ -7,7 +7,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"time"
 
@@ -17,7 +16,7 @@ import (
 // Project is a resolved piso workspace: the host dir mounted into the worker.
 type Project struct {
 	Dir  string // absolute host dir mounted at /workspace
-	Slug string // safe container/compose name derived from dir
+	Slug string // container/compose identifier (saved, git origin, or folder)
 }
 
 // Resolve builds a Project from an absolute directory.
@@ -33,7 +32,11 @@ func Resolve(dir string) (Project, error) {
 	if !st.IsDir() {
 		return Project{}, fmt.Errorf("%s is not a directory", abs)
 	}
-	return Project{Dir: abs, Slug: slug(abs)}, nil
+	slug := SlugFromDir(abs)
+	if saved, ok := LoadProjectSlug(abs); ok {
+		slug = saved
+	}
+	return Project{Dir: abs, Slug: slug}, nil
 }
 
 // ProjectFromCWD resolves the project from the current working directory.
@@ -43,19 +46,6 @@ func ProjectFromCWD() (Project, error) {
 		return Project{}, err
 	}
 	return Resolve(cwd)
-}
-
-// slug converts a workspace path into a safe identifier.
-func slug(dir string) string {
-	base := filepath.Base(dir)
-	// strip unsafe characters
-	re := regexp.MustCompile(`[^a-zA-Z0-9_.-]+`)
-	base = re.ReplaceAllString(base, "-")
-	base = strings.Trim(base, "-.")
-	if base == "" || base == "." {
-		base = "workspace"
-	}
-	return base
 }
 
 // WorkerName is the deterministic container name (must match the compose

@@ -179,6 +179,21 @@ func dockerOutput(args ...string) (string, error) {
 	return strings.TrimSpace(string(out)), err
 }
 
+// ContainerWorkspace is the host path bind-mounted at /workspace, if any.
+func ContainerWorkspace(name string) (string, bool) {
+	out, err := dockerOutput("inspect", "-f",
+		`{{range .Mounts}}{{if eq .Destination "/workspace"}}{{.Source}}{{end}}{{end}}`,
+		name)
+	if err != nil {
+		return "", false
+	}
+	out = strings.TrimSpace(out)
+	if out == "" {
+		return "", false
+	}
+	return out, true
+}
+
 // ContainerIPs returns the IPv4/v6 addresses the container is attached to,
 // parsed from `docker inspect`. Used to populate the worker registry (slug↔IP)
 // so the gateway can tag request logs.
