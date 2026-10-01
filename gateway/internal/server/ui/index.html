@@ -15,7 +15,7 @@
   header h1 { font-size:16px; margin:0; font-weight:600 }
   header .sub { color:var(--muted); font-size:12px }
   header .actions { margin-left: auto; display:flex; align-items:center; gap:8px }
-  header .btn.plan-hot, header .btn.mcp-hot { background:var(--warn); color:#1a1a1a }
+  header .btn.plan-hot, header .btn.mcp-hot, header .btn.github-hot { background:var(--warn); color:#1a1a1a }
   nav { display:flex; gap:4px; padding:10px 20px; border-bottom:1px solid var(--border); flex-wrap:wrap }
   nav button { background:transparent; color:var(--muted); border:1px solid transparent; padding:6px 14px; border-radius:6px; cursor:pointer; font-size:13px }
   nav button.active { background:var(--panel); color:var(--fg); border-color:var(--border) }
@@ -161,6 +161,7 @@
   <div class="actions">
     <button type="button" class="btn" id="openPlanModal">Plan review (<span id="planCount">0</span>)</button>
     <button type="button" class="btn" id="openMcpModal">MCP login (<span id="mcpCount">0</span>)</button>
+    <button type="button" class="btn" id="openGithubModal">GitHub (<span id="githubCount">0</span>)</button>
   </div>
 </header>
 <div id="errbar"></div>
@@ -168,6 +169,7 @@
   <button data-tab="board">Board</button>
   <button data-tab="log" class="active">Request log</button>
   <button data-tab="mcp">MCP</button>
+  <button data-tab="github">GitHub</button>
   <button data-tab="secrets">Secrets</button>
   <button data-tab="rules">Rules</button>
   <button data-tab="patterns">Patterns</button>
@@ -236,6 +238,23 @@
       </div>
       <table><thead><tr><th>Name</th><th>Worker</th><th>URL</th><th>Placeholder</th><th>Status</th><th></th></tr></thead>
       <tbody id="mcprows"></tbody></table>
+    </div>
+  </section>
+
+  <!-- GITHUB APP -->
+  <section class="tab" id="tab-github">
+    <div class="card">
+      <div class="card-head">
+        <div>
+          <h3>GitHub App</h3>
+          <p class="muted">Create an app on <b>your</b> account, then install it on orgs/repos. Workers only see a <span class="mono">piso_github_app_…</span> placeholder; the gateway mints installation tokens.</p>
+        </div>
+        <div>
+          <button type="button" class="btn" id="githubConnect">Connect GitHub</button>
+        </div>
+      </div>
+      <table><thead><tr><th>Name</th><th>Status</th><th>Placeholder</th><th>Installations</th><th></th></tr></thead>
+      <tbody id="githubrows"></tbody></table>
     </div>
   </section>
 
@@ -364,6 +383,18 @@
     <p class="muted" id="mcpStatus"></p>
     <div class="modal-actions">
       <button type="button" class="btn danger" id="mcpClose">Close</button>
+    </div>
+  </div>
+</div>
+<div id="githubModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="githubModalTitle">
+  <div class="modal-card sheet">
+    <h3 id="githubModalTitle">GitHub access</h3>
+    <p class="muted">Create the app on your GitHub account, then install it on the orgs and repos this fleet may use.</p>
+    <div id="githubGroups"></div>
+    <p class="muted" id="githubStatus"></p>
+    <div class="modal-actions">
+      <button type="button" class="btn" id="githubModalConnect">Connect GitHub</button>
+      <button type="button" class="btn danger" id="githubClose">Close</button>
     </div>
   </div>
 </div>
@@ -844,6 +875,7 @@ function streamLog() {
   es.addEventListener('route', ev => { loadRoutes().catch(() => {}); loadTopo().catch(() => {}); });
   es.addEventListener('activity', ev => { loadBoard().catch(() => {}); });
   es.addEventListener('mcp', ev => { loadMCP().catch(() => {}); });
+  es.addEventListener('github', ev => { loadGithub().catch(() => {}); });
   es.onerror = () => {};
 }
 $('#logFilter').oninput = ev => {
@@ -2019,6 +2051,143 @@ $('#mcpModal').addEventListener('click', (ev) => {
   if (ev.target === $('#mcpModal')) $('#mcpModal').classList.remove('open');
 });
 
+// ---- GitHub App inbox + tab ----
+let githubItems = [];
+let githubPending = [];
+let githubSeen = new Set();
+let githubSeeded = false;
+
+async function loadGithub() {
+  const rows = await api('/api/v1/github-app');
+  githubItems = Array.isArray(rows) ? rows : [];
+  const pending = await api('/api/v1/github-app/pending');
+  githubPending = Array.isArray(pending) ? pending : [];
+  const n = githubPending.length;
+  const count = $('#githubCount');
+  const btn = $('#openGithubModal');
+  if (count) count.textContent = String(n);
+  if (btn) btn.classList.toggle('github-hot', n > 0);
+  const fresh = githubPending.filter(p => p.id && !githubSeen.has(p.id + ':' + (p.status||'')));
+  githubPending.forEach(p => { if (p.id) githubSeen.add(p.id + ':' + (p.status||'')); });
+  if (githubSeeded && fresh.length > 0) {
+    $('#githubModal').classList.add('open');
+  }
+  githubSeeded = true;
+  renderGithubTab();
+  if ($('#githubModal').classList.contains('open')) renderGithubPending();
+}
+
+function renderGithubTab() {
+  const box = $('#githubrows');
+  if (!box) return;
+  box.innerHTML = '';
+  if (!githubItems.length) {
+    box.append(el('tr', '', '<td colspan="5" class="muted">No GitHub App yet. Connect GitHub to create one on your account.</td>'));
+    return;
+  }
+  githubItems.forEach((item) => {
+    const inst = (item.installations || []).map(i => {
+      const repos = (i.repos && i.repos.length) ? ' (' + i.repos.join(', ') + ')' : '';
+      return esc(i.account || '') + repos;
+    }).join('<br>') || '<span class="muted">none</span>';
+    const tr = el('tr', '', `<td>${esc(item.name||'')}</td><td>${esc(item.status||'')}</td>
+      <td class="mono">${esc(item.placeholder||'')}</td>
+      <td>${inst}</td><td></td>`);
+    const td = tr.lastElementChild;
+    if (item.status === 'needs-register') {
+      const b = el('button', 'btn small', 'Create app');
+      b.onclick = () => startGithubManifest();
+      td.append(b);
+    } else {
+      const instBtn = el('button', 'btn small', 'Install on org');
+      instBtn.onclick = () => startGithubInstall(item.id);
+      td.append(instBtn);
+      const ref = el('button', 'btn small', 'Refresh');
+      ref.style.marginLeft = '6px';
+      ref.onclick = () => refreshGithub(item.id, ref);
+      td.append(ref);
+    }
+    const del = el('button', 'btn small danger', 'Remove');
+    del.style.marginLeft = '6px';
+    del.onclick = () => deleteGithub(item.id, del);
+    td.append(del);
+    box.append(tr);
+  });
+}
+
+function renderGithubPending() {
+  const box = $('#githubGroups');
+  box.innerHTML = '';
+  if (!githubPending.length) {
+    box.append(el('p', 'muted', 'GitHub is connected, or not started. Use Connect GitHub to create/install the app.'));
+    return;
+  }
+  githubPending.forEach((item) => {
+    const wrap = el('div', 'fail-group', `<p class="meta">${esc(item.name || '')} · ${esc(item.status || '')}</p>
+      <p class="mono">${esc(item.placeholder || '')}</p>
+      <div class="fail-actions"></div>`);
+    const actions = wrap.querySelector('.fail-actions');
+    const label = item.status === 'needs-register' ? 'Create app' : 'Install on org';
+    const b = el('button', 'btn', label);
+    b.onclick = () => {
+      if (item.status === 'needs-register') startGithubManifest();
+      else startGithubInstall(item.id);
+    };
+    actions.append(b);
+    box.append(wrap);
+  });
+}
+
+async function startGithubManifest() {
+  const out = await api('/api/v1/github-app/manifest', {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'});
+  if (!out || !out.action || !out.manifest) throw new Error('manifest response incomplete');
+  const form = document.createElement('form');
+  form.method = 'POST';
+  form.action = out.action;
+  form.target = '_blank';
+  const input = document.createElement('input');
+  input.type = 'hidden';
+  input.name = 'manifest';
+  input.value = typeof out.manifest === 'string' ? out.manifest : JSON.stringify(out.manifest);
+  form.appendChild(input);
+  document.body.appendChild(form);
+  form.submit();
+  form.remove();
+  await loadGithub();
+}
+
+async function startGithubInstall(id) {
+  const out = await api('/api/v1/github-app/' + encodeURIComponent(id) + '/install');
+  if (out && out.url) window.open(out.url, '_blank', 'noopener');
+}
+
+async function refreshGithub(id, btn) {
+  if (btn) btn.disabled = true;
+  try {
+    await api('/api/v1/github-app/' + encodeURIComponent(id) + '/refresh', {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'});
+    await loadGithub();
+  } catch (e) { alert(e.message); }
+  if (btn) btn.disabled = false;
+}
+
+async function deleteGithub(id, btn) {
+  if (!confirm('Remove this GitHub App from the gateway? The GitHub-side app is not deleted.')) return;
+  if (btn) btn.disabled = true;
+  try {
+    await api('/api/v1/github-app/' + encodeURIComponent(id), {method:'DELETE'});
+    await loadGithub();
+  } catch (e) { alert(e.message); }
+  if (btn) btn.disabled = false;
+}
+
+$('#openGithubModal').onclick = () => { renderGithubPending(); $('#githubModal').classList.add('open'); };
+$('#githubClose').onclick = () => $('#githubModal').classList.remove('open');
+$('#githubModal').addEventListener('click', (ev) => {
+  if (ev.target === $('#githubModal')) $('#githubModal').classList.remove('open');
+});
+$('#githubConnect').onclick = () => startGithubManifest().catch(e => alert(e.message));
+$('#githubModalConnect').onclick = () => startGithubManifest().catch(e => alert(e.message));
+
 $('#planClose').onclick = () => $('#planModal').classList.remove('open');
 $('#planModal').addEventListener('click', (ev) => {
   if (ev.target === $('#planModal')) {
@@ -2047,7 +2216,7 @@ $('#planModal').addEventListener('click', (ev) => {
     showErr('control API unreachable at ' + location.origin + ' — try http://127.0.0.1 (piso.local IPv6 needs ::1 published)');
     return;
   }
-  const loaders = [loadBoard, loadMCP, loadSecrets, loadRules, loadPatterns, loadExceptions, loadDomains, loadRoutes, loadWorkers, loadPlanning, loadLog];
+  const loaders = [loadBoard, loadMCP, loadGithub, loadSecrets, loadRules, loadPatterns, loadExceptions, loadDomains, loadRoutes, loadWorkers, loadPlanning, loadLog];
   for (const fn of loaders) {
     try {
       await fn();

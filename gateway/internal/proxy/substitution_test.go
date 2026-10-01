@@ -33,7 +33,7 @@ func TestApplySubstitutionRewritesBasicAuth(t *testing.T) {
 		t.Fatal(err)
 	}
 	req.Header.Set("Authorization", "Basic "+b64)
-	applySubstitution(req, []byte{}, model.Decision{Substituted: []string{ph}}, st, scanner.Result{})
+	applySubstitution(req, []byte{}, model.Decision{Substituted: []string{ph}}, st, scanner.Result{}, nil)
 	got := req.Header.Get("Authorization")
 	want := "Basic " + base64.StdEncoding.EncodeToString([]byte("ExampleUser:"+real))
 	if got != want {
@@ -104,7 +104,7 @@ func TestApplySubstitutionRewritesHeaderNotMessages(t *testing.T) {
 	}
 	req.Header.Set("Authorization", "Bearer "+ph)
 	req.Header.Set("Content-Type", "application/json")
-	applySubstitution(req, body, model.Decision{Substituted: []string{ph}}, st, scanner.Result{})
+	applySubstitution(req, body, model.Decision{Substituted: []string{ph}}, st, scanner.Result{}, nil)
 	if got := req.Header.Get("Authorization"); got != "Bearer "+real {
 		t.Fatalf("header: %q", got)
 	}
@@ -169,12 +169,42 @@ func TestApplySubstitutionPreservesPktBody(t *testing.T) {
 		t.Fatal(err)
 	}
 	req.Body = io.NopCloser(bytes.NewReader(body))
-	applySubstitution(req, body, model.Decision{Substituted: []string{ph}}, st, scanner.Result{})
+	applySubstitution(req, body, model.Decision{Substituted: []string{ph}}, st, scanner.Result{}, nil)
 	got, err := io.ReadAll(req.Body)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !bytes.Equal(got, body) {
 		t.Fatalf("pkt body mangled: want %d bytes got %d bytes", len(body), len(got))
+	}
+}
+
+type fakeMinter struct{ token string }
+
+func (f fakeMinter) Mint(placeholder, host, path, body string) (string, error) {
+	return f.token, nil
+}
+func (f fakeMinter) LiveTokens() []string { return []string{f.token} }
+
+func TestApplySubstitutionMintsGithubApp(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.New(dir+"/state.json", dir+"/log.jsonl", dir+"/patterns.json", dir+"/activities.db", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const ph = "piso_github_app_testxx"
+	if err := st.AddSecret(store.SecretRec{
+		ID: "s1", Name: "gha", Placeholder: ph, Kind: model.SecretKindGithubApp,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	req, err := http.NewRequest("GET", "https://api.github.com/repos/complex-gh/piso", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+ph)
+	applySubstitution(req, nil, model.Decision{Substituted: []string{ph}}, st, scanner.Result{}, fakeMinter{token: "ghs_minted"})
+	if got := req.Header.Get("Authorization"); got != "Bearer ghs_minted" {
+		t.Fatalf("got %q", got)
 	}
 }

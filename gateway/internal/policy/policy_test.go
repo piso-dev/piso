@@ -488,3 +488,38 @@ func TestScopedSecretStarOrEmptyAllowsAll(t *testing.T) {
 		}
 	}
 }
+
+func githubAppInput(ownerPath string, view model.GithubAppView) Input {
+	const ph = "piso_github_app_testxx"
+	sec := model.Secret{ID: "s1", Placeholder: ph, Kind: model.SecretKindGithubApp, Value: ""}
+	return Input{
+		Method: "GET", Host: "api.github.com", Path: ownerPath,
+		Scan: scanner.Result{Placeholders: []model.Finding{{
+			Kind: model.FindingPlaceholder, Token: ph, Location: "authorization",
+		}}},
+		SecretByPlaceholder:    map[string]model.Secret{ph: sec},
+		Rules:                  []model.Rule{{ID: "r1", SecretID: "s1", Host: "api.github.com", Placeholder: ph}},
+		GithubAppByPlaceholder: map[string]model.GithubAppView{ph: view},
+	}
+}
+
+func TestGithubAppNeedsRegister(t *testing.T) {
+	d := Decide(githubAppInput("/repos/complex-gh/piso", model.GithubAppView{}))
+	if d.Action != model.ActionBlock || d.Reasons[0] != model.ReasonGithubAppRegisterRequired {
+		t.Fatalf("got %q %+v", d.Action, d.Reasons)
+	}
+}
+
+func TestGithubAppNeedsInstall(t *testing.T) {
+	d := Decide(githubAppInput("/repos/complex-gh/piso", model.GithubAppView{HasPEM: true}))
+	if d.Action != model.ActionBlock || d.Reasons[0] != model.ReasonGithubAppInstallRequired {
+		t.Fatalf("got %q %+v", d.Action, d.Reasons)
+	}
+}
+
+func TestGithubAppSubstitutesWhenInstalled(t *testing.T) {
+	d := Decide(githubAppInput("/repos/complex-gh/piso", model.GithubAppView{HasPEM: true, Accounts: []string{"complex-gh"}}))
+	if d.Action != model.ActionSubstitute {
+		t.Fatalf("got %q %+v", d.Action, d.Reasons)
+	}
+}
