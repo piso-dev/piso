@@ -132,12 +132,11 @@ type checkinIn struct {
 // handleWorkerCheckin claims the caller's source IP for its own worker
 // record, so a container recreate (new vpc IP) does not strand the registry
 // with a stale mapping that 403s every activity/ports/context POST. The vpc
-// bridge prevents source-IP spoofing and the claim is first-come (same trust
-// model as the host CLI's `piso up` registration), so this cannot be used to
-// squat another worker's identity:
+// bridge prevents source-IP spoofing, so the packet source is the occupant:
 //   - IP already claimed by THIS worker (name+slug) → no-op, 200.
-//   - IP claimed by a DIFFERENT worker → 403 with detail (strict; the host
-//     must redeploy the conflicting worker or re-run `piso up`).
+//   - IP claimed by THIS worker under a different slug → 403 with detail.
+//   - IP claimed by a DIFFERENT worker → steal (Docker reused the address);
+//     UpsertWorker strips it from the previous owner.
 //   - IP unclaimed → append the IP to this worker's record (merge, never
 //     clobber the registered IP set) and return the authoritative record.
 func (s *Server) handleWorkerCheckin(w http.ResponseWriter, r *http.Request) {
@@ -165,7 +164,11 @@ func (s *Server) handleWorkerCheckin(w http.ResponseWriter, r *http.Request) {
 		writeCheckinOK(w, reg) // already registered correctly; nothing to heal
 		return
 	}
-	if regOK {
+	// Same container name with a different slug is a real spoof — reject.
+	// A *different* name at this IP is Docker reusing the address after the
+	// previous occupant left; the source IP is the occupant (vpc cannot
+	// spoof). Fall through and steal via UpsertWorker so activity POSTs stop 403ing.
+	if regOK && reg.Name == in.Worker {
 		identityMismatch(w, r, reg, in.Worker, in.Slug)
 		return
 	}

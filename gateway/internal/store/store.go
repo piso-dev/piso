@@ -826,10 +826,38 @@ func (s *Store) Workers() []WorkerRec {
 }
 
 // UpsertWorker records or refreshes a worker's slug + vpc IPs, keyed by name.
+// Each IP is exclusive: Docker reuses vpc addresses, so a live registration
+// steals those IPs from any other worker. WorkerByIP is first-match, and a
+// stale owner would 403 every activity POST from the new occupant.
 func (s *Store) UpsertWorker(rec WorkerRec) (WorkerRec, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	rec.UpdatedAt = time.Now().UTC()
+	want := make(map[string]bool, len(rec.IPs))
+	for _, ip := range rec.IPs {
+		want[ip] = true
+	}
+	for i, r := range s.state.Workers {
+		if r.Name == rec.Name {
+			continue
+		}
+		if len(want) == 0 || len(r.IPs) == 0 {
+			continue
+		}
+		kept := make([]string, 0, len(r.IPs))
+		changed := false
+		for _, ip := range r.IPs {
+			if want[ip] {
+				changed = true
+				continue
+			}
+			kept = append(kept, ip)
+		}
+		if changed {
+			r.IPs = kept
+			s.state.Workers[i] = r
+		}
+	}
 	for i, r := range s.state.Workers {
 		if r.Name == rec.Name {
 			// preserve the prior slug if the new one is empty; keep IPs updated
