@@ -61,6 +61,13 @@ if [ ! -e /root/.pi/agent/bin/fd ]; then
   fi
 fi
 
+# Agent bin is ahead of /usr/local/bin on PATH. A pre-image bridge copy of
+# piso-mcp-add there would shadow the baked helper forever; drop it once the
+# image ships the command.
+if [ -x /usr/local/bin/piso-mcp-add ] && [ -e /root/.pi/agent/bin/piso-mcp-add ]; then
+  rm -f /root/.pi/agent/bin/piso-mcp-add
+fi
+
 # Seed piso-owned global extensions. Keep these separate from the host npm
 # extension tree: they ship with the worker image and are always available,
 # while the symlink leaves the source on the read-only image filesystem.

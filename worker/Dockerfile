@@ -156,6 +156,7 @@ COPY context-watch.sh /usr/local/bin/piso-context-watch
 COPY ports-watch.sh /usr/local/bin/piso-ports-watch
 COPY activity-watch.sh /usr/local/bin/piso-activity-watch
 COPY informant-help.sh /usr/local/bin/piso-informant
+COPY mcp-add.sh /usr/local/bin/piso-mcp-add
 COPY checkin-watch.sh /usr/local/bin/piso-checkin-watch
 COPY egress-forward.py /usr/local/bin/piso-egress-forward
 COPY gateway-post.sh /usr/local/lib/piso-gateway-post.sh
@@ -166,7 +167,7 @@ COPY monitor-loop.sh /usr/local/bin/piso-monitor-loop
 RUN chmod +x /usr/local/bin/piso-monitor-loop
 # make the monitor loop invocable as a plain name (and pi can call it too)
 RUN ln -sf /usr/local/bin/piso-monitor-loop /usr/local/bin/piso-monitor
-RUN chmod +x /usr/local/bin/piso-entrypoint /usr/local/bin/piso-planning-watch /usr/local/bin/piso-loopback-forward /usr/local/bin/piso-context-watch /usr/local/bin/piso-ports-watch /usr/local/bin/piso-activity-watch /usr/local/bin/piso-informant /usr/local/bin/piso-checkin-watch /usr/local/bin/piso-egress-forward /usr/local/lib/piso-gateway-post.sh
+RUN chmod +x /usr/local/bin/piso-entrypoint /usr/local/bin/piso-planning-watch /usr/local/bin/piso-loopback-forward /usr/local/bin/piso-context-watch /usr/local/bin/piso-ports-watch /usr/local/bin/piso-activity-watch /usr/local/bin/piso-informant /usr/local/bin/piso-mcp-add /usr/local/bin/piso-checkin-watch /usr/local/bin/piso-egress-forward /usr/local/lib/piso-gateway-post.sh
 # piso-informant is CALLED by the agent (not a background watcher); ensure it
 # is on PATH (entrypoint runs at /usr/local/bin which is on the default PATH).
 ENV PATH=/usr/local/bin:$PATH

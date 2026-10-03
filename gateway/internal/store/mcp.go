@@ -106,12 +106,14 @@ func (s *Store) McpByPlaceholder(placeholder string) (McpServerRec, bool) {
 	return McpServerRec{}, false
 }
 
+// PendingMcpAuth is the dashboard login inbox. Revoked rows stay on the
+// MCP tab but must not count toward the MCP login button.
 func (s *Store) PendingMcpAuth() []McpServerRec {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	var out []McpServerRec
 	for _, r := range s.state.McpServers {
-		if r.Status == McpStatusNeedsAuth || r.Status == McpStatusExpired || r.Status == McpStatusRevoked {
+		if r.Status == McpStatusNeedsAuth || r.Status == McpStatusExpired {
 			out = append(out, r)
 		}
 	}

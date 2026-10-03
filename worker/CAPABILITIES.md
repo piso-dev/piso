@@ -21,7 +21,7 @@ everything below is simple:
   `http://<slug>-<port>.piso.local` (or `?route=` on the apex) — no host
   ceremony needed.
 - The worker API at `$GATEWAY_URL` (:8083) is reachable: health, checkin,
-  capabilities, activity, context, ports.
+  capabilities, activity, context, ports, mcp.
 - `/root/.pi/agent` (and `/var` equivalents) persist: sessions, skills,
   extensions, logs.
 
@@ -29,6 +29,9 @@ everything below is simple:
 
 - **ssh/scp** of any kind — no keys, no route, and an unproxied ssh/git will
   **hang**, not fail fast. This is the biggest time-waster in this sandbox.
+- **`pi mcp login` / in-worker MCP OAuth.** The callback is
+  `http://127.0.0.1:<port>/callback` inside this container; the host browser
+  cannot finish it. A real Bearer is 407'd. Use `piso-mcp-add` (below).
 - **git clone/push/pull over ssh**, or any git operation requiring
   credentials the substitution layer cannot satisfy.
 - **docker / podman / any container control**.
@@ -73,6 +76,47 @@ curl -s "$GATEWAY_URL/api/v1/worker/capabilities?worker=$PISO_WORKER_NAME"
 
 If the fetch fails or a field is unclear, treat the capability as **BLOCKED**,
 not open.
+
+## MCP servers
+
+When the user asks to add, connect, or sign in to a remote MCP server, run:
+
+```bash
+piso-mcp-add https://example.com/mcp [name]
+```
+
+That is the whole install. It POSTs the URL to `$GATEWAY_URL/api/v1/worker/mcp`
+and writes `~/.pi/agent/mcp.json` with
+`headers.Authorization: Bearer piso_mcp_…`. The gateway keeps the real OAuth
+token. You only ever hold the placeholder.
+
+**Never** `pi mcp add`, `pi mcp login`, or `/mcp login`. A `url`-only
+`mcp.json` entry starts the same in-worker OAuth. Do not write one. Do not
+use `auth` / `bearerToken` — current pi ignores those and still starts OAuth
+unless an `Authorization` header is set. Do not paste tokens or open the
+OAuth URL yourself.
+
+If the command prints `needs-auth`, `expired`, or `revoked`, tell the human
+to Authorize that server on the dashboard MCP tab (the Authorize chip is
+already up), then:
+
+```bash
+piso-informant waiting "Authorize <name> on the dashboard MCP tab"
+```
+
+A connect before they sign in is held (`407 mcp-auth-required`) and replays
+after. This session will not see the new server until `/reload` or the next
+session. Re-running `piso-mcp-add` with the same URL refreshes status; it
+does not mint a second secret.
+
+If `piso-mcp-add` is not on PATH, do those two steps by hand — still never
+`pi mcp login`:
+
+1. `POST $GATEWAY_URL/api/v1/worker/mcp` with
+   `{"worker":"$PISO_WORKER_NAME","slug":"$PISO_WORKER_SLUG","url":"<https url>","name":"<optional>"}`.
+2. Write the returned `name` under `mcpServers` in `~/.pi/agent/mcp.json`,
+   with `url` and `headers.Authorization` set to `Bearer <placeholder>`.
+   Refuse anything that is not a `piso_mcp_…` placeholder.
 
 ## Probing cautiously
 
