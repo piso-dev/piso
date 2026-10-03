@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -36,7 +38,7 @@ func originFor(serverURL string) string {
 	}
 }
 
-func connectSession(id tc.Identity, nudge func()) (ready bool, err error) {
+func connectSession(id tc.Identity, dataDir string, nudge func()) (ready bool, err error) {
 	if nudge == nil {
 		nudge = func() {}
 	}
@@ -68,18 +70,26 @@ func connectSession(id tc.Identity, nudge func()) (ready bool, err error) {
 	if err != nil {
 		return false, err
 	}
-	if err := conn.WriteJSON(map[string]string{
+	if err := conn.WriteJSON(heartbeatFields(id, dataDir, map[string]string{
 		"type":      "auth",
 		"pubkey":    strings.ToLower(id.SigningPublicKey),
 		"timestamp": ts,
 		"nonce":     nonce,
 		"signature": sig,
-	}); err != nil {
+	})); err != nil {
 		return false, err
 	}
 
 	done := make(chan struct{})
 	defer close(done)
+	path := tc.Path(dataDir)
+	sendHeartbeat := func() {
+		live := id
+		if cur, err := tc.Load(path); err == nil {
+			live = cur
+		}
+		_ = conn.WriteJSON(heartbeatFields(live, dataDir, map[string]string{"type": "heartbeat"}))
+	}
 	go func() {
 		t := time.NewTicker(30 * time.Second)
 		defer t.Stop()
@@ -88,7 +98,7 @@ func connectSession(id tc.Identity, nudge func()) (ready bool, err error) {
 			case <-done:
 				return
 			case <-t.C:
-				_ = conn.WriteJSON(map[string]string{"type": "ping"})
+				sendHeartbeat()
 			}
 		}
 	}()
@@ -105,7 +115,7 @@ func connectSession(id tc.Identity, nudge func()) (ready bool, err error) {
 			log.Printf("technocore: websocket ready")
 			// HTTP reconcile runs on its own goroutine. Do not block this read loop.
 			nudge()
-		case "envelopes_changed", "gateways_changed":
+		case "envelopes_changed", "gateways_changed", "workers_changed":
 			nudge()
 		case "pong", "ack", "hello":
 		case "error":
@@ -115,4 +125,18 @@ func connectSession(id tc.Identity, nudge func()) (ready bool, err error) {
 			log.Printf("technocore: ws %s", raw)
 		}
 	}
+}
+
+func heartbeatFields(id tc.Identity, dataDir string, extra map[string]string) map[string]string {
+	out := map[string]string{
+		"placement": id.PlacementOrLocal(),
+		"publicUrl": strings.TrimRight(id.PublicURL, "/"),
+	}
+	for k, v := range extra {
+		out[k] = v
+	}
+	if raw, err := os.ReadFile(filepath.Join(dataDir, "ca.crt")); err == nil {
+		out["caPem"] = string(raw)
+	}
+	return out
 }

@@ -25,6 +25,7 @@ import (
 	"piso/cli/internal/pisoconfig"
 	"piso/cli/internal/pkgstamp"
 	"piso/cli/internal/workerhash"
+	"piso/internal/technocore"
 )
 
 var version = "dev"
@@ -58,6 +59,8 @@ func main() {
 		err = cmdDashboard(args)
 	case "gateway":
 		err = cmdGateway(args)
+	case "worker":
+		err = cmdWorker(args)
 	case "setup":
 		err = cmdSetup(args)
 	case "update":
@@ -101,9 +104,19 @@ Usage:
                            piso up; run restart manually after a sudo make install)
   piso logs [--follow]   tail the gateway request log (SSE when --follow)
   piso dashboard         open the gateway web UI (http://piso.local)
-  piso gateway launch [--name n] [--server url] [--no-qr]
-                         pair this machine (QR + fingerprint; phone approves)
+  piso gateway launch [--name n] [--server url] [--no-qr] [--standalone] [--url https://host:8443]
+                         pair this machine (QR + fingerprint; phone approves).
+                         --standalone marks an always-on host that can run
+                         launched workers; --url is a public worker-facing HTTPS
+                         endpoint (implies --standalone). Without --url, remote
+                         workers reverse-tunnel through the coordinator.
   piso gateway status    show technocore enrollment
+  piso worker launch [dir] [--name n] [--server url] [--no-qr]
+                         enroll a cloud-ship worker on THIS machine and attach it
+                         to an available standalone gateway (never this host).
+                         Refuses if this machine is already a standalone gateway.
+  piso worker status [dir] [--name n]
+                         show this project's worker enrollment
   piso setup [--rebuild] import leftover data and (with --rebuild) recreate the gateway
   piso update [version] [--dry-run] [--force]  refresh host extensions, pin a pi version,
                          rebuild the shared worker image once, and recreate every worker
@@ -1527,12 +1540,20 @@ func dockerComposeEnv() (map[string]string, error) {
 		return nil, err
 	}
 	p := pisoconfig.LoadHostPorts()
+	publicBind := "127.0.0.1"
+	if path, err := identityPath(); err == nil {
+		if id, err := technocore.Load(path); err == nil && strings.TrimSpace(id.PublicURL) != "" {
+			publicBind = "0.0.0.0"
+		}
+	}
 	return map[string]string{
 		"DOCKER_BUILDKIT":   "1",
 		"PISO_DATA":         pisoconfig.ComposeHostPath(data),
 		"PISO_PROXY_PORT":   fmt.Sprintf("%d", p.Proxy),
 		"PISO_CTRL_PORT":    fmt.Sprintf("%d", p.Control),
 		"PISO_INGRESS_PORT": fmt.Sprintf("%d", p.Ingress),
+		"PISO_PUBLIC_BIND":  publicBind,
+		"PISO_PUBLIC_PORT":  "8443",
 	}, nil
 }
 

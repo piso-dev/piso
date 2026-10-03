@@ -465,6 +465,7 @@ async function refreshTechnocore() {
   try {
     const tc = await api('/api/v1/technocore');
     let label = 'technocore: ' + (tc.status || 'unpaired');
+    if (tc.placement) label += ' ' + tc.placement;
     if (tc.fingerprint) label += ' ' + tc.fingerprint;
     if (tc.lastError) {
       label += ' · err ' + String(tc.lastError).replace(/\s+/g, ' ').slice(0, 80);

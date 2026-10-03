@@ -7,12 +7,26 @@
 # here. Transport failures return 000 so the caller can spool or wait for
 # its own loop. Callers must not treat a non-200 as fatal to the process.
 
+piso_gateway_auth_args() {
+  if [ -n "${PISO_WORKER_TOKEN:-}" ]; then
+    printf '%s' "-H" "Authorization: Bearer ${PISO_WORKER_TOKEN}"
+  fi
+}
+
 piso_gateway_post_once() {
   local url="$1" body="$2" out="$3" code
-  code=$(curl -sS --max-time 3 -o "$out" -w '%{http_code}' \
-    -X POST "$url" \
-    -H 'Content-Type: application/json' \
-    -d "$body" 2>/dev/null) || code=000
+  if [ -n "${PISO_WORKER_TOKEN:-}" ]; then
+    code=$(curl -sS --max-time 3 -o "$out" -w '%{http_code}' \
+      -X POST "$url" \
+      -H 'Content-Type: application/json' \
+      -H "Authorization: Bearer ${PISO_WORKER_TOKEN}" \
+      -d "$body" 2>/dev/null) || code=000
+  else
+    code=$(curl -sS --max-time 3 -o "$out" -w '%{http_code}' \
+      -X POST "$url" \
+      -H 'Content-Type: application/json' \
+      -d "$body" 2>/dev/null) || code=000
+  fi
   printf '%s' "$code"
 }
 
@@ -26,10 +40,18 @@ piso_gateway_checkin() {
   if [ -z "$gw" ] || [ -z "$worker" ] || [ -z "$slug" ]; then
     return 1
   fi
-  code=$(curl -sS --max-time 3 -o /dev/null -w '%{http_code}' \
-    -X POST "${gw}/api/v1/worker/checkin" \
-    -H 'Content-Type: application/json' \
-    -d "{\"worker\":\"${worker}\",\"slug\":\"${slug}\"}" 2>/dev/null) || code=000
+  if [ -n "${PISO_WORKER_TOKEN:-}" ]; then
+    code=$(curl -sS --max-time 3 -o /dev/null -w '%{http_code}' \
+      -X POST "${gw}/api/v1/worker/checkin" \
+      -H 'Content-Type: application/json' \
+      -H "Authorization: Bearer ${PISO_WORKER_TOKEN}" \
+      -d "{\"worker\":\"${worker}\",\"slug\":\"${slug}\"}" 2>/dev/null) || code=000
+  else
+    code=$(curl -sS --max-time 3 -o /dev/null -w '%{http_code}' \
+      -X POST "${gw}/api/v1/worker/checkin" \
+      -H 'Content-Type: application/json' \
+      -d "{\"worker\":\"${worker}\",\"slug\":\"${slug}\"}" 2>/dev/null) || code=000
+  fi
   [ "$code" = "200" ]
 }
 

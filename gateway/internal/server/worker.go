@@ -158,6 +158,14 @@ func (s *Server) handleWorkerCheckin(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, map[string]string{"error": "slug required"})
 		return
 	}
+	if tok := workerBearerToken(r); tok != "" {
+		if rec, ok := s.Store.WorkerByTokenHash(hashWorkerToken(tok)); ok {
+			writeCheckinOK(w, rec)
+			return
+		}
+		writeJSON(w, 401, map[string]string{"error": "unauthorized"})
+		return
+	}
 	ip := requestIP(r)
 	reg, regOK := s.Store.WorkerByIP(ip)
 	if regOK && reg.Name == in.Worker && reg.Slug == in.Slug {

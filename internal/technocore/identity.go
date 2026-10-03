@@ -20,6 +20,9 @@ const (
 	StatusPending = "pending"
 	StatusActive  = "active"
 
+	PlacementLocal      = "local"
+	PlacementStandalone = "standalone"
+
 	identityFileVersion = 1
 )
 
@@ -37,7 +40,29 @@ type Identity struct {
 	PollToken             string `json:"pollToken,omitempty"`
 	PrincipalID           string `json:"principalId,omitempty"`
 	Status                string `json:"status"`
+	Placement             string `json:"placement,omitempty"`
+	PublicURL             string `json:"publicUrl,omitempty"`
 	CreatedAt             string `json:"createdAt,omitempty"`
+}
+
+// NormalizePlacement accepts local|standalone. Empty becomes local.
+func NormalizePlacement(s string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "", PlacementLocal:
+		return PlacementLocal, nil
+	case PlacementStandalone:
+		return PlacementStandalone, nil
+	default:
+		return "", fmt.Errorf("placement must be local or standalone")
+	}
+}
+
+// PlacementOrLocal is local unless the identity is explicitly standalone.
+func (id Identity) PlacementOrLocal() string {
+	if id.Placement == PlacementStandalone {
+		return PlacementStandalone
+	}
+	return PlacementLocal
 }
 
 // Path returns $dataDir/technocore/identity.json.
@@ -74,6 +99,7 @@ func Generate(serverURL, name string) (Identity, error) {
 		EncryptionPublicKey:  hex.EncodeToString(encPriv.PublicKey().Bytes()),
 		EncryptionPrivateKey: hex.EncodeToString(encPriv.Bytes()),
 		Status:               StatusNew,
+		Placement:            PlacementLocal,
 		CreatedAt:            now,
 	}, nil
 }
@@ -104,6 +130,8 @@ type identityFile struct {
 	PollToken            string `json:"pollToken,omitempty"`
 	PrincipalID          string `json:"principalId,omitempty"`
 	Status               string `json:"status"`
+	Placement            string `json:"placement,omitempty"`
+	PublicURL            string `json:"publicUrl,omitempty"`
 	CreatedAt            string `json:"createdAt,omitempty"`
 	// Legacy field names from the first pairing slice.
 	PublicKey  string `json:"publicKey,omitempty"`
@@ -127,7 +155,14 @@ func parseIdentity(raw []byte) (Identity, error) {
 		PollToken:            f.PollToken,
 		PrincipalID:          f.PrincipalID,
 		Status:               f.Status,
+		Placement:            f.Placement,
+		PublicURL:            strings.TrimRight(f.PublicURL, "/"),
 		CreatedAt:            f.CreatedAt,
+	}
+	if p, err := NormalizePlacement(id.Placement); err == nil {
+		id.Placement = p
+	} else {
+		id.Placement = PlacementLocal
 	}
 	if id.SigningPublicKey == "" && f.PublicKey != "" {
 		id.SigningPublicKey = strings.ToLower(f.PublicKey)
@@ -210,6 +245,7 @@ func Save(path string, id Identity) error {
 	id.Version = identityFileVersion
 	id.SigningPublicKey = strings.ToLower(id.SigningPublicKey)
 	id.EncryptionPublicKey = strings.ToLower(id.EncryptionPublicKey)
+	id.Placement = id.PlacementOrLocal()
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}

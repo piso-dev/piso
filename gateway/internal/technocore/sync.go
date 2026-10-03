@@ -57,7 +57,7 @@ func Run(st *store.Store, dataDir string) {
 			continue
 		}
 		log.Printf("technocore: connecting %s", id.ServerURL)
-		ready, err := connectSession(id, rec.Nudge)
+		ready, err := connectSession(id, dataDir, rec.Nudge)
 		if err != nil {
 			log.Printf("technocore: websocket: %v", err)
 			setLive(func(s *Status) { s.LastError = err.Error() })
@@ -115,6 +115,59 @@ func poll(id tc.Identity) (string, string, error) {
 		return "", "", err
 	}
 	return out.Status, out.PrincipalID, nil
+}
+
+func syncAssignedWorkers(st *store.Store, id tc.Identity) error {
+	req, err := http.NewRequest(http.MethodGet, strings.TrimRight(id.ServerURL, "/")+"/api/v1/sync/workers", nil)
+	if err != nil {
+		return err
+	}
+	if err := tc.SignRequest(req, id, nil); err != nil {
+		return err
+	}
+	res, err := serverHTTP.Do(req)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
+	if res.StatusCode != 200 {
+		return fmt.Errorf("sync workers HTTP %d: %s", res.StatusCode, raw)
+	}
+	var out struct {
+		Workers []struct {
+			PrincipalID string `json:"principal_id"`
+			Name        string `json:"name"`
+			Pubkey      string `json:"pubkey"`
+			Slug        string `json:"slug"`
+			TokenHash   string `json:"token_hash"`
+		} `json:"workers"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return err
+	}
+	rows := make([]store.WorkerRec, 0, len(out.Workers))
+	for _, w := range out.Workers {
+		slug := strings.TrimSpace(w.Slug)
+		if slug == "" {
+			slug = strings.TrimSpace(w.Name)
+		}
+		name := strings.TrimSpace(w.Name)
+		if name == "" {
+			name = "piso-worker-" + slug
+		}
+		if !strings.HasPrefix(name, "piso-worker-") {
+			name = "piso-worker-" + slug
+		}
+		rows = append(rows, store.WorkerRec{
+			Name:      name,
+			Slug:      slug,
+			TokenHash: w.TokenHash,
+			Pubkey:    w.Pubkey,
+			Remote:    true,
+		})
+	}
+	return st.ReplaceRemoteWorkers(rows)
 }
 
 // syncSecrets replaces the local tc_ snapshot with a complete coordinator

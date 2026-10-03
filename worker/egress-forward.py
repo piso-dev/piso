@@ -16,9 +16,11 @@ from __future__ import print_function
 import os
 import select
 import socket
+import ssl
 import sys
 import threading
 import time
+from urllib.parse import urlparse
 
 
 def env_int(name, default):
@@ -42,9 +44,24 @@ def parse_hostport(raw, default_port):
         return raw, default_port
 
 
-UPSTREAM_HOST, UPSTREAM_PORT = parse_hostport(os.environ.get("PISO_EGRESS_UPSTREAM"), 8080)
+UPSTREAM_RAW = (os.environ.get("PISO_EGRESS_UPSTREAM") or "gateway:8080").strip()
 LISTEN_HOST, LISTEN_PORT = parse_hostport(os.environ.get("PISO_EGRESS_LISTEN") or "127.0.0.1:18080", 18080)
 RETRY_SECS = env_int("PISO_EGRESS_RETRY_SECS", 45)
+WORKER_TOKEN = (os.environ.get("PISO_WORKER_TOKEN") or "").strip()
+
+
+def parse_upstream(raw):
+    if "://" in raw:
+        u = urlparse(raw)
+        host = u.hostname or "gateway"
+        port = u.port or (443 if u.scheme == "https" else 80)
+        path = u.path or ""
+        return u.scheme, host, port, path.rstrip("/")
+    host, port = parse_hostport(raw, 8080)
+    return "http", host, port, ""
+
+
+UP_SCHEME, UPSTREAM_HOST, UPSTREAM_PORT, UP_PATH = parse_upstream(UPSTREAM_RAW)
 
 
 def read_headers(sock, limit=65536):
@@ -61,6 +78,17 @@ def read_headers(sock, limit=65536):
     return buf[:end], buf[end:]
 
 
+def _ssl_wrap(sock, server_hostname):
+    ctx = ssl.create_default_context()
+    ca = os.environ.get("SSL_CERT_FILE") or os.environ.get("CURL_CA_BUNDLE")
+    if ca and os.path.isfile(ca):
+        try:
+            ctx.load_verify_locations(cafile=ca)
+        except Exception:
+            pass
+    return ctx.wrap_socket(sock, server_hostname=server_hostname)
+
+
 def dial_upstream(deadline):
     delay = 0.2
     announced = False
@@ -70,15 +98,34 @@ def dial_upstream(deadline):
         if remaining <= 0:
             raise OSError(last or "egress dial timed out")
         try:
-            up = socket.create_connection((UPSTREAM_HOST, UPSTREAM_PORT), timeout=min(5.0, remaining))
-            up.settimeout(None)
+            raw = socket.create_connection((UPSTREAM_HOST, UPSTREAM_PORT), timeout=min(5.0, remaining))
+            raw.settimeout(None)
+            if UP_SCHEME == "https":
+                up = _ssl_wrap(raw, UPSTREAM_HOST)
+            else:
+                up = raw
+            if UP_PATH.startswith("/gw/"):
+                prelude = (
+                    "POST %s/in HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n"
+                    % (UP_PATH, UPSTREAM_HOST)
+                )
+                if WORKER_TOKEN:
+                    prelude += "X-Piso-Worker-Token: %s\r\n" % WORKER_TOKEN
+                prelude += "\r\n"
+                send_all(up, prelude.encode("ascii"))
+                head, extra = read_headers(up)
+                if b" 200 " not in head.split(b"\r\n", 1)[0]:
+                    raise OSError("relay prelude failed: %s" % head.split(b"\r\n", 1)[0])
+                if extra:
+                    # should be empty after 200 Content-Length 0
+                    pass
             return up
         except OSError as exc:
             last = exc
             if not announced:
                 print(
-                    "piso-egress-forward: dial %s:%s failed (%s); retrying up to %ss"
-                    % (UPSTREAM_HOST, UPSTREAM_PORT, exc, RETRY_SECS),
+                    "piso-egress-forward: dial %s://%s:%s%s failed (%s); retrying up to %ss"
+                    % (UP_SCHEME, UPSTREAM_HOST, UPSTREAM_PORT, UP_PATH, exc, RETRY_SECS),
                     file=sys.stderr,
                     flush=True,
                 )
@@ -150,6 +197,9 @@ def handle(client):
             reject(client, 502, "Bad Gateway")
             return
         # Gateway has accepted the TCP connection. Write once. Do not replay.
+        if WORKER_TOKEN and b"\r\n\r\n" in head and b"X-Piso-Worker-Token:" not in head and b"Proxy-Authorization:" not in head:
+            insert = ("Proxy-Authorization: Bearer %s\r\nX-Piso-Worker-Token: %s\r\n" % (WORKER_TOKEN, WORKER_TOKEN)).encode("ascii")
+            head = head[:-2] + insert + b"\r\n"
         send_all(up, head)
         if extra:
             send_all(up, extra)
@@ -172,8 +222,8 @@ def main():
     srv.bind((LISTEN_HOST, LISTEN_PORT))
     srv.listen(128)
     print(
-        "piso-egress-forward: %s:%s -> %s:%s (dial retry %ss)"
-        % (LISTEN_HOST, LISTEN_PORT, UPSTREAM_HOST, UPSTREAM_PORT, RETRY_SECS),
+        "piso-egress-forward: %s:%s -> %s://%s:%s%s (dial retry %ss)"
+        % (LISTEN_HOST, LISTEN_PORT, UP_SCHEME, UPSTREAM_HOST, UPSTREAM_PORT, UP_PATH, RETRY_SECS),
         flush=True,
     )
     while True:

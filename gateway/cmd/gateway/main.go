@@ -6,18 +6,24 @@
 package main
 
 import (
+	"crypto/sha256"
+	"crypto/tls"
+	"encoding/hex"
 	"flag"
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"piso/gateway/internal/proxy"
 	"piso/gateway/internal/server"
 	"piso/gateway/internal/store"
 	"piso/gateway/internal/technocore"
+	tc "piso/internal/technocore"
 )
 
 // workerIdentityFn returns the proxy's request→worker-identity callback. It
@@ -26,12 +32,28 @@ import (
 // container name or, failing that, "worker".
 func workerIdentityFn(st *store.Store) func(*http.Request) string {
 	return func(r *http.Request) string {
+		if tok := headerBearer(r); tok != "" {
+			sum := sha256.Sum256([]byte(tok))
+			if rec, ok := st.WorkerByTokenHash(hex.EncodeToString(sum[:])); ok {
+				return rec.Slug
+			}
+		}
 		slug, ok := st.WorkerByIP(remoteIP(r))
 		if ok {
 			return slug.Slug
 		}
 		return ""
 	}
+}
+
+func headerBearer(r *http.Request) string {
+	for _, h := range []string{r.Header.Get("Authorization"), r.Header.Get("Proxy-Authorization")} {
+		h = strings.TrimSpace(h)
+		if len(h) >= 7 && strings.EqualFold(h[:7], "Bearer ") {
+			return strings.TrimSpace(h[7:])
+		}
+	}
+	return strings.TrimSpace(r.Header.Get("X-Piso-Worker-Token"))
 }
 
 func remoteIP(r *http.Request) string {
@@ -57,6 +79,7 @@ func main() {
 		proxyAddr    = flag.String("proxy-listen", envOr("PISO_PROXY_LISTEN", ":8080"), "egress proxy listen addr")
 		ctrlAddr     = flag.String("ctrl-listen", envOr("PISO_CTRL_LISTEN", ":8081"), "control plane (UI+API) listen addr")
 		workerAddr   = flag.String("worker-listen", envOr("PISO_WORKER_LISTEN", ":8083"), "worker API listen addr (vpc only)")
+		publicAddr   = flag.String("public-listen", envOr("PISO_PUBLIC_LISTEN", ":8443"), "TLS mux for remote workers (CONNECT + worker API)")
 		ingressAddr  = flag.String("ingress-listen", envOr("PISO_INGRESS_LISTEN", ":8082"), "ingress reverse proxy listen addr")
 		maxLog       = flag.Int("max-log", 5000, "max in-memory log records")
 	)
@@ -92,9 +115,58 @@ func main() {
 	go serve("web", *ctrlAddr, srv.WebHandler())
 	go serve("worker-api", *workerAddr, srv.WorkerHandler())
 	go serve("ingress", *ingressAddr, srv.IngressHandler())
-	serve("egress-proxy", *proxyAddr, h)
-
+	go serve("egress-proxy", *proxyAddr, h)
+	id, _ := tc.Load(tc.Path(srv.DataDir))
+	if id.PlacementOrLocal() == tc.PlacementStandalone {
+		host := publicHostname(id.PublicURL)
+		go servePublicTLS("public-workers", *publicAddr, host, ca, srv.PublicWorkerHandler())
+		if id.PublicURL == "" && id.Status == tc.StatusActive {
+			go technocore.RunTunnel(id, srv.DataDir, srv.PublicWorkerHandler())
+		}
+	}
 	select {}
+}
+
+func publicHostname(publicURL string) string {
+	publicURL = strings.TrimSpace(publicURL)
+	if publicURL == "" {
+		return "piso-gateway"
+	}
+	if !strings.Contains(publicURL, "://") {
+		publicURL = "https://" + publicURL
+	}
+	u, err := url.Parse(publicURL)
+	if err != nil || u.Hostname() == "" {
+		return "piso-gateway"
+	}
+	return u.Hostname()
+}
+
+func servePublicTLS(name, addr, hostname string, ca *proxy.CA, h http.Handler) {
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		log.Printf("%s: listen %s: %v", name, addr, err)
+		return
+	}
+	cfg := &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		GetCertificate: func(chi *tls.ClientHelloInfo) (*tls.Certificate, error) {
+			host := chi.ServerName
+			if host == "" {
+				host = hostname
+			}
+			cert, err := ca.TLSCertificate(host)
+			if err != nil {
+				return nil, err
+			}
+			return &cert, nil
+		},
+	}
+	log.Printf("%s listening on %s (tls %s)", name, addr, hostname)
+	srv := &http.Server{Handler: h, ReadHeaderTimeout: 10 * time.Second, TLSConfig: cfg}
+	if err := srv.Serve(tls.NewListener(ln, cfg)); err != nil {
+		log.Printf("%s: %v", name, err)
+	}
 }
 
 func serve(name, addr string, h http.Handler) {
