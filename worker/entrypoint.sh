@@ -15,6 +15,18 @@ NODE_COMPILE_CACHE="${NODE_COMPILE_CACHE:-/root/.pi/agent/.node-compile-cache}"
 export TMPDIR NODE_COMPILE_CACHE
 mkdir -p "$PISO_LOG_DIR" "$TMPDIR" "$NODE_COMPILE_CACHE" 2>/dev/null || true
 
+# Remote workers need the piso MITM CA *and* public CAs (coordinator Let's Encrypt).
+if [ -f /piso-ca.pem ]; then
+  bundle="$TMPDIR/piso-ca-bundle.pem"
+  {
+    cat /piso-ca.pem
+    cat /etc/ssl/certs/ca-certificates.crt 2>/dev/null || true
+  } >"$bundle" 2>/dev/null || true
+  if [ -s "$bundle" ]; then
+    export SSL_CERT_FILE="$bundle" CURL_CA_BUNDLE="$bundle" GIT_SSL_CAINFO="$bundle" REQUESTS_CA_BUNDLE="$bundle" NODE_EXTRA_CA_CERTS="$bundle"
+  fi
+fi
+
 # Host pi-profile is a directory mount at /opt/piso/pi-profile. Do not bind-mount
 # settings.json / models.json as files: if they are missing, Docker creates host
 # directories, then later "mount a directory onto a file" fails against the

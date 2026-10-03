@@ -55,6 +55,9 @@ piso dashboard   # open http://piso.local
 piso expose 5173 --name preview   # reverse-proxy a worker dev server
 # Optional: pair this machine with a technocore server (phone approves):
 # piso gateway launch --server https://your-domain
+# Always-on host that should run launched workers:
+# piso gateway launch --server https://your-domain --standalone
+# piso worker launch
 ```
 
 `make install` (including `sudo make install` over an existing copy) replaces `$(PREFIX)/bin/piso` and `$(PREFIX)/share/piso`, then runs `piso setup --rebuild` as the login user. That imports any leftover repo `.piso` files that `~/.piso` does not already have, rebuilds the gateway image, recreates the container, and migrates `state.json` on startup. Live secrets in `~/.piso` are kept. Gateway secrets/CA/logs live in `~/.piso` (`PISO_DATA` overrides). Override the share tree with `PISO_HOME`. Secrets filled in the dashboard **Blocked secrets** modal are stored in the gateway; the next `piso attach` exports placeholders only (`ANTHROPIC_API_KEY=piso_…`) from `~/.piso/placeholders.env`. Existing workers need one `piso up` to mount that file.

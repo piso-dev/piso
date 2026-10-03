@@ -102,6 +102,9 @@ func (r *Reconciler) once() error {
 	if err := syncSecrets(r.st, id); err != nil {
 		return err
 	}
+	if err := syncAssignedWorkers(r.st, id); err != nil {
+		return err
+	}
 	if err := publishAllSecrets(r.st, r.dataDir); err != nil {
 		return err
 	}

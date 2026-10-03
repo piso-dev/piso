@@ -30,6 +30,8 @@ services:
       - "[::1]:${PISO_CTRL_PORT:-80}:8081"
       - "127.0.0.1:${PISO_INGRESS_PORT:-8082}:8082"
       - "[::1]:${PISO_INGRESS_PORT:-8082}:8082"
+      # Remote-worker TLS mux. Loopback unless the gateway has --url (then 0.0.0.0).
+      - "${PISO_PUBLIC_BIND:-127.0.0.1}:${PISO_PUBLIC_PORT:-8443}:8443"
     volumes:
       # Machine-level state (secrets, CA, log). The CLI sets PISO_DATA
       # (default ~/.piso) so an installed binary does not need a writable repo.
@@ -45,6 +47,7 @@ services:
       PISO_PROXY_LISTEN: :8080
       PISO_CTRL_LISTEN: :8081
       PISO_WORKER_LISTEN: :8083
+      PISO_PUBLIC_LISTEN: :8443
       PISO_INGRESS_LISTEN: :8082
       # The public WEB port (same listener as the control plane — WebHandler
       # dispatches dashboard vs ingress by Host on one port), advertised on

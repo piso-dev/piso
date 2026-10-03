@@ -91,6 +91,31 @@ func TestLoadOrCreateIsStable(t *testing.T) {
 	}
 }
 
+func TestPlacementRoundTripAndDefault(t *testing.T) {
+	path := Path(t.TempDir())
+	id, err := Generate("https://s", "n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id.PlacementOrLocal() != PlacementLocal {
+		t.Fatalf("new identity placement %q", id.Placement)
+	}
+	id.Placement = PlacementStandalone
+	if err := Save(path, id); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Placement != PlacementStandalone {
+		t.Fatalf("got %q", got.Placement)
+	}
+	if _, err := NormalizePlacement("cloud"); err == nil {
+		t.Fatal("expected invalid placement error")
+	}
+}
+
 func TestMismatchedSigningKeyRejected(t *testing.T) {
 	id, err := Generate("https://s", "n")
 	if err != nil {

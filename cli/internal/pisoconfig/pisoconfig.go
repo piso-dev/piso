@@ -141,6 +141,53 @@ func WorkerComposePath(slug string) (string, error) {
 	return filepath.Join(dir, "compose", "worker-"+slug+".yaml"), nil
 }
 
+// WriteRemoteWorkerCompose renders a worker that dials a remote standalone gateway.
+func WriteRemoteWorkerCompose(p Project, endpoint, token string) (string, error) {
+	home, err := Home()
+	if err != nil {
+		return "", err
+	}
+	dataDir, err := DataDir()
+	if err != nil {
+		return "", err
+	}
+	tmpl := filepath.Join(home, "compose", "worker-remote.yaml.tmpl")
+	raw, err := os.ReadFile(tmpl)
+	if err != nil {
+		return "", fmt.Errorf("remote worker compose template: %w", err)
+	}
+	workerDir, err := WorkerBuildDir()
+	if err != nil {
+		return "", err
+	}
+	hash, err := workerhash.ContextHash(workerDir)
+	if err != nil {
+		return "", fmt.Errorf("worker context hash: %w", err)
+	}
+	egress := strings.TrimRight(strings.TrimSpace(endpoint), "/")
+	api := egress
+	out := string(raw)
+	out = strings.ReplaceAll(out, "PROJ-SLUG", p.Slug)
+	out = strings.ReplaceAll(out, "PROJECT_DIR", ComposeHostPath(p.Dir))
+	out = strings.ReplaceAll(out, "WORKER_BUILD_CONTEXT", ComposeHostPath(workerDir))
+	out = strings.ReplaceAll(out, "__WORKER_HASH__", hash)
+	out = strings.ReplaceAll(out, "CA_DIR", ComposeHostPath(dataDir))
+	out = strings.ReplaceAll(out, "EGRESS_UPSTREAM", egress)
+	out = strings.ReplaceAll(out, "GATEWAY_API", api)
+	out = strings.ReplaceAll(out, "WORKER_TOKEN", token)
+	dest, err := WorkerComposePath(p.Slug)
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(filepath.Dir(dest), 0o700); err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(dest, []byte(out), 0o600); err != nil {
+		return "", err
+	}
+	return dest, nil
+}
+
 // WriteWorkerCompose renders the worker compose template with this project's
 // values into WorkerComposePath. A leftover copy under <project>/.piso is
 // removed so it cannot leak host paths through the share.

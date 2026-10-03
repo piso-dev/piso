@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
@@ -144,4 +145,13 @@ func (c *CA) Leaf(hostname string) (tlsCert, error) {
 // distribute to workers).
 func (c *CA) CertPEM() []byte {
 	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: c.der})
+}
+
+// TLSCertificate mints a server certificate for hostname from this CA.
+func (c *CA) TLSCertificate(hostname string) (tls.Certificate, error) {
+	leaf, err := c.Leaf(hostname)
+	if err != nil {
+		return tls.Certificate{}, err
+	}
+	return leaf.toTLS(), nil
 }

@@ -16,6 +16,7 @@ type Status struct {
 	ServerURL    string    `json:"serverUrl"`
 	Fingerprint  string    `json:"fingerprint"`
 	PrincipalID  string    `json:"principalId,omitempty"`
+	Placement    string    `json:"placement,omitempty"`
 	PairURL      string    `json:"pairUrl,omitempty"`
 	LastSync     time.Time `json:"lastSync,omitempty"`
 	LastError    string    `json:"lastError,omitempty"`
@@ -54,6 +55,7 @@ func Snapshot(dataDir string) Status {
 	out.ServerURL = id.ServerURL
 	out.Fingerprint = id.Fingerprint()
 	out.PrincipalID = id.PrincipalID
+	out.Placement = id.PlacementOrLocal()
 	if id.Status == tc.StatusPending && id.PairingID != "" {
 		out.PairURL = id.ServerURL + "/pair/" + id.PairingID + "/"
 	}

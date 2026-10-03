@@ -111,6 +111,9 @@ type WorkerRec struct {
 	Slug             string    `json:"slug"`                       // project slug, e.g. "demo"
 	Dir              string    `json:"dir,omitempty"`              // host project dir mounted at /workspace
 	IPs              []string  `json:"ips,omitempty"`              // vpc IP addresses of the container
+	TokenHash        string    `json:"tokenHash,omitempty"`        // SHA-256 hex of remote worker bearer token
+	Pubkey           string    `json:"pubkey,omitempty"`           // worker signing pubkey (technocore)
+	Remote           bool      `json:"remote,omitempty"`           // enrolled remote worker (not vpc IP identity)
 	InternetDisabled bool      `json:"internetDisabled,omitempty"` // true = gateway refuses egress
 	UpdatedAt        time.Time `json:"updatedAt"`
 }
@@ -914,6 +917,43 @@ func (s *Store) WorkerBySlug(slug string) (WorkerRec, bool) {
 		}
 	}
 	return WorkerRec{}, false
+}
+
+// WorkerByTokenHash returns the remote worker whose bearer token hashes to h.
+func (s *Store) WorkerByTokenHash(h string) (WorkerRec, bool) {
+	h = strings.ToLower(strings.TrimSpace(h))
+	if h == "" {
+		return WorkerRec{}, false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, r := range s.state.Workers {
+		if r.TokenHash != "" && strings.ToLower(r.TokenHash) == h {
+			return r, true
+		}
+	}
+	return WorkerRec{}, false
+}
+
+// ReplaceRemoteWorkers upserts coordinator-assigned remote workers (token/pubkey)
+// without dropping local vpc registrations.
+func (s *Store) ReplaceRemoteWorkers(rows []WorkerRec) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	keep := make([]WorkerRec, 0, len(s.state.Workers)+len(rows))
+	for _, r := range s.state.Workers {
+		if !r.Remote {
+			keep = append(keep, r)
+		}
+	}
+	now := time.Now().UTC()
+	for _, r := range rows {
+		r.Remote = true
+		r.UpdatedAt = now
+		keep = append(keep, r)
+	}
+	s.state.Workers = keep
+	return s.save()
 }
 
 // SetWorkerInternet flips the internet kill-switch for a worker, preserving
