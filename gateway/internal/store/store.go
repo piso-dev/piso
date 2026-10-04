@@ -20,7 +20,7 @@ import (
 
 // CurrentStateVersion is written into state.json. Bump when adding a
 // migration in applyMigrations.
-const CurrentStateVersion = 6
+const CurrentStateVersion = 7
 
 // State is the persisted configuration.
 type State struct {
@@ -35,6 +35,18 @@ type State struct {
 	Contexts        []WorkerCtx         `json:"contexts,omitempty"`
 	McpServers      []McpServerRec      `json:"mcpServers,omitempty"`
 	GithubApps      []GithubAppRec      `json:"githubApps,omitempty"`
+	// PiProvider is the shared pi models.json pointer (secret resource id +
+	// plain base URL). Empty means the dashboard has not set one.
+	PiProvider *PiProviderRec `json:"piProvider,omitempty"`
+}
+
+// PiProviderRec is not a secret. SecretID is a technocore resource UUID so
+// every gateway can resolve its own piso_ placeholder. BaseURL is written
+// into models.json as-is.
+type PiProviderRec struct {
+	SecretID  string    `json:"secretId,omitempty"`
+	BaseURL   string    `json:"baseUrl,omitempty"`
+	UpdatedAt time.Time `json:"updatedAt,omitempty"`
 }
 
 // JSON-friendly records (this package owns persistence shape).
@@ -529,6 +541,30 @@ func (s *Store) SetEnvKey(id, envKey string) error {
 		return s.writePlaceholdersEnvLocked()
 	}
 	return fmt.Errorf("secret %s not found", id)
+}
+
+// PiProvider returns the shared pi provider pointer, or nil if unset.
+func (s *Store) PiProvider() *PiProviderRec {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.state.PiProvider == nil {
+		return nil
+	}
+	cp := *s.state.PiProvider
+	return &cp
+}
+
+// SetPiProvider stores the shared pointer. A nil or empty record clears it.
+func (s *Store) SetPiProvider(rec *PiProviderRec) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if rec == nil || (rec.SecretID == "" && rec.BaseURL == "") {
+		s.state.PiProvider = nil
+	} else {
+		cp := *rec
+		s.state.PiProvider = &cp
+	}
+	return s.save()
 }
 
 // ReplaceSecret overwrites a secret by ID and rewrites worker env files.

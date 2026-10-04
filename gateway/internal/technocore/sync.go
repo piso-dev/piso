@@ -209,6 +209,8 @@ func syncSecrets(st *store.Store, id tc.Identity) error {
 		seen[kept] = true
 		applied++
 	}
+	// The shared provider pointer may name a secret that just arrived.
+	applyProviderPointer(st)
 	removed := 0
 	for _, rec := range st.Secrets() {
 		if !strings.HasPrefix(rec.ID, "tc_") {

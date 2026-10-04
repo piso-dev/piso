@@ -76,5 +76,10 @@ func applyMigrations(st *State) bool {
 		st.Version = 6
 		changed = true
 	}
+	// v6→v7: shared pi provider pointer. Older files omit the field (nil).
+	if st.Version < 7 {
+		st.Version = 7
+		changed = true
+	}
 	return changed
 }

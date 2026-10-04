@@ -234,6 +234,9 @@ type SecretSummary struct {
 	AllowedHosts []string  `json:"allowedHosts,omitempty"`
 	Workers      []string  `json:"workers,omitempty"`
 	CreatedAt    time.Time `json:"createdAt"`
+	// TechnocoreID is the coordinator resource UUID, when this secret has been
+	// shared. The pi provider dropdown stores this, not the local sec_ id.
+	TechnocoreID string `json:"technocoreId,omitempty"`
 }
 
 // ToSummary strips the real value.

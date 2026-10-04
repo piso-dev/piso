@@ -108,6 +108,9 @@ func (r *Reconciler) once() error {
 	if err := publishAllSecrets(r.st, r.dataDir); err != nil {
 		return err
 	}
+	if err := syncPiProvider(r.st, id); err != nil {
+		return err
+	}
 	return nil
 }
 

@@ -172,6 +172,7 @@
   <button data-tab="mcp">MCP</button>
   <button data-tab="github">GitHub</button>
   <button data-tab="secrets">Secrets</button>
+  <button data-tab="provider">Pi provider</button>
   <button data-tab="rules">Rules</button>
   <button data-tab="patterns">Patterns</button>
   <button data-tab="exceptions">Exceptions</button>
@@ -271,6 +272,32 @@
       </div>
       <table><thead><tr><th>ID</th><th>Name</th><th>Env</th><th>Placeholder</th><th>Hosts</th><th></th></tr></thead>
       <tbody id="secretrows"></tbody></table>
+    </div>
+  </section>
+
+  <!-- PI PROVIDER -->
+  <section class="tab" id="tab-provider">
+    <div class="card">
+      <div class="card-head">
+        <div>
+          <h3>Pi provider</h3>
+          <p class="muted">Pick an existing secret as the API key and set the API URL. The choice syncs to every gateway as a pointer (secret id + URL), not a second key. Workers and the monitor read the local <span class="mono">piso_…</span> placeholder from <span class="mono">models.json</span>. Publish the secret first so other gateways can resolve it. Restart a running pi to pick up a change.</p>
+        </div>
+      </div>
+      <form id="providerForm" class="form">
+        <label>API key secret
+          <select id="pSecret" name="secretId" required>
+            <option value="">select a secret</option>
+          </select>
+        </label>
+        <label>API URL
+          <input id="pBaseURL" name="baseUrl" placeholder="https://api.example.com/v1" required>
+        </label>
+        <div>
+          <button class="btn" type="submit">Save</button>
+          <span class="muted" id="providerStatus"></span>
+        </div>
+      </form>
     </div>
   </section>
 
@@ -1147,8 +1174,51 @@ $('#secretModalForm').onsubmit = async ev => {
   } catch (e) { alert(e.message); }
 };
 
+let cachedSecrets = [];
+async function loadPiProvider() {
+  const [prov, ss] = await Promise.all([api('/api/v1/pi-provider'), api('/api/v1/secrets')]);
+  cachedSecrets = ss;
+  const sel = $('#pSecret');
+  const prev = prov.secretId || sel.value;
+  sel.innerHTML = '<option value="">select a secret</option>';
+  ss.forEach(s => {
+    const id = s.technocoreId || s.id;
+    const opt = el('option', '', esc(s.name) + ' · ' + esc(s.placeholder));
+    opt.value = id;
+    if (id === prev || s.id === prev) opt.selected = true;
+    sel.append(opt);
+  });
+  if (prov.baseUrl) $('#pBaseURL').value = prov.baseUrl;
+  const bits = [];
+  if (prov.placeholder) bits.push('placeholder ' + prov.placeholder);
+  if (prov.applied) bits.push('written to models.json');
+  else if (prov.secretId) bits.push('not applied yet');
+  if (prov.warning) bits.push(prov.warning);
+  $('#providerStatus').textContent = bits.join(' · ');
+}
+$('#providerForm').onsubmit = async ev => {
+  ev.preventDefault();
+  const status = $('#providerStatus');
+  status.textContent = 'saving…';
+  try {
+    const out = await api('/api/v1/pi-provider', {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({secretId: $('#pSecret').value, baseUrl: $('#pBaseURL').value.trim()})
+    });
+    const bits = [];
+    if (out.placeholder) bits.push('placeholder ' + out.placeholder);
+    if (out.applied) bits.push('written to models.json — restart running pi');
+    else bits.push(out.warning || 'saved, waiting for the secret on this gateway');
+    status.textContent = bits.join(' · ');
+  } catch (e) {
+    status.textContent = e.message;
+  }
+};
+
 async function loadSecrets() {
   const ss = await api('/api/v1/secrets');
+  cachedSecrets = ss;
   $('#secretrows').innerHTML = '';
   ss.forEach(s => $('#secretrows').append(el('tr', '', `<td class="mono">${esc(s.id)}</td><td>${esc(s.name)}</td><td class="mono">${esc(s.envKey||'')}</td>
     <td class="mono">${esc(s.placeholder)}</td>
@@ -2241,7 +2311,7 @@ $('#planModal').addEventListener('click', (ev) => {
     showErr('control API unreachable at ' + location.origin + ' — try http://127.0.0.1 (piso.local IPv6 needs ::1 published)');
     return;
   }
-  const loaders = [loadBoard, loadMCP, loadGithub, loadSecrets, loadRules, loadPatterns, loadExceptions, loadDomains, loadRoutes, loadWorkers, loadPlanning, loadLog];
+  const loaders = [loadBoard, loadMCP, loadGithub, loadSecrets, loadPiProvider, loadRules, loadPatterns, loadExceptions, loadDomains, loadRoutes, loadWorkers, loadPlanning, loadLog];
   for (const fn of loaders) {
     try {
       await fn();

@@ -22,6 +22,7 @@ import (
 
 	"piso/cli/internal/dockernet"
 	"piso/cli/internal/piprofile"
+	sharedprofile "piso/internal/piprofile"
 	"piso/cli/internal/pisoconfig"
 	"piso/cli/internal/pkgstamp"
 	"piso/cli/internal/workerhash"
@@ -382,6 +383,11 @@ func syncPiProfile() error {
 	settings = piprofile.EnsureInformantPrompts(settings)
 	rawModels, modelsErr := os.ReadFile(piprofile.ModelsPath(agent))
 	destModels, _ := os.ReadFile(filepath.Join(dest, "models.json"))
+	// A dashboard-written profile already has the shared provider. Do not
+	// replace it with the host agent's models.json on a later piso up.
+	if sharedprofile.KeepDashboardModels(destModels) {
+		rawModels, modelsErr = destModels, nil
+	}
 	srcModels, fromHost := piprofile.HostOrDest(rawModels, modelsErr, destModels)
 	placeholders := map[string]string{}
 	var models []byte
