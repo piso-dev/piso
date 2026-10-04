@@ -384,9 +384,11 @@ func syncPiProfile() error {
 	rawModels, modelsErr := os.ReadFile(piprofile.ModelsPath(agent))
 	destModels, _ := os.ReadFile(filepath.Join(dest, "models.json"))
 	// A dashboard-written profile already has the shared provider. Do not
-	// replace it with the host agent's models.json on a later piso up.
+	// replace it with the host agent's models.json on a later piso up, and do
+	// not run it through the host import: that import skips piso_ keys and
+	// SanitizeModelsJSON would then write apiKey as empty.
 	if sharedprofile.KeepDashboardModels(destModels) {
-		rawModels, modelsErr = destModels, nil
+		rawModels, modelsErr = nil, os.ErrNotExist
 	}
 	srcModels, fromHost := piprofile.HostOrDest(rawModels, modelsErr, destModels)
 	placeholders := map[string]string{}

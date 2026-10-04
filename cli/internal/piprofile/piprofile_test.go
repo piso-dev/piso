@@ -39,6 +39,26 @@ func TestExtractAndSanitize(t *testing.T) {
 	}
 }
 
+func TestSanitizeKeepsExistingPlaceholder(t *testing.T) {
+	raw := []byte(`{
+  "providers": {
+    "routstr": {
+      "api": "openai-completions",
+      "apiKey": "piso_aimlapi",
+      "baseUrl": "https://api.example.test/v1",
+      "models": []
+    }
+  }
+}`)
+	out, err := SanitizeModelsJSON(raw, map[string]string{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), `"apiKey": "piso_aimlapi"`) {
+		t.Fatalf("placeholder was wiped:\n%s", out)
+	}
+}
+
 func TestSanitizeEmptiesUnknownProviderKey(t *testing.T) {
 	out, err := SanitizeModelsJSON([]byte(fixtureModels), map[string]string{})
 	if err != nil {

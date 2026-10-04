@@ -82,7 +82,9 @@ func ExtractProviderKeys(raw []byte) ([]ProviderKey, error) {
 }
 
 // SanitizeModelsJSON replaces providers.*.apiKey with placeholders[name].
-// Unknown providers keep an empty apiKey. Real keys never remain.
+// A key that is already a piso_ placeholder is kept: the dashboard writes
+// that literal into models.json, and a later piso up must not blank it.
+// Anything else with no import result is emptied. Real keys never remain.
 func SanitizeModelsJSON(raw []byte, placeholders map[string]string) ([]byte, error) {
 	var root map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &root); err != nil {
@@ -102,6 +104,8 @@ func SanitizeModelsJSON(raw []byte, placeholders map[string]string) ([]byte, err
 		}
 		if ph, ok := placeholders[name]; ok && ph != "" {
 			p["apiKey"] = ph
+		} else if key, _ := p["apiKey"].(string); strings.HasPrefix(strings.TrimSpace(key), "piso_") {
+			p["apiKey"] = strings.TrimSpace(key)
 		} else {
 			p["apiKey"] = ""
 		}
