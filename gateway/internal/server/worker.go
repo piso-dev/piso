@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"piso/gateway/internal/store"
+	tc "piso/internal/technocore"
 )
 
 // WorkerHandler is the namespaced worker API. It is served on a separate
@@ -160,7 +161,8 @@ func (s *Server) handleWorkerCheckin(w http.ResponseWriter, r *http.Request) {
 	}
 	if tok := workerBearerToken(r); tok != "" {
 		if rec, ok := s.Store.WorkerByTokenHash(hashWorkerToken(tok)); ok {
-			writeCheckinOK(w, rec)
+			s.noteDirectCheckin(r, rec.Name)
+			s.writeCheckinOK(w, rec)
 			return
 		}
 		writeJSON(w, 401, map[string]string{"error": "unauthorized"})
@@ -169,7 +171,7 @@ func (s *Server) handleWorkerCheckin(w http.ResponseWriter, r *http.Request) {
 	ip := requestIP(r)
 	reg, regOK := s.Store.WorkerByIP(ip)
 	if regOK && reg.Name == in.Worker && reg.Slug == in.Slug {
-		writeCheckinOK(w, reg) // already registered correctly; nothing to heal
+		s.writeCheckinOK(w, reg) // already registered correctly; nothing to heal
 		return
 	}
 	// Same container name with a different slug is a real spoof — reject.
@@ -198,20 +200,83 @@ func (s *Server) handleWorkerCheckin(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 500, map[string]string{"error": err.Error()})
 		return
 	}
-	writeCheckinOK(w, out)
+	s.writeCheckinOK(w, out)
 }
 
 // checkinOut is the worker-visible identity after a successful checkin.
 // Host-only fields (Dir, InternetDisabled, UpdatedAt) stay off this
 // response — Dir is the host project path and must not enter the worker.
 type checkinOut struct {
-	Name string   `json:"name"`
-	Slug string   `json:"slug"`
-	IPs  []string `json:"ips,omitempty"`
+	Name      string   `json:"name"`
+	Slug      string   `json:"slug"`
+	IPs       []string `json:"ips,omitempty"`
+	PublicURL string   `json:"publicUrl,omitempty"`
 }
 
-func writeCheckinOK(w http.ResponseWriter, rec store.WorkerRec) {
-	writeJSON(w, 200, checkinOut{Name: rec.Name, Slug: rec.Slug, IPs: rec.IPs})
+func (s *Server) writeCheckinOK(w http.ResponseWriter, rec store.WorkerRec) {
+	writeJSON(w, 200, checkinOut{
+		Name:      rec.Name,
+		Slug:      rec.Slug,
+		IPs:       rec.IPs,
+		PublicURL: s.gatewayPublicURL(),
+	})
+}
+
+// gatewayPublicURL is this gateway's worker-facing URL, or empty when
+// remote workers must keep using the coordinator relay.
+func (s *Server) gatewayPublicURL() string {
+	if s == nil || strings.TrimSpace(s.DataDir) == "" {
+		return ""
+	}
+	id, err := tc.Load(tc.Path(s.DataDir))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimRight(strings.TrimSpace(id.PublicURL), "/")
+}
+
+// noteDirectCheckin records that this remote worker reached the public
+// listener. Relay splices do not carry viaDirectKey.
+func (s *Server) noteDirectCheckin(r *http.Request, name string) {
+	if s == nil || strings.TrimSpace(name) == "" {
+		return
+	}
+	if r.Context().Value(viaDirectKey{}) != true {
+		return
+	}
+	if s.gatewayPublicURL() == "" {
+		return
+	}
+	s.directMu.Lock()
+	defer s.directMu.Unlock()
+	if s.directSwitch == nil {
+		s.directSwitch = map[string]bool{}
+	}
+	s.directSwitch[name] = true
+}
+
+// RelayStillNeeded is true while any assigned remote worker has not checked
+// in on the public URL since this process started. An empty public URL
+// always needs the relay.
+func (s *Server) RelayStillNeeded() bool {
+	if s == nil || s.Store == nil {
+		return true
+	}
+	if s.gatewayPublicURL() == "" {
+		return true
+	}
+	s.directMu.Lock()
+	switched := s.directSwitch
+	s.directMu.Unlock()
+	for _, rec := range s.Store.Workers() {
+		if !rec.Remote {
+			continue
+		}
+		if switched == nil || !switched[rec.Name] {
+			return true
+		}
+	}
+	return false
 }
 
 const (

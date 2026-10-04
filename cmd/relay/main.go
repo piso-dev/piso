@@ -80,10 +80,25 @@ func (r *relay) handleRegister(w http.ResponseWriter, req *http.Request) {
 	_, _ = bufrw.WriteString("HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: keep-alive\r\n\r\n")
 	_ = bufrw.Flush()
 	ch := r.pool(id)
+	parked := prefixConn{Conn: conn, r: bufrw.Reader}
 	select {
-	case ch <- prefixConn{Conn: conn, r: bufrw.Reader}:
-	case <-time.After(5 * time.Minute):
-		conn.Close()
+	case ch <- parked:
+		log.Printf("relay: registered %s", id)
+	default:
+		// A full buffer must not stall this register. Drop the oldest parked
+		// conn so the gateway slot can redial, then take the slot.
+		select {
+		case old := <-ch:
+			old.Close()
+		default:
+		}
+		select {
+		case ch <- parked:
+			log.Printf("relay: registered %s (dropped stale)", id)
+		default:
+			conn.Close()
+			log.Printf("relay: register %s dropped (pool busy)", id)
+		}
 	}
 }
 
@@ -96,7 +111,9 @@ func (r *relay) splice(w http.ResponseWriter, req *http.Request, id string, prel
 	var gw net.Conn
 	select {
 	case gw = <-r.pool(id):
+		log.Printf("relay: splice %s %s", id, req.URL.Path)
 	case <-time.After(20 * time.Second):
+		log.Printf("relay: no tunnel for %s %s", id, req.URL.Path)
 		http.Error(w, "gateway unavailable", http.StatusBadGateway)
 		return
 	}

@@ -1,11 +1,16 @@
 package server
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"net/http"
 	"strings"
 )
+
+// viaDirectKey marks a request that arrived on the public listener, not a
+// relay splice. Workers cannot set this themselves.
+type viaDirectKey struct{}
 
 // PublicWorkerHandler is the standalone worker-facing mux: CONNECT goes to
 // the MITM proxy, /api/v1/worker/* to the worker API, /ca.crt is the MITM CA.
@@ -36,7 +41,10 @@ func (s *Server) PublicWorkerHandler() http.Handler {
 			return
 		}
 		if strings.HasPrefix(r.URL.Path, "/api/v1/worker/") {
-			worker.ServeHTTP(w, r)
+			r2 := r.Clone(r.Context())
+			r2.Header.Del("X-Piso-Worker-Via")
+			ctx := context.WithValue(r2.Context(), viaDirectKey{}, true)
+			worker.ServeHTTP(w, r2.WithContext(ctx))
 			return
 		}
 		http.NotFound(w, r)

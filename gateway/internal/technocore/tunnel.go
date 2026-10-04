@@ -16,25 +16,69 @@ import (
 	tc "piso/internal/technocore"
 )
 
-// RunTunnel keeps reverse-tunnel connections to the coordinator so remote
-// workers can reach this standalone gateway without a public URL.
-func RunTunnel(id tc.Identity, dataDir string, handler http.Handler) {
+const tunnelPoolSize = 8
+
+// RelayNeeded reports whether remote workers still depend on the coordinator
+// relay. The gateway process injects this so the pool stays up after a
+// public URL is set until every assigned worker has checked in on it.
+type RelayNeeded func() bool
+
+// RunTunnel keeps a pool of reverse-tunnel connections to the coordinator so
+// remote workers can reach this standalone gateway without a public URL.
+// One registration carries one worker request. The pool redials as slots
+// free. It stops only when the gateway is no longer standalone, or when a
+// public URL is set and need reports that every remote worker has switched.
+func RunTunnel(id tc.Identity, dataDir string, handler http.Handler, need RelayNeeded) {
 	if handler == nil || strings.TrimSpace(id.ServerURL) == "" {
 		return
 	}
-	for {
-		if err := dialTunnelOnce(id, handler); err != nil {
-			log.Printf("technocore: tunnel: %v", err)
-		}
-		time.Sleep(2 * time.Second)
-		if live, err := tc.Load(tc.Path(dataDir)); err == nil {
-			id = live
-			if id.PublicURL != "" || id.PlacementOrLocal() != tc.PlacementStandalone {
-				log.Printf("technocore: tunnel: stopped (direct URL or not standalone)")
-				return
-			}
-		}
+	var wg sync.WaitGroup
+	for i := 0; i < tunnelPoolSize; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			tunnelSlot(id, dataDir, handler, need)
+		}()
 	}
+	wg.Wait()
+}
+
+func tunnelSlot(id tc.Identity, dataDir string, handler http.Handler, need RelayNeeded) {
+	backoff := time.Second
+	for {
+		live, stop := tunnelShouldStop(id, dataDir, need)
+		if stop {
+			log.Printf("technocore: tunnel: stopped (direct URL and workers switched, or not standalone)")
+			return
+		}
+		id = live
+		err := dialTunnelOnce(id, handler)
+		if err != nil {
+			log.Printf("technocore: tunnel: %v", err)
+			time.Sleep(backoff)
+			if backoff < 15*time.Second {
+				backoff *= 2
+			}
+			continue
+		}
+		backoff = time.Second
+	}
+}
+
+func tunnelShouldStop(id tc.Identity, dataDir string, need RelayNeeded) (tc.Identity, bool) {
+	if live, err := tc.Load(tc.Path(dataDir)); err == nil {
+		id = live
+	}
+	if id.PlacementOrLocal() != tc.PlacementStandalone || id.Status != tc.StatusActive {
+		return id, true
+	}
+	if strings.TrimSpace(id.PublicURL) == "" {
+		return id, false
+	}
+	if need == nil {
+		return id, false
+	}
+	return id, !need()
 }
 
 func dialTunnelOnce(id tc.Identity, handler http.Handler) error {

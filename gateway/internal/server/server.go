@@ -14,6 +14,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"piso/gateway/internal/model"
@@ -37,6 +38,12 @@ type Server struct {
 	HTTP *http.Client
 	// DenyPeer overrides worker-vpc detection on the control plane (tests).
 	DenyPeer denyPeerFunc
+
+	// directMu guards workers that have checked in on the public URL.
+	// Not persisted: a gateway restart must see a fresh direct check-in
+	// before it drops the relay pool.
+	directMu     sync.Mutex
+	directSwitch map[string]bool // worker name → reached publicUrl
 }
 
 // New assembles the server.

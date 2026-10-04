@@ -120,8 +120,10 @@ func main() {
 	if id.PlacementOrLocal() == tc.PlacementStandalone {
 		host := publicHostname(id.PublicURL)
 		go servePublicTLS("public-workers", *publicAddr, host, ca, srv.PublicWorkerHandler())
-		if id.PublicURL == "" && id.Status == tc.StatusActive {
-			go technocore.RunTunnel(id, srv.DataDir, srv.PublicWorkerHandler())
+		if id.Status == tc.StatusActive {
+			// Pool stays up after a public URL is set until every assigned
+			// remote worker has checked in on that URL.
+			go technocore.RunTunnel(id, srv.DataDir, srv.PublicWorkerHandler(), srv.RelayStillNeeded)
 		}
 	}
 	select {}

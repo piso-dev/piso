@@ -48,6 +48,12 @@ UPSTREAM_RAW = (os.environ.get("PISO_EGRESS_UPSTREAM") or "gateway:8080").strip(
 LISTEN_HOST, LISTEN_PORT = parse_hostport(os.environ.get("PISO_EGRESS_LISTEN") or "127.0.0.1:18080", 18080)
 RETRY_SECS = env_int("PISO_EGRESS_RETRY_SECS", 45)
 WORKER_TOKEN = (os.environ.get("PISO_WORKER_TOKEN") or "").strip()
+PUBLIC_URL_FILE = (os.environ.get("PISO_PUBLIC_URL_FILE") or "").strip()
+# direct_upstream is the gateway public URL learned from check-in. Empty
+# means keep using the launch assignment (relay or vpc gateway).
+_upstream_lock = threading.Lock()
+_direct_upstream = ""
+_skip_direct = False
 
 
 def parse_upstream(raw):
@@ -59,6 +65,46 @@ def parse_upstream(raw):
         return u.scheme, host, port, path.rstrip("/")
     host, port = parse_hostport(raw, 8080)
     return "http", host, port, ""
+
+
+def current_upstream():
+    with _upstream_lock:
+        if _skip_direct:
+            raw = UPSTREAM_RAW
+        else:
+            raw = _direct_upstream or UPSTREAM_RAW
+    return parse_upstream(raw)
+
+
+def set_direct_upstream(url):
+    """Switch later dials to the gateway public URL. Relay stays available until a direct check-in succeeds."""
+    global _direct_upstream
+    url = (url or "").strip().rstrip("/")
+    if not url:
+        return False
+    with _upstream_lock:
+        if _direct_upstream == url:
+            return False
+        _direct_upstream = url
+    print("piso-egress-forward: direct upstream %s" % url, flush=True)
+    return True
+
+
+def using_direct():
+    with _upstream_lock:
+        return bool(_direct_upstream)
+
+
+def refresh_direct_upstream():
+    if not PUBLIC_URL_FILE:
+        return
+    try:
+        raw = open(PUBLIC_URL_FILE, "r").read()
+    except OSError:
+        return
+    url = raw.strip().splitlines()[0].strip() if raw.strip() else ""
+    if url:
+        set_direct_upstream(url)
 
 
 UP_SCHEME, UPSTREAM_HOST, UPSTREAM_PORT, UP_PATH = parse_upstream(UPSTREAM_RAW)
@@ -90,24 +136,37 @@ def _ssl_wrap(sock, server_hostname):
 
 
 def dial_upstream(deadline):
+    """Open one gateway session for one client request.
+
+    A relay assignment (path /gw/<id>) sends POST /in and expects 200 before
+    the client request is written. That splice is single-use: the caller must
+    dial again for the next request. A direct public URL has no prelude.
+    A failed direct dial falls back to the launch assignment for this call
+    only; the next call tries the public URL again.
+    """
+    global _skip_direct
     delay = 0.2
     announced = False
     last = None
+    with _upstream_lock:
+        _skip_direct = False
     while True:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise OSError(last or "egress dial timed out")
+        refresh_direct_upstream()
+        scheme, host, port, path = current_upstream()
         try:
-            raw = socket.create_connection((UPSTREAM_HOST, UPSTREAM_PORT), timeout=min(5.0, remaining))
+            raw = socket.create_connection((host, port), timeout=min(5.0, remaining))
             raw.settimeout(None)
-            if UP_SCHEME == "https":
-                up = _ssl_wrap(raw, UPSTREAM_HOST)
+            if scheme == "https":
+                up = _ssl_wrap(raw, host)
             else:
                 up = raw
-            if UP_PATH.startswith("/gw/"):
+            if path.startswith("/gw/"):
                 prelude = (
                     "POST %s/in HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n"
-                    % (UP_PATH, UPSTREAM_HOST)
+                    % (path, host)
                 )
                 if WORKER_TOKEN:
                     prelude += "X-Piso-Worker-Token: %s\r\n" % WORKER_TOKEN
@@ -115,17 +174,31 @@ def dial_upstream(deadline):
                 send_all(up, prelude.encode("ascii"))
                 head, extra = read_headers(up)
                 if b" 200 " not in head.split(b"\r\n", 1)[0]:
+                    try:
+                        up.close()
+                    except Exception:
+                        pass
                     raise OSError("relay prelude failed: %s" % head.split(b"\r\n", 1)[0])
-                if extra:
-                    # should be empty after 200 Content-Length 0
-                    pass
             return up
         except OSError as exc:
+            # A learned public URL that is not reachable yet must not strand
+            # the worker. Drop it for this attempt and use the launch relay.
+            if using_direct() and not path.startswith("/gw/") and not _skip_direct:
+                print(
+                    "piso-egress-forward: direct dial failed (%s); falling back to launch assignment"
+                    % exc,
+                    file=sys.stderr,
+                    flush=True,
+                )
+                with _upstream_lock:
+                    _skip_direct = True
+                announced = False
+                continue
             last = exc
             if not announced:
                 print(
                     "piso-egress-forward: dial %s://%s:%s%s failed (%s); retrying up to %ss"
-                    % (UP_SCHEME, UPSTREAM_HOST, UPSTREAM_PORT, UP_PATH, exc, RETRY_SECS),
+                    % (scheme, host, port, path, exc, RETRY_SECS),
                     file=sys.stderr,
                     flush=True,
                 )

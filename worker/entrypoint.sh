@@ -186,6 +186,10 @@ fi
 # Self-heal the slug↔IP registry for the life of the container, not just
 # five tries at boot. A worker that starts while the gateway is rebuilding
 # would otherwise 403 every later post until it was recreated.
+if [ -n "${PISO_PUBLIC_URL_FILE:-}" ]; then
+  mkdir -p "$(dirname "$PISO_PUBLIC_URL_FILE")" 2>/dev/null || true
+  export PISO_PUBLIC_URL_FILE
+fi
 if [ -n "${GATEWAY_URL:-}" ] && [ -n "${PISO_WORKER_NAME:-}" ] && [ -n "${PISO_WORKER_SLUG:-}" ] && [ -x /usr/local/bin/piso-checkin-watch ]; then
   respawn /usr/local/bin/piso-checkin-watch "$PISO_LOG_DIR/checkin-watch.log"
 fi
