@@ -186,6 +186,28 @@ func workerIdentityPath(slug string) (string, error) {
 	return filepath.Join(dir, "technocore", "workers", slug, "identity.json"), nil
 }
 
+// copyWorkerIdentity mounts the pairing identity at /etc/piso/identity.json
+// so the relay uses the key the coordinator already knows. An existing file
+// is left alone: a corrupt mount must not be overwritten.
+func copyWorkerIdentity(slug, slugDir string) error {
+	src, err := workerIdentityPath(slug)
+	if err != nil {
+		return err
+	}
+	raw, err := os.ReadFile(src)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	dst := filepath.Join(slugDir, "identity.json")
+	if _, err := os.Stat(dst); err == nil {
+		return nil
+	}
+	return os.WriteFile(dst, raw, 0o600)
+}
+
 func workerAssignmentPath(slug string) (string, error) {
 	dir, err := pisoconfig.DataDir()
 	if err != nil {
@@ -301,13 +323,13 @@ func pollWorkerAssignment(id technocore.Identity) (workerAssignment, error) {
 		return zero, fmt.Errorf("poll HTTP %d: %s", res.StatusCode, raw)
 	}
 	var out struct {
-		Status           string `json:"status"`
-		PrincipalID      string `json:"principal_id"`
-		GatewayID        string `json:"gateway_id"`
-		GatewayEndpoint  string `json:"gateway_endpoint"`
-		GatewayMode      string `json:"gateway_mode"`
-		CAPem            string `json:"ca_pem"`
-		WorkerToken      string `json:"worker_token"`
+		Status          string `json:"status"`
+		PrincipalID     string `json:"principal_id"`
+		GatewayID       string `json:"gateway_id"`
+		GatewayEndpoint string `json:"gateway_endpoint"`
+		GatewayMode     string `json:"gateway_mode"`
+		CAPem           string `json:"ca_pem"`
+		WorkerToken     string `json:"worker_token"`
 	}
 	if err := json.Unmarshal(raw, &out); err != nil {
 		return zero, err
@@ -347,6 +369,9 @@ func startRemoteWorker(proj pisoconfig.Project, asg workerAssignment) error {
 		if err := os.WriteFile(filepath.Join(slugDir, "token"), []byte(asg.Token+"\n"), 0o600); err != nil {
 			return err
 		}
+	}
+	if err := copyWorkerIdentity(proj.Slug, slugDir); err != nil {
+		return err
 	}
 	if err := pisoconfig.EnsureWorkerPlaceholdersEnv(proj.Slug); err != nil {
 		return err

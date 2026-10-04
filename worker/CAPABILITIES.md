@@ -22,6 +22,8 @@ everything below is simple:
   ceremony needed.
 - The worker API at `$GATEWAY_URL` (:8083) is reachable: health, checkin,
   capabilities, activity, context, ports, mcp.
+- Gateway tools are the `piso` MCP server (`piso-mcp` on stdio). That relay
+  seals every call; do not POST plaintext JSON-RPC to `$GATEWAY_URL/mcp`.
 - `/root/.pi/agent` (and `/var` equivalents) persist: sessions, skills,
   extensions, logs.
 

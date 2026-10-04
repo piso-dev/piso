@@ -10,6 +10,20 @@
 #
 # Hardening: read-only rootfs, dropped caps, no-new-privileges, init — applied
 # in compose, not here.
+#
+# The relay is built here so hosts do not need a Go toolchain. The CLI
+# stages relay-src (a trimmed go.mod plus internal/mcpchannel,
+# internal/technocore, internal/ownfile, and cmd/piso-mcp). GOPROXY is left
+# at the image default: this stage runs during `docker build`, which has
+# real network. The runtime stage does not.
+FROM golang:1.25-bookworm AS relay
+WORKDIR /src
+COPY relay-src/go.mod relay-src/go.sum ./
+RUN go mod download
+COPY relay-src/internal ./internal
+COPY relay-src/cmd ./cmd
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/piso-mcp ./cmd/piso-mcp
+
 FROM node:24-bookworm-slim
 
 # fd-find is baked in: pi's runtime download uses tar --same-owner, which
@@ -157,6 +171,8 @@ COPY ports-watch.sh /usr/local/bin/piso-ports-watch
 COPY activity-watch.sh /usr/local/bin/piso-activity-watch
 COPY informant-help.sh /usr/local/bin/piso-informant
 COPY mcp-add.sh /usr/local/bin/piso-mcp-add
+COPY mcp-merge.py /usr/local/lib/piso-mcp-merge.py
+COPY --from=relay /out/piso-mcp /usr/local/bin/piso-mcp
 COPY checkin-watch.sh /usr/local/bin/piso-checkin-watch
 COPY egress-forward.py /usr/local/bin/piso-egress-forward
 COPY gateway-post.sh /usr/local/lib/piso-gateway-post.sh
@@ -167,7 +183,7 @@ COPY monitor-loop.sh /usr/local/bin/piso-monitor-loop
 RUN chmod +x /usr/local/bin/piso-monitor-loop
 # make the monitor loop invocable as a plain name (and pi can call it too)
 RUN ln -sf /usr/local/bin/piso-monitor-loop /usr/local/bin/piso-monitor
-RUN chmod +x /usr/local/bin/piso-entrypoint /usr/local/bin/piso-planning-watch /usr/local/bin/piso-loopback-forward /usr/local/bin/piso-context-watch /usr/local/bin/piso-ports-watch /usr/local/bin/piso-activity-watch /usr/local/bin/piso-informant /usr/local/bin/piso-mcp-add /usr/local/bin/piso-checkin-watch /usr/local/bin/piso-egress-forward /usr/local/lib/piso-gateway-post.sh
+RUN chmod +x /usr/local/bin/piso-entrypoint /usr/local/bin/piso-planning-watch /usr/local/bin/piso-loopback-forward /usr/local/bin/piso-context-watch /usr/local/bin/piso-ports-watch /usr/local/bin/piso-activity-watch /usr/local/bin/piso-informant /usr/local/bin/piso-mcp-add /usr/local/bin/piso-mcp /usr/local/bin/piso-checkin-watch /usr/local/bin/piso-egress-forward /usr/local/lib/piso-gateway-post.sh
 # piso-informant is CALLED by the agent (not a background watcher); ensure it
 # is on PATH (entrypoint runs at /usr/local/bin which is on the default PATH).
 ENV PATH=/usr/local/bin:$PATH

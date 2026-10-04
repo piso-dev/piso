@@ -13,6 +13,14 @@ func TestContextHashStableAndChanges(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	for _, tree := range ExtraTrees {
+		if err := os.MkdirAll(filepath.Join(dir, tree, "cmd"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, tree, "cmd", "main.go"), []byte("package main\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	a, err := ContextHash(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -43,5 +51,15 @@ func TestContextHashStableAndChanges(t *testing.T) {
 	}
 	if d == c {
 		t.Fatal("hash should change when package.json changes")
+	}
+	if err := os.WriteFile(filepath.Join(dir, "relay-src", "cmd", "main.go"), []byte("package main\nfunc main() {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	e, err := ContextHash(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e == d {
+		t.Fatal("hash should change when relay source changes")
 	}
 }

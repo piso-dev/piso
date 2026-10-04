@@ -16,11 +16,12 @@ import (
 	"time"
 
 	"piso/gateway/internal/patterns"
+	"piso/internal/ownfile"
 )
 
 // CurrentStateVersion is written into state.json. Bump when adding a
 // migration in applyMigrations.
-const CurrentStateVersion = 7
+const CurrentStateVersion = 8
 
 // State is the persisted configuration.
 type State struct {
@@ -125,6 +126,8 @@ type WorkerRec struct {
 	IPs              []string  `json:"ips,omitempty"`              // vpc IP addresses of the container
 	TokenHash        string    `json:"tokenHash,omitempty"`        // SHA-256 hex of remote worker bearer token
 	Pubkey           string    `json:"pubkey,omitempty"`           // worker signing pubkey (technocore)
+	ChannelPubkey    string    `json:"channelPubkey,omitempty"`    // Ed25519 hex bound to the MCP channel
+	ChannelBoundAt   time.Time `json:"channelBoundAt,omitempty"`   // when ChannelPubkey was bound
 	Remote           bool      `json:"remote,omitempty"`           // enrolled remote worker (not vpc IP identity)
 	InternetDisabled bool      `json:"internetDisabled,omitempty"` // true = gateway refuses egress
 	UpdatedAt        time.Time `json:"updatedAt"`
@@ -147,6 +150,7 @@ type WorkerCtx struct {
 // Ingress request statuses. Only pending rows appear in the dashboard inbox.
 const (
 	IngressKindPlanning  = "planning"
+	IngressKindRebind    = "channel-rebind"
 	IngressStatusPending = "pending"
 	DefaultPlanningPort  = 19432
 )
@@ -316,7 +320,10 @@ func (s *Store) save() error {
 	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return err
 	}
-	return os.Rename(tmp, s.path)
+	if err := os.Rename(tmp, s.path); err != nil {
+		return err
+	}
+	return ownfile.MatchDir(s.path)
 }
 
 // ---- reads ----
@@ -761,7 +768,10 @@ func (s *Store) writePatterns(entries []patterns.Entry) error {
 	if err := os.MkdirAll(filepath.Dir(s.patternsPath), 0o700); err != nil {
 		return err
 	}
-	return os.WriteFile(s.patternsPath, data, 0o600)
+	if err := os.WriteFile(s.patternsPath, data, 0o600); err != nil {
+		return err
+	}
+	return ownfile.MatchDir(s.patternsPath)
 }
 
 func (s *Store) DeleteException(id string) error {
@@ -983,13 +993,53 @@ func (s *Store) ReplaceRemoteWorkers(rows []WorkerRec) error {
 		}
 	}
 	now := time.Now().UTC()
+	prev := map[string]WorkerRec{}
+	for _, r := range s.state.Workers {
+		if r.Remote {
+			prev[r.Name] = r
+		}
+	}
 	for _, r := range rows {
 		r.Remote = true
 		r.UpdatedAt = now
+		if old, ok := prev[r.Name]; ok && r.ChannelPubkey == "" {
+			r.ChannelPubkey = old.ChannelPubkey
+			r.ChannelBoundAt = old.ChannelBoundAt
+		}
 		keep = append(keep, r)
 	}
 	s.state.Workers = keep
 	return s.save()
+}
+
+// BindChannelKey records the Ed25519 public key (hex) presented on the MCP
+// channel. An empty pubkey clears the binding (piso up --reset-worker-key).
+func (s *Store) BindChannelKey(name, pubkey string) (WorkerRec, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	name = strings.TrimSpace(name)
+	pubkey = strings.ToLower(strings.TrimSpace(pubkey))
+	for i, r := range s.state.Workers {
+		if r.Name != name {
+			continue
+		}
+		r.ChannelPubkey = pubkey
+		if pubkey == "" {
+			r.ChannelBoundAt = time.Time{}
+		} else {
+			r.ChannelBoundAt = time.Now().UTC()
+		}
+		r.UpdatedAt = r.ChannelBoundAt
+		if r.UpdatedAt.IsZero() {
+			r.UpdatedAt = time.Now().UTC()
+		}
+		s.state.Workers[i] = r
+		if err := s.save(); err != nil {
+			return WorkerRec{}, err
+		}
+		return r, nil
+	}
+	return WorkerRec{}, ErrWorkerNotFound
 }
 
 // SetWorkerInternet flips the internet kill-switch for a worker, preserving

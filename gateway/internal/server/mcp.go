@@ -75,6 +75,22 @@ func (s *Server) handleWorkerPostMCP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) upsertMCP(worker, slug, name, rawURL, host, resource string) (store.McpServerRec, bool, error) {
+	if host == "" || resource == "" {
+		h, res, err := validateMCPURL(rawURL)
+		if err != nil {
+			return store.McpServerRec{}, false, err
+		}
+		if host == "" {
+			host = h
+		}
+		if resource == "" {
+			resource = res
+		}
+	}
+	name = sanitizeMCPName(name)
+	if name == "" {
+		name = sanitizeMCPName(host)
+	}
 	if existing, ok := s.Store.FindMcp(worker, name, rawURL); ok && existing.Placeholder != "" {
 		return existing, false, nil
 	}

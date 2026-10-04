@@ -80,6 +80,19 @@ if [ -x /usr/local/bin/piso-mcp-add ] && [ -e /root/.pi/agent/bin/piso-mcp-add ]
   rm -f /root/.pi/agent/bin/piso-mcp-add
 fi
 
+# Worker channel key. A mounted remote identity is copied onto the agent
+# volume; otherwise ensure generates one. A corrupt file is left untouched
+# (ensure exits non-zero) so a bad key is never overwritten at boot.
+if [ -x /usr/local/bin/piso-mcp ]; then
+  mkdir -p /root/.pi/agent/piso 2>/dev/null || true
+  if ! piso-mcp identity ensure >/dev/null; then
+    echo "piso-mcp: worker identity ensure failed; channel will not start" >&2
+  fi
+  if [ -f /usr/local/lib/piso-mcp-merge.py ]; then
+    python3 /usr/local/lib/piso-mcp-merge.py || echo "piso-mcp: mcp.json merge failed" >&2
+  fi
+fi
+
 # Seed piso-owned global extensions. Keep these separate from the host npm
 # extension tree: they ship with the worker image and are always available,
 # while the symlink leaves the source on the read-only image filesystem.

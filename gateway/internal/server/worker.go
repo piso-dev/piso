@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"piso/gateway/internal/mcp"
 	"piso/gateway/internal/store"
 	tc "piso/internal/technocore"
 )
@@ -32,7 +33,24 @@ func (s *Server) WorkerHandler() http.Handler {
 	mux.HandleFunc("GET /api/v1/worker/activities", s.handleWorkerGetActivities)
 	mux.HandleFunc("POST /api/v1/worker/activity/revoke", s.handleWorkerRevokeActivity)
 	mux.HandleFunc("POST /api/v1/worker/mcp", s.handleWorkerPostMCP)
+	s.mountMCP(mux)
 	return mux
+}
+
+// mountMCP serves the encrypted channel on the worker listener. GET /mcp/key
+// is plaintext diagnostics; POST /mcp never echoes a pre-dispatch error body.
+func (s *Server) mountMCP(mux *http.ServeMux) {
+	h := s.mcpHandler()
+	mux.Handle("POST /mcp", h)
+	mux.Handle("GET /mcp/key", h)
+}
+
+func (s *Server) mcpHandler() *mcp.Handler {
+	h := mcp.New(s.Store, s.Patterns, s.DataDir)
+	h.Upsert = func(worker, slug, name, rawURL string) (store.McpServerRec, bool, error) {
+		return s.upsertMCP(worker, slug, name, rawURL, "", "")
+	}
+	return h
 }
 
 // portIn is one listener reported by the ports watcher.

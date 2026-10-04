@@ -50,7 +50,7 @@ func Snapshot(dataDir string) Status {
 		return out
 	}
 	out.Enrolled = id.Status == tc.StatusActive
-	out.Status = id.Status
+	out.Status = displayStatus(id.Status)
 	out.Name = id.Name
 	out.ServerURL = id.ServerURL
 	out.Fingerprint = id.Fingerprint()
@@ -59,8 +59,16 @@ func Snapshot(dataDir string) Status {
 	if id.Status == tc.StatusPending && id.PairingID != "" {
 		out.PairURL = id.ServerURL + "/pair/" + id.PairingID + "/"
 	}
-	if id.Status == "" {
-		out.Status = "unpaired"
-	}
 	return out
+}
+
+// displayStatus maps a freshly generated identity to the same chip label as
+// a missing file. Enrollment still requires active.
+func displayStatus(status string) string {
+	switch status {
+	case "", tc.StatusNew:
+		return "unpaired"
+	default:
+		return status
+	}
 }

@@ -9,8 +9,14 @@ GW=${GW:-bin/gateway}
 WORK=$(mktemp -d)
 # kill any stale local gateways from previous runs (pattern matches the binary
 # invocation, not just a name)
-TARGETS=$(pgrep -f "gateway -state" || true)
-[ -n "$TARGETS" ] && kill $TARGETS 2>/dev/null || true
+if command -v pgrep >/dev/null 2>&1; then
+  TARGETS=$(pgrep -f "gateway -state" || true)
+  [ -n "$TARGETS" ] && kill $TARGETS 2>/dev/null || true
+fi
+if command -v ss >/dev/null 2>&1 && ss -ltn | grep -q ':18080 '; then
+  echo "smoke: 127.0.0.1:18080 is already in use; stop that listener first" >&2
+  exit 1
+fi
 trap 'kill $GW_PID 2>/dev/null || true; rm -rf "$WORK"' EXIT
 
 echo "== starting gateway =="
@@ -96,6 +102,13 @@ curl -s -X POST "$API/ingress/requests/$ING_ID/approve" >/dev/null
 PLAN_BODY=$(curl -s -H "Host: plan-smoke.piso.local" http://127.0.0.1:18082/ | head -1)
 check "approve opens plan-smoke.piso.local" "echo '$PLAN_BODY' | grep -qi '<!DOCTYPE'"
 kill $PLAN 2>/dev/null || true
+
+echo "== 8. worker mcp channel whoami =="
+if go run ./gateway/cmd/mcp-whoami "$WORK" http://127.0.0.1:18083; then
+  check "sealed whoami returns the bound slug" "true"
+else
+  check "sealed whoami returns the bound slug" "false"
+fi
 
 echo
 echo "passed: $pass  failed: $fail"

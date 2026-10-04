@@ -40,7 +40,7 @@ func (s *Server) PublicWorkerHandler() http.Handler {
 			s.Proxy.ServeHTTP(w, r)
 			return
 		}
-		if strings.HasPrefix(r.URL.Path, "/api/v1/worker/") {
+		if r.URL.Path == "/mcp" || r.URL.Path == "/mcp/key" || strings.HasPrefix(r.URL.Path, "/api/v1/worker/") {
 			r2 := r.Clone(r.Context())
 			r2.Header.Del("X-Piso-Worker-Via")
 			ctx := context.WithValue(r2.Context(), viaDirectKey{}, true)

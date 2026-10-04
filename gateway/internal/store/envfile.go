@@ -145,7 +145,20 @@ func WriteAllWorkerEnvs(statePath string, secrets []SecretRec) error {
 			return err
 		}
 	}
+	if err := republishGatewayPin(statePath); err != nil {
+		return err
+	}
 	return nil
+}
+
+// republishGatewayPin rewrites gateway.json next to each placeholders.env
+// when the gateway identity is already on disk. A missing identity is fine:
+// boot publishes the pin once LoadOrCreate has run.
+func republishGatewayPin(statePath string) error {
+	if gatewayPin == nil {
+		return nil
+	}
+	return WriteAllWorkerPins(statePath, *gatewayPin)
 }
 
 // RenderPlaceholdersEnv writes KEY=piso_… lines. Real secret values are never

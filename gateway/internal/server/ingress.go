@@ -95,6 +95,10 @@ func (s *Server) handleCreateIngress(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleApproveIngress(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	if pending, ok := s.pendingByID(id); ok && pending.Kind == store.IngressKindRebind {
+		s.approveChannelRebind(w, pending)
+		return
+	}
 	rec, route, err := s.Store.ApproveIngress(id, "route_"+randID())
 	if err != nil {
 		if errors.Is(err, store.ErrIngressNotFound) {
@@ -113,6 +117,43 @@ func (s *Server) handleApproveIngress(w http.ResponseWriter, r *http.Request) {
 		"request": viewIngress(rec, false),
 		"route":   route,
 		"url":     url,
+	})
+}
+
+func (s *Server) pendingByID(id string) (store.IngressRequestRec, bool) {
+	for _, rec := range s.Store.PendingIngress() {
+		if rec.ID == id {
+			return rec, true
+		}
+	}
+	return store.IngressRequestRec{}, false
+}
+
+// approveChannelRebind rebinds the worker's MCP channel key from the note
+// ("<old> → <new>") and drops the inbox row. Reject is dismiss.
+func (s *Server) approveChannelRebind(w http.ResponseWriter, pending store.IngressRequestRec) {
+	newKey := pending.Note
+	if i := strings.LastIndex(pending.Note, "→"); i >= 0 {
+		newKey = pending.Note[i+len("→"):]
+	}
+	newKey = strings.ToLower(strings.TrimSpace(newKey))
+	if newKey == "" {
+		writeJSON(w, 400, map[string]string{"error": "rebind note has no key"})
+		return
+	}
+	rec, err := s.Store.BindChannelKey(pending.Worker, newKey)
+	if err != nil {
+		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		return
+	}
+	if err := s.Store.DismissIngress(pending.ID); err != nil && !errors.Is(err, store.ErrIngressNotFound) {
+		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, 200, map[string]any{
+		"request": viewIngress(pending, false),
+		"worker":  rec.Name,
+		"channelPubkey": rec.ChannelPubkey,
 	})
 }
 

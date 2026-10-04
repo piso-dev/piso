@@ -185,7 +185,11 @@ func cmdGatewayStatus() error {
 	fmt.Printf("file:        %s\n", path)
 	fmt.Printf("server:      %s\n", id.ServerURL)
 	fmt.Printf("name:        %s\n", id.Name)
-	fmt.Printf("status:      %s\n", id.Status)
+	status := id.Status
+	if status == technocore.StatusNew || status == "" {
+		status = "not enrolled"
+	}
+	fmt.Printf("status:      %s\n", status)
 	fmt.Printf("placement:   %s\n", id.PlacementOrLocal())
 	if id.PublicURL != "" {
 		fmt.Printf("public url:  %s\n", id.PublicURL)

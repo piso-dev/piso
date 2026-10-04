@@ -282,7 +282,127 @@ func CopyWorkerSkeleton(dest string) error {
 			}
 		}
 	}
+	if err := stageRelaySources(home, dest); err != nil {
+		return err
+	}
 	return nil
+}
+
+// stageRelaySources copies the Go packages the worker Dockerfile builds
+// into dest/relay-src. The worker-build context is flat; the image has no
+// Go toolchain of its own and must not depend on a host `go` binary.
+func stageRelaySources(home, dest string) error {
+	root := filepath.Join(dest, "relay-src")
+	if err := os.RemoveAll(root); err != nil {
+		return err
+	}
+	copies := []struct{ src, dst string }{
+		{"internal/mcpchannel", "internal/mcpchannel"},
+		{"internal/technocore", "internal/technocore"},
+		{"internal/ownfile", "internal/ownfile"},
+		{"cmd/piso-mcp", "cmd/piso-mcp"},
+	}
+	for _, c := range copies {
+		src := filepath.Join(home, c.src)
+		dst := filepath.Join(root, c.dst)
+		info, err := os.Stat(src)
+		if err != nil {
+			return fmt.Errorf("stage relay %s: %w", c.src, err)
+		}
+		if info.IsDir() {
+			if err := copyTree(src, dst); err != nil {
+				return fmt.Errorf("stage relay %s: %w", c.src, err)
+			}
+			continue
+		}
+		if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
+			return err
+		}
+		if err := copyFile(src, dst); err != nil {
+			return fmt.Errorf("stage relay %s: %w", c.src, err)
+		}
+	}
+	return writeRelayModule(home, root)
+}
+
+// writeRelayModule writes a go.mod that contains only what piso-mcp imports.
+// The worker image must not download the gateway's sqlite module.
+func writeRelayModule(home, root string) error {
+	const mod = `module piso
+
+go 1.25.0
+
+require (
+	github.com/cloudflare/circl v1.6.1
+	golang.org/x/crypto v0.41.0
+)
+
+require golang.org/x/sys v0.46.0 // indirect
+`
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte(mod), 0o644); err != nil {
+		return err
+	}
+	sum, err := relaySum(home)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(root, "go.sum"), sum, 0o644)
+}
+
+// relaySum copies the checksum lines the relay require block needs from the
+// repo go.sum, so the image build verifies the same modules.
+func relaySum(home string) ([]byte, error) {
+	raw, err := os.ReadFile(filepath.Join(home, "go.sum"))
+	if err != nil {
+		return nil, fmt.Errorf("relay go.sum: %w", err)
+	}
+	want := map[string]bool{
+		"github.com/cloudflare/circl v1.6.1": true,
+		"golang.org/x/crypto v0.41.0":        true,
+		"golang.org/x/sys v0.46.0":           true,
+	}
+	var b strings.Builder
+	for _, line := range strings.Split(string(raw), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		key := fields[0] + " " + fields[1]
+		if strings.HasSuffix(fields[1], "/go.mod") {
+			key = fields[0] + " " + strings.TrimSuffix(fields[1], "/go.mod")
+		}
+		if want[key] {
+			b.WriteString(line)
+			b.WriteByte('\n')
+		}
+	}
+	if b.Len() == 0 {
+		return nil, fmt.Errorf("relay go.sum: no matching lines")
+	}
+	return []byte(b.String()), nil
+}
+
+func copyTree(src, dest string) error {
+	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dest, rel)
+		if info.IsDir() {
+			return os.MkdirAll(target, 0o700)
+		}
+		if !info.Mode().IsRegular() {
+			return nil
+		}
+		if strings.HasSuffix(info.Name(), "_test.go") {
+			return nil
+		}
+		return copyFile(path, target)
+	})
 }
 
 func copyFile(src, dest string) error {

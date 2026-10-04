@@ -81,5 +81,11 @@ func applyMigrations(st *State) bool {
 		st.Version = 7
 		changed = true
 	}
+	// v7→v8: MCP channel key binding on WorkerRec. Older files omit the
+	// fields; the zero value means unbound.
+	if st.Version < 8 {
+		st.Version = 8
+		changed = true
+	}
 	return changed
 }

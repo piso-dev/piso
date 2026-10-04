@@ -43,8 +43,8 @@ windows:
 install: build
 	install -d $(PREFIX)/bin $(SHARE)
 	install -m 755 $(BIN)/piso $(PREFIX)/bin/piso
-	rm -rf $(SHARE)/compose $(SHARE)/worker $(SHARE)/gateway $(SHARE)/internal $(SHARE)/third_party
-	cp -R compose worker gateway internal $(SHARE)/
+	rm -rf $(SHARE)/compose $(SHARE)/worker $(SHARE)/gateway $(SHARE)/internal $(SHARE)/cmd $(SHARE)/third_party
+	cp -R compose worker gateway internal cmd $(SHARE)/
 	install -m 644 go.mod $(SHARE)/go.mod
 	install -m 644 go.sum $(SHARE)/go.sum
 	if [ -f .dockerignore ]; then install -m 644 .dockerignore $(SHARE)/.dockerignore; fi

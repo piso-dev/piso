@@ -85,9 +85,12 @@ func usage() {
 
 Usage:
   piso up [dir] [--name n] [--proxy-port N] [--ctrl-port N] [--ingress-port N]
+                         [--reset-worker-key]
                          ensure gateway + worker for [dir] (default: cwd).
                          Name defaults to the git origin repo, else the folder.
                          Confirms the name when that worker does not exist (--name skips).
+                         --reset-worker-key deletes the channel key on the agent
+                         volume before recreate; the next boot generates a new one.
   piso down              stop this project's worker (gateway stays up)
   piso attach [--shell] [--new] [--session <id|path>]
                          enter the worker and run pi (new session if none exist;
@@ -259,9 +262,10 @@ func cmdUp(args []string) error {
 }
 
 type upOpts struct {
-	Dir   string
-	Name  string
-	Ports pisoconfig.HostPorts
+	Dir            string
+	Name           string
+	Ports          pisoconfig.HostPorts
+	ResetWorkerKey bool
 }
 
 // parseUpArgs reads `piso up [dir] [--name n] [--proxy-port N] [--ctrl-port N] [--ingress-port N]`.
@@ -274,6 +278,7 @@ func parseUpArgs(args []string) (upOpts, error) {
 	fs.IntVar(&opts.Ports.Proxy, "proxy-port", 0, "host port for the egress proxy")
 	fs.IntVar(&opts.Ports.Control, "ctrl-port", 0, "host port for the dashboard / control API")
 	fs.IntVar(&opts.Ports.Ingress, "ingress-port", 0, "host port for name.piso.local ingress")
+	fs.BoolVar(&opts.ResetWorkerKey, "reset-worker-key", false, "delete the worker channel key before recreate")
 	if err := fs.Parse(args); err != nil {
 		return upOpts{}, err
 	}
@@ -1414,6 +1419,29 @@ func containerRunning(name string) bool {
 }
 
 // recreateWorker recreates a worker's compose service (image change → recreate).
+// resetWorkerKey deletes the channel identity on the agent volume. The
+// next entrypoint generates a new key; the gateway then sees a mismatch
+// and raises a rebind row. No-op when the container is not running.
+func resetWorkerKey(container string) error {
+	bin, err := dockernet.LookPath()
+	if err != nil {
+		return err
+	}
+	out, err := exec.Command(bin, "inspect", "-f", "{{.State.Running}}", container).Output()
+	if err != nil {
+		return nil
+	}
+	if strings.TrimSpace(string(out)) != "true" {
+		return nil
+	}
+	cmd := exec.Command(bin, "exec", container, "rm", "-f", "/root/.pi/agent/piso/identity.json")
+	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("reset worker key: %w", err)
+	}
+	return nil
+}
+
 func recreateWorker(w pisoconfig.WorkerRec) error {
 	composeEnv, err := dockerComposeEnv()
 	if err != nil {

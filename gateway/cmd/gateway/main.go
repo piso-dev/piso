@@ -23,6 +23,7 @@ import (
 	"piso/gateway/internal/server"
 	"piso/gateway/internal/store"
 	"piso/gateway/internal/technocore"
+	"piso/internal/mcpchannel"
 	tc "piso/internal/technocore"
 )
 
@@ -92,6 +93,10 @@ func main() {
 	st, err := store.New(*statePath, *logPath, *patternsPath, *activitiesPath, *maxLog)
 	if err != nil {
 		log.Fatalf("store: %v", err)
+	}
+	dataDir := filepath.Dir(*statePath)
+	if err := ensureGatewayIdentity(dataDir, *statePath); err != nil {
+		log.Fatalf("identity: %v", err)
 	}
 
 	pat, err := st.LoadPatterns()
@@ -191,4 +196,28 @@ func envOr(k, def string) string {
 		return v
 	}
 	return def
+}
+
+// ensureGatewayIdentity creates identity.json when it is missing and publishes
+// gateway.json into every workers/<slug>/ directory. A corrupt file is fatal:
+// never overwrite it.
+func ensureGatewayIdentity(dataDir, statePath string) error {
+	id, err := tc.LoadOrCreate(tc.Path(dataDir), "", "")
+	if err != nil {
+		return err
+	}
+	enc, err := hex.DecodeString(id.EncryptionPublicKey)
+	if err != nil {
+		return err
+	}
+	sign, err := hex.DecodeString(id.SigningPublicKey)
+	if err != nil {
+		return err
+	}
+	pin := mcpchannel.PinFromPublic(enc, sign)
+	if err := store.PublishGatewayPin(statePath, pin); err != nil {
+		return err
+	}
+	log.Printf("technocore: identity %s (%s) key %s", id.Status, id.Fingerprint(), pin.KeyID)
+	return nil
 }

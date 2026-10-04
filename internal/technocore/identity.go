@@ -13,6 +13,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"piso/internal/ownfile"
 )
 
 const (
@@ -111,6 +113,12 @@ func Load(path string) (Identity, error) {
 	if err != nil {
 		return Identity{}, err
 	}
+	return ParseIdentity(raw)
+}
+
+// ParseIdentity decodes an identity file. A corrupt or mismatched key is an
+// error. Callers that must not overwrite a bad file should use this and stop.
+func ParseIdentity(raw []byte) (Identity, error) {
 	id, err := parseIdentity(raw)
 	if err != nil {
 		return Identity{}, err
@@ -257,7 +265,12 @@ func Save(path string, id Identity) error {
 	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	if err := os.Rename(tmp, path); err != nil {
+		return err
+	}
+	// The gateway runs as root and writes into a bind-mounted data dir. Match
+	// the directory owner so the host CLI can still read the file.
+	return ownfile.MatchDir(path)
 }
 
 // LoadOrCreate loads path or generates and saves a new identity.

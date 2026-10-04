@@ -155,6 +155,14 @@ func TestWriteWorkerComposeRendersPerWorkerEnv(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	for _, tree := range workerhash.ExtraTrees {
+		if err := os.MkdirAll(filepath.Join(build, tree), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(build, tree, "keep.go"), []byte("package x\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	proj := Project{Dir: t.TempDir(), Slug: "demo"}
 	legacyDir := filepath.Join(proj.Dir, ".piso")
 	if err := os.MkdirAll(legacyDir, 0o700); err != nil {
@@ -200,6 +208,67 @@ func TestWriteWorkerComposeRendersPerWorkerEnv(t *testing.T) {
 	}
 	if _, err := os.Stat(legacy); !os.IsNotExist(err) {
 		t.Fatalf("legacy in-share compose must be removed, stat: %v", err)
+	}
+}
+
+func TestCopyWorkerSkeletonStagesRelay(t *testing.T) {
+	root := t.TempDir()
+	writeTree(t, root)
+	for _, name := range workerhash.Files {
+		if name == "package.json" {
+			continue
+		}
+		if err := os.MkdirAll(filepath.Join(root, "worker"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, "worker", name), []byte(name+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, dir := range []string{
+		"internal/mcpchannel", "internal/technocore", "internal/ownfile", "cmd/piso-mcp",
+	} {
+		if err := os.MkdirAll(filepath.Join(root, dir), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, dir, "keep.go"), []byte("package x\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, dir, "keep_test.go"), []byte("package x\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sum := "github.com/cloudflare/circl v1.6.1 h1:abc=\ngithub.com/cloudflare/circl v1.6.1/go.mod h1:def=\n" +
+		"golang.org/x/crypto v0.41.0 h1:abc=\ngolang.org/x/crypto v0.41.0/go.mod h1:def=\n" +
+		"golang.org/x/sys v0.46.0 h1:abc=\ngolang.org/x/sys v0.46.0/go.mod h1:def=\n" +
+		"modernc.org/sqlite v1.55.0 h1:nope=\n"
+	if err := os.WriteFile(filepath.Join(root, "go.sum"), []byte(sum), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PISO_HOME", root)
+	dest := t.TempDir()
+	if err := CopyWorkerSkeleton(dest); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dest, "relay-src", "cmd", "piso-mcp", "keep.go")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dest, "relay-src", "cmd", "piso-mcp", "keep_test.go")); !os.IsNotExist(err) {
+		t.Fatal("tests must not be staged")
+	}
+	mod, err := os.ReadFile(filepath.Join(dest, "relay-src", "go.mod"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(mod), "sqlite") {
+		t.Fatalf("relay module pulled sqlite:\n%s", mod)
+	}
+	gotSum, err := os.ReadFile(filepath.Join(dest, "relay-src", "go.sum"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(gotSum), "sqlite") || !strings.Contains(string(gotSum), "circl v1.6.1 ") || !strings.Contains(string(gotSum), "circl v1.6.1/go.mod") {
+		t.Fatalf("sum filter:\n%s", gotSum)
 	}
 }
 
