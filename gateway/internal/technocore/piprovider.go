@@ -34,7 +34,7 @@ type piProviderDoc struct {
 // syncPiProvider pulls the account's shared pi provider pointer and writes
 // this gateway's models.json. A missing remote record leaves the local
 // pointer alone so an unpaired or older coordinator does not wipe it.
-func syncPiProvider(st *store.Store, id tc.Identity) error {
+func syncPiProvider(st *store.Store, dataDir string, id tc.Identity) error {
 	req, err := http.NewRequest(http.MethodGet, strings.TrimRight(id.ServerURL, "/")+"/api/v1/pi-provider", nil)
 	if err != nil {
 		return err
@@ -73,7 +73,7 @@ func syncPiProvider(st *store.Store, id tc.Identity) error {
 	}); err != nil {
 		return err
 	}
-	applyProviderPointer(st)
+	applyProviderPointer(st, dataDir)
 	return nil
 }
 
@@ -131,19 +131,23 @@ func publishPiProvider(st *store.Store, id tc.Identity) error {
 // applyProviderPointer writes models.json when the pointed-at secret is
 // already in this gateway's vault. Called after secret sync and after the
 // pointer itself arrives.
-func applyProviderPointer(st *store.Store) {
+func applyProviderPointer(st *store.Store, dataDir string) {
 	p := st.PiProvider()
 	if p == nil || p.SecretID == "" || p.BaseURL == "" {
+		log.Printf("technocore: pi profile: no provider pointer yet")
 		return
 	}
 	rec, ok := secretForPointer(st, p.SecretID)
 	if !ok || !strings.HasPrefix(rec.Placeholder, model.PlaceholderPrefix) {
+		log.Printf("technocore: pi profile: secret %s not in this vault yet", p.SecretID)
 		return
 	}
-	dir := piProfileDir()
+	dir := piProfileDir(dataDir)
 	if err := piprofile.WriteProviderModels(dir, rec.Placeholder, p.BaseURL); err != nil {
-		log.Printf("technocore: pi profile: %v", err)
+		log.Printf("technocore: pi profile: write %s: %v", dir, err)
+		return
 	}
+	log.Printf("technocore: pi profile: wrote %s (placeholder %s)", filepath.Join(dir, "models.json"), rec.Placeholder)
 }
 
 func secretForPointer(st *store.Store, id string) (store.SecretRec, bool) {
@@ -159,9 +163,16 @@ func secretForPointer(st *store.Store, id string) (store.SecretRec, bool) {
 	return store.SecretRec{}, false
 }
 
-func piProfileDir() string {
+// piProfileDir is the host profile workers mount. The gateway container
+// bind-mounts ${PISO_DATA} at /data and does not set PISO_DATA, so the
+// state-file directory (dataDir) is the one that is actually writable.
+// /opt/piso/pi-profile is the worker mount, not a gateway path.
+func piProfileDir(dataDir string) string {
 	if v := strings.TrimSpace(os.Getenv("PISO_PI_PROFILE")); v != "" {
 		return v
+	}
+	if dataDir != "" {
+		return filepath.Join(dataDir, "pi-profile")
 	}
 	if v := strings.TrimSpace(os.Getenv("PISO_DATA")); v != "" {
 		return filepath.Join(v, "pi-profile")

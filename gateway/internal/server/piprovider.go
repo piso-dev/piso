@@ -17,10 +17,14 @@ import (
 )
 
 // piProfileDir is the worker-mounted profile. PISO_PI_PROFILE overrides it
-// (tests). Production compose bind-mounts ${PISO_DATA}/pi-profile here.
-func piProfileDir() string {
+// (tests). The gateway container mounts ${PISO_DATA} at DataDir (/data) and
+// does not set PISO_DATA, so DataDir wins over the env fallback.
+func (s *Server) piProfileDir() string {
 	if v := strings.TrimSpace(os.Getenv("PISO_PI_PROFILE")); v != "" {
 		return v
+	}
+	if s != nil && strings.TrimSpace(s.DataDir) != "" {
+		return filepath.Join(s.DataDir, "pi-profile")
 	}
 	if v := strings.TrimSpace(os.Getenv("PISO_DATA")); v != "" {
 		return filepath.Join(v, "pi-profile")
@@ -107,7 +111,8 @@ func (s *Server) piProviderView() piProviderView {
 	if rec, ok := s.secretForPiProvider(p.SecretID); ok {
 		view.Placeholder = rec.Placeholder
 	}
-	if _, err := os.Stat(filepath.Join(piProfileDir(), "models.json")); err == nil && view.Placeholder != "" && view.BaseURL != "" {
+	raw, err := os.ReadFile(filepath.Join(s.piProfileDir(), "models.json"))
+	if err == nil && strings.Contains(string(raw), view.Placeholder) && strings.Contains(string(raw), view.BaseURL) {
 		view.Applied = true
 	}
 	return view
@@ -128,7 +133,7 @@ func (s *Server) applyPiProvider() piProviderView {
 		view.Warning = "selected secret is not on this gateway yet"
 		return view
 	}
-	if err := piprofile.WriteProviderModels(piProfileDir(), rec.Placeholder, p.BaseURL); err != nil {
+	if err := piprofile.WriteProviderModels(s.piProfileDir(), rec.Placeholder, p.BaseURL); err != nil {
 		view.Applied = false
 		view.Warning = err.Error()
 		return view

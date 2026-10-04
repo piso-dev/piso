@@ -2,9 +2,11 @@ package technocore
 
 import (
 	"encoding/base64"
+	"os"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -26,6 +28,42 @@ func testStore(t *testing.T) *store.Store {
 		t.Fatal(err)
 	}
 	return st
+}
+
+func TestApplyProviderPointerWritesDataDirProfile(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("PISO_DATA", "")
+	t.Setenv("PISO_PI_PROFILE", "")
+	st, err := store.New(
+		filepath.Join(dir, "state.json"),
+		filepath.Join(dir, "log.jsonl"),
+		filepath.Join(dir, "patterns.json"),
+		filepath.Join(dir, "activities.db"),
+		20,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AddSecret(store.SecretRec{
+		ID: "tc_rid", Name: "AIML", Placeholder: "piso_aimlapi", Value: "not-written",
+		TechnocoreID: "11111111-1111-1111-1111-111111111111",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetPiProvider(&store.PiProviderRec{
+		SecretID: "11111111-1111-1111-1111-111111111111",
+		BaseURL:  "https://api.example.test/v1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	applyProviderPointer(st, dir)
+	raw, err := os.ReadFile(filepath.Join(dir, "pi-profile", "models.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"apiKey": "piso_aimlapi"`) || strings.Contains(string(raw), "not-written") {
+		t.Fatalf("profile: %s", raw)
+	}
 }
 
 func TestSyncSecretsKeepsVaultOnHTTPError(t *testing.T) {
@@ -57,7 +95,7 @@ func TestSyncSecretsKeepsVaultOnHTTPError(t *testing.T) {
 		t.Fatal(err)
 	}
 	id.Status = tc.StatusActive
-	if err := syncSecrets(st, id); err == nil {
+	if err := syncSecrets(st, t.TempDir(), id); err == nil {
 		t.Fatal("expected sync error")
 	}
 	got, ok := st.SecretByID("tc_keepme")
@@ -91,7 +129,7 @@ func TestSyncSecretsRejectsUnparseableBody(t *testing.T) {
 		t.Fatal(err)
 	}
 	id.Status = tc.StatusActive
-	if err := syncSecrets(st, id); err == nil {
+	if err := syncSecrets(st, t.TempDir(), id); err == nil {
 		t.Fatal("expected parse error")
 	}
 	if _, ok := st.SecretByID("tc_keepme"); !ok {

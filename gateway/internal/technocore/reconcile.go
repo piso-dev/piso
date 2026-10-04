@@ -99,7 +99,7 @@ func (r *Reconciler) once() error {
 	if id.Status != tc.StatusActive || id.ServerURL == "" {
 		return nil
 	}
-	if err := syncSecrets(r.st, id); err != nil {
+	if err := syncSecrets(r.st, r.dataDir, id); err != nil {
 		return err
 	}
 	if err := syncAssignedWorkers(r.st, id); err != nil {
@@ -108,7 +108,7 @@ func (r *Reconciler) once() error {
 	if err := publishAllSecrets(r.st, r.dataDir); err != nil {
 		return err
 	}
-	if err := syncPiProvider(r.st, id); err != nil {
+	if err := syncPiProvider(r.st, r.dataDir, id); err != nil {
 		return err
 	}
 	return nil

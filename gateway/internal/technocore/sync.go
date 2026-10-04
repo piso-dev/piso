@@ -173,7 +173,7 @@ func syncAssignedWorkers(st *store.Store, id tc.Identity) error {
 // syncSecrets replaces the local tc_ snapshot with a complete coordinator
 // response. A non-200, a transport error, or a body that does not parse
 // returns before any delete, so a restart blip cannot wipe the vault.
-func syncSecrets(st *store.Store, id tc.Identity) error {
+func syncSecrets(st *store.Store, dataDir string, id tc.Identity) error {
 	req, err := http.NewRequest(http.MethodGet, strings.TrimRight(id.ServerURL, "/")+"/api/v1/sync/secrets", nil)
 	if err != nil {
 		return err
@@ -209,8 +209,9 @@ func syncSecrets(st *store.Store, id tc.Identity) error {
 		seen[kept] = true
 		applied++
 	}
-	// The shared provider pointer may name a secret that just arrived.
-	applyProviderPointer(st)
+	// The pointer may already be stored from an earlier pull. Apply it now
+	// that this gateway's copy of the secret is in the vault.
+	applyProviderPointer(st, dataDir)
 	removed := 0
 	for _, rec := range st.Secrets() {
 		if !strings.HasPrefix(rec.ID, "tc_") {
