@@ -33,12 +33,15 @@ type Handler struct {
 	// pattern. The pattern id is logged; the value is not.
 	OnCredential func(worker, patternID string)
 
-	nonces *nonceCache
-	tools  map[string]Tool
+	nonces    *nonceCache
+	tools     map[string]Tool
+	toolNames []string
 	// Helpers are piso/ methods. They are not listed in tools/list.
 	Helpers map[string]HelperFunc
 	// Upsert registers a remote MCP server. The server package injects it.
 	Upsert func(worker, slug, name, rawURL string) (store.McpServerRec, bool, error)
+	// CoordinatorDo is the signed coordinator client. Tests inject a fake.
+	CoordinatorDo CoordinatorDo
 }
 
 // Tool is one MCP tool. Caller always comes from the envelope.
@@ -85,11 +88,15 @@ func New(st *store.Store, pat *patterns.Compiled, dataDir string) *Handler {
 		Write: true,
 		Call:  h.toolMCPAdd,
 	})
+	h.registerInbox()
 	return h
 }
 
-// Register adds or replaces a tool.
+// Register adds or replaces a tool. First registration order is tools/list order.
 func (h *Handler) Register(t Tool) {
+	if _, ok := h.tools[t.Name]; !ok {
+		h.toolNames = append(h.toolNames, t.Name)
+	}
 	h.tools[t.Name] = t
 }
 
@@ -353,8 +360,8 @@ func (h *Handler) initializeResult(params json.RawMessage) map[string]any {
 }
 
 func (h *Handler) toolList() []map[string]any {
-	out := make([]map[string]any, 0, len(h.tools))
-	for _, name := range []string{"whoami", "mcp_add"} {
+	out := make([]map[string]any, 0, len(h.toolNames))
+	for _, name := range h.toolNames {
 		t, ok := h.tools[name]
 		if !ok {
 			continue

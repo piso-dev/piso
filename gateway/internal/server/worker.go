@@ -5,12 +5,14 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
 
 	"piso/gateway/internal/mcp"
 	"piso/gateway/internal/store"
+	gtwc "piso/gateway/internal/technocore"
 	tc "piso/internal/technocore"
 )
 
@@ -49,6 +51,13 @@ func (s *Server) mcpHandler() *mcp.Handler {
 	h := mcp.New(s.Store, s.Patterns, s.DataDir)
 	h.Upsert = func(worker, slug, name, rawURL string) (store.McpServerRec, bool, error) {
 		return s.upsertMCP(worker, slug, name, rawURL, "", "")
+	}
+	h.CoordinatorDo = func(method, path string, query url.Values, body []byte) (int, []byte, error) {
+		id, err := tc.Load(tc.Path(s.dataDir()))
+		if err != nil {
+			return 0, nil, gtwc.ErrUnpaired
+		}
+		return gtwc.Call(id, method, path, query, body)
 	}
 	return h
 }

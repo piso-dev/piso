@@ -160,11 +160,12 @@ func syncAssignedWorkers(st *store.Store, id tc.Identity) error {
 			name = "piso-worker-" + slug
 		}
 		rows = append(rows, store.WorkerRec{
-			Name:      name,
-			Slug:      slug,
-			TokenHash: w.TokenHash,
-			Pubkey:    w.Pubkey,
-			Remote:    true,
+			Name:        name,
+			Slug:        slug,
+			TokenHash:   w.TokenHash,
+			Pubkey:      w.Pubkey,
+			PrincipalID: w.PrincipalID,
+			Remote:      true,
 		})
 	}
 	return st.ReplaceRemoteWorkers(rows)

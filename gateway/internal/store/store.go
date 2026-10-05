@@ -126,6 +126,7 @@ type WorkerRec struct {
 	IPs              []string  `json:"ips,omitempty"`              // vpc IP addresses of the container
 	TokenHash        string    `json:"tokenHash,omitempty"`        // SHA-256 hex of remote worker bearer token
 	Pubkey           string    `json:"pubkey,omitempty"`           // worker signing pubkey (technocore)
+	PrincipalID      string    `json:"principalId,omitempty"`      // coordinator worker principal UUID
 	ChannelPubkey    string    `json:"channelPubkey,omitempty"`    // Ed25519 hex bound to the MCP channel
 	ChannelBoundAt   time.Time `json:"channelBoundAt,omitempty"`   // when ChannelPubkey was bound
 	Remote           bool      `json:"remote,omitempty"`           // enrolled remote worker (not vpc IP identity)
@@ -913,6 +914,9 @@ func (s *Store) UpsertWorker(rec WorkerRec) (WorkerRec, error) {
 			if rec.Slug == "" {
 				rec.Slug = r.Slug
 			}
+			if rec.PrincipalID == "" {
+				rec.PrincipalID = r.PrincipalID
+			}
 			s.state.Workers[i] = rec
 			if err := s.save(); err != nil {
 				return WorkerRec{}, err
@@ -1002,9 +1006,14 @@ func (s *Store) ReplaceRemoteWorkers(rows []WorkerRec) error {
 	for _, r := range rows {
 		r.Remote = true
 		r.UpdatedAt = now
-		if old, ok := prev[r.Name]; ok && r.ChannelPubkey == "" {
-			r.ChannelPubkey = old.ChannelPubkey
-			r.ChannelBoundAt = old.ChannelBoundAt
+		if old, ok := prev[r.Name]; ok {
+			if r.ChannelPubkey == "" {
+				r.ChannelPubkey = old.ChannelPubkey
+				r.ChannelBoundAt = old.ChannelBoundAt
+			}
+			if r.PrincipalID == "" {
+				r.PrincipalID = old.PrincipalID
+			}
 		}
 		keep = append(keep, r)
 	}
