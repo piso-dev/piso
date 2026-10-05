@@ -174,6 +174,10 @@ fi
 if [ -f /opt/piso/CAPABILITIES.md ]; then
   cat /opt/piso/CAPABILITIES.md >>"$ctx"
 fi
+if [ "${PISO_TASK_LOOP:-}" = "1" ] && [ "${PISO_ROLE:-}" != "monitor" ] && [ -f /opt/piso/TASKLOOP.md ]; then
+  printf '\n' >>"$ctx"
+  cat /opt/piso/TASKLOOP.md >>"$ctx"
+fi
 if [ -s "$ctx" ]; then
   if [ ! -f /root/.pi/agent/AGENTS.md ] || ! cmp -s "$ctx" /root/.pi/agent/AGENTS.md; then
     mkdir -p /root/.pi/agent
@@ -230,6 +234,12 @@ fi
 # model) so the dashboard request log can label each row. Advisory only.
 if [ -n "${GATEWAY_URL:-}" ] && [ -n "${PISO_WORKER_NAME:-}" ] && [ -n "${PISO_WORKER_SLUG:-}" ] && [ -x /usr/local/bin/piso-context-watch ]; then
   respawn /usr/local/bin/piso-context-watch "$PISO_LOG_DIR/context-watch.log"
+fi
+
+# Unattended inbox loop: peek every ≤5 min when pi is down, one session per
+# task, never preempt. Off unless PISO_TASK_LOOP=1 (cloud ships).
+if [ "${PISO_TASK_LOOP:-}" = "1" ] && [ "${PISO_ROLE:-}" != "monitor" ] && [ -x /usr/local/bin/piso-task-watch ]; then
+  respawn /usr/local/bin/piso-task-watch "$PISO_LOG_DIR/task-watch.log"
 fi
 
 # Signal that seeding is done so `piso up` / `piso attach` can wait. /run is

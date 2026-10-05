@@ -15,7 +15,7 @@ import (
 // package.json is the host pi extension list staged into the build context.
 // The relay sources are not in this list: CopyWorkerSkeleton stages them as
 // trees and ContextHash walks those via ExtraTrees.
-var Files = []string{"Dockerfile", "entrypoint.sh", "routstr-models.ts", "planning-watch.sh", "loopback-forward.py", "context-watch.sh", "ports-watch.sh", "activity-watch.sh", "activity-state.ts", "activity-state.py", "informant-help.sh", "mcp-add.sh", "mcp-merge.py", "checkin-watch.sh", "egress-forward.py", "gateway-post.sh", "INFORMANT.md", "CAPABILITIES.md", "MONITOR.md", "monitor-loop.sh", "package.json"}
+var Files = []string{"Dockerfile", "entrypoint.sh", "routstr-models.ts", "planning-watch.sh", "loopback-forward.py", "context-watch.sh", "ports-watch.sh", "activity-watch.sh", "activity-state.ts", "activity-state.py", "informant-help.sh", "mcp-add.sh", "mcp-merge.py", "checkin-watch.sh", "egress-forward.py", "gateway-post.sh", "INFORMANT.md", "CAPABILITIES.md", "MONITOR.md", "TASKLOOP.md", "task-pick.py", "task-watch.sh", "monitor-loop.sh", "package.json"}
 
 // ExtraTrees are directories staged next to Files. A change anywhere under
 // them (sorted walk) changes the worker image hash.

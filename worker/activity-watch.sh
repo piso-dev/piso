@@ -44,6 +44,7 @@ san() {
 
 # Lifecycle leases distinguish an attached prompt from an active agent run.
 # No child-process or session-file heuristic: MCP servers persist while idle.
+# Shared with piso-task-watch (down vs not-down).
 pi_status() {
   python3 /usr/local/lib/piso-activity-state.py
 }
