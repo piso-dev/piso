@@ -56,6 +56,7 @@ COPY package.json /opt/piso/npm/package.json
 # The entrypoint symlinks these into the persistent global extensions dir so
 # pi auto-discovers them and /reload can reload them.
 COPY routstr-models.ts /opt/piso/extensions/routstr-models.ts
+COPY activity-state.ts /opt/piso/extensions/activity-state.ts
 
 # --ignore-scripts skips postinstall downloads (pi-browser Chromium, etc.)
 # that hang `docker build`. node-pty still needs a compile.
@@ -169,6 +170,7 @@ COPY loopback-forward.py /usr/local/bin/piso-loopback-forward
 COPY context-watch.sh /usr/local/bin/piso-context-watch
 COPY ports-watch.sh /usr/local/bin/piso-ports-watch
 COPY activity-watch.sh /usr/local/bin/piso-activity-watch
+COPY activity-state.py /usr/local/lib/piso-activity-state.py
 COPY informant-help.sh /usr/local/bin/piso-informant
 COPY mcp-add.sh /usr/local/bin/piso-mcp-add
 COPY mcp-merge.py /usr/local/lib/piso-mcp-merge.py

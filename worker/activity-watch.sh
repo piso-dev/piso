@@ -26,11 +26,7 @@ if [ -z "$gw" ] || [ -z "$worker" ] || [ -z "$slug" ]; then
   exit 3
 fi
 
-BEAT_SECS=30             # active span refresh at most every 30 s: each beat
-                         # upserts a SINGLE live row per worker (purge + post),
-                         # so the store/feed never flood — and the board's live
-                         # marker stays fresh. The row's text embeds the elapsed
-                         # span ("working on … · for 13 min").
+BEAT_SECS=30             # store an active heartbeat at most every 30 s
 IDLE_SECS=600            # pi up + not working for this long → one idle row
 RESCAN_SECS=3            # check for session boundary/beat every 3 s
 GIT=(git -c safe.directory=*)
@@ -46,76 +42,10 @@ san() {
   printf '%s' "$v"
 }
 
-# pi_status prints down | busy | idle
-#   down: no pi agent process
-#   busy: pi is running and has descendant processes (a tool/command in flight)
-#   idle: pi is up but has no tool children (typically sitting at the prompt)
+# Lifecycle leases distinguish an attached prompt from an active agent run.
+# No child-process or session-file heuristic: MCP servers persist while idle.
 pi_status() {
-  python3 - <<'PY' 2>/dev/null | head -1
-import os, re
-want1 = re.compile(r'pi-coding-agent')
-want2 = re.compile(r'(^|\s)pi(\s|$)')
-bad = re.compile(r'piso-entrypoint|piso-planning-watch|piso-context-watch|piso-ports-watch|piso-activity-watch|piso-monitor-loop|docker-init|sleep infinity')
-
-def cmdline(pid):
-    raw = open('/proc/%s/cmdline' % pid, 'rb').read().replace(b'\0', b' ')
-    return raw.decode('utf-8', 'replace')
-
-def is_pi(cmd):
-    if bad.search(cmd): return False
-    return bool(want1.search(cmd) or want2.search(cmd))
-
-pi_pids = []
-for p in os.listdir('/proc'):
-    if not p.isdigit(): continue
-    try:
-        cmd = cmdline(p)
-        if is_pi(cmd):
-            pi_pids.append(int(p))
-    except Exception:
-        pass
-if not pi_pids:
-    print('down')
-    raise SystemExit
-
-def children_of(pid):
-    kids = set()
-    task = '/proc/%d/task' % pid
-    try:
-        for tid in os.listdir(task):
-            try:
-                raw = open('%s/%s/children' % (task, tid)).read().split()
-                kids.update(int(x) for x in raw)
-            except Exception:
-                pass
-    except Exception:
-        pass
-    return kids
-
-ppid_of = {}
-for p in os.listdir('/proc'):
-    if not p.isdigit(): continue
-    try:
-        st = open('/proc/%s/stat' % p).read()
-        rp = st.rfind(')')
-        fields = st[rp+2:].split()
-        ppid_of[int(p)] = int(fields[1])
-    except Exception:
-        pass
-
-seen = set(pi_pids)
-stack = list(pi_pids)
-desc = set()
-while stack:
-    pid = stack.pop()
-    for k in children_of(pid):
-        if k not in seen:
-            seen.add(k); stack.append(k); desc.add(k)
-    for c, parent in list(ppid_of.items()):
-        if parent == pid and c not in seen:
-            seen.add(c); stack.append(c); desc.add(c)
-print('busy' if desc else 'idle')
-PY
+  python3 /usr/local/lib/piso-activity-state.py
 }
 
 # proj_ctx prints "repo · branch · commit" (or "" when not a git repo)
@@ -224,25 +154,6 @@ post() {
   return 1
 }
 
-# session_recency outputs the newest mtime (unix secs) of any pi session file,
-# or 0 when none exists. pi APPENDS to the session jsonl as it exchanges with
-# the model/tools, so a recent mtime means REAL activity; a stale mtime means
-# an idle pi process (e.g. an attach sitting at a prompt) — which is NOT work.
-session_recency() {
-  python3 - <<'PY' 2>/dev/null | head -1
-import glob, os
-paths = glob.glob('/root/.pi/agent/sessions/**/*.jsonl', recursive=True)
-best = 0
-for f in paths:
-    try:
-        m = os.path.getmtime(f)
-        if m > best: best = m
-    except Exception:
-        pass
-print(int(best))
-PY
-}
-
 last_beat=0
 last_state=""   # "up" | "down"
 idle_since=0    # unix secs when this not-working stretch began; 0 = n/a
@@ -270,18 +181,11 @@ while true; do
     idle_posted=0
   fi
 
-  # alive beat — the board's live marker. Fire when there is recent session-file
-  # activity (model/tool exchange) OR a tool child is still running, so an idle
-  # attached pi does not keep the board "live". Every beat is stored (history
-  # lives in the store): readers compress — the worker feed's active=span fuses
-  # runs of beats into one span row for the monitor, the board merges visually.
-  recent=$(session_recency); recent=${recent:-0}
-  jsonl_fresh=0
-  if [ "$recent" -ge $((now - 20)) ]; then jsonl_fresh=1; fi
+  # Every beat is stored; readers merge the history into active spans. Only
+  # a fresh lifecycle lease can keep a worker active. Missing/stale leases
+  # fail quiet rather than reverting to the old process-tree heuristic.
   working=0
-  if [ "$state" = "up" ] && { [ "$jsonl_fresh" = "1" ] || [ "$status" = "busy" ]; }; then
-    working=1
-  fi
+  if [ "$status" = "busy" ]; then working=1; fi
   if [ "$working" = "1" ]; then
     idle_since=0
     idle_posted=0
