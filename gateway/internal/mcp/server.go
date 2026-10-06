@@ -90,6 +90,9 @@ func New(st *store.Store, pat *patterns.Compiled, dataDir string) *Handler {
 	})
 	h.registerInbox()
 	h.registerBoard()
+	h.registerIdentity()
+	h.registerIngress()
+	h.registerAsks()
 	return h
 }
 

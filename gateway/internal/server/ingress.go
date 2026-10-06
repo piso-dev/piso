@@ -151,8 +151,8 @@ func (s *Server) approveChannelRebind(w http.ResponseWriter, pending store.Ingre
 		return
 	}
 	writeJSON(w, 200, map[string]any{
-		"request": viewIngress(pending, false),
-		"worker":  rec.Name,
+		"request":       viewIngress(pending, false),
+		"worker":        rec.Name,
 		"channelPubkey": rec.ChannelPubkey,
 	})
 }
@@ -193,15 +193,7 @@ func viewIngress(rec store.IngressRequestRec, created bool) ingressView {
 }
 
 func planningRouteName(slug string) string {
-	label := sanitizeDNSLabel(slug)
-	if label == "" {
-		label = "worker"
-	}
-	name := "plan-" + label
-	if len(name) > 63 {
-		name = strings.TrimRight(name[:63], "-")
-	}
-	return name
+	return store.PlanningRouteName(slug)
 }
 
 func slugFromWorker(worker string) string {
@@ -210,23 +202,6 @@ func slugFromWorker(worker string) string {
 		return worker[len(prefix):]
 	}
 	return worker
-}
-
-func sanitizeDNSLabel(raw string) string {
-	var b strings.Builder
-	lastDash := false
-	for _, r := range strings.ToLower(raw) {
-		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
-			b.WriteRune(r)
-			lastDash = false
-			continue
-		}
-		if b.Len() > 0 && !lastDash {
-			b.WriteByte('-')
-			lastDash = true
-		}
-	}
-	return strings.Trim(b.String(), "-")
 }
 
 func ingressHostPort() int {

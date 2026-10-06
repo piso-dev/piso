@@ -38,9 +38,12 @@ func originFor(serverURL string) string {
 	}
 }
 
-func connectSession(id tc.Identity, dataDir string, nudge func()) (ready bool, err error) {
+func connectSession(id tc.Identity, dataDir string, nudge func(), onEvent func(string)) (ready bool, err error) {
 	if nudge == nil {
 		nudge = func() {}
+	}
+	if onEvent == nil {
+		onEvent = func(string) {}
 	}
 	wsURL := httpToWS(id.ServerURL) + "/ws/gateway/"
 	dialer := websocket.Dialer{HandshakeTimeout: 20 * time.Second}
@@ -117,6 +120,8 @@ func connectSession(id tc.Identity, dataDir string, nudge func()) (ready bool, e
 			nudge()
 		case "envelopes_changed", "gateways_changed", "workers_changed":
 			nudge()
+		case "asks_changed":
+			onEvent("asks_changed")
 		case "pong", "ack", "hello":
 		case "error":
 			return ready, fmt.Errorf("server error: %v", msg["error"])

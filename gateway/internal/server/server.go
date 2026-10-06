@@ -560,6 +560,9 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/ingress/requests", s.handleListIngress)
 	mux.HandleFunc("POST /api/v1/ingress/requests/{id}/approve", s.handleApproveIngress)
 	mux.HandleFunc("POST /api/v1/ingress/requests/{id}/dismiss", s.handleDismissIngress)
+	mux.HandleFunc("GET /api/v1/asks", s.handleAsksList)
+	mux.HandleFunc("POST /api/v1/asks/approvals/{id}/decide", s.handleAskApprove)
+	mux.HandleFunc("POST /api/v1/asks/human-actions/{id}/resolve", s.handleAskResolve)
 }
 
 // reloadPatterns swaps the live compiled library in both the server and the
@@ -597,6 +600,7 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 	subActs := s.Store.SubActivities()
 	subMcp := s.Store.SubMcp()
 	subGithub := s.Store.SubGithub()
+	subAsks := s.Store.SubAsks()
 	ctx := r.Context()
 	tick := time.NewTicker(20 * time.Second)
 	defer tick.Stop()
@@ -632,6 +636,9 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 				fmt.Fprintf(w, "event: github\ndata: %s\n\n", b)
 				fl.Flush()
 			}
+		case <-subAsks:
+			fmt.Fprintf(w, "event: asks\ndata: {}\n\n")
+			fl.Flush()
 		case <-tick.C:
 			fmt.Fprint(w, ": keepalive\n\n")
 			fl.Flush()

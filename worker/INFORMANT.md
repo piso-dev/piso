@@ -63,6 +63,10 @@ factual line. Concretely:
 - The gateway validates the kind and sanitizes the text. If the tool fails,
   treat it as non-fatal and continue — the board is advisory.
 - `activity_feed` is **your** rows only. Do not try to read another worker.
+- After you file an `approval_request` or `human_action_request`, check
+  `approval_list` / `human_action_list` (or the `*_status` tools) before
+  retrying the blocked step. Do not spin. Pending means wait; approved or
+  completed means continue; rejected or failed means change course.
 
 ## Why it matters
 
@@ -81,6 +85,5 @@ you suspect is out of bounds. Two things to internalize up front:
 - Never attempt ssh, docker, any credential-bearing git, or privileged
   writes: call `host_request` with the exact command and a `/workspace/...`
   result path instead, and check that path later.
-- Fetch your live boundaries once per session with
-  `curl -s "$GATEWAY_URL/api/v1/worker/capabilities?worker=$PISO_WORKER_NAME"`;
-  if the fetch fails, treat capabilities as BLOCKED.
+- Fetch your live boundaries once per session with the piso MCP tool
+  `capabilities`; if the call fails, treat capabilities as BLOCKED.

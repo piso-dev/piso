@@ -67,19 +67,10 @@ For any out-of-bounds step, do all of the following:
 
 ## Live boundaries (fetch once per session)
 
-Two things change at runtime and only the gateway knows them:
-
-```bash
-curl -s "$GATEWAY_URL/api/v1/worker/capabilities?worker=$PISO_WORKER_NAME"
-```
-
-- `internetEnabled` — the operator can flip the kill-switch per worker.
-- `scopedPlaceholders` — which `piso_…` placeholders your model may actually
-  see (secret scoping). A step that needs an unscoped secret is out of
-  bounds, period.
-
-If the fetch fails or a field is unclear, treat the capability as **BLOCKED**,
-not open.
+Call the piso MCP tool `capabilities`. It returns `internetEnabled` and
+`scopedPlaceholders`. If the call fails or a field is unclear, treat the
+capability as **BLOCKED**, not open. A step that needs an unscoped secret is
+out of bounds.
 
 ## MCP servers
 

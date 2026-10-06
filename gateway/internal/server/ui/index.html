@@ -16,7 +16,7 @@
   header .sub { color:var(--muted); font-size:12px }
   #tcchip { max-width:42vw; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; display:inline-block; vertical-align:bottom }
   header .actions { margin-left: auto; display:flex; align-items:center; gap:8px }
-  header .btn.plan-hot, header .btn.mcp-hot, header .btn.github-hot { background:var(--warn); color:#1a1a1a }
+  header .btn.plan-hot, header .btn.mcp-hot, header .btn.github-hot, header .btn.asks-hot { background:var(--warn); color:#1a1a1a }
   nav { display:flex; gap:4px; padding:10px 20px; border-bottom:1px solid var(--border); flex-wrap:wrap }
   nav button { background:transparent; color:var(--muted); border:1px solid transparent; padding:6px 14px; border-radius:6px; cursor:pointer; font-size:13px }
   nav button.active { background:var(--panel); color:var(--fg); border-color:var(--border) }
@@ -160,6 +160,7 @@
   <span class="sub" id="health"></span>
   <span class="sub" id="tcchip">technocore: …</span>
   <div class="actions">
+    <button type="button" class="btn" id="openAsksModal">Asks (<span id="asksCount">0</span>)</button>
     <button type="button" class="btn" id="openPlanModal">Plan review (<span id="planCount">0</span>)</button>
     <button type="button" class="btn" id="openMcpModal">MCP login (<span id="mcpCount">0</span>)</button>
     <button type="button" class="btn" id="openGithubModal">GitHub (<span id="githubCount">0</span>)</button>
@@ -392,6 +393,17 @@
     </div>
   </section>
 </main>
+<div id="asksModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="asksModalTitle">
+  <div class="modal-card sheet">
+    <h3 id="asksModalTitle">Asks</h3>
+    <p class="muted">Decisions and jobs only a human can finish. Approving here updates every gateway.</p>
+    <div id="asksGroups"></div>
+    <p class="muted" id="asksStatus"></p>
+    <div class="modal-actions">
+      <button type="button" class="btn danger" id="asksClose">Close</button>
+    </div>
+  </div>
+</div>
 <div id="planModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="planModalTitle">
   <div class="modal-card sheet">
     <h3 id="planModalTitle">Plan review</h3>
@@ -931,6 +943,7 @@ function streamLog() {
   const es = new EventSource('/api/v1/requests/stream');
   es.addEventListener('record', ev => { const r = JSON.parse(ev.data); logRow(r); topoFlash(r); });
   es.addEventListener('planning', ev => { loadPlanning().catch(() => {}); });
+  es.addEventListener('asks', ev => { loadAsks().catch(() => {}); });
   es.addEventListener('route', ev => { loadRoutes().catch(() => {}); loadTopo().catch(() => {}); });
   es.addEventListener('activity', ev => { loadBoard().catch(() => {}); });
   es.addEventListener('mcp', ev => { loadMCP().catch(() => {}); });
@@ -1844,6 +1857,84 @@ async function setWorkerInternet(name, disabled) {
   catch (e) { alert(e.message); }
 };
 
+let askItems = [];
+
+async function loadAsks() {
+  const data = await api('/api/v1/asks');
+  askItems = Array.isArray(data.asks) ? data.asks : [];
+  const n = askItems.length;
+  const count = $('#asksCount');
+  const btn = $('#openAsksModal');
+  if (count) count.textContent = String(n);
+  if (btn) btn.classList.toggle('asks-hot', n > 0);
+  if ($('#asksModal') && $('#asksModal').classList.contains('open')) {
+    renderAsks();
+  }
+}
+
+function renderAsks() {
+  const box = $('#asksGroups');
+  if (!box) return;
+  box.innerHTML = '';
+  if (askItems.length === 0) {
+    box.append(el('p', 'muted', 'No asks. Workers file these when they hit a decision or something only you can do.'));
+    return;
+  }
+  askItems.forEach((item) => {
+    const kind = item.kind === 'human' ? 'Do' : 'Approve';
+    const meta = item.kind === 'human'
+      ? (item.category || 'human') + ' · ' + (item.from || '')
+      : (item.action || 'approval') + ' · ' + (item.from || '');
+    const extra = item.kind === 'human' && item.instructions
+      ? `<p>${esc(item.instructions)}</p>` : '';
+    const actions = item.kind === 'human'
+      ? `<button type="button" class="btn" data-act="completed">Done</button>
+         <button type="button" class="btn" data-act="deferred">Later</button>
+         <button type="button" class="btn danger" data-act="rejected">Can't</button>`
+      : `<button type="button" class="btn" data-act="approved">Approve</button>
+         <button type="button" class="btn danger" data-act="rejected">Reject</button>`;
+    const wrap = el('div', 'fail-group', `<p class="meta">${esc(kind + ' · ' + meta)}</p>
+      <p>${esc(item.title || '')}</p>${extra}
+      <div class="fail-actions">${actions}</div>`);
+    wrap.querySelectorAll('[data-act]').forEach((btn) => {
+      btn.addEventListener('click', () => decideAsk(item, btn.getAttribute('data-act'), btn));
+    });
+    box.append(wrap);
+  });
+}
+
+async function decideAsk(item, act, btn) {
+  if (btn) btn.disabled = true;
+  try {
+    if (item.kind === 'human') {
+      await api('/api/v1/asks/human-actions/' + encodeURIComponent(item.id) + '/resolve', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ status: act }),
+      });
+    } else {
+      await api('/api/v1/asks/approvals/' + encodeURIComponent(item.id) + '/decide', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ decision: act }),
+      });
+    }
+    await loadAsks();
+  } catch (e) {
+    if ($('#asksStatus')) $('#asksStatus').textContent = e.message || String(e);
+    if (btn) btn.disabled = false;
+  }
+}
+
+$('#openAsksModal').onclick = () => {
+  $('#asksModal').classList.add('open');
+  renderAsks();
+};
+$('#asksClose').onclick = () => $('#asksModal').classList.remove('open');
+$('#asksModal').addEventListener('click', (ev) => {
+  if (ev.target === $('#asksModal')) $('#asksModal').classList.remove('open');
+});
+
 // ---- plan review inbox ----
 let planItems = [];
 // ids we've already surfaced this page load; the first load seeds the set
@@ -2311,7 +2402,7 @@ $('#planModal').addEventListener('click', (ev) => {
     showErr('control API unreachable at ' + location.origin + ' — try http://127.0.0.1 (piso.local IPv6 needs ::1 published)');
     return;
   }
-  const loaders = [loadBoard, loadMCP, loadGithub, loadSecrets, loadPiProvider, loadRules, loadPatterns, loadExceptions, loadDomains, loadRoutes, loadWorkers, loadPlanning, loadLog];
+  const loaders = [loadBoard, loadMCP, loadGithub, loadSecrets, loadPiProvider, loadRules, loadPatterns, loadExceptions, loadDomains, loadRoutes, loadWorkers, loadPlanning, loadAsks, loadLog];
   for (const fn of loaders) {
     try {
       await fn();
@@ -2327,6 +2418,7 @@ $('#planModal').addEventListener('click', (ev) => {
   activateTab(tabFromHash() || 'board');
   setInterval(() => {
     loadPlanning().catch(() => {});
+    loadAsks().catch(() => {});
     loadMCP().catch(() => {});
     refreshTechnocore();
   }, 5000);

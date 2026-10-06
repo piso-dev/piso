@@ -57,7 +57,11 @@ func Run(st *store.Store, dataDir string) {
 			continue
 		}
 		log.Printf("technocore: connecting %s", id.ServerURL)
-		ready, err := connectSession(id, dataDir, rec.Nudge)
+		ready, err := connectSession(id, dataDir, rec.Nudge, func(ev string) {
+			if ev == "asks_changed" {
+				st.BroadcastAsks()
+			}
+		})
 		if err != nil {
 			log.Printf("technocore: websocket: %v", err)
 			setLive(func(s *Status) { s.LastError = err.Error() })

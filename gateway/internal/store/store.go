@@ -202,6 +202,8 @@ type Store struct {
 	// GitHub App rows (dashboard chip + tab)
 	onGithub chan GithubAppRec
 
+	onAsks chan struct{}
+
 	// transient listener hints: worker → ports the watcher reported but the
 	// gateway cannot route to (loopback / specific-IP / v6-only binds)
 	unreachable map[string][]UnreachablePort
@@ -267,6 +269,7 @@ func New(path, logPath, patternsPath, activitiesPath string, maxLog int) (*Store
 		onActivity:  make(chan Activity, 64),
 		onMcp:       make(chan McpServerRec, 64),
 		onGithub:    make(chan GithubAppRec, 64),
+		onAsks:      make(chan struct{}, 8),
 		unreachable: map[string][]UnreachablePort{},
 	}
 	if err := s.load(); err != nil {
@@ -1204,6 +1207,15 @@ func (s *Store) broadcastRoute(rec RouteRec) {
 
 // SubRoutes returns a channel of route changes (SSE). Callers must drain.
 func (s *Store) SubRoutes() <-chan RouteRec { return s.onRoute }
+
+func (s *Store) BroadcastAsks() {
+	select {
+	case s.onAsks <- struct{}{}:
+	default:
+	}
+}
+
+func (s *Store) SubAsks() <-chan struct{} { return s.onAsks }
 
 // ReplayGet returns a captured record by id (for retry).
 func (s *Store) ReplayGet(id string) (Record, bool) {
