@@ -540,6 +540,12 @@ func (s *Server) routes(mux *http.ServeMux) {
 			TargetSlug: strings.TrimSpace(r.URL.Query().Get("target")),
 			Limit:      atoiDefault(r.URL.Query().Get("limit"), 500),
 		}
+		// The live timeline needs a complete, time-bounded window rather than
+		// a row limit that can silently discard older projects on busy boards.
+		if r.URL.Query().Get("window") == "3h" {
+			f.SinceMs = time.Now().Add(-3 * time.Hour).UnixMilli()
+			f.Limit = 0
+		}
 		acts, err := s.Store.QueryActivities(f)
 		if err != nil {
 			writeJSON(w, 500, map[string]string{"error": err.Error()})
