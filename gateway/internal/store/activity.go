@@ -11,7 +11,7 @@ import (
 	_ "modernc.org/sqlite" // registers the "sqlite" driver (pure Go, no CGO)
 )
 
-// Activity kinds emitted by worker informants and the monitor. The board
+// Activity kinds emitted by workers (MCP board tools) and the monitor. The board
 // color-codes by kind.
 const (
 	ActivityKindProgress  = "progress"  // work in progress, descriptive
@@ -24,6 +24,22 @@ const (
 	ActivityKindHost      = "host"      // host action required (sandbox boundary)
 	ActivityKindNote      = "note"      // unstructured note
 )
+
+// SanitizeLabel strips control characters, collapses whitespace, and caps
+// length so board text matches the HTTP activity handler.
+func SanitizeLabel(s string, max int) string {
+	s = strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return ' '
+		}
+		return r
+	}, s)
+	s = strings.Join(strings.Fields(s), " ")
+	if max > 0 && len(s) > max {
+		s = s[:max]
+	}
+	return s
+}
 
 // ValidActivityKind reports whether k is an accepted activity kind.
 func ValidActivityKind(k string) bool {
@@ -44,12 +60,12 @@ func ValidActivityKind(k string) bool {
 // digest, board) compress/aggregate at read time, never here.
 type Activity struct {
 	ID         string `json:"id"`
-	Worker     string `json:"worker"`   // container name of the reporter
-	Slug       string `json:"slug"`     // project slug of the reporter
+	Worker     string `json:"worker"` // container name of the reporter
+	Slug       string `json:"slug"`   // project slug of the reporter
 	Kind       string `json:"kind"`
 	TargetSlug string `json:"targetSlug,omitempty"` // for pokes/reminders: which project's track
 	Text       string `json:"text"`
-	Ts         int64  `json:"ts"`      // unix ms
+	Ts         int64  `json:"ts"` // unix ms
 	// ActiveFromMs / ActiveBeats are READ-side decorations: the worker feed's
 	// active=span projection fills them when it fuses a run of beats into one
 	// synthesized row. Never persisted.

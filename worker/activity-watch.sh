@@ -65,9 +65,9 @@ proj_ctx() {
   printf '%s' "$repo${branch:+ · $branch}${commit:+ @$commit}"
 }
 
-# Spool: shared buffer with piso-informant for events that could not reach
+# Spool: local buffer for events that could not reach
 # the gateway right now. On the agent volume: writable + persistent in every
-# worker (incl. the read-only-rootfs monitor). The informant appends, we
+# worker (incl. the read-only-rootfs monitor). The watcher appends, we
 # drain here once the gateway is reachable. Bounded: newest SPOOL_MAX lines.
 SPOOL="${PISO_SPOOL_FILE:-/root/.pi/agent/spool/activity.jsonl}"
 SPOOL_MAX=200
@@ -89,7 +89,7 @@ post_raw() {
 }
 
 # spool_append buffers one payload under the shared lock (same file and lock
-# the informant writes to). Drops oldest lines past SPOOL_MAX.
+# the watcher holds while draining). Drops oldest lines past SPOOL_MAX.
 spool_append() {
   mkdir -p "$(dirname "$SPOOL")" 2>/dev/null || return 1
   {
@@ -106,7 +106,7 @@ spool_append() {
   return 0
 }
 
-# drain_spool replays buffered events (informant spool + our own spooled
+# drain_spool replays buffered events (legacy spool + our own spooled
 # notes) once the gateway accepts them. Snapshot + truncate happen together
 # under the lock so concurrent appends are never clobbered; failed lines are
 # re-queued for the next pass. Replays are at-most-once per pass.
@@ -136,7 +136,7 @@ drain_spool() {
 }
 
 # post sends one activity; true iff accepted NOW. Durable kinds (notes, and
-# the informant's semantic events via the spool) are buffered on failure so a
+# board events via the spool) are buffered on failure so a
 # gateway blip cannot lose them. Ephemeral "active" beats are never spooled:
 # they are alive-signals and replaying stale ones would mislead the board.
 post() {

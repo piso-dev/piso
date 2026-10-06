@@ -54,8 +54,10 @@ For any out-of-bounds step, do all of the following:
      COMMAND: cd /abs/path && git clone git@github.com:org/repo.git
      RESULT:  /workspace/repo   (then I can continue with the vendoring)
    ```
-2. **Surface it on the board** so it survives this session:
-   `piso-informant host "git clone git@github.com:org/repo.git → /workspace/repo"`
+2. **Surface it on the board** so it survives this session — call the piso
+   MCP tool `host_request` with `command` set to the host command and
+   `resultPath` set to the `/workspace/...` rendezvous (or `activity_post`
+   with `kind=host` and the same one-line text).
 3. **Rendezvous**: later, check the RESULT path. If it exists, continue from
    there. If it does not, the host has not done it yet — re-ask (a new
    `host` event or a `poke` to the project), never block, never retry the
@@ -102,9 +104,9 @@ If the command prints `needs-auth`, `expired`, or `revoked`, tell the human
 to Authorize that server on the dashboard MCP tab (the Authorize chip is
 already up), then:
 
-```bash
-piso-informant waiting "Authorize <name> on the dashboard MCP tab"
-```
+Call `activity_post` with `kind=waiting` and
+`text="Authorize <name> on the dashboard MCP tab"`.
+
 
 A connect before they sign in is held (`407 mcp-auth-required`) and replays
 after. This session will not see the new server until `/reload` or the next

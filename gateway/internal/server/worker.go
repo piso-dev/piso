@@ -140,7 +140,7 @@ func requestIP(r *http.Request) string {
 
 // identityMismatch writes a 403 naming the registry's owner of the caller's
 // source IP vs the claimed identity, so operator logs show exactly what to
-// fix (re-run `piso up`, or redeploy the conflicting worker). piso-informant
+// fix (re-run `piso up`, or redeploy the conflicting worker). activity_post
 // prints this body, so the agent line reads as an actionable message.
 func identityMismatch(w http.ResponseWriter, r *http.Request, reg store.WorkerRec, name, slug string) {
 	detail := fmt.Sprintf("registered %s@%s; request claims worker=%s",
@@ -317,7 +317,7 @@ func isMonitorWorker(name, slug string) bool {
 	return slug == monitorSlug || name == monitorWorkerName
 }
 
-// activityIn is one informant report (or monitor poke) posted by a worker.
+// activityIn is one board event posted by a worker (watcher or MCP tool).
 type activityIn struct {
 	Worker     string `json:"worker"`
 	Slug       string `json:"slug,omitempty"`
@@ -326,8 +326,8 @@ type activityIn struct {
 	Text       string `json:"text"`
 }
 
-// handleWorkerPostActivity stores an activity reported by a worker's
-// informant (or the monitor). The origin worker is identity-checked against
+// handleWorkerPostActivity stores a Tier A watcher event. MCP board tools
+// write the same store in-process. The origin worker is identity-checked against
 // the slug↔IP registry exactly like the ports handler; text is sanitized
 // (labels render in the host dashboard). No headers/bodies ever enter the
 // activity store — only the sanitized text.
@@ -773,15 +773,5 @@ func (s *Server) handleWorkerGetPlanning(w http.ResponseWriter, r *http.Request)
 // whitespace runs, and caps length so labels can be embedded safely in the
 // dashboard HTML and request-log JSONL. Values are advisory.
 func sanitizeLabel(s string, max int) string {
-	s = strings.Map(func(r rune) rune {
-		if r < 0x20 || r == 0x7f {
-			return ' '
-		}
-		return r
-	}, s)
-	s = strings.Join(strings.Fields(s), " ")
-	if max > 0 && len(s) > max {
-		s = s[:max]
-	}
-	return s
+	return store.SanitizeLabel(s, max)
 }

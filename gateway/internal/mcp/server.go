@@ -89,6 +89,7 @@ func New(st *store.Store, pat *patterns.Compiled, dataDir string) *Handler {
 		Call:  h.toolMCPAdd,
 	})
 	h.registerInbox()
+	h.registerBoard()
 	return h
 }
 

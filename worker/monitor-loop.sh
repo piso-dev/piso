@@ -3,7 +3,7 @@
 #
 # Runs in piso-worker-monitor. On each wake it asks pi to read the activity
 # feed, judge per MONITOR.md, and emit any pokes/reminders/notes via
-# piso-informant. The loop gives the cadence; pi's session (scoped to the
+# MCP activity_post. The loop gives the cadence; pi's session (scoped to the
 # monitor's own agent volume) keeps the judge's state across wakes.
 #
 # Detailed machine log: every wake prints a CLEARLY DELIMITED block with
@@ -11,8 +11,7 @@
 #      pi re-narrates), and
 #   2) the decision record pi prints per MONITOR.md (verbatim) — required on
 #      EVERY wake, including "stay silent" ones, and
-#   3) the informant lines (actual POST results: 201 = stored, spooled = r
-#      buffered because the gateway was unreachable).
+#   3) whether activity_post appears in the decision dump (board write).
 # That way `docker logs piso-worker-monitor` shows input → decision →
 # outcome as one auditable unit. `piso-monitor-loop --once` runs a single
 # wake and exits (for manual debugging).
@@ -212,11 +211,11 @@ wake() {
   fi
   echo "$SEP"
   echo "-- decision (pi, per MONITOR.md — printed every wake, even silent) -"
-  out="$("$piBin" -p "Run your project-manager routine now: read the activity feed per $(basename "$PROMPT"), decide, emit any pokes/reminders/notes via piso-informant, and ALWAYS print your Wake Report to stdout (same shape every wake, including when you stay silent). Be conservative: usually the right call is NO new events." 2>&1)"
+  out="$("$piBin" -p "Run your project-manager routine now: read the activity feed per $(basename "$PROMPT"), decide, emit any pokes/reminders/notes via the piso MCP activity_post tool (not piso-informant), and ALWAYS print your Wake Report to stdout (same shape every wake, including when you stay silent). Be conservative: usually the right call is NO new events." 2>&1)"
   printf '%s\n' "$out"
   echo "$SEP"
-  echo "-- informant emissions (actual POST results) --------------------"
-  emissions="$(printf '%s\n' "$out" | sed -n 's/^informant /informant /p')"
+  echo "-- board emissions (MCP activity_post in the decision dump) -----"
+  emissions="$(printf '%s\n' "$out" | sed -n '/activity_post/p')"
   if [ -n "$emissions" ]; then
     printf '%s\n' "$emissions"
   else
