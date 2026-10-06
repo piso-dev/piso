@@ -140,6 +140,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	})
 	s.registerTechnocore(mux)
 	s.registerGithubApp(mux)
+	mux.HandleFunc("GET /api/v1/connections", s.handleConnections)
 
 	// CA cert for distribution
 	mux.HandleFunc("GET /api/v1/ca.pem", func(w http.ResponseWriter, r *http.Request) {

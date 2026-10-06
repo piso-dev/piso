@@ -171,6 +171,7 @@
   <button data-tab="board">Board</button>
   <button data-tab="log" class="active">Request log</button>
   <button data-tab="mcp">MCP</button>
+  <button data-tab="connections">Connections</button>
   <button data-tab="github">GitHub</button>
   <button data-tab="secrets">Secrets</button>
   <button data-tab="provider">Pi provider</button>
@@ -241,6 +242,19 @@
       </div>
       <table><thead><tr><th>Name</th><th>Worker</th><th>URL</th><th>Placeholder</th><th>Status</th><th></th></tr></thead>
       <tbody id="mcprows"></tbody></table>
+    </div>
+  </section>
+
+  <section class="tab" id="tab-connections">
+    <div class="card">
+      <div class="card-head">
+        <div>
+          <h3>Connections</h3>
+          <p class="muted">Gateway logins for GitHub, AI Boost, and Hammerspace. Workers never hold these tokens.</p>
+        </div>
+      </div>
+      <table><thead><tr><th>Service</th><th>Status</th><th>Detail</th><th></th></tr></thead>
+      <tbody id="connectionrows"></tbody></table>
     </div>
   </section>
 
@@ -947,7 +961,7 @@ function streamLog() {
   es.addEventListener('route', ev => { loadRoutes().catch(() => {}); loadTopo().catch(() => {}); });
   es.addEventListener('activity', ev => { loadBoard().catch(() => {}); });
   es.addEventListener('mcp', ev => { loadMCP().catch(() => {}); });
-  es.addEventListener('github', ev => { loadGithub().catch(() => {}); });
+  es.addEventListener('github', ev => { loadGithub().catch(() => {}); loadConnections().catch(() => {}); });
   es.onerror = () => {};
 }
 $('#logFilter').oninput = ev => {
@@ -2250,6 +2264,33 @@ let githubPending = [];
 let githubSeen = new Set();
 let githubSeeded = false;
 
+async function loadConnections() {
+  const data = await api('/api/v1/connections');
+  const rows = Array.isArray(data.connections) ? data.connections : [];
+  const box = $('#connectionrows');
+  if (!box) return;
+  box.innerHTML = '';
+  rows.forEach((item) => {
+    const tr = el('tr', '', `<td>${esc(item.name||'')}</td><td>${esc(item.status||'')}</td>
+      <td>${esc(item.detail||'')}</td><td></td>`);
+    const td = tr.lastElementChild;
+    if (item.id === 'github' && item.status !== 'ok') {
+      const b = el('button', 'btn small', item.status === 'needs-install' ? 'Install on org' : 'Connect GitHub');
+      b.onclick = () => {
+        if (item.status === 'needs-install') {
+          const first = (githubItems || [])[0];
+          if (first && first.id) startGithubInstall(first.id);
+          else startGithubManifest();
+        } else {
+          startGithubManifest();
+        }
+      };
+      td.append(b);
+    }
+    box.append(tr);
+  });
+}
+
 async function loadGithub() {
   const rows = await api('/api/v1/github-app');
   githubItems = Array.isArray(rows) ? rows : [];
@@ -2402,7 +2443,7 @@ $('#planModal').addEventListener('click', (ev) => {
     showErr('control API unreachable at ' + location.origin + ' — try http://127.0.0.1 (piso.local IPv6 needs ::1 published)');
     return;
   }
-  const loaders = [loadBoard, loadMCP, loadGithub, loadSecrets, loadPiProvider, loadRules, loadPatterns, loadExceptions, loadDomains, loadRoutes, loadWorkers, loadPlanning, loadAsks, loadLog];
+  const loaders = [loadBoard, loadMCP, loadConnections, loadGithub, loadSecrets, loadPiProvider, loadRules, loadPatterns, loadExceptions, loadDomains, loadRoutes, loadWorkers, loadPlanning, loadAsks, loadLog];
   for (const fn of loaders) {
     try {
       await fn();
