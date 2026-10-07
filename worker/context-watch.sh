@@ -26,8 +26,20 @@ if [ -z "$gw" ] || [ -z "$worker" ] || [ -z "$slug" ]; then
   exit 3
 fi
 
-# pi sanitizes the session cwd: /workspace → --workspace--
-SESS_DIR="/root/.pi/agent/sessions/--workspace--"
+# Match Pi's cwd-scoped session directories, including the monitor's workdir.
+AGENT_DIR="${PI_CODING_AGENT_DIR:-/root/.pi/agent}"
+DEFAULT_CWD="/workspace"
+if [ "${PISO_ROLE:-}" = "monitor" ] || [ "$slug" = "monitor" ]; then
+  DEFAULT_CWD="${AGENT_DIR}/monitor-work"
+fi
+
+session_dir() {
+  local safe="${1#/}"
+  safe="${safe//\\\\/-}"
+  safe="${safe//\//-}"
+  safe="${safe//:/-}"
+  printf '%s/sessions/--%s--' "$AGENT_DIR" "$safe"
+}
 GIT=(git -c safe.directory=*)
 
 # repo_name_from_url prints the repository name from a git remote URL:
@@ -57,7 +69,7 @@ san() {
   printf '%s' "$v"
 }
 
-# detect_pid prints one live pi pid (any; all share cwd=/workspace).
+# detect_pid prints one live pi pid; its cwd selects the session directory.
 detect_pid() {
   python3 - <<'PY' 2>/dev/null | head -1
 import os, re, sys
@@ -85,8 +97,9 @@ PY
 # common case (model set recently) costs one 64KB read.
 model_ctx() {
   local pid="$1" prov="" mid=""
-  local latest=""
-  latest=$(ls -t "${SESS_DIR}"/*.jsonl 2>/dev/null | head -1)
+  local latest="" sess_dir
+  sess_dir=$(session_dir "${2:-$DEFAULT_CWD}")
+  latest=$(ls -t "${sess_dir}"/*.jsonl 2>/dev/null | head -1)
   if [ -n "$latest" ] && [ -f "$latest" ]; then
     local size win line
     size=$(wc -c < "$latest" 2>/dev/null) || size=0
@@ -117,11 +130,12 @@ model_ctx() {
 }
 
 # ctx computes the full context tuple, setting globals folder/project/branch/
-# commit/model. Falls back to the /workspace mount when pi is not running.
+# commit/model. Falls back to the role's workdir between pi runs, so the
+# monitor retains its last observed model between wakes (not a guessed default).
 ctx() {
   local pid="" toplevel=""
   pid=$(detect_pid)
-  folder="/workspace"
+  folder="$DEFAULT_CWD"
   if [ -n "$pid" ]; then
     local f
     f=$(readlink -f "/proc/${pid}/cwd" 2>/dev/null) || true
@@ -155,7 +169,7 @@ ctx() {
   if [ -z "$project" ]; then
     project=$(basename "$folder")
   fi
-  model=$(model_ctx "$pid")
+  model=$(model_ctx "$pid" "$folder")
 }
 
 # notify POSTs the context; success iff the gateway answered 200/201.

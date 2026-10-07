@@ -150,7 +150,7 @@ func scanTextInto(res *Result, text string, opts Options, loc, field string) {
 }
 
 // patternMatchContainsPlaceholder reports whether the regex hit's matched
-// bytes include a piso_ token (Bearer piso_routstr_… is not a credential).
+// bytes include a piso_ token (Bearer piso_model_… is not a credential).
 func patternMatchContainsPlaceholder(raw []byte, m patterns.Match) bool {
 	if m.Start < 0 || m.End > len(raw) || m.Start >= m.End {
 		return false

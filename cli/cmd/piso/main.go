@@ -397,7 +397,7 @@ func syncPiProfile() error {
 			Provider string `json:"defaultProvider"`
 			Model    string `json:"defaultModel"`
 		}
-		if json.Unmarshal(destSettings, &saved) == nil && saved.Provider == sharedprofile.ProviderName && saved.Model != "" {
+		if json.Unmarshal(destSettings, &saved) == nil && (saved.Provider == sharedprofile.ProviderName || saved.Provider == sharedprofile.LegacyProviderName) && saved.Model != "" {
 			settings = sharedprofile.WithDefaultModel(settings, saved.Model)
 		}
 	}
@@ -440,7 +440,7 @@ func syncPiProfile() error {
 		// No host ~/.pi/agent/models.json: keep a hand-written dest profile.
 		models = srcModels
 	}
-	return piprofile.WriteProfile(dest, settings, models)
+	return piprofile.WriteProfile(dest, settings, sharedprofile.MigrateProviderModels(models))
 }
 
 type piKeyImportResult struct {

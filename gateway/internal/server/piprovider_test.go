@@ -141,7 +141,7 @@ func TestPutPiProviderDefaultModel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(raw), `"defaultProvider": "routstr"`) || !strings.Contains(string(raw), `"defaultModel": "model-b"`) {
+	if !strings.Contains(string(raw), `"defaultProvider": "piso"`) || !strings.Contains(string(raw), `"defaultModel": "model-b"`) {
 		t.Fatalf("settings: %s", raw)
 	}
 	// Other settings survive, and clearing the default removes both keys.

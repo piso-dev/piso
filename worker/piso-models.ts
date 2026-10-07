@@ -4,14 +4,14 @@ import { join } from "node:path";
 import type { Api, Model, ModelsStoreEntry, RefreshModelsContext } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ProviderModelConfig } from "@earendil-works/pi-coding-agent";
 
-const PROVIDER_ID = "routstr";
+const PROVIDER_ID = "piso";
 const DEFAULT_CONTEXT_WINDOW = 128_000;
 const DEFAULT_MAX_TOKENS = 16_384;
 const STARTUP_DISCOVERY_TIMEOUT_MS = 10_000;
 
 type JsonObject = Record<string, unknown>;
 
-type RoutstrConfig = {
+type PisoConfig = {
 	api?: Api;
 	apiKey: string;
 	baseUrl: string;
@@ -133,7 +133,7 @@ export function mergeCatalog(
 	return models;
 }
 
-function persistedModels(models: ProviderModelConfig[], config: RoutstrConfig): Model<Api>[] {
+function persistedModels(models: ProviderModelConfig[], config: PisoConfig): Model<Api>[] {
 	const api = config.api ?? "openai-completions";
 	return models.map((model) => ({
 		...model,
@@ -145,7 +145,7 @@ function persistedModels(models: ProviderModelConfig[], config: RoutstrConfig): 
 
 function catalogEntries(payload: unknown): JsonObject[] {
 	if (!isObject(payload) || !Array.isArray(payload.data)) {
-		throw new Error("Routstr returned an invalid /models response");
+		throw new Error("Piso returned an invalid /models response");
 	}
 	return payload.data.filter(isObject);
 }
@@ -160,7 +160,7 @@ function agentDir(): string {
 
 // Read Pi's catalog snapshot without modifying the shared, read-only profile.
 // Ignore catalogs from an old dashboard endpoint.
-async function loadStartupModels(config: RoutstrConfig): Promise<ProviderModelConfig[]> {
+async function loadStartupModels(config: PisoConfig): Promise<ProviderModelConfig[]> {
 	try {
 		const payload = JSON.parse(await readFile(join(agentDir(), "models-store.json"), "utf8"));
 		const models = payload?.[PROVIDER_ID]?.models;
@@ -175,7 +175,7 @@ async function loadStartupModels(config: RoutstrConfig): Promise<ProviderModelCo
 	}
 }
 
-async function loadConfig(): Promise<RoutstrConfig | undefined> {
+async function loadConfig(): Promise<PisoConfig | undefined> {
 	let payload: unknown;
 	try {
 		payload = JSON.parse(await readFile(join(agentDir(), "models.json"), "utf8"));
@@ -194,7 +194,7 @@ async function loadConfig(): Promise<RoutstrConfig | undefined> {
 	};
 }
 
-export default async function routstrModels(pi: ExtensionAPI): Promise<void> {
+export default async function pisoModels(pi: ExtensionAPI): Promise<void> {
 	const config = await loadConfig();
 	if (!config) return;
 
@@ -227,7 +227,7 @@ export default async function routstrModels(pi: ExtensionAPI): Promise<void> {
 	}
 
 	pi.registerProvider(PROVIDER_ID, {
-		name: "Routstr",
+		name: "Piso",
 		models: startupModels,
 		baseUrl: config.baseUrl,
 		api: config.api ?? "openai-completions",
@@ -254,10 +254,10 @@ export default async function routstrModels(pi: ExtensionAPI): Promise<void> {
 				await context.publish({ persist: { ...context.stored, checkedAt: Date.now() } });
 				return current;
 			}
-			if (!response.ok) throw new Error(`Routstr model discovery failed: HTTP ${response.status}`);
+			if (!response.ok) throw new Error(`Piso model discovery failed: HTTP ${response.status}`);
 
 			const refreshed = mergeCatalog(catalogEntries(await response.json()), fallback, cached);
-			if (refreshed.length === 0) throw new Error("Routstr model discovery returned no models");
+			if (refreshed.length === 0) throw new Error("Piso model discovery returned no models");
 			const entry: ModelsStoreEntry = {
 				models: persistedModels(refreshed, config),
 				checkedAt: Date.now(),

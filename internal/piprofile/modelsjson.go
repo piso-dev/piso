@@ -10,13 +10,16 @@ import (
 	"strings"
 )
 
-// ProviderName is the custom provider workers and the monitor already use.
-const ProviderName = "routstr"
+// ProviderName is the neutral namespace for the dashboard-managed endpoint.
+const ProviderName = "piso"
+
+// LegacyProviderName is read only during migration of older piso profiles.
+const LegacyProviderName = "routstr"
 
 // ProviderAPI is the pi models.json api adapter for an OpenAI-compatible URL.
 const ProviderAPI = "openai-completions"
 
-// WriteProviderModels writes providers.routstr with a literal placeholder and
+// WriteProviderModels writes providers.piso with a literal placeholder and
 // a plain base URL. The models list is left empty: pi fills it from
 // <baseUrl>/models. Real secret values must not be passed as apiKey.
 func WriteProviderModels(dir, apiKey, baseURL string) error {
@@ -34,7 +37,7 @@ func WriteProviderModels(dir, apiKey, baseURL string) error {
 	path := filepath.Join(dir, "models.json")
 	doc := map[string]any{}
 	if raw, err := os.ReadFile(path); err == nil && len(strings.TrimSpace(string(raw))) > 0 {
-		if err := json.Unmarshal(raw, &doc); err != nil {
+		if err := json.Unmarshal(MigrateProviderModels(raw), &doc); err != nil {
 			doc = map[string]any{}
 		}
 	}
@@ -80,6 +83,36 @@ func KeepDashboardModels(dest []byte) bool {
 	if json.Unmarshal(dest, &doc) != nil || doc.Providers == nil {
 		return false
 	}
-	p, ok := doc.Providers[ProviderName]
-	return ok && strings.TrimSpace(p.APIKey) != "" && strings.TrimSpace(p.BaseURL) != ""
+	for _, name := range []string{ProviderName, LegacyProviderName} {
+		p, ok := doc.Providers[name]
+		if ok && strings.HasPrefix(strings.TrimSpace(p.APIKey), "piso_") && strings.TrimSpace(p.BaseURL) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// MigrateProviderModels removes the old piso-owned namespace without touching
+// an independently configured provider or changing any credentials/endpoints.
+// If both names exist, the current piso entry wins.
+func MigrateProviderModels(raw []byte) []byte {
+	var doc map[string]any
+	if json.Unmarshal(raw, &doc) != nil {
+		return raw
+	}
+	providers, _ := doc["providers"].(map[string]any)
+	legacy, _ := providers[LegacyProviderName].(map[string]any)
+	key, _ := legacy["apiKey"].(string)
+	if !strings.HasPrefix(strings.TrimSpace(key), "piso_") {
+		return raw
+	}
+	if _, exists := providers[ProviderName]; !exists {
+		providers[ProviderName] = legacy
+	}
+	delete(providers, LegacyProviderName)
+	out, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		return raw
+	}
+	return append(out, '\n')
 }

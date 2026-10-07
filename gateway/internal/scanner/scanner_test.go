@@ -99,12 +99,12 @@ func TestBasicAuthMalformedIgnored(t *testing.T) {
 func TestLongBearerPlaceholderIsNotGenericBearer(t *testing.T) {
 	// Imported keys are piso_<provider>_<12 hex> (≥24 chars) so generic-bearer
 	// matches "Bearer " + the placeholder unless the scanner drops it.
-	req := newReq(t, "POST", "https://routstr.ft.hn/v1/chat/completions", `{}`, map[string]string{
-		"Authorization": "Bearer piso_routstr_5ef1739b3cf1",
+	req := newReq(t, "POST", "https://api.example.test/v1/chat/completions", `{}`, map[string]string{
+		"Authorization": "Bearer piso_model_5ef1739b3cf1",
 	})
 	res := ScanRequest(req, Options{Patterns: testPatterns(t)})
-	if len(res.Placeholders) != 1 || res.Placeholders[0].Token != "piso_routstr_5ef1739b3cf1" {
-		t.Fatalf("want the routstr placeholder, got %+v", res.Placeholders)
+	if len(res.Placeholders) != 1 || res.Placeholders[0].Token != "piso_model_5ef1739b3cf1" {
+		t.Fatalf("want the piso placeholder, got %+v", res.Placeholders)
 	}
 	if res.LooksCredential() {
 		t.Fatalf("Bearer piso_… must not be generic-bearer: %+v", res.PatternHits)

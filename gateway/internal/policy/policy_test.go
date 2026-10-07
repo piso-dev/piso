@@ -151,16 +151,16 @@ func TestBearerPlaceholderSubstitutes(t *testing.T) {
 	// Imported provider keys become long piso_ tokens. generic-bearer matches
 	// "Bearer " + 24 chars, so the scanner can flag both a pattern and a
 	// placeholder on Authorization. Substitution must still win.
-	ph := "piso_routstr_5ef1739b3cf1"
-	sec := model.Secret{ID: "s1", Placeholder: ph, Value: "sk-test-not-real", AllowedHosts: []string{"routstr.ft.hn"}}
+	ph := "piso_model_5ef1739b3cf1"
+	sec := model.Secret{ID: "s1", Placeholder: ph, Value: "sk-test-not-real", AllowedHosts: []string{"api.example.test"}}
 	in := Input{
-		Method: "POST", Host: "routstr.ft.hn", Path: "/v1/chat/completions",
+		Method: "POST", Host: "api.example.test", Path: "/v1/chat/completions",
 		Scan: scanner.Result{
 			Placeholders: []model.Finding{{Kind: model.FindingPlaceholder, Token: ph, Location: "authorization", Field: "Authorization"}},
 			PatternHits:  []model.Finding{{Kind: model.FindingPatternSecret, PatternID: "generic-bearer", Token: "Bearer piso…", Location: "authorization", Field: "Authorization"}},
 		},
 		SecretByPlaceholder: map[string]model.Secret{ph: sec},
-		Rules:               []model.Rule{{ID: "r1", SecretID: "s1", Host: "routstr.ft.hn", Placeholder: ph}},
+		Rules:               []model.Rule{{ID: "r1", SecretID: "s1", Host: "api.example.test", Placeholder: ph}},
 	}
 	d := Decide(in)
 	if d.Action != model.ActionSubstitute {
@@ -169,7 +169,7 @@ func TestBearerPlaceholderSubstitutes(t *testing.T) {
 }
 
 func TestBearerPlaceholderDoesNotHideOtherPattern(t *testing.T) {
-	ph := "piso_routstr_5ef1739b3cf1"
+	ph := "piso_model_5ef1739b3cf1"
 	in := Input{
 		Method: "POST", Host: "evil.example.com", Path: "/collect",
 		Scan: scanner.Result{
@@ -248,10 +248,10 @@ func TestPatternScopedExceptionDoesNotWaiveRealSecret(t *testing.T) {
 }
 
 func TestJWTInChatContentDoesNotBlockVaultSubstitute(t *testing.T) {
-	ph := "piso_routstr_5ef1739b3cf1"
+	ph := "piso_model_5ef1739b3cf1"
 	sec := model.Secret{ID: "s1", Placeholder: ph, Value: "sk-test-not-real"}
 	in := Input{
-		Method: "POST", Host: "routstr.ft.hn", Path: "/v1/chat/completions",
+		Method: "POST", Host: "api.example.test", Path: "/v1/chat/completions",
 		Scan: scanner.Result{
 			Placeholders: []model.Finding{{Kind: model.FindingPlaceholder, Token: ph, Location: "authorization", Field: "Authorization"}},
 			PatternHits: []model.Finding{
@@ -260,7 +260,7 @@ func TestJWTInChatContentDoesNotBlockVaultSubstitute(t *testing.T) {
 			},
 		},
 		SecretByPlaceholder: map[string]model.Secret{ph: sec},
-		Rules:               []model.Rule{{ID: "r1", SecretID: "s1", Host: "routstr.ft.hn", Placeholder: ph}},
+		Rules:               []model.Rule{{ID: "r1", SecretID: "s1", Host: "api.example.test", Placeholder: ph}},
 	}
 	d := Decide(in)
 	if d.Action != model.ActionSubstitute {
@@ -285,16 +285,16 @@ func TestJWTInRequestFieldStillBlocks(t *testing.T) {
 func TestUnknownPisoTokenInBodyDoesNotBlockVaultSubstitute(t *testing.T) {
 	// Chat/code mentioning piso_egress (the Docker network) is not a vault
 	// token. The Authorization placeholder must still substitute.
-	ph := "piso_routstr_5ef1739b3cf1"
+	ph := "piso_model_5ef1739b3cf1"
 	sec := model.Secret{ID: "s1", Placeholder: ph, Value: "sk-test-not-real"}
 	in := Input{
-		Method: "POST", Host: "routstr.ft.hn", Path: "/v1/chat/completions",
+		Method: "POST", Host: "api.example.test", Path: "/v1/chat/completions",
 		Scan: scanner.Result{Placeholders: []model.Finding{
 			{Kind: model.FindingPlaceholder, Token: ph, Location: "authorization", Field: "Authorization"},
 			{Kind: model.FindingPlaceholder, Token: "piso_egress", Location: "json-body", Field: "messages[29].content"},
 		}},
 		SecretByPlaceholder: map[string]model.Secret{ph: sec},
-		Rules:               []model.Rule{{ID: "r1", SecretID: "s1", Host: "routstr.ft.hn", Placeholder: ph}},
+		Rules:               []model.Rule{{ID: "r1", SecretID: "s1", Host: "api.example.test", Placeholder: ph}},
 	}
 	d := Decide(in)
 	if d.Action != model.ActionSubstitute {
@@ -383,7 +383,7 @@ func TestChatOnlyVaultPlaceholderDoesNotSubstitute(t *testing.T) {
 	ph := "piso_gh_abcdef"
 	sec := model.Secret{ID: "s1", Placeholder: ph, Value: "github_pat_REALVALUE"}
 	in := Input{
-		Method: "POST", Host: "routstr.ft.hn", Path: "/v1/chat/completions",
+		Method: "POST", Host: "api.example.test", Path: "/v1/chat/completions",
 		Scan: scanner.Result{Placeholders: []model.Finding{{
 			Kind: model.FindingPlaceholder, Token: ph,
 			Location: "json-body", Field: "messages[0].content",
@@ -403,7 +403,7 @@ func TestChatOnlyVaultPlaceholderDoesNotSubstitute(t *testing.T) {
 func TestChatOnlyVaultPlaceholderWithoutRuleDoesNotBlock(t *testing.T) {
 	ph := "piso_gh_abcdef"
 	in := Input{
-		Method: "POST", Host: "routstr.ft.hn", Path: "/v1/chat/completions",
+		Method: "POST", Host: "api.example.test", Path: "/v1/chat/completions",
 		Scan: scanner.Result{Placeholders: []model.Finding{{
 			Kind: model.FindingPlaceholder, Token: ph,
 			Location: "json-body", Field: "messages[3].tool_calls[0].function.arguments",
@@ -417,16 +417,16 @@ func TestChatOnlyVaultPlaceholderWithoutRuleDoesNotBlock(t *testing.T) {
 }
 
 func TestHeaderAndChatSameTokenStillSubstitutes(t *testing.T) {
-	ph := "piso_routstr_abc"
+	ph := "piso_model_abc"
 	sec := model.Secret{ID: "s1", Placeholder: ph, Value: "sk-real"}
 	in := Input{
-		Method: "POST", Host: "routstr.ft.hn", Path: "/v1/chat/completions",
+		Method: "POST", Host: "api.example.test", Path: "/v1/chat/completions",
 		Scan: scanner.Result{Placeholders: []model.Finding{
 			{Kind: model.FindingPlaceholder, Token: ph, Location: "authorization", Field: "Authorization"},
 			{Kind: model.FindingPlaceholder, Token: ph, Location: "json-body", Field: "messages[0].content"},
 		}},
 		SecretByPlaceholder: map[string]model.Secret{ph: sec},
-		Rules:               []model.Rule{{ID: "r1", SecretID: "s1", Host: "routstr.ft.hn", Placeholder: ph}},
+		Rules:               []model.Rule{{ID: "r1", SecretID: "s1", Host: "api.example.test", Placeholder: ph}},
 	}
 	d := Decide(in)
 	if d.Action != model.ActionSubstitute || len(d.Substituted) != 1 || d.Substituted[0] != ph {
@@ -452,7 +452,7 @@ func TestNonChatJSONFieldStillNeedsRule(t *testing.T) {
 
 func TestRealSecretInChatStillBlocks(t *testing.T) {
 	in := Input{
-		Method: "POST", Host: "routstr.ft.hn", Path: "/v1/chat/completions",
+		Method: "POST", Host: "api.example.test", Path: "/v1/chat/completions",
 		Scan: scanner.Result{
 			RealSecrets: []model.Finding{{
 				Kind: model.FindingRealSecret, SecretID: "s1",

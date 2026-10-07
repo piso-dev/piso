@@ -90,15 +90,15 @@ func TestApplySubstitutionRewritesHeaderNotMessages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const ph = "piso_routstr_abc"
+	const ph = "piso_model_abc"
 	const real = "sk-real-provider-key-value"
 	if err := st.AddSecret(store.SecretRec{
-		ID: "s1", Name: "routstr", Placeholder: ph, Value: real,
+		ID: "s1", Name: "piso", Placeholder: ph, Value: real,
 	}); err != nil {
 		t.Fatal(err)
 	}
 	body := []byte(`{"messages":[{"role":"user","content":"token ` + ph + `"}]}`)
-	req, err := http.NewRequest("POST", "https://routstr.ft.hn/v1/chat/completions", nil)
+	req, err := http.NewRequest("POST", "https://api.example.test/v1/chat/completions", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

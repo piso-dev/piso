@@ -55,7 +55,7 @@ COPY package.json /opt/piso/npm/package.json
 # Piso-owned extensions are kept separate from host-installed npm packages.
 # The entrypoint symlinks these into the persistent global extensions dir so
 # pi auto-discovers them and /reload can reload them.
-COPY routstr-models.ts /opt/piso/extensions/routstr-models.ts
+COPY piso-models.ts /opt/piso/extensions/piso-models.ts
 COPY activity-state.ts /opt/piso/extensions/activity-state.ts
 
 # --ignore-scripts skips postinstall downloads (pi-browser Chromium, etc.)

@@ -80,7 +80,7 @@ func Decide(in Input) model.Decision {
 	}
 
 	// 4. Credential-looking patterns. Hits that are just a piso_ placeholder
-	// (e.g. Authorization: Bearer piso_routstr_…) are not secrets — they fall
+	// (e.g. Authorization: Bearer piso_model_…) are not secrets — they fall
 	// through to substitution. A leftover real-looking hit still blocks
 	// unless every such hit is covered by an exception.
 	leftover := egressPatternHits(in.Scan)

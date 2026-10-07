@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import routstrModels, { mergeCatalog, normalizeModel } from "./routstr-models";
+import pisoModels, { mergeCatalog, normalizeModel } from "./piso-models";
 
 const originalAgentDir = process.env.PI_AGENT_DIR;
 const originalFetch = globalThis.fetch;
@@ -26,19 +26,19 @@ async function profile(models: unknown[] = []): Promise<string> {
 	tempDirs.push(dir);
 	process.env.PI_AGENT_DIR = dir;
 	delete process.env.PI_OFFLINE;
-	await writeFile(join(dir, "models.json"), JSON.stringify({ providers: { routstr: {
-		apiKey: "piso_routstr_test", baseUrl: "https://routstr.example/v1/", models,
+	await writeFile(join(dir, "models.json"), JSON.stringify({ providers: { piso: {
+		apiKey: "piso_piso_test", baseUrl: "https://piso.example/v1/", models,
 	} } }));
 	return dir;
 }
 
 async function registration(): Promise<any> {
 	let config: any;
-	await routstrModels({ registerProvider(_name: string, value: unknown) { config = value; } } as any);
+	await pisoModels({ registerProvider(_name: string, value: unknown) { config = value; } } as any);
 	return config;
 }
 
-describe("Routstr model discovery", () => {
+describe("Piso model discovery", () => {
 	test("cold start awaits discovery and registers models before initial selection", async () => {
 		await profile();
 		let release!: () => void;
@@ -59,16 +59,16 @@ describe("Routstr model discovery", () => {
 		expect(registered).toBe(false);
 		release();
 		const config = await startup;
-		expect(request?.url).toBe("https://routstr.example/v1/models");
-		expect(request?.headers.get("authorization")).toBe("Bearer piso_routstr_test");
+		expect(request?.url).toBe("https://piso.example/v1/models");
+		expect(request?.headers.get("authorization")).toBe("Bearer piso_piso_test");
 		expect(config.models[0].id).toBe("first-model");
 		// Pi performs an offline refresh during startup; it must not erase discovery.
 		expect(await config.refreshModels({ allowNetwork: false })).toEqual(config.models);
 	});
 	test("warm cache skips startup network discovery", async () => {
 		const dir = await profile();
-		await writeFile(join(dir, "models-store.json"), JSON.stringify({ routstr: {
-			models: [{ id: "cached", provider: "routstr", baseUrl: "https://routstr.example/v1" }],
+		await writeFile(join(dir, "models-store.json"), JSON.stringify({ piso: {
+			models: [{ id: "cached", provider: "piso", baseUrl: "https://piso.example/v1" }],
 		} }));
 		globalThis.fetch = (() => { throw new Error("unexpected network request"); }) as typeof fetch;
 		expect((await registration()).models[0].id).toBe("cached");
@@ -92,8 +92,8 @@ describe("Routstr model discovery", () => {
 
 	test("catalog from a previous endpoint does not suppress discovery", async () => {
 		const dir = await profile();
-		await writeFile(join(dir, "models-store.json"), JSON.stringify({ routstr: {
-			models: [{ id: "old", provider: "routstr", baseUrl: "https://old.example/v1" }],
+		await writeFile(join(dir, "models-store.json"), JSON.stringify({ piso: {
+			models: [{ id: "old", provider: "piso", baseUrl: "https://old.example/v1" }],
 		} }));
 		globalThis.fetch = (async () => Response.json({ data: [{ id: "new" }] })) as typeof fetch;
 		expect((await registration()).models[0].id).toBe("new");
@@ -116,7 +116,7 @@ describe("Routstr model discovery", () => {
 						init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
 					});
 				}
-				if (failure === "network") throw new Error("piso_routstr_test secret response");
+				if (failure === "network") throw new Error("piso_piso_test secret response");
 				if (failure === "http") return new Response("secret response", { status: 401 });
 				if (failure === "invalid") return new Response("secret response");
 				return Response.json({ data: [] });
@@ -125,18 +125,18 @@ describe("Routstr model discovery", () => {
 			expect(config.models).toEqual([]);
 			expect(warnings).toHaveLength(1);
 			expect(warnings[0]).toContain("dashboard API connection");
-			expect(warnings[0]).not.toContain("piso_routstr_test");
+			expect(warnings[0]).not.toContain("piso_piso_test");
 			expect(warnings[0]).not.toContain("secret response");
 			// Keep normal refresh available so the session can recover.
 			globalThis.fetch = (async () => Response.json({ data: [{ id: "recovered" }] })) as typeof fetch;
 			expect((await config.refreshModels({
-				allowNetwork: true, credential: { type: "api_key", key: "piso_routstr_test" },
+				allowNetwork: true, credential: { type: "api_key", key: "piso_piso_test" },
 				signal: new AbortController().signal, publish: async () => true,
 			}))[0].id).toBe("recovered");
 		});
 	}
 
-	test("normalizes common Routstr metadata fields", () => {
+	test("normalizes common Piso metadata fields", () => {
 		expect(
 			normalizeModel({
 				id: "vision-model",
@@ -212,10 +212,10 @@ describe("Routstr model discovery", () => {
 			join(agentDir, "models.json"),
 			JSON.stringify({
 				providers: {
-					routstr: {
+					piso: {
 						api: "openai-completions",
-						apiKey: "piso_routstr_test",
-						baseUrl: "https://routstr.example/v1/",
+						apiKey: "piso_piso_test",
+						baseUrl: "https://piso.example/v1/",
 						models: [{ id: "fallback", contextWindow: 99_000 }],
 					},
 				},
@@ -224,12 +224,12 @@ describe("Routstr model discovery", () => {
 		process.env.PI_AGENT_DIR = agentDir;
 
 		let registration: any;
-		await routstrModels({
+		await pisoModels({
 			registerProvider(name: string, config: unknown) {
 				registration = { name, config };
 			},
 		} as any);
-		expect(registration.name).toBe("routstr");
+		expect(registration.name).toBe("piso");
 
 		const offline = await registration.config.refreshModels({
 			allowNetwork: false,
@@ -250,7 +250,7 @@ describe("Routstr model discovery", () => {
 		let persisted: any;
 		const refreshed = await registration.config.refreshModels({
 			allowNetwork: true,
-			credential: { type: "api_key", key: "piso_routstr_test" },
+			credential: { type: "api_key", key: "piso_piso_test" },
 			signal: new AbortController().signal,
 			publish: async (publication: any) => {
 				persisted = publication.persist;
@@ -258,14 +258,14 @@ describe("Routstr model discovery", () => {
 			},
 		});
 
-		expect(request?.url).toBe("https://routstr.example/v1/models");
-		expect(request?.headers.get("authorization")).toBe("Bearer piso_routstr_test");
+		expect(request?.url).toBe("https://piso.example/v1/models");
+		expect(request?.headers.get("authorization")).toBe("Bearer piso_piso_test");
 		expect(refreshed[0]).toMatchObject({ id: "fresh", contextWindow: 250_000 });
 		expect(persisted).toMatchObject({ etag: '"catalog-v1"' });
 		expect(persisted.models[0]).toMatchObject({
 			id: "fresh",
-			provider: "routstr",
-			baseUrl: "https://routstr.example/v1",
+			provider: "piso",
+			baseUrl: "https://piso.example/v1",
 		});
 	});
 });

@@ -98,6 +98,15 @@ fi
 # while the symlink leaves the source on the read-only image filesystem.
 if [ -d /opt/piso/extensions ]; then
   mkdir -p /root/.pi/agent/extensions
+  # Remove only obsolete image-owned links (e.g. renamed bundled extensions).
+  # Never delete user extensions or links to their own extension packages.
+  for ext in /root/.pi/agent/extensions/*; do
+    [ -L "$ext" ] || continue
+    target=$(readlink "$ext")
+    case "$target" in
+      /opt/piso/extensions/*) [ -e "$target" ] || rm -f "$ext" ;;
+    esac
+  done
   for ext in /opt/piso/extensions/*.ts /opt/piso/extensions/*.js; do
     [ -e "$ext" ] || continue
     ln -sfn "$ext" "/root/.pi/agent/extensions/$(basename "$ext")"

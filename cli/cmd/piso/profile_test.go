@@ -13,11 +13,13 @@ func TestSyncPiProfilePreservesDefault(t *testing.T) {
 	for _, tt := range []struct {
 		name, body, want string
 		status           int
+		legacy           bool
 	}{
-		{"gateway unavailable", `{}`, "unbiased/pareto-26.10-preview", 503},
-		{"older gateway", `{"secretId":"test"}`, "unbiased/pareto-26.10-preview", 200},
-		{"explicit clear", `{"defaultModel":""}`, "", 200},
-		{"new default", `{"defaultModel":"new-model"}`, "new-model", 200},
+		{"gateway unavailable", `{}`, "unbiased/pareto-26.10-preview", 503, false},
+		{"older gateway", `{"secretId":"test"}`, "unbiased/pareto-26.10-preview", 200, false},
+		{"explicit clear", `{"defaultModel":""}`, "", 200, false},
+		{"new default", `{"defaultModel":"new-model"}`, "new-model", 200, false},
+		{"legacy profile without gateway", `{}`, "unbiased/pareto-26.10-preview", 503, true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -32,8 +34,12 @@ func TestSyncPiProfilePreservesDefault(t *testing.T) {
 			}
 			files := map[string]string{
 				filepath.Join(agent, "settings.json"): `{"theme":"test"}`,
-				filepath.Join(dest, "settings.json"):  `{"defaultProvider":"routstr","defaultModel":"unbiased/pareto-26.10-preview"}`,
-				filepath.Join(dest, "models.json"):    `{"providers":{"routstr":{"apiKey":"piso_test","baseUrl":"https://example.test/v1"}}}`,
+				filepath.Join(dest, "settings.json"):  `{"defaultProvider":"piso","defaultModel":"unbiased/pareto-26.10-preview"}`,
+				filepath.Join(dest, "models.json"):    `{"providers":{"piso":{"apiKey":"piso_test","baseUrl":"https://example.test/v1"}}}`,
+			}
+			if tt.legacy {
+				files[filepath.Join(dest, "settings.json")] = `{"defaultProvider":"routstr","defaultModel":"unbiased/pareto-26.10-preview"}`
+				files[filepath.Join(dest, "models.json")] = `{"providers":{"routstr":{"apiKey":"piso_test","baseUrl":"https://example.test/v1"}}}`
 			}
 			for p, body := range files {
 				if err := os.WriteFile(p, []byte(body), 0600); err != nil {
@@ -61,8 +67,21 @@ func TestSyncPiProfilePreservesDefault(t *testing.T) {
 				if _, ok := settings["defaultModel"]; ok {
 					t.Fatalf("not cleared: %s", raw)
 				}
-			} else if settings["defaultModel"] != tt.want {
+			} else if settings["defaultModel"] != tt.want || settings["defaultProvider"] != "piso" {
 				t.Fatalf("worker default: %s", raw)
+			}
+			raw, err = os.ReadFile(filepath.Join(dest, "models.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var models struct {
+				Providers map[string]any `json:"providers"`
+			}
+			if err := json.Unmarshal(raw, &models); err != nil {
+				t.Fatal(err)
+			}
+			if models.Providers["piso"] == nil || models.Providers["routstr"] != nil {
+				t.Fatalf("provider namespace not migrated: %s", raw)
 			}
 		})
 	}
