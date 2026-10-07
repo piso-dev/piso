@@ -7,6 +7,7 @@ import type { ExtensionAPI, ProviderModelConfig } from "@earendil-works/pi-codin
 const PROVIDER_ID = "routstr";
 const DEFAULT_CONTEXT_WINDOW = 128_000;
 const DEFAULT_MAX_TOKENS = 16_384;
+const STARTUP_DISCOVERY_TIMEOUT_MS = 10_000;
 
 type JsonObject = Record<string, unknown>;
 
@@ -153,11 +154,31 @@ function modelsUrl(baseUrl: string): string {
 	return `${baseUrl.replace(/\/+$/, "")}/models`;
 }
 
+function agentDir(): string {
+	return process.env.PI_AGENT_DIR?.trim() || join(homedir(), ".pi", "agent");
+}
+
+// Read Pi's catalog snapshot without modifying the shared, read-only profile.
+// Ignore catalogs from an old dashboard endpoint.
+async function loadStartupModels(config: RoutstrConfig): Promise<ProviderModelConfig[]> {
+	try {
+		const payload = JSON.parse(await readFile(join(agentDir(), "models-store.json"), "utf8"));
+		const models = payload?.[PROVIDER_ID]?.models;
+		if (!Array.isArray(models)) return [];
+		return models.flatMap((model) => {
+			if (!isObject(model) || model.provider !== PROVIDER_ID || model.baseUrl !== config.baseUrl) return [];
+			const normalized = configModel(model);
+			return normalized ? [normalized] : [];
+		});
+	} catch {
+		return [];
+	}
+}
+
 async function loadConfig(): Promise<RoutstrConfig | undefined> {
-	const agentDir = process.env.PI_AGENT_DIR?.trim() || join(homedir(), ".pi", "agent");
 	let payload: unknown;
 	try {
-		payload = JSON.parse(await readFile(join(agentDir, "models.json"), "utf8"));
+		payload = JSON.parse(await readFile(join(agentDir(), "models.json"), "utf8"));
 	} catch {
 		return undefined;
 	}
@@ -182,15 +203,39 @@ export default async function routstrModels(pi: ExtensionAPI): Promise<void> {
 		return normalized ? [normalized] : [];
 	});
 
+	let startupModels = await loadStartupModels(config);
+	if (startupModels.length === 0) startupModels = fallback;
+	// Interactive Pi refreshes in the background *after* initial model selection.
+	// Await discovery only on a cold start, using the dashboard's literal scoped
+	// placeholder. Do not interpret arbitrary credential commands here; normal
+	// refresh below continues to use Pi's credential resolution.
+	if (startupModels.length === 0 && !process.env.PI_OFFLINE) {
+		try {
+			if (!config.apiKey.startsWith("piso_")) throw new Error("unsupported bootstrap credential");
+			const response = await fetch(modelsUrl(config.baseUrl), {
+				headers: { accept: "application/json", authorization: `Bearer ${config.apiKey}` },
+				redirect: "error",
+				signal: AbortSignal.timeout(STARTUP_DISCOVERY_TIMEOUT_MS),
+			});
+			if (!response.ok) throw new Error("discovery failed");
+			startupModels = mergeCatalog(catalogEntries(await response.json()), fallback);
+			if (startupModels.length === 0) throw new Error("empty catalog");
+		} catch {
+			// Never print the response, URL, credentials, or raw network errors.
+			console.warn("Piso: initial model discovery failed (10s limit). Check the dashboard API connection, then use /model or retry attach.");
+		}
+	}
+
 	pi.registerProvider(PROVIDER_ID, {
 		name: "Routstr",
+		models: startupModels,
 		baseUrl: config.baseUrl,
 		api: config.api ?? "openai-completions",
 		async refreshModels(context: RefreshModelsContext): Promise<ProviderModelConfig[]> {
 			const cached = (context.stored?.models ?? [])
-				.filter((model) => model.provider === PROVIDER_ID)
+				.filter((model) => model.provider === PROVIDER_ID && model.baseUrl === config.baseUrl)
 				.map(storedModel);
-			const current = cached.length > 0 ? cached : fallback;
+			const current = cached.length > 0 ? cached : startupModels;
 			if (!context.allowNetwork) return current;
 			if (context.credential?.type !== "api_key" || !context.credential.key) return current;
 
@@ -219,6 +264,7 @@ export default async function routstrModels(pi: ExtensionAPI): Promise<void> {
 				etag: response.headers.get("etag") ?? undefined,
 			};
 			await context.publish({ persist: entry });
+			startupModels = refreshed;
 			return refreshed;
 		},
 	});
