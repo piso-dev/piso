@@ -917,6 +917,28 @@
         height: 18px;
         accent-color: var(--blue);
       }
+      .suggestions {
+        list-style: none;
+        margin: 0;
+        padding: 4px;
+        max-height: 220px;
+        overflow: auto;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: var(--panel);
+      }
+      .suggestions li {
+        padding: 7px 10px;
+        border-radius: 4px;
+        font-family: var(--mono, monospace);
+        font-size: 12px;
+        cursor: pointer;
+      }
+      .suggestions li.active,
+      .suggestions li:hover {
+        background: var(--blue);
+        color: #fff;
+      }
       .inline-form {
         max-width: 750px;
         padding: 24px;
@@ -2528,8 +2550,12 @@
                 ],
                 ["Placeholder", p.placeholder || "Not resolved"],
                 [
+                  "Default model",
+                  p.defaultModel || "First model the provider lists",
+                ],
+                [
                   "Applied",
-                  p.applied ? "Written to models.json" : "Not applied",
+                  p.applied ? "Written to the worker profile" : "Not applied",
                 ],
                 ["Warning", p.warning],
               ]) +
@@ -2886,7 +2912,7 @@
         const p = data.provider || {};
         formDialog(
           "Model provider",
-          "This selection syncs as a secret reference and API URL. Restart running pi sessions after saving.",
+          "This selection syncs as a secret reference and API URL. New containers start on the default model. Restart running pi sessions after saving.",
           field(
             "secretId",
             "API key secret",
@@ -2906,7 +2932,8 @@
               type: "url",
               required: true,
               full: true,
-            }),
+            }) +
+            `<label class="field full" for="f-defaultModel"><span>Default model</span><input name="defaultModel" id="f-defaultModel" type="text" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="modelList" autocomplete="off" placeholder="First model the provider lists" value="${esc(p.defaultModel || "")}"><ul id="modelList" class="suggestions" role="listbox" hidden></ul><small id="modelHint">Leave empty to use the first model the provider lists.</small></label>`,
           "Save provider",
           async (f) => {
             const out = await api("pi-provider", "PUT", f);
@@ -2916,6 +2943,90 @@
               : out.warning || "Saved. Waiting for the secret on this gateway.";
           },
         );
+        wireModelAutocomplete(p);
+      }
+
+      // Suggest model ids from the provider's live catalog. The gateway holds
+      // the key, so this only returns names. A catalog that cannot be loaded
+      // leaves the field as plain text.
+      function wireModelAutocomplete(provider) {
+        const input = $("#f-defaultModel");
+        const listbox = $("#modelList");
+        const hint = $("#modelHint");
+        if (!input || !listbox) return;
+        let models = [];
+        let active = -1;
+        const saved = (provider.baseUrl || "") + "\u0000" + (provider.secretId || "");
+        const current = () =>
+          ($("#f-baseUrl")?.value || "") +
+          "\u0000" +
+          ($("#f-secretId")?.value || "");
+        const show = (items) => {
+          active = -1;
+          listbox.innerHTML = items
+            .map(
+              (id, i) =>
+                `<li role="option" id="modelOpt${i}" data-model="${esc(id)}">${esc(id)}</li>`,
+            )
+            .join("");
+          const open = items.length > 0;
+          listbox.hidden = !open;
+          input.setAttribute("aria-expanded", String(open));
+          input.removeAttribute("aria-activedescendant");
+        };
+        const move = (by) => {
+          const options = [...listbox.querySelectorAll("li")];
+          if (!options.length) return;
+          active = (active + by + options.length) % options.length;
+          options.forEach((o, i) => o.classList.toggle("active", i === active));
+          input.setAttribute("aria-activedescendant", "modelOpt" + active);
+          options[active].scrollIntoView({ block: "nearest" });
+        };
+        input.addEventListener("input", () => {
+          const q = input.value.trim().toLowerCase();
+          show(models.filter((id) => id.toLowerCase().includes(q)).slice(0, 8));
+        });
+        input.addEventListener("keydown", (e) => {
+          if (listbox.hidden) return;
+          if (e.key === "ArrowDown") {
+            e.preventDefault();
+            move(1);
+          } else if (e.key === "ArrowUp") {
+            e.preventDefault();
+            move(-1);
+          } else if (e.key === "Enter" && active >= 0) {
+            e.preventDefault();
+            input.value = listbox.children[active].dataset.model;
+            show([]);
+          } else if (e.key === "Escape") {
+            show([]);
+          }
+        });
+        input.addEventListener("blur", () => setTimeout(() => show([]), 150));
+        listbox.addEventListener("mousedown", (e) => {
+          const option = e.target.closest("li");
+          if (!option) return;
+          e.preventDefault();
+          input.value = option.dataset.model;
+          show([]);
+        });
+        if (!provider.baseUrl || current() !== saved) {
+          hint.textContent = provider.baseUrl
+            ? "Save the provider, then reopen to choose from its model list."
+            : "Save the provider first to load its model list.";
+          return;
+        }
+        api("pi-provider/models")
+          .then((catalog) => {
+            models = Array.isArray(catalog?.models) ? catalog.models : [];
+            hint.textContent = models.length
+              ? models.length + " models available. Leave empty for the first one."
+              : "The provider returned no models.";
+          })
+          .catch(() => {
+            hint.textContent =
+              "Model list unavailable. You can still type a model id.";
+          });
       }
       function addPolicy(kind) {
         let fields = "",

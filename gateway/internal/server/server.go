@@ -152,6 +152,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	// secrets (summaries only — real values never leave via GET)
 	mux.HandleFunc("GET /api/v1/pi-provider", s.handleGetPiProvider)
 	mux.HandleFunc("PUT /api/v1/pi-provider", s.handlePutPiProvider)
+	mux.HandleFunc("GET /api/v1/pi-provider/models", s.handleGetPiProviderModels)
 
 	mux.HandleFunc("GET /api/v1/secrets", func(w http.ResponseWriter, r *http.Request) {
 		recs := s.Store.Secrets()

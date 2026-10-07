@@ -1,8 +1,11 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -10,10 +13,10 @@ import (
 	"strings"
 	"time"
 
-	"piso/internal/piprofile"
 	"piso/gateway/internal/model"
 	"piso/gateway/internal/store"
 	"piso/gateway/internal/technocore"
+	"piso/internal/piprofile"
 )
 
 // piProfileDir is the worker-mounted profile. PISO_PI_PROFILE overrides it
@@ -33,12 +36,13 @@ func (s *Server) piProfileDir() string {
 }
 
 type piProviderView struct {
-	SecretID    string `json:"secretId,omitempty"`
-	BaseURL     string `json:"baseUrl,omitempty"`
-	Placeholder string `json:"placeholder,omitempty"`
-	Applied     bool   `json:"applied"`
-	Warning     string `json:"warning,omitempty"`
-	UpdatedAt   string `json:"updatedAt,omitempty"`
+	SecretID     string `json:"secretId,omitempty"`
+	BaseURL      string `json:"baseUrl,omitempty"`
+	Placeholder  string `json:"placeholder,omitempty"`
+	DefaultModel string `json:"defaultModel"`
+	Applied      bool   `json:"applied"`
+	Warning      string `json:"warning,omitempty"`
+	UpdatedAt    string `json:"updatedAt,omitempty"`
 }
 
 func (s *Server) handleGetPiProvider(w http.ResponseWriter, r *http.Request) {
@@ -47,8 +51,9 @@ func (s *Server) handleGetPiProvider(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handlePutPiProvider(w http.ResponseWriter, r *http.Request) {
 	var in struct {
-		SecretID string `json:"secretId"`
-		BaseURL  string `json:"baseUrl"`
+		SecretID     string `json:"secretId"`
+		BaseURL      string `json:"baseUrl"`
+		DefaultModel string `json:"defaultModel"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		writeJSON(w, 400, map[string]string{"error": "bad json"})
@@ -56,6 +61,7 @@ func (s *Server) handlePutPiProvider(w http.ResponseWriter, r *http.Request) {
 	}
 	secretID := strings.TrimSpace(in.SecretID)
 	baseURL := strings.TrimSpace(in.BaseURL)
+	defaultModel := strings.TrimSpace(in.DefaultModel)
 	if secretID == "" && baseURL == "" {
 		if err := s.Store.SetPiProvider(nil); err != nil {
 			writeJSON(w, 500, map[string]string{"error": err.Error()})
@@ -77,10 +83,34 @@ func (s *Server) handlePutPiProvider(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, map[string]string{"error": "secret has no piso_ placeholder"})
 		return
 	}
+	// A default is only useful if the provider actually serves it. Verify
+	// against the live catalog so a typo can't shadow the first-available
+	// fallback inside workers.
+	if defaultModel != "" {
+		ids, err := s.providerModelIDs(r.Context(), rec.Value, baseURL)
+		if err != nil {
+			writeJSON(w, 502, map[string]string{"error": "could not verify the default model with the provider"})
+			return
+		}
+		if !containsString(ids, defaultModel) {
+			current := ""
+			if p := s.Store.PiProvider(); p != nil {
+				current = p.DefaultModel
+			}
+			// Keeping an already-saved model is allowed: the provider may be
+			// briefly unreachable or mid-rename, and blocking the save would
+			// also make the stale value impossible to clear.
+			if defaultModel != current {
+				writeJSON(w, 400, map[string]string{"error": "default model is not in the provider catalog"})
+				return
+			}
+		}
+	}
 	pointer := &store.PiProviderRec{
-		SecretID:  resourceIDFor(rec, secretID),
-		BaseURL:   baseURL,
-		UpdatedAt: time.Now().UTC(),
+		SecretID:     resourceIDFor(rec, secretID),
+		BaseURL:      baseURL,
+		DefaultModel: defaultModel,
+		UpdatedAt:    time.Now().UTC(),
 	}
 	if err := s.Store.SetPiProvider(pointer); err != nil {
 		writeJSON(w, 500, map[string]string{"error": err.Error()})
@@ -104,7 +134,7 @@ func (s *Server) piProviderView() piProviderView {
 	if p == nil {
 		return piProviderView{}
 	}
-	view := piProviderView{SecretID: p.SecretID, BaseURL: p.BaseURL}
+	view := piProviderView{SecretID: p.SecretID, BaseURL: p.BaseURL, DefaultModel: p.DefaultModel}
 	if !p.UpdatedAt.IsZero() {
 		view.UpdatedAt = p.UpdatedAt.UTC().Format(time.RFC3339)
 	}
@@ -112,8 +142,30 @@ func (s *Server) piProviderView() piProviderView {
 		view.Placeholder = rec.Placeholder
 	}
 	raw, err := os.ReadFile(filepath.Join(s.piProfileDir(), "models.json"))
-	if err == nil && strings.Contains(string(raw), view.Placeholder) && strings.Contains(string(raw), view.BaseURL) {
-		view.Applied = true
+	var models struct {
+		Providers map[string]struct {
+			APIKey  string `json:"apiKey"`
+			BaseURL string `json:"baseUrl"`
+		} `json:"providers"`
+	}
+	if err == nil && json.Unmarshal(raw, &models) == nil && view.Placeholder != "" {
+		provider := models.Providers[piprofile.ProviderName]
+		view.Applied = provider.APIKey == view.Placeholder && provider.BaseURL == view.BaseURL
+	}
+	raw, err = os.ReadFile(filepath.Join(s.piProfileDir(), "settings.json"))
+	var settings struct {
+		Provider string `json:"defaultProvider"`
+		Model    string `json:"defaultModel"`
+	}
+	settingsMatch := err == nil && json.Unmarshal(raw, &settings) == nil
+	if p.DefaultModel == "" {
+		settingsMatch = settingsMatch && settings.Provider == "" && settings.Model == ""
+	} else {
+		settingsMatch = settingsMatch && settings.Provider == piprofile.ProviderName && settings.Model == p.DefaultModel
+	}
+	view.Applied = view.Applied && settingsMatch
+	if !view.Applied {
+		view.Warning = "saved provider settings do not match the worker profile; save again to apply"
 	}
 	return view
 }
@@ -138,10 +190,102 @@ func (s *Server) applyPiProvider() piProviderView {
 		view.Warning = err.Error()
 		return view
 	}
+	if err := s.writePiDefaultModel(p.DefaultModel); err != nil {
+		view.Applied = false
+		view.Warning = err.Error()
+		return view
+	}
 	view.Placeholder = rec.Placeholder
 	view.Applied = true
 	view.Warning = ""
 	return view
+}
+
+// writePiDefaultModel sets the dashboard-owned defaultModel in the shared
+// profile's settings.json, preserving every other key. An empty model clears
+// it so workers fall back to first-available selection.
+func (s *Server) writePiDefaultModel(modelID string) error {
+	return piprofile.WriteDefaultModel(s.piProfileDir(), modelID)
+}
+
+// piProviderCatalog is the model list behind the dashboard's autocomplete.
+// The real key is used only for this host-only request and never returned.
+type piProviderCatalog struct {
+	Models []string `json:"models"`
+}
+
+func (s *Server) handleGetPiProviderModels(w http.ResponseWriter, r *http.Request) {
+	p := s.Store.PiProvider()
+	if p == nil || p.SecretID == "" || p.BaseURL == "" {
+		writeJSON(w, 409, map[string]string{"error": "configure the provider before listing models"})
+		return
+	}
+	rec, ok := s.secretForPiProvider(p.SecretID)
+	if !ok || rec.Value == "" {
+		writeJSON(w, 409, map[string]string{"error": "provider secret is not on this gateway yet"})
+		return
+	}
+	ids, err := s.providerModelIDs(r.Context(), rec.Value, p.BaseURL)
+	if err != nil {
+		writeJSON(w, 502, map[string]string{"error": "provider model catalog is unavailable"})
+		return
+	}
+	writeJSON(w, 200, piProviderCatalog{Models: ids})
+}
+
+// providerModelIDs calls <baseURL>/models with the real key. Only model IDs
+// come back; the response body is never logged or forwarded.
+func (s *Server) providerModelIDs(ctx context.Context, apiKey, baseURL string) ([]string, error) {
+	endpoint, err := url.JoinPath(strings.TrimRight(baseURL, "/"), "models")
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	resp, err := s.httpClient().Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("provider returned HTTP %d", resp.StatusCode)
+	}
+	var payload struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(payload.Data))
+	seen := map[string]bool{}
+	for _, m := range payload.Data {
+		id := strings.TrimSpace(m.ID)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		ids = append(ids, id)
+	}
+	return ids, nil
+}
+
+func containsString(values []string, want string) bool {
+	for _, v := range values {
+		if v == want {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) secretForPiProvider(id string) (store.SecretRec, bool) {

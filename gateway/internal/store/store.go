@@ -45,9 +45,12 @@ type State struct {
 // every gateway can resolve its own piso_ placeholder. BaseURL is written
 // into models.json as-is.
 type PiProviderRec struct {
-	SecretID  string    `json:"secretId,omitempty"`
-	BaseURL   string    `json:"baseUrl,omitempty"`
-	UpdatedAt time.Time `json:"updatedAt,omitempty"`
+	SecretID string `json:"secretId,omitempty"`
+	BaseURL  string `json:"baseUrl,omitempty"`
+	// DefaultModel is the model id new pi sessions start on. Empty means
+	// pi picks the first model the provider's catalog returns.
+	DefaultModel string    `json:"defaultModel,omitempty"`
+	UpdatedAt    time.Time `json:"updatedAt,omitempty"`
 }
 
 // JSON-friendly records (this package owns persistence shape).

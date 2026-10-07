@@ -12,9 +12,9 @@ import (
 	"strings"
 	"time"
 
-	"piso/internal/piprofile"
 	"piso/gateway/internal/model"
 	"piso/gateway/internal/store"
+	"piso/internal/piprofile"
 	tc "piso/internal/technocore"
 )
 
@@ -25,8 +25,9 @@ type piProviderDoc struct {
 	Name       string `json:"name"`
 	Kind       string `json:"kind"`
 	Metadata   struct {
-		SecretID string `json:"secretId"`
-		BaseURL  string `json:"baseUrl"`
+		SecretID     string  `json:"secretId"`
+		BaseURL      string  `json:"baseUrl"`
+		DefaultModel *string `json:"defaultModel"`
 	} `json:"metadata"`
 	UpdatedAt string `json:"updated_at"`
 }
@@ -66,10 +67,19 @@ func syncPiProvider(st *store.Store, dataDir string, id tc.Identity) error {
 	if local != nil && !remoteAt.IsZero() && !local.UpdatedAt.IsZero() && local.UpdatedAt.After(remoteAt) {
 		return publishPiProvider(st, id)
 	}
+	// A coordinator that predates defaultModel omits it. Absence is not an
+	// explicit clear, and must not erase a locally saved choice on every sync.
+	defaultModel := ""
+	if doc.Metadata.DefaultModel != nil {
+		defaultModel = *doc.Metadata.DefaultModel
+	} else if local != nil && local.SecretID == doc.Metadata.SecretID && local.BaseURL == doc.Metadata.BaseURL {
+		defaultModel = local.DefaultModel
+	}
 	if err := st.SetPiProvider(&store.PiProviderRec{
-		SecretID:  doc.Metadata.SecretID,
-		BaseURL:   doc.Metadata.BaseURL,
-		UpdatedAt: remoteAt,
+		SecretID:     doc.Metadata.SecretID,
+		BaseURL:      doc.Metadata.BaseURL,
+		DefaultModel: defaultModel,
+		UpdatedAt:    remoteAt,
 	}); err != nil {
 		return err
 	}
@@ -104,8 +114,9 @@ func publishPiProvider(st *store.Store, id tc.Identity) error {
 	body, _ := json.Marshal(map[string]any{
 		"name": piProviderName,
 		"metadata": map[string]string{
-			"secretId": p.SecretID,
-			"baseUrl":  p.BaseURL,
+			"secretId":     p.SecretID,
+			"baseUrl":      p.BaseURL,
+			"defaultModel": p.DefaultModel,
 		},
 	})
 	req, err := http.NewRequest(http.MethodPut, strings.TrimRight(id.ServerURL, "/")+"/api/v1/pi-provider", bytes.NewReader(body))
@@ -145,6 +156,10 @@ func applyProviderPointer(st *store.Store, dataDir string) {
 	dir := piProfileDir(dataDir)
 	if err := piprofile.WriteProviderModels(dir, rec.Placeholder, p.BaseURL); err != nil {
 		log.Printf("technocore: pi profile: write %s: %v", dir, err)
+		return
+	}
+	if err := piprofile.WriteDefaultModel(dir, p.DefaultModel); err != nil {
+		log.Printf("technocore: pi profile: default model: %v", err)
 		return
 	}
 	log.Printf("technocore: pi profile: wrote %s (placeholder %s)", filepath.Join(dir, "models.json"), rec.Placeholder)

@@ -22,10 +22,10 @@ import (
 
 	"piso/cli/internal/dockernet"
 	"piso/cli/internal/piprofile"
-	sharedprofile "piso/internal/piprofile"
 	"piso/cli/internal/pisoconfig"
 	"piso/cli/internal/pkgstamp"
 	"piso/cli/internal/workerhash"
+	sharedprofile "piso/internal/piprofile"
 	"piso/internal/technocore"
 )
 
@@ -386,6 +386,21 @@ func syncPiProfile() error {
 	// convention automatically (emit progress/milestone/etc.). Preserves the
 	// user's other settings; dedupes.
 	settings = piprofile.EnsureInformantPrompts(settings)
+	// The dashboard's default model is authoritative for new workers. The host
+	// agent's settings.json has none, so re-apply it after the copy above or the
+	// next `piso up` would drop it. If the gateway is down or too old to
+	// report the field, preserve the destination default, not the host copy.
+	if modelID, ok := dashboardDefaultModel(); ok {
+		settings = sharedprofile.WithDefaultModel(settings, modelID)
+	} else {
+		var saved struct {
+			Provider string `json:"defaultProvider"`
+			Model    string `json:"defaultModel"`
+		}
+		if json.Unmarshal(destSettings, &saved) == nil && saved.Provider == sharedprofile.ProviderName && saved.Model != "" {
+			settings = sharedprofile.WithDefaultModel(settings, saved.Model)
+		}
+	}
 	rawModels, modelsErr := os.ReadFile(piprofile.ModelsPath(agent))
 	destModels, _ := os.ReadFile(filepath.Join(dest, "models.json"))
 	// A dashboard-written profile already has the shared provider. Do not
@@ -433,6 +448,28 @@ type piKeyImportResult struct {
 	Placeholder string `json:"placeholder"`
 	EnvKey      string `json:"envKey"`
 	Host        string `json:"host"`
+}
+
+// dashboardDefaultModel reads the model the dashboard chose for new
+// workers. ok is false when the control plane can't be reached, so a sync
+// never clears a previously applied default just because the gateway is down.
+func dashboardDefaultModel() (string, bool) {
+	gw := pisoconfig.ControlAPIURL()
+	resp, err := (&http.Client{Timeout: 5 * time.Second}).Get(gw + "/api/v1/pi-provider")
+	if err != nil {
+		return "", false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return "", false
+	}
+	var view struct {
+		DefaultModel *string `json:"defaultModel"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&view); err != nil || view.DefaultModel == nil {
+		return "", false
+	}
+	return strings.TrimSpace(*view.DefaultModel), true
 }
 
 func importPiKeys(keys []piprofile.ProviderKey) ([]piKeyImportResult, error) {
