@@ -51,28 +51,6 @@ test("three-hour cutoff excludes older, future and invalid timestamps; respects 
   assert.equal(blocks.length, 2);
   assert.equal(blocks[1].start, 29900000);
 });
-test("newest callout stays at the leading edge and pushes older panels left without gaps", () => {
-  const run = harness();
-  const layout = run(
-    `layoutTimelineCallouts([{ts:1000},{ts:999},{ts:998}], t=>t, 260)`,
-  );
-  assert.deepEqual(
-    layout.map((p) => p.left),
-    [740, 480, 220],
-  );
-});
-test("callouts expire at 60 seconds and never include heartbeat or future events", () => {
-  const run = harness();
-  assert.deepEqual(
-    run(`recentTimelineEvents([
-    {id:'expired',ts:40000,kind:'note'},
-    {id:'fresh',ts:40001,kind:'note'},
-    {id:'beat',ts:100000,kind:'active'},
-    {id:'future',ts:100001,kind:'note'}
-  ],100000).map(e=>e.id)`),
-    ["fresh"],
-  );
-});
 test("returns to now at 30 seconds but not during a pointer drag", () => {
   const run = harness();
   assert.equal(
@@ -129,6 +107,8 @@ test("scrolling to the right edge immediately pins to now and keeps following", 
     let testNow = 60000;
     timelineInteract = () => { timeline.following = false; timeline.lastInteraction = testNow; };
     hideTimelineTip = () => { timeline.tipKey = null; };
+    updateTimelineRows = () => {};
+    scheduleTimelinePanels = () => {};
     updateTimeline = () => {
       timelineFollow(testNow);
       if (timeline.following) scroller.scrollLeft = scroller.scrollWidth - scroller.clientWidth;
@@ -167,6 +147,15 @@ test("scrolling to the right edge immediately pins to now and keeps following", 
   handlers.scroll();
   assert.equal(vm.runInContext("timeline.following", context), false);
 });
+test("row visibility intersects the visible window, including spanning activity", () => {
+  const run = harness();
+  assert.equal(run("timelineRangeVisible(90, 20, 100, 200)"), true);
+  assert.equal(run("timelineRangeVisible(0, 300, 100, 200)"), true);
+  assert.equal(run("timelineRangeVisible(192, 8, 100, 200)"), true);
+  assert.equal(run("timelineRangeVisible(200, 8, 100, 200)"), false);
+  assert.equal(run("timelineRangeVisible(92, 8, 100, 200)"), false);
+  assert.equal(run("timelineRangeVisible(150, 0, 100, 200)"), false);
+});
 test("timeline offsets apply to absolutely positioned blocks and panels", () => {
   const css = html.match(/<style>([\s\S]*?)<\/style>/)[1];
   for (const selector of [
@@ -181,21 +170,17 @@ test("timeline offsets apply to absolutely positioned blocks and panels", () => 
   }
   assert.match(css, /\.timeline-track\s*\{[^}]*position:\s*relative\s*;/);
 });
-test("fixed lanes leave the top 20% exposed and callouts stay passive", () => {
-  assert.match(html, /\.timeline-row\s*\{[^}]*height:\s*100px/);
-  assert.match(
-    html,
-    /\.timeline-callout\s*\{[^}]*bottom:\s*0;[^}]*height:\s*80%;[^}]*z-index:\s*2;/,
-  );
-  assert.match(
-    html,
-    /\.timeline-tip\s*\{[^}]*position:\s*fixed;[^}]*z-index:\s*20;/,
-  );
-  assert.doesNotMatch(html, /Activity & context|Signal strips/);
-  assert.doesNotMatch(
-    html,
-    /class="[^"]*timeline-callout[^"]*"[^>]*data-timeline-key/,
-  );
+test("detail rows use content height and passive panels with group-level leads", () => {
+  const css = html.match(/<style>([\s\S]*?)<\/style>/)[1];
+  assert.match(css, /\.timeline-row\s*\{[^}]*min-height:\s*64px/);
+  assert.match(css, /\.timeline-detail-lane\s*\{[^}]*position:\s*relative/);
+  const panel = css.match(/\.timeline-callout\s*\{([^}]*)\}/)[1];
+  assert.match(panel, /top:\s*6px/);
+  assert.match(panel, /pointer-events:\s*none/);
+  assert.doesNotMatch(panel, /(?:^|;)\s*(?:height|bottom):/);
+  assert.match(css, /\.timeline-leads\s*\{[^}]*position:\s*absolute[^}]*z-index:\s*3[^}]*pointer-events:\s*none/);
+  assert.match(css, /prefers-reduced-motion:\s*no-preference/);
+  assert.doesNotMatch(html, /timeline-panel-traces|timelineTracePath|layoutTimelineCallouts/);
 });
 test("block layout keeps events visible and lets later events overdraw", () => {
   const run = harness();

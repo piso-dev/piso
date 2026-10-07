@@ -441,7 +441,50 @@
         height: 32px;
       }
       .timeline-row {
-        height: 100px;
+        min-height: 64px;
+      }
+      /* A project is a group: the time row, an optional detail row that
+         grows to fit recent update panels, and one leads SVG over both. */
+      .timeline-group {
+        position: relative;
+        border-bottom: 1px solid var(--line);
+      }
+      .timeline-group .timeline-label {
+        border-bottom: 0;
+        padding: 8px 12px;
+      }
+      .timeline-group .timeline-label p {
+        margin: 2px 0 5px;
+      }
+      .timeline-group.collapsed .timeline-track,
+      .timeline-group.collapsed .timeline-detail,
+      .timeline-group.collapsed .timeline-leads {
+        display: none;
+      }
+      .timeline-group.collapsed .timeline-label {
+        padding: 7px 12px;
+      }
+      .timeline-group.collapsed .timeline-label p,
+      .timeline-group.collapsed .timeline-label .status {
+        display: none;
+      }
+      .timeline-detail {
+        display: grid;
+        grid-template-columns: var(--timeline-label) minmax(0, 1fr);
+      }
+      .timeline-detail .timeline-label {
+        display: flex;
+        align-items: center;
+        padding: 6px 12px;
+        color: var(--muted);
+        font-size: 11px;
+      }
+      .timeline-detail-lane {
+        position: relative;
+        min-width: 0;
+        min-height: 12px;
+        overflow: hidden;
+        background: color-mix(in srgb, var(--inset) 60%, transparent);
       }
       .timeline-label {
         position: sticky;
@@ -502,66 +545,57 @@
         padding-left: 8px;
       }
       .timeline-track {
-        height: 100px;
+        min-height: 64px;
         background-image: linear-gradient(
           to right,
           var(--line) 1px,
           transparent 1px
         );
         background-size: var(--timeline-hour) 100%;
-        box-shadow: inset 0 -1px var(--line);
       }
       .timeline-block {
         position: absolute;
-        top: 0;
-        height: 100%;
+        top: 10%;
+        bottom: 10%;
+        border-radius: 2px;
         padding: 0;
         z-index: 1;
-        background: color-mix(in srgb, var(--event-color) 25%, var(--inset));
+        background: color-mix(in srgb, var(--event-color) 55%, var(--inset));
       }
-      .timeline-block:hover,
+      .timeline-block:hover:not(:disabled),
       .timeline-block:focus-visible {
-        background: color-mix(in srgb, var(--event-color) 50%, var(--inset));
+        background: color-mix(in srgb, var(--event-color) 75%, var(--inset));
       }
       .timeline-callout {
         position: absolute;
-        bottom: 0;
-        height: 80%;
-        z-index: 2;
-        display: flex;
-        flex-direction: column;
+        top: 6px;
+        z-index: 1;
+        width: max-content;
+        min-width: 160px;
+        max-width: 240px;
+        padding: 6px 10px 7px;
+        border: 1px solid color-mix(in srgb, var(--event-color) 70%, var(--line));
         border-radius: 3px;
-        overflow: hidden;
         background: var(--panel);
+        box-shadow: 0 6px 16px #0006;
         text-align: left;
         font-weight: 400;
-        cursor: default;
-      }
-      .timeline-panel-traces {
-        flex: 0 0 16px;
-        position: relative;
-        border-bottom: 1px solid var(--line);
-      }
-      .timeline-panel-traces svg {
-        position: absolute;
-        inset: 0;
-        width: 100%;
-        height: 100%;
-      }
-      .timeline-trace {
-        position: absolute;
-        left: 0;
-        top: 0;
-        height: 1px;
-        transform-origin: 0 50%;
-        background: var(--event-color);
-        opacity: 0.9;
-      }
-      .timeline-panel-body {
-        flex: 1 1 auto;
-        min-height: 0;
-        padding: 7px 10px;
+        pointer-events: none;
         overflow: hidden;
+      }
+      .timeline-leads {
+        position: absolute;
+        top: 0;
+        left: var(--timeline-label);
+        z-index: 3;
+        pointer-events: none;
+      }
+      .timeline-leads path {
+        fill: none;
+        stroke: var(--event-color);
+        stroke-width: 1.5;
+        stroke-linejoin: round;
+        stroke-linecap: butt;
       }
       .timeline-callout-meta {
         display: flex;
@@ -579,36 +613,21 @@
       .timeline-callout-text {
         display: -webkit-box;
         -webkit-box-orient: vertical;
-        -webkit-line-clamp: 3;
-        line-clamp: 3;
+        -webkit-line-clamp: 4;
+        line-clamp: 4;
         overflow: hidden;
         overflow-wrap: anywhere;
         font-size: 12px;
         line-height: 15px;
         margin-top: 3px;
       }
-      .timeline-callout[hidden],
       .timeline-block[hidden] {
         display: none;
       }
       @media (prefers-reduced-motion: no-preference) {
         .timeline-callout {
-          transition: left 0.4s ease;
+          transition: left 0.4s ease-out;
         }
-      }
-      .timeline-leads {
-        position: absolute;
-        inset: 0;
-        width: 100%;
-        height: 100%;
-        pointer-events: none;
-        z-index: 3;
-      }
-      .timeline-leads path {
-        stroke: var(--blue);
-        stroke-width: 0.75;
-        fill: none;
-        opacity: 0.85;
       }
       .timeline-live-line {
         position: absolute;
@@ -660,21 +679,25 @@
         border-radius: 1px;
         background: var(--event-color, var(--blue));
       }
+      .timeline-scroll,
+      .timeline-legend {
+        --event-color: #489dff;
+      }
       .timeline-scroll .milestone,
       .timeline-legend .milestone {
-        --event-color: var(--green);
+        --event-color: #35db8c;
       }
       .timeline-scroll :is(.poke, .waiting, .host),
       .timeline-legend .waiting {
-        --event-color: var(--amber);
+        --event-color: #ffb638;
       }
       .timeline-scroll :is(.note, .reminder),
       .timeline-legend .note {
-        --event-color: #b6a8d9;
+        --event-color: #b58aff;
       }
       .timeline-scroll :is(.active, .idle),
       .timeline-legend .active {
-        --event-color: #697788;
+        --event-color: #5798bc;
       }
       @media (max-width: 720px) {
         .timeline-scroll {
@@ -1653,12 +1676,20 @@
         groups: new Map(),
         items: new Map(),
         tipKey: null,
+        panels: new Map(), // run key -> panel element, kept across re-renders
+        panelX: new Map(), // run key -> frozen lane x (old board's bDetailX)
+        leadsUntil: 0,
       };
+      // Update panels follow the previous board: one per merged run of these
+      // kinds, shown for 60s after the run's newest event, fading in the last
+      // 15s. They sit in a detail row under the blocks that grows to fit them.
+      const TL_CALL_MS = 60000,
+        TL_CALL_SLIDE_MS = 400,
+        TL_CALL_GAP = 6,
+        TL_CALL_KINDS = new Set(["progress", "milestone", "note", "poke", "waiting"]);
       const semantic = (e) => !["active", "idle"].includes(e.kind);
       const eventKey = (e) =>
         e.id || `${e.slug || e.worker}:${e.kind}:${e.ts}:${e.text}`;
-      const recentTimelineEvents = (events, now) =>
-        events.filter((e) => semantic(e) && e.ts <= now && now - e.ts < 60000);
       function mergeTimelineEvents(events, now) {
         const blocks = [];
         [...events]
@@ -1798,8 +1829,10 @@
       function mountTimeline() {
         hideTimelineTip();
         timeline.signature = "";
+        timeline.panels.clear();
+        timeline.panelX.clear();
         replaceContent(
-          `<div class="timeline-controls"><p>15 minutes visible · 3 hours of history</p><div><span id="timelineMode">Live</span><button type="button" id="timelineNow" class="quiet small">Now</button></div></div><div class="timeline-scroll" id="timelineScroll" tabindex="0" role="region" aria-label="Project timeline. Scroll horizontally for history; returns to now after 30 seconds without interaction."><div class="timeline-grid" id="timelineGrid"><div class="timeline-ruler"><div class="timeline-label">Project</div><div class="timeline-axis" id="timelineAxis"></div></div><div id="timelineRows"></div></div></div><div class="timeline-legend"><span class="progress">Progress</span><span class="milestone">Milestone</span><span class="waiting">Needs attention</span><span class="note">Note / reminder</span><span class="active">Activity</span></div>`,
+          `<div class="timeline-controls"><p>15 minutes visible · 3 hours of history</p><div><span id="timelineMode">Live</span><button type="button" id="timelineNow" class="quiet small">Now</button></div></div><div class="timeline-scroll" id="timelineScroll" tabindex="0" role="region" aria-label="Project timeline. Scroll horizontally for history; returns to now after 30 seconds without interaction."><div class="timeline-grid" id="timelineGrid"><div class="timeline-ruler"><div class="timeline-label">Project</div><div class="timeline-axis" id="timelineAxis"></div></div><div id="timelineRows"></div></div></div><p id="timelineEmpty" hidden>No activity in this time window.</p><div class="timeline-legend"><span class="progress">Progress</span><span class="milestone">Milestone</span><span class="waiting">Needs attention</span><span class="note">Note / reminder</span><span class="active">Activity</span></div>`,
         );
         const scroller = $("#timelineScroll");
         $("#timelineNow").onclick = () => {
@@ -1840,6 +1873,8 @@
             }
             timeline.expectedScroll = scroller.scrollLeft;
             if (!timeline.following) pinTimelineNow(scroller);
+            updateTimelineRows();
+            scheduleTimelinePanels();
           },
           { passive: true },
         );
@@ -1929,18 +1964,10 @@
           const focusKey = document.activeElement?.dataset.timelineKey,
             tipKey = timeline.tipKey;
           timeline.signature = signature;
-          const previousPanels = new Map(
-            [...document.querySelectorAll(".timeline-callout")].map((el) => [
-              el.dataset.calloutKey,
-              el,
-            ]),
-          );
           timeline.items.clear();
           timeline.groups.clear();
           const itemButton = (key, item, css, content = "") => {
             timeline.items.set(key, item);
-            if (css === "timeline-callout")
-              return `<div class="${css} ${timelineKind(item.kind)}" data-callout-key="${esc(key)}">${content}</div>`;
             return `<button type="button" class="${css} ${timelineKind(item.kind)}" data-timeline-key="${esc(key)}" aria-label="${esc(item.kind === "active" ? `${item.slug}: ${timelineDuration(item)}` : `${item.slug}: ${item.kind}, ${item.events.length} event${item.events.length === 1 ? "" : "s"}. ${item.events.at(-1).text || ""}`)}">${content}</button>`;
           };
           $("#timelineRows").innerHTML = projects
@@ -1948,15 +1975,10 @@
               const w = p.workers[0] || {},
                 context = w.context || {};
               const blocks = mergeTimelineEvents(p.events, now);
-              const recent = recentTimelineEvents(p.events, now);
-              timeline.groups.set(p.slug, { blocks, recent });
-              return `<div class="timeline-row"><div class="timeline-label"><h2 title="${esc(p.slug)}">${esc(p.slug)}</h2><p title="${esc(context.branch || w.name || "")}">${esc(context.branch || w.name || "")}</p>${p.waiting ? badge("Needs attention", "warn") : p.events.some((e) => e.kind === "active" && now - e.ts < 600000) ? badge("Active", "good") : badge("No recent heartbeat")}</div><div class="timeline-track" data-slug="${esc(p.slug)}">${blocks.map((b) => itemButton(`block:${p.slug}:${b.key}`, { ...b, slug: p.slug }, `timeline-block${semantic(b) ? "" : " heartbeat"}`)).join("")}${recent.map((e) => `<div class="timeline-callout ${timelineKind(e.kind)}" data-callout-key="callout:${esc(p.slug)}:${esc(eventKey(e))}" style="--event-color:${timelineKind(e.kind)}"><div class="timeline-panel-traces" aria-hidden="true"></div><div class="timeline-panel-body"><span class="timeline-callout-meta">${esc(e.kind)} <time>${esc(time(e.ts))}</time></span><span class="timeline-callout-text">${esc(e.text)}</span></div></div>`).join("")}<svg class="timeline-leads" aria-hidden="true"></svg><span class="timeline-live-line" aria-hidden="true"></span></div></div>`;
+              timeline.groups.set(p.slug, { blocks });
+              return `<div class="timeline-group" data-slug="${esc(p.slug)}"><div class="timeline-row"><div class="timeline-label"><h2 title="${esc(p.slug)}">${esc(p.slug)}</h2><p title="${esc(context.branch || w.name || "")}">${esc(context.branch || w.name || "")}</p>${p.waiting ? badge("Needs attention", "warn") : p.events.some((e) => e.kind === "active" && now - e.ts < 600000) ? badge("Active", "good") : badge("No recent heartbeat")}</div><div class="timeline-track" data-slug="${esc(p.slug)}">${blocks.map((b) => itemButton(`block:${p.slug}:${b.key}`, { ...b, slug: p.slug }, `timeline-block${semantic(b) ? "" : " heartbeat"}`)).join("")}<span class="timeline-live-line" aria-hidden="true"></span></div></div><div class="timeline-detail" hidden><div class="timeline-label"></div><div class="timeline-detail-lane"></div></div><svg class="timeline-leads" aria-hidden="true"></svg></div>`;
             })
             .join("");
-          for (const fresh of document.querySelectorAll(".timeline-callout")) {
-            const previous = previousPanels.get(fresh.dataset.calloutKey);
-            if (previous && !previous.isConnected) fresh.replaceWith(previous);
-          }
           updateTimeline();
           const buttons = [...document.querySelectorAll("[data-timeline-key]")];
           if (focusKey)
@@ -1972,38 +1994,236 @@
           }
         } else updateTimeline();
       }
-      function layoutTimelineCallouts(events, x, width, gap = 0) {
-        let right = Infinity;
-        return events.map((e) => {
-          const left = Math.min(x(e.ts) - width, right - gap - width);
-          right = left;
-          return { event: e, left };
-        });
+      // Port of the previous board's bPlaceDetails. Each eligible merged run
+      // whose block is on screen gets one panel in the group's detail row.
+      // A panel is first centred under its block, then its x is frozen; a
+      // newer panel shoves older ones left. The row grows to the tallest
+      // panel, and disappears when none are left.
+      function layoutTimelinePanels(now = Date.now()) {
+        const scroller = $("#timelineScroll");
+        if (!scroller) return;
+        const labelWidth = parseFloat(
+          getComputedStyle(scroller).getPropertyValue("--timeline-label"),
+        );
+        const from = scroller.scrollLeft;
+        const to = from + Math.max(100, scroller.clientWidth - labelWidth) - 8;
+        const seen = new Set();
+        let moved = false;
+        for (const group of document.querySelectorAll(".timeline-group")) {
+          const track = group.querySelector(".timeline-track");
+          const detail = group.querySelector(".timeline-detail");
+          const lane = group.querySelector(".timeline-detail-lane");
+          if (!track || !detail || !lane) continue;
+          const runs = group.classList.contains("collapsed")
+            ? []
+            : [...track.querySelectorAll(".timeline-block")]
+                .map((block) => {
+                  const item = timeline.items.get(block.dataset.timelineKey);
+                  if (!item || block.hidden || !TL_CALL_KINDS.has(item.kind))
+                    return null;
+                  const newest = item.events.at(-1);
+                  const age = now - Number(newest.ts);
+                  const left = parseFloat(block.style.left),
+                    width = parseFloat(block.style.width);
+                  if (!(age >= 0 && age < TL_CALL_MS)) return null;
+                  if (!timelineRangeVisible(left, width, from, to)) return null;
+                  return { key: block.dataset.timelineKey, item, newest, age, ax: left + width / 2 };
+                })
+                .filter(Boolean);
+          detail.hidden = runs.length === 0;
+          if (!runs.length) {
+            lane.replaceChildren();
+            continue;
+          }
+          detail.querySelector(".timeline-label").textContent =
+            runs.length === 1 ? "new" : `${runs.length} new`;
+          const laneWidth = lane.clientWidth;
+          const items = runs.map((run) => {
+            let panel = timeline.panels.get(run.key);
+            const fresh = !panel;
+            if (fresh) {
+              panel = document.createElement("div");
+              panel.dataset.runKey = run.key;
+              timeline.panels.set(run.key, panel);
+            }
+            const kind = timelineKind(run.item.kind);
+            const n = run.item.events.length;
+            panel.className = `timeline-callout ${kind}`;
+            const text = String(run.newest.text || "").slice(0, 240);
+            const html = `<span class="timeline-callout-meta">${esc(run.item.kind)}${n > 1 ? ` · ${n}` : ""} <time>${esc(time(run.newest.ts))}</time></span>${text ? `<span class="timeline-callout-text">${esc(text)}</span>` : ""}`;
+            if (panel.dataset.html !== html) {
+              panel.innerHTML = html;
+              panel.dataset.html = html;
+            }
+            const fade =
+              run.age < TL_CALL_MS - 15000
+                ? 1
+                : Math.max(0.2, (TL_CALL_MS - run.age) / 15000);
+            panel.style.opacity = String(fade);
+            const attached = panel.parentNode === lane;
+            if (!attached) lane.append(panel);
+            const w = Math.max(panel.offsetWidth, 80),
+              h = panel.offsetHeight;
+            const pref = Math.max(
+              2,
+              Math.min(run.ax - w / 2, Math.max(2, laneWidth - w - 2)),
+            );
+            const start = timeline.panelX.has(run.key)
+              ? timeline.panelX.get(run.key)
+              : pref;
+            return { ...run, panel, kind, fade, w, h, x: start, jump: fresh || !attached };
+          });
+          // Newest first: older panels yield and slide left.
+          items.sort((a, b) => a.age - b.age || a.ax - b.ax);
+          for (let i = 1; i < items.length; i++) {
+            const it = items[i];
+            for (let j = 0; j < i; j++) {
+              const p = items[j];
+              if (it.x < p.x + p.w + TL_CALL_GAP && p.x < it.x + it.w + TL_CALL_GAP)
+                it.x = Math.min(it.x, p.x - it.w - TL_CALL_GAP);
+            }
+          }
+          let maxB = 12;
+          for (const it of items) {
+            seen.add(it.key);
+            timeline.panelX.set(it.key, it.x);
+            const left = `${it.x.toFixed(1)}px`;
+            if (it.jump) {
+              it.panel.style.transition = "none";
+              it.panel.style.left = left;
+              it.panel.offsetWidth; // commit before re-enabling the slide
+              it.panel.style.transition = "";
+            } else if (it.panel.style.left !== left) {
+              it.panel.style.left = left;
+              moved = true;
+            }
+            maxB = Math.max(maxB, 6 + it.h + 8);
+          }
+          lane.style.minHeight = `${maxB}px`;
+          for (const panel of [...lane.children])
+            if (!seen.has(panel.dataset.runKey)) panel.remove();
+        }
+        for (const [key, panel] of timeline.panels)
+          if (!seen.has(key)) {
+            panel.remove();
+            timeline.panels.delete(key);
+            timeline.panelX.delete(key);
+          }
+        drawTimelineLeads();
+        if (moved) animateTimelineLeads();
       }
-      function drawTraces() {
-        for (const svg of document.querySelectorAll(".timeline-leads")) {
-          const track = svg.closest(".timeline-track");
-          if (!track || svg.clientWidth === 0) continue;
-          const box = track.getBoundingClientRect();
+      // One SVG per project group, sibling of both rows, so panels cannot
+      // clip it. Same elbow as the old tl-leads: block bottom-centre, down a
+      // short stub, across, then down to the panel's top-centre.
+      function drawTimelineLeads() {
+        const NS = "http://www.w3.org/2000/svg";
+        for (const group of document.querySelectorAll(".timeline-group")) {
+          const svg = group.querySelector(".timeline-leads");
+          const track = group.querySelector(".timeline-track");
+          if (!svg || !track) continue;
+          const panels = [
+            ...group.querySelectorAll(".timeline-detail-lane .timeline-callout"),
+          ];
+          if (!panels.length || group.classList.contains("collapsed")) {
+            svg.replaceChildren();
+            continue;
+          }
+          svg.setAttribute("width", String(track.offsetWidth));
+          svg.setAttribute("height", String(group.offsetHeight));
+          const o = svg.getBoundingClientRect();
           const blocks = new Map(
             [...track.querySelectorAll(".timeline-block")].map((b) => [
               b.dataset.timelineKey,
               b,
             ]),
           );
-          let d = "";
-          for (const panel of track.querySelectorAll(".timeline-callout")) {
-            if (panel.hidden) continue;
-            const block = blocks.get(
-              "block:" + panel.dataset.calloutKey.slice("callout:".length),
-            );
-            if (!block) continue;
+          const paths = [];
+          for (const panel of panels) {
+            const block = blocks.get(panel.dataset.runKey);
+            if (!block || block.hidden) continue;
             const b = block.getBoundingClientRect(),
               q = panel.getBoundingClientRect();
-            d += `M${b.right - box.left},${b.top + b.height * 0.1 - box.top} L${q.left - box.left},${q.top + 8 - box.top} `;
+            const bx = b.left + b.width / 2 - o.left,
+              by = b.bottom - o.top,
+              cx = q.left + q.width / 2 - o.left,
+              cy = q.top - o.top;
+            const stub = 8;
+            let yH = by + stub;
+            if (yH > cy - stub) yH = (by + cy) / 2;
+            const n = (v) => v.toFixed(1);
+            const path = document.createElementNS(NS, "path");
+            path.setAttribute("class", panel.classList[1] || "progress");
+            path.setAttribute(
+              "d",
+              `M ${n(bx)} ${n(by)} L ${n(bx)} ${n(yH)} L ${n(cx)} ${n(yH)} L ${n(cx)} ${n(cy)}`,
+            );
+            path.setAttribute(
+              "opacity",
+              String(0.75 * (parseFloat(panel.style.opacity) || 1)),
+            );
+            paths.push(path);
           }
-          svg.innerHTML = d ? `<path d="${d}" />` : "";
+          svg.replaceChildren(...paths);
         }
+      }
+      // Keep leads attached while panels slide instead of snapping to the
+      // destination before the panel gets there.
+      function animateTimelineLeads() {
+        const running = timeline.leadsUntil > performance.now();
+        timeline.leadsUntil = performance.now() + TL_CALL_SLIDE_MS + 80;
+        if (running) return;
+        const step = () => {
+          drawTimelineLeads();
+          if (performance.now() < timeline.leadsUntil)
+            requestAnimationFrame(step);
+        };
+        requestAnimationFrame(step);
+      }
+      function scheduleTimelinePanels() {
+        if (timeline.panelFrame) return;
+        timeline.panelFrame = requestAnimationFrame(() => {
+          timeline.panelFrame = 0;
+          layoutTimelinePanels();
+        });
+      }
+      function timelineRangeVisible(left, width, from, to) {
+        return width > 0 && left < to && left + width > from;
+      }
+      function updateTimelineRows() {
+        const scroller = $("#timelineScroll");
+        if (!scroller) return;
+        const labelWidth = parseFloat(
+          getComputedStyle(scroller).getPropertyValue("--timeline-label"),
+        );
+        // Sticky labels obscure the leftmost labelWidth pixels. Track-local
+        // coordinates therefore start at scrollLeft, not scrollLeft - labelWidth.
+        const from = scroller.scrollLeft;
+        const to = from + Math.max(100, scroller.clientWidth - labelWidth);
+        let visible = 0;
+        for (const track of document.querySelectorAll(".timeline-track")) {
+          const row = track.closest(".timeline-group");
+          const hasVisible = [...track.querySelectorAll(".timeline-block")].some(
+            (item) =>
+              !item.hidden &&
+              timelineRangeVisible(
+                parseFloat(item.style.left),
+                parseFloat(item.style.width),
+                from,
+                to,
+              ),
+          );
+          row.classList.toggle("collapsed", !hasVisible);
+          if (hasVisible) visible++;
+          else if (
+            timeline.tipKey &&
+            [...track.querySelectorAll("[data-timeline-key]")].some(
+              (item) => item.dataset.timelineKey === timeline.tipKey,
+            )
+          )
+            hideTimelineTip();
+        }
+        $("#timelineEmpty").hidden = visible > 0;
+        count(visible, "projects");
       }
       function updateTimeline() {
         const scroller = $("#timelineScroll");
@@ -2047,22 +2267,6 @@
                 item.end < now - TL_HISTORY || layout[i].width <= 0;
             },
           );
-          const callouts = recentTimelineEvents(group.recent, now);
-          const cardWidth = Math.min(260, Math.max(110, visibleWidth - 8));
-          const placements = new Map(
-            layoutTimelineCallouts(callouts, x, cardWidth).map((p) => [
-              `callout:${track.dataset.slug}:${eventKey(p.event)}`,
-              p,
-            ]),
-          );
-          for (const panel of track.querySelectorAll(".timeline-callout")) {
-            const placement = placements.get(panel.dataset.calloutKey);
-            panel.hidden = !placement;
-            if (placement) {
-              panel.style.left = `${placement.left}px`;
-              panel.style.width = `${cardWidth}px`;
-            }
-          }
         }
         $("#timelineMode").textContent = timeline.following
           ? "Live"
@@ -2074,6 +2278,8 @@
           );
           scroller.scrollLeft = timeline.expectedScroll;
         }
+        updateTimelineRows();
+        layoutTimelinePanels(now);
       }
       window.addEventListener("pointerup", () => {
         if (timeline.pointerDown) {
@@ -2086,6 +2292,7 @@
       });
       window.addEventListener("resize", () => {
         hideTimelineTip();
+        timeline.panelX.clear();
         updateTimeline();
       });
       window.addEventListener("keydown", (e) => {
