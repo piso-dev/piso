@@ -411,8 +411,9 @@
         align-items: center;
         justify-content: flex-end;
         gap: 8px;
-        flex-shrink: 0;
+        flex-shrink: 1;
         flex-wrap: wrap;
+        max-width: 100%;
       }
       .timeline-controls,
       .timeline-controls > div {
@@ -828,6 +829,12 @@
       }
       .github-gate {
         text-align: center;
+        padding: 32px 24px;
+        border: 1px dashed var(--line);
+        border-radius: 6px;
+      }
+      .github-gate p {
+        margin: 8px auto 0;
       }
       .github-gate .intro-actions {
         justify-content: center;
@@ -886,7 +893,7 @@
         overflow-wrap: anywhere;
       }
       .record-body {
-        padding: 0 0 22px 0;
+        padding: 12px 16px 22px;
         max-width: 100%;
       }
       .record-body .actions {
@@ -1359,13 +1366,78 @@
           }
         }
       }
-      .github-mapping { margin: 24px 0; }
+      .github-mapping {
+        margin: 24px 0;
+        padding: 20px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        min-width: 0;
+      }
+      .github-mapping > .notice { margin-top: 16px; }
       .github-mapping h3 { margin-bottom: 12px; }
       .github-table-scroll { overflow-x: auto; margin-top: 16px; }
-      .github-routing-table { width: 100%; border-collapse: collapse; text-align: left; }
+      .github-routing-table { width: 100%; min-width: 920px; table-layout: fixed; border-collapse: collapse; text-align: left; }
       .github-routing-table th, .github-routing-table td { padding: 12px 10px; vertical-align: top; border-bottom: 1px solid var(--line); }
-      .github-routing-table td:last-child { min-width: 220px; }
-      .github-routing-table button { margin: 0 4px 6px 0; }
+      .github-routing-table th, .github-routing-table td { overflow-wrap: anywhere; }
+      .github-app-row { cursor: pointer; }
+      .github-app-row:hover { background: var(--inset); }
+      .github-app-row:focus-within { outline: 1px solid var(--blue); outline-offset: -1px; }
+      .github-repositories { margin-top: 12px; }
+      .github-repositories > div + div { margin-top: 6px; }
+      .github-setup { margin-bottom: 24px; }
+      .github-setup ol {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        gap: 12px;
+        list-style: none;
+        padding: 0;
+        margin: 0;
+      }
+      .github-setup li {
+        border-top: 2px solid var(--line);
+        padding: 18px 16px;
+        color: var(--muted);
+      }
+      .github-setup li[aria-current="step"] { border-color: var(--blue); color: var(--text); }
+      .github-setup small { display: block; margin-top: 4px; }
+      .github-setup li.complete {
+        border-color: color-mix(in srgb, var(--green) 45%, var(--line));
+        background: color-mix(in srgb, var(--green) 5%, transparent);
+        color: var(--green);
+      }
+      .github-setup li.complete small { color: var(--green); }
+      .github-setup li.complete { padding: 20px 18px; }
+      .github-session, .github-scope {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 12px;
+        padding: 12px 0;
+      }
+      .github-session { padding: 16px; background: var(--inset); border-radius: 5px; }
+      .github-route-details > .facts, .github-route-details > p { margin-top: 12px; }
+      .github-route-details > p { color: var(--muted); font-size: 13px; }
+      .github-row-actions { display: flex; flex-direction: column; align-items: flex-end; gap: 12px; }
+      .github-maintenance { width: 100%; text-align: right; }
+      .github-maintenance .actions { margin-top: 12px; flex-direction: column; align-items: flex-end; gap: 8px; }
+      .github-maintenance .actions[hidden] { display: none; }
+      .github-maintenance button { max-width: 100%; white-space: normal; }
+      .github-conflict { background: #29261f; }
+      .github-conflict td:first-child { border-left: 3px solid var(--amber); }
+      .sr-label:not([hidden]) {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        overflow: hidden;
+        clip-path: inset(50%);
+        white-space: nowrap;
+      }
+      @media (max-width: 720px) {
+        .github-mapping { padding: 16px; }
+        .github-gate { padding: 24px 16px; }
+        .github-routing-table th, .github-routing-table td { padding: 12px; }
+      }
     </style>
   </head>
   <body>
@@ -1832,7 +1904,7 @@
         const box = $("#content");
         if (!box) return;
         const open = new Set(
-          [...box.querySelectorAll("details[open][data-key]")].map(
+          [...box.querySelectorAll('details[open][data-key], .github-app-row:has([aria-expanded="true"])[data-key]')].map(
             (d) => d.dataset.key,
           ),
         );
@@ -1846,6 +1918,10 @@
           if (open.has(d.dataset.key)) d.open = true;
           if (focusKey === d.dataset.key)
             d.querySelector("summary")?.focus({ preventScroll: true });
+        });
+        box.querySelectorAll(".github-app-row").forEach((row) => {
+          if (open.has(row.dataset.key)) setGithubRowExpanded(row, true);
+          if (focusKey === row.dataset.key) row.querySelector(".github-row-toggle")?.focus({ preventScroll: true });
         });
         if (focused) window.scrollTo({ top: scroll });
       }
@@ -2559,7 +2635,7 @@
                 ? "Create an app on your GitHub account."
                 : "Choose the organizations and repositories this app may access.",
               button(
-                g.status === "needs-register" ? "Create app" : "Install on org",
+                g.status === "needs-register" ? "Create GitHub App" : "Install on an account",
                 g.status === "needs-register"
                   ? "github-connect"
                   : "github-install",
@@ -2658,8 +2734,8 @@
         ],
         github: [
           "GitHub Apps",
-          "Each access secret routes requests to the matching account’s app installation. Private keys and installation tokens stay in the gateway.",
-          "Connect GitHub",
+          "Sign-in lets you manage apps. App installations provide worker access. Private keys and installation tokens stay in the gateway.",
+          "Create GitHub App",
           "github-connect",
         ],
         connections: [
@@ -2707,33 +2783,86 @@
           "domain-add",
         ],
       };
+      function githubSetup(github, groups) {
+        const apps = groups.flatMap((g) => g.apps || []);
+        const registered = apps.some((app) => app.appId && app.status !== "needs-register");
+        const installed = apps.some((app) => app.status === "ok" && app.installations?.length);
+        // First-connection progress, not the health of every app. Do not use
+        // cached mappings to infer management progress while signed out.
+        const current = !github.configured ? 0 : !github.connected ? 1 : !registered ? 2 : !installed ? 3 : 4;
+        const steps = ["Configure sign-in", "Sign in", "Connect an app", "Install on an account"];
+        return `<nav class="github-setup" aria-label="First GitHub connection"><ol>${steps.map((label, i) => `<li${i < current ? ' class="complete"' : i === current ? ' aria-current="step"' : ""}><span>${i + 1}. ${label}</span><small>${i < current ? "Complete" : i === current ? "Next step" : "Not started"}</small></li>`).join("")}</ol></nav>`;
+      }
+      function setGithubRowExpanded(row, expanded) {
+        row.querySelector('.github-row-toggle').setAttribute('aria-expanded', String(expanded));
+        row.querySelectorAll('[data-row-detail]').forEach(detail => { detail.hidden = !expanded; });
+      }
+      function bindGithubRows() {
+        document.querySelectorAll('.github-app-row').forEach(row => {
+          row.addEventListener('click', event => {
+            // Buttons and links keep their own actions; the native toggle button
+            // supplies Enter/Space support without making the table row a button.
+            if (event.target.closest('button, a, input, select, textarea, summary') &&
+                !event.target.closest('.github-row-toggle')) return;
+            setGithubRowExpanded(row, row.querySelector('.github-row-toggle').getAttribute('aria-expanded') !== 'true');
+          });
+        });
+      }
+      function githubAppRows(g) {
+        return (g.apps || []).flatMap((app) => {
+          const installations = app.installations?.length ? app.installations : [{ account: "Not installed", id: "—" }];
+          return installations.map((inst) => {
+            const conflict = (g.conflicts || []).some((account) => account.toLowerCase() === inst.account.toLowerCase());
+            const needsRegister = app.status === "needs-register";
+            const key = [g.secretId, app.id, inst.id].map(value => encodeURIComponent(value)).join('-');
+            const next = needsRegister
+              ? button("Create GitHub App", "github-connect", app.id, "small primary")
+              : !app.installations?.length ? button("Install on an account", "github-install", app.id, "small primary") : "";
+            const maintenance = `<div class="github-maintenance"><button type="button" class="github-row-toggle small quiet" aria-expanded="false" aria-controls="github-repos-${key} github-actions-${key}" aria-label="Manage ${esc(app.name || app.slug || 'app')} on ${esc(inst.account)}">Manage app</button><div id="github-actions-${key}" class="actions" data-row-detail hidden>${!needsRegister && app.installations?.length ? button("Install on another account", "github-install", app.id, "small") : ""}${button("Replace credentials", "github-reconnect", app.id, "small")}${button("Refresh installations", "github-refresh", app.id, "small")}${button(conflict ? "Remove conflicting app" : "Remove app", "github-remove", app.id, "small danger")}</div></div>`;
+            return `<tr class="github-app-row${conflict ? ' github-conflict' : ''}" data-key="github-row-${key}"><td>${esc(inst.account)}<div id="github-repos-${key}" class="github-repositories" data-row-detail hidden>${inst.repos?.length ? inst.repos.map(repo => `<div>${esc(repo)}</div>`).join('') : '<small>No repositories listed</small>'}</div></td><td>${esc(app.name || app.slug)}<br><small>App ${esc(app.appId || "not registered")}</small></td><td>${esc(inst.id)}</td><td>${badge(conflict ? "Ambiguous — blocked" : app.status, conflict || app.status !== "ok" ? "warn" : "good")}</td><td><div class="github-row-actions">${next}${maintenance}</div></td></tr>`;
+          });
+        }).join("");
+      }
+      function githubMapping(g) {
+        const scope = g.gatewayOnly ? "No workers" : !g.workers?.length || g.workers.includes("*") ? "All workers" : g.workers.join(", ");
+        return `<section class="github-mapping">
+          <h3>${esc(g.name)}</h3>
+          <div class="github-scope"><p><strong>Workers:</strong> ${esc(scope)}</p>${button("Edit worker scope", "secret-edit", g.secretId, "small")}</div>
+          <details class="github-route-details" data-key="github-route-${esc(g.secretId)}"><summary>Routing details</summary>${facts([["Environment key", g.envKey], ["Placeholder", g.placeholder], ["Allowed hosts", g.allowedHosts]])}<p>Workers use the placeholder, not a real token. The gateway reads the account from the request URL or GraphQL variables and selects exactly one installation. Requests without an identifiable account require exactly one installation in this group. Missing or ambiguous routes are blocked; there is no default account.</p></details>
+          ${(g.conflicts || []).length ? `<div class="notice" role="status"><p>Routing blocked for ${esc(g.conflicts.join(", "))}. Highlighted rows map the same account more than once.</p><p>Remove a conflicting app, or change its installations on GitHub and refresh. Removing an app removes all of its routes from the gateway.</p></div>` : ""}
+          ${(g.warnings || []).map((warning) => `<p class="notice" role="status">${esc(warning)}</p>`).join("")}
+          <div class="github-table-scroll"><table class="github-routing-table"><caption class="sr-label">Account routes for ${esc(g.name)}</caption><colgroup><col style="width:25%"><col style="width:22%"><col style="width:12%"><col style="width:15%"><col style="width:26%"></colgroup><thead><tr><th scope="col">Account</th><th scope="col">App</th><th scope="col">Installation</th><th scope="col">Status</th><th scope="col">Actions</th></tr></thead><tbody>${githubAppRows(g) || '<tr><td colspan="5">No apps connected. Import an existing app or create one using the actions at the top of this page.</td></tr>'}</tbody></table></div>
+        </section>`;
+      }
+      function renderGithub(intro) {
+        const github = data.githubUser || {};
+        const groups = list("githubMappings");
+        const setup = githubSetup(github, groups);
+        if (!github.connected) {
+          count(0);
+          const gate = !github.configured
+            ? `<section class="empty github-gate"><h2>Configure GitHub sign-in</h2><p>Add a GitHub OAuth App (client ID and secret) once to enable dashboard sign-in. This does not grant workers repository access.</p><div class="intro-actions">${button("Configure GitHub sign-in", "github-user-config", "", "primary")}</div></section>`
+            : `<section class="github-gate"><h3>Sign in to GitHub</h3><p>Sign in to manage your apps and installations. Signing out here does not stop existing worker access.</p><div class="intro-actions">${button("Sign in with GitHub", "github-user-authorize", "", "primary")}${button("Change OAuth App", "github-user-config", "", "quiet")}</div></section>`;
+          return replaceContent(intro + setup + gate);
+        }
+        const visible = groups.filter((g) => matches(JSON.stringify(g)));
+        count(visible.length);
+        const signedIn = `<div class="github-session"><p>Managing apps${github.login ? ` as <strong>${esc(github.login)}</strong>` : ""}</p>${button("Sign out", "github-user-signout", "", "small quiet")}</div>`;
+        const emptyState = groups.length
+          ? empty("No matching access groups", "Try another search to see your connected apps.")
+          : empty("Connect your first app", "Create a GitHub App or import an existing one using the actions above. Each access group gives workers one placeholder that can route to multiple account installations.");
+        replaceContent(intro + setup + signedIn + (visible.map(githubMapping).join("") || emptyState));
+        bindGithubRows();
+      }
       function renderSettings() {
         const [title, description, add, act] = intros[sub];
         let rows = list(sub);
         const actions = [
           add && (sub !== "github" || data.githubUser?.connected) ? button(add, act, "", "primary") : "",
-          sub === "github" && data.githubUser?.connected ? button("Connect existing app", "github-import", "", "quiet") : "",
+          sub === "github" && data.githubUser?.connected ? button("Import existing app", "github-import", "", "quiet") : "",
         ].filter(Boolean);
         const intro = `<div class="section-intro"><div><h2>${title}</h2><p>${description}</p></div>${actions.length ? `<div class="intro-actions">${actions.join("")}</div>` : ""}</div>`;
-        if (sub === "github") {
-          const github = data.githubUser || {};
-          if (!github.connected) {
-            count(0);
-            return replaceContent(intro + (!github.configured ? `<section class="empty github-gate"><h2>Connect GitHub</h2><p>Add a GitHub OAuth App (client ID and secret) to enable account-scoped app management.</p><div class="intro-actions">${button("Configure GitHub sign-in", "github-user-config", "", "primary")}</div></section>` : `<section class="github-gate"><h3>Sign in to GitHub</h3><p>Verifying your GitHub session unlocks app management on this page. Workers keep using their existing tokens.</p><div class="intro-actions">${button("Sign in with GitHub", "github-user-authorize", "", "primary")}${button("Change OAuth App", "github-user-config", "", "quiet")}</div></section>`));
-          }
-          const signedIn = github.login ? `<p class="muted">Managing apps as <strong>${esc(github.login)}</strong> · ${button("Sign out", "github-user-signout", "", "small quiet")}</p>` : "";
-          const groups = list("githubMappings").filter((g) => matches(JSON.stringify(g)));
-          count(groups.length);
-          return replaceContent(intro + signedIn + (groups.map((g) => {
-            const scope = g.gatewayOnly ? "No workers" : !g.workers?.length || g.workers.includes("*") ? "All workers" : g.workers.join(", ");
-            const rows = (g.apps || []).flatMap((app) => (app.installations?.length ? app.installations : [{account: "Not installed", id: "—"}]).map((inst, index) => {
-              const conflict = (g.conflicts || []).includes(inst.account.toLowerCase());
-              const actions = index ? "" : button(app.status === "needs-register" ? "Create app" : "Install", app.status === "needs-register" ? "github-connect" : "github-install", app.id, "small") + button("Replace credentials", "github-reconnect", app.id, "small") + button("Refresh", "github-refresh", app.id, "small") + button("Remove", "github-remove", app.id, "small danger");
-              return `<tr><td>${esc(inst.account)}${inst.repos?.length ? `<details><summary>${inst.repos.length} repositories</summary>${inst.repos.map((repo) => `<div>${esc(repo)}</div>`).join("")}</details>` : ""}</td><td>${esc(app.name || app.slug)}<br><small>App ${esc(app.appId || "not registered")}</small></td><td>${esc(inst.id)}</td><td>${badge(conflict ? "Ambiguous — blocked" : app.status, conflict || app.status !== "ok" ? "warn" : "good")}</td><td>${actions}</td></tr>`;
-            })).join("");
-            return `<section class="github-mapping"><h3>${esc(g.name)}</h3>${facts([["Environment key", g.envKey], ["Placeholder", g.placeholder], ["Workers", scope], ["Allowed hosts", g.allowedHosts]])}<div class="intro-actions">${button("Edit worker scope", "secret-edit", g.secretId, "small")}${button("Add existing app", "github-import", g.secretId, "small")}${button("Create another app", "github-create-group", g.secretId, "small")}</div>${(g.conflicts || []).length ? `<p role="status">Routing blocked for ${esc(g.conflicts.join(", "))}: remove the duplicate installation mapping.</p>` : ""}${(g.warnings || []).map((warning) => `<p role="status">${esc(warning)}</p>`).join("")}<div class="github-table-scroll"><table class="github-routing-table"><thead><tr><th>Account</th><th>App</th><th>Installation</th><th>Status</th><th>Actions</th></tr></thead><tbody>${rows || '<tr><td colspan="5">No apps connected. Add an existing app or create one.</td></tr>'}</tbody></table></div></section>`;
-          }).join("") || '<p class="muted">No GitHub access secrets yet. Connect an app to create one.</p>'));
-        }
+        if (sub === "github") return renderGithub(intro);
         if (sub === "provider") {
           const p = data.provider || {};
           if ($("#resultCount")) $("#resultCount").textContent = "";
@@ -2842,8 +2971,8 @@
               actions =
                 button(
                   r.status === "needs-register"
-                    ? "Create app"
-                    : "Install on org",
+                    ? "Create GitHub App"
+                    : "Install on an account",
                   r.status === "needs-register"
                     ? "github-connect"
                     : "github-install",
@@ -2851,7 +2980,7 @@
                   "small",
                 ) +
                 button(
-                  "Connect existing app",
+                  "Import existing app",
                   "github-import",
                   "",
                   "small",
@@ -3662,14 +3791,14 @@
       }
       function githubImportForm(secretId = "", app = null) {
         formDialog(
-          "Connect existing app",
+          app ? "Replace credentials" : "Import existing app",
           "Reconnect an app you created earlier without registering a new one. Paste the numeric app ID from its settings page and upload its private key file (.pem). The gateway verifies the pair with GitHub before saving, then lists every account or organization the app is installed on. Nothing is saved when verification fails.",
           field("appId", "App ID", app?.appId || "", {
             required: true,
             hint: "Numeric ID from https://github.com/settings/apps/<your-app>. Values above 65535 are expected.",
           }) +
             `<label class="field full" for="f-privateKey"><span>Private key (.pem)</span><input name="privateKey" id="f-privateKey" type="file" accept=".pem,application/x-pem-file" required><small>Generate a new key in the app's settings if the original is lost. The gateway stores it; it is never sent to workers.</small></label>`,
-          "Connect app",
+          app ? "Replace credentials" : "Import app",
           async (f) => {
             const form = $("#actionForm");
             const file = form?.querySelector("#f-privateKey")?.files?.[0];
@@ -3683,7 +3812,7 @@
                 "That file does not look like a private key (.pem).",
               );
             if (app && Number(f.appId) !== app.appId)
-              throw new Error("Keep the same App ID when replacing credentials. Use Add existing app for another app.");
+              throw new Error("Keep the same App ID when replacing credentials. Use Import existing app for another app.");
             const out = await api("github-app/import", "POST", {
               appId: Number(f.appId),
               privateKey: key,
@@ -3894,7 +4023,7 @@
         if (name === "github-remove")
           return confirmAction(
             "Remove GitHub App from gateway?",
-            "This removes gateway access. It does not delete the app on GitHub.",
+            "This removes all routes for this app from the gateway, including every account installation. Other apps in the access group are unchanged. It does not delete the app on GitHub.",
             "Remove app",
             async () => {
               await api("github-app/" + enc(id), "DELETE");
