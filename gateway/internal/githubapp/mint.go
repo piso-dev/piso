@@ -2,6 +2,7 @@ package githubapp
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -175,14 +176,65 @@ func (c *Client) ListRepos(app store.GithubAppRec, owner string) ([]string, erro
 	return out, nil
 }
 
+// Discover verifies app credentials and loads all installations without saving them.
+func (c *Client) Discover(ctx context.Context, app store.GithubAppRec) (store.GithubAppRec, error) {
+	jwt, err := SignJWT(app.AppID, []byte(app.PrivateKey), c.now())
+	if err != nil {
+		return app, err
+	}
+	var info struct {
+		ID   int64  `json:"id"`
+		Name string `json:"name"`
+		Slug string `json:"slug"`
+	}
+	if err := c.doJSONContext(ctx, http.MethodGet, "/app", jwt, nil, &info); err != nil {
+		return app, err
+	}
+	if info.ID != app.AppID || info.Slug == "" {
+		return app, fmt.Errorf("github app: unexpected app identity")
+	}
+	app.Name, app.Slug = info.Name, info.Slug
+	app.Installations = nil
+	for page := 1; ; page++ {
+		var items []struct {
+			ID      int64  `json:"id"`
+			HTMLURL string `json:"html_url"`
+			Account struct {
+				Login string `json:"login"`
+				Type  string `json:"type"`
+			} `json:"account"`
+		}
+		path := fmt.Sprintf("/app/installations?per_page=100&page=%d", page)
+		if err := c.doJSONContext(ctx, http.MethodGet, path, jwt, nil, &items); err != nil {
+			return app, err
+		}
+		for _, item := range items {
+			if item.ID <= 0 || item.Account.Login == "" {
+				return app, fmt.Errorf("github app: invalid installation")
+			}
+			app.Installations = append(app.Installations, store.GithubInstallation{
+				ID: item.ID, Account: strings.ToLower(item.Account.Login),
+				AccountType: item.Account.Type, HTMLURL: item.HTMLURL,
+			})
+		}
+		if len(items) < 100 {
+			return app, nil
+		}
+	}
+}
+
 func (c *Client) doJSON(method, path, bearer string, body []byte, dest any) error {
+	return c.doJSONContext(context.Background(), method, path, bearer, body, dest)
+}
+
+func (c *Client) doJSONContext(ctx context.Context, method, path, bearer string, body []byte, dest any) error {
 	var rdr io.Reader
 	if len(body) > 0 {
 		rdr = bytes.NewReader(body)
 	} else if method == http.MethodPost {
 		rdr = bytes.NewReader([]byte("{}"))
 	}
-	req, err := http.NewRequest(method, c.api()+path, rdr)
+	req, err := http.NewRequestWithContext(ctx, method, c.api()+path, rdr)
 	if err != nil {
 		return err
 	}

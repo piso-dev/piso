@@ -406,6 +406,14 @@
         font-size: 13px;
         margin-top: 5px;
       }
+      .intro-actions {
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 8px;
+        flex-shrink: 0;
+        flex-wrap: wrap;
+      }
       .timeline-controls,
       .timeline-controls > div {
         display: flex;
@@ -1535,8 +1543,14 @@
           hint = "",
           choices,
           full = false,
+          min,
+          max,
         } = options;
         const attrs = `name="${esc(name)}" id="f-${esc(name)}" ${required ? "required" : ""}`;
+        const bounds =
+          min === undefined && max === undefined
+            ? ""
+            : ` min="${min ?? 0}" max="${max ?? ""}"`;
         let input;
         if (choices)
           input = `<select ${attrs}>${choices.map(([v, t]) => `<option value="${esc(v)}" ${String(value) === String(v) ? "selected" : ""}>${esc(t)}</option>`).join("")}</select>`;
@@ -1545,7 +1559,7 @@
         else if (type === "checkbox")
           input = `<input ${attrs} type="checkbox" ${value ? "checked" : ""}>`;
         else
-          input = `<input ${attrs} type="${esc(type)}" value="${esc(value)}" ${type === "password" ? 'autocomplete="new-password"' : 'autocomplete="off"'} ${type === "number" ? 'min="1" max="65535"' : ""}>`;
+          input = `<input ${attrs} type="${esc(type)}" value="${esc(value)}" ${type === "password" ? 'autocomplete="new-password"' : 'autocomplete="off"'}${bounds}>`;
         return `<label class="field ${full ? "full" : ""} ${type === "checkbox" ? "check" : ""}" for="f-${esc(name)}">${type === "checkbox" ? input : ""}<span>${esc(label)}</span>${type === "checkbox" ? "" : input}${hint ? `<small>${esc(hint)}</small>` : ""}</label>`;
       }
       function formDialog(title, description, fields, submit, onSubmit) {
@@ -2584,7 +2598,11 @@
       function renderSettings() {
         const [title, description, add, act] = intros[sub];
         let rows = list(sub);
-        const intro = `<div class="section-intro"><div><h2>${title}</h2><p>${description}</p></div>${add ? button(add, act, "", "primary") : ""}</div>`;
+        const actions = [
+          add ? button(add, act, "", "primary") : "",
+          sub === "github" ? button("Connect existing app", "github-import", "", "quiet") : "",
+        ].filter(Boolean);
+        const intro = `<div class="section-intro"><div><h2>${title}</h2><p>${description}</p></div>${actions.length ? `<div class="intro-actions">${actions.join("")}</div>` : ""}</div>`;
         if (sub === "provider") {
           const p = data.provider || {};
           if ($("#resultCount")) $("#resultCount").textContent = "";
@@ -2699,6 +2717,12 @@
                     ? "github-connect"
                     : "github-install",
                   r.id,
+                  "small",
+                ) +
+                button(
+                  "Connect existing app",
+                  "github-import",
+                  "",
                   "small",
                 ) +
                 button(
@@ -3197,7 +3221,12 @@
                 ...list("workers").map((w) => [w.name, w.slug || w.name]),
               ],
             }) +
-            field("port", "Port", "5173", { required: true, type: "number" }),
+            field("port", "Port", "5173", {
+              required: true,
+              type: "number",
+              min: 1,
+              max: 65535,
+            }),
           "Publish service",
           async (f) => {
             f.port = Number(f.port);
@@ -3339,6 +3368,44 @@
           throw e;
         }
       }
+      function githubImportForm() {
+        formDialog(
+          "Connect existing app",
+          "Reconnect an app you created earlier without registering a new one. Paste the numeric app ID from its settings page and upload its private key file (.pem). The gateway verifies the pair with GitHub before saving, then lists every account or organization the app is installed on. Nothing is saved when verification fails.",
+          field("appId", "App ID", "", {
+            required: true,
+            hint: "Numeric ID from https://github.com/settings/apps/<your-app>. Values above 65535 are expected.",
+          }) +
+            `<label class="field full" for="f-privateKey"><span>Private key (.pem)</span><input name="privateKey" id="f-privateKey" type="file" accept=".pem,application/x-pem-file" required><small>Generate a new key in the app's settings if the original is lost. The gateway stores it; it is never sent to workers.</small></label>`,
+          "Connect app",
+          async (f) => {
+            const form = $("#actionForm");
+            const file = form?.querySelector("#f-privateKey")?.files?.[0];
+            const key = file ? (await file.text()).trim() : "";
+            if (!/^\d+$/.test(f.appId) || Number(f.appId) <= 0)
+              throw new Error(
+                "Enter the numeric App ID, not the app name or slug.",
+              );
+            if (!key.startsWith("-----BEGIN"))
+              throw new Error(
+                "That file does not look like a private key (.pem).",
+              );
+            const out = await api("github-app/import", "POST", {
+              appId: Number(f.appId),
+              privateKey: key,
+            });
+            await changed(["github", "githubPending", "connections"]);
+            const accounts = (out.installations || [])
+              .map((i) => i.account)
+              .filter(Boolean)
+              .join(", ");
+            return accounts
+              ? `Connected ${out.slug || "app"}. Installed on ${accounts}.`
+              : `Connected ${out.slug || "app"}. No installations found yet.`;
+          },
+        );
+      }
+
       async function githubConnect() {
         const tab = window.open("about:blank", "_blank");
         if (!tab) throw new Error("Allow popups to create a GitHub App.");
@@ -3497,6 +3564,7 @@
             },
           );
         if (name === "github-connect") return githubConnect();
+        if (name === "github-import") return githubImportForm();
         if (name === "github-install") return githubInstall(id);
         if (name === "github-refresh") {
           await api("github-app/" + enc(id) + "/refresh", "POST", {});

@@ -52,6 +52,7 @@ func (s *Server) registerGithubApp(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/github-app", s.handleListGithubApps)
 	mux.HandleFunc("GET /api/v1/github-app/pending", s.handlePendingGithubApps)
 	mux.HandleFunc("POST /api/v1/github-app", s.handlePutGithubApp)
+	mux.HandleFunc("POST /api/v1/github-app/import", s.handleImportGithubApp)
 	mux.HandleFunc("POST /api/v1/github-app/manifest", s.handleGithubManifest)
 	mux.HandleFunc("GET /api/v1/github-app/{id}/install", s.handleGithubInstallURL)
 	mux.HandleFunc("POST /api/v1/github-app/{id}/installations", s.handleAddGithubInstallation)
@@ -129,6 +130,60 @@ func (s *Server) handlePutGithubApp(w http.ResponseWriter, r *http.Request) {
 		}
 		rec.Installations = inst
 	}
+	saved, err := s.Store.UpsertGithubApp(rec)
+	if err != nil {
+		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		return
+	}
+	s.replayGithub(r, saved)
+	writeJSON(w, 200, saved.ToSummary())
+}
+
+// handleImportGithubApp reconnects an existing GitHub App: the dashboard
+// posts appId + PEM, the gateway verifies them against api.github.com,
+// discovers installations, and only then stores anything.
+func (s *Server) handleImportGithubApp(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		AppID      int64  `json:"appId"`
+		PrivateKey string `json:"privateKey"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeJSON(w, 400, map[string]string{"error": "bad json"})
+		return
+	}
+	in.PrivateKey = strings.TrimSpace(in.PrivateKey)
+	if in.AppID == 0 || in.PrivateKey == "" {
+		writeJSON(w, 400, map[string]string{"error": "appId and privateKey required"})
+		return
+	}
+	if _, err := githubapp.ParseRSAPrivateKey([]byte(in.PrivateKey)); err != nil {
+		writeJSON(w, 400, map[string]string{"error": "invalid private key: " + err.Error()})
+		return
+	}
+	rec, err := s.ensureGithubApp("", "")
+	if err != nil {
+		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		return
+	}
+	candidate := rec
+	candidate.AppID = in.AppID
+	candidate.PrivateKey = in.PrivateKey
+	verified, err := s.githubClient().Discover(r.Context(), candidate)
+	if err != nil {
+		// Nothing is saved until verification succeeds. The placeholder
+		// secret from ensureGithubApp only matters once an app is usable.
+		if rec.ID != "" && rec.SecretID != "" && rec.PrivateKey == "" && rec.AppID == 0 {
+			s.Store.DeleteGithubApp(rec.ID)
+		}
+		writeJSON(w, 502, map[string]string{"error": err.Error()})
+		return
+	}
+	rec.AppID = verified.AppID
+	rec.Name = verified.Name
+	rec.Slug = verified.Slug
+	rec.PrivateKey = in.PrivateKey
+	rec.ManifestState = ""
+	rec.Installations = verified.Installations
 	saved, err := s.Store.UpsertGithubApp(rec)
 	if err != nil {
 		writeJSON(w, 500, map[string]string{"error": err.Error()})
