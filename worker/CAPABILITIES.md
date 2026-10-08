@@ -43,6 +43,29 @@ everything below is simple:
   system service management, binds below port 1024 that need privilege.
 - Anything requiring the **host filesystem** beyond the `/workspace` mount.
 
+## GitHub clone fallback
+
+When a GitHub clone fails, always prepare a fallback using `gh repo clone`
+with the parsed `OWNER/REPO`, not the full URL. Strip any trailing slash
+and `.git` suffix. Preserve the requested destination when it is permitted.
+For example, `https://github.com/lunar9-dev/v1-mono.git` becomes:
+
+```bash
+gh repo clone lunar9-dev/v1-mono /workspace/v1-mono
+```
+
+Attempt the parsed-name fallback once when sandbox capabilities permit it,
+including when the original attempt used `gh` with a full URL. Do not repeat
+it if the same parsed-name command already failed, and never delete a partial
+clone or an existing destination automatically.
+
+This fallback does not override sandbox boundaries. Credential-bearing
+clones, proxy/auth denials, forbidden destinations, and pending host requests
+require the Host Action Request protocol rather than an in-worker retry.
+In those cases, use the parsed-name `gh repo clone` command in the host
+request with a `/workspace/...` result path. Never bypass the proxy or retry
+in a loop.
+
 ## Host Action Request protocol
 
 For any out-of-bounds step, do all of the following:
