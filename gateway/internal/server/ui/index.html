@@ -1537,6 +1537,7 @@
         githubPending: "github-app/pending",
         githubUser: "github-user",
         connections: "connections",
+        aiBoost: "ai-boost",
         secrets: "secrets",
         provider: "pi-provider",
         rules: "rules",
@@ -3010,7 +3011,11 @@
               actions =
                 r.id === "github"
                   ? button("Manage GitHub", "go-github", "", "small")
-                  : "";
+                  : r.id === "ai-boost"
+                    ? (!data.aiBoost?.configured
+                        ? button("Configure AI Boost", "boost-config", "", "small")
+                        : button(r.status === "needs-auth" ? "Reconnect AI Boost" : "Sign in to AI Boost", "boost-authorize", "", "small") + button("Disconnect", "boost-disconnect", "", "small danger"))
+                    : "";
             }
             if (sub === "workers") {
               title = r.slug || r.name;
@@ -3339,6 +3344,37 @@
               row.hidden = !`${name} ${slug}`.toLowerCase().includes(q);
             });
           };
+      }
+      function boostForm() {
+        formDialog(
+          "Connect AI Boost",
+          "Register this gateway once. Tokens stay encrypted in the gateway. Use an exact HTTPS callback; loopback HTTP requires AI Boost to enable it.",
+          field("baseUrl", "AI Boost API origin", "https://api.ai-boost.io", { type: "url", required: true, full: true }) +
+          field("redirectUri", "Callback URL", "", { type: "url", required: true, full: true, hint: "Must end in /oauth/ai-boost/callback and route to this gateway. Registration fixes this URL." }),
+          "Register gateway",
+          async (f) => {
+            await api("ai-boost/register", "POST", f);
+            await changed(["aiBoost", "connections"]);
+            return "Gateway registered. Sign in to AI Boost to choose a library.";
+          },
+        );
+      }
+      function boostStart() {
+        // Open synchronously so popup blockers cannot strand a pending flow.
+        const tab = window.open("about:blank", "_blank");
+        if (!tab) throw new Error("Allow popups to sign in to AI Boost.");
+        tab.opener = null;
+        api("ai-boost/authorize", "POST", {}).then(({url}) => {
+          const target = safeURL(url);
+          if (!target) throw new Error("Invalid AI Boost sign-in URL.");
+          tab.location.href = target;
+        }).catch((err) => { tab.close(); errorDialog(err); });
+      }
+      function boostDisconnect() {
+        confirmAction("Disconnect AI Boost?", "This deletes the tokens in Piso only. The AI Boost grant is not revoked and can remain active until it expires.", "Disconnect", async () => {
+          await api("ai-boost/disconnect", "POST", {});
+          await changed(["aiBoost", "connections"]);
+        });
       }
       async function githubUserForm() {
         const current = data.githubUser || {};
@@ -3940,6 +3976,9 @@
         }
         if (name === "secret-add" || name === "secret-edit")
           return secretForm(id);
+        if (name === "boost-config") return boostForm();
+        if (name === "boost-authorize") return boostStart();
+        if (name === "boost-disconnect") return boostDisconnect();
         if (name === "github-user-config") return githubUserForm();
         if (name === "github-user-authorize") return githubUserStart();
         if (name === "github-user-signout") return githubUserStop();
@@ -4166,6 +4205,7 @@
               "githubUser",
               "githubPending",
               "connections",
+              "aiBoost",
               "routes",
               "technocore",
               ...(!streamOK ? ["requests"] : []),

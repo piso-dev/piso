@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"piso/gateway/internal/aiboost"
 	"piso/gateway/internal/githubapp"
 	"piso/gateway/internal/mcp"
 	"piso/gateway/internal/store"
@@ -58,6 +60,13 @@ func (s *Server) mcpHandler() *mcp.Handler {
 		}
 	}
 	h.GithubRepos = githubClient.ListReposContext
+	h.BoostGet = func(ctx context.Context, id string) (aiboost.Booster, error) {
+		client, err := s.boostClient()
+		if err != nil {
+			return aiboost.Booster{}, err
+		}
+		return client.Get(ctx, id)
+	}
 	h.Upsert = func(worker, slug, name, rawURL string) (store.McpServerRec, bool, error) {
 		return s.upsertMCP(worker, slug, name, rawURL, "", "")
 	}

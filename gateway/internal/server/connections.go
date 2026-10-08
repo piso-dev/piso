@@ -21,7 +21,7 @@ func (s *Server) handleConnections(w http.ResponseWriter, r *http.Request) {
 func (s *Server) connectionViews() []connectionView {
 	return []connectionView{
 		s.githubConnection(),
-		{ID: "ai-boost", Name: "AI Boost", Status: "none", Detail: "Not connected"},
+		s.boostConnection(),
 		{ID: "hammerspace", Name: "Hammerspace", Status: "none", Detail: "Not connected"},
 	}
 }

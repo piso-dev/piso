@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"piso/gateway/internal/aiboost"
 	"piso/gateway/internal/model"
 	"piso/gateway/internal/patterns"
 	"piso/gateway/internal/scanner"
@@ -45,6 +46,8 @@ type Handler struct {
 	CoordinatorDo CoordinatorDo
 	// GithubRepos lists repository full_names using gateway-owned credentials.
 	GithubRepos func(context.Context, store.GithubAppRec, string) ([]string, error)
+	// BoostGet fetches one coordinator-authorized upstream ID with gateway credentials.
+	BoostGet func(context.Context, string) (aiboost.Booster, error)
 }
 
 // Tool is one MCP tool. Caller always comes from the envelope.
@@ -95,6 +98,7 @@ func New(st *store.Store, pat *patterns.Compiled, dataDir string) *Handler {
 	h.registerBoard()
 	h.registerIdentity()
 	h.registerGithub()
+	h.registerBoost()
 	h.registerIngress()
 	h.registerAsks()
 	return h

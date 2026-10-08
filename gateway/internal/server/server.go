@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"piso/gateway/internal/aiboost"
 	"piso/gateway/internal/model"
 	"piso/gateway/internal/patterns"
 	"piso/gateway/internal/proxy"
@@ -40,6 +41,9 @@ type Server struct {
 	DenyPeer          denyPeerFunc
 	githubOAuthMu     sync.Mutex
 	githubOAuthStates map[string]githubOAuthAttempt
+	boostMu           sync.Mutex
+	boost             *aiboost.Client
+	boostTickets      map[string]time.Time
 
 	// directMu guards workers that have checked in on the public URL.
 	// Not persisted: a gateway restart must see a fresh direct check-in
@@ -65,6 +69,10 @@ func (s *Server) ControlHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if s.denyControlPeer(r.RemoteAddr) {
 			writeJSON(w, 403, map[string]string{"error": "control plane is host-only"})
+			return
+		}
+		if strings.HasPrefix(r.URL.Path, "/oauth/ai-boost/") {
+			s.handleBoostOAuth(w, r)
 			return
 		}
 		mux.ServeHTTP(w, r)
@@ -94,6 +102,10 @@ func (s *Server) WebHandler() http.Handler {
 		}
 		if githubAppHost(r) || strings.HasPrefix(r.URL.Path, "/github-app/") {
 			s.handleGithubAppHTTP(w, r)
+			return
+		}
+		if strings.HasPrefix(r.URL.Path, "/oauth/ai-boost/") {
+			s.handleBoostOAuth(w, r)
 			return
 		}
 		if isWebRouteRequest(r) {
@@ -143,6 +155,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	s.registerTechnocore(mux)
 	s.registerGithubApp(mux)
 	s.registerGithubUser(mux)
+	s.registerAIBoost(mux)
 	mux.HandleFunc("GET /api/v1/connections", s.handleConnections)
 
 	// CA cert for distribution

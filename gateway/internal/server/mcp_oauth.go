@@ -40,7 +40,12 @@ func (s *Server) startMCPOAuth(ctx context.Context, rec store.McpServerRec) (str
 			return "", err
 		}
 	}
-	if rec.ClientID == "" {
+	// This is an explicit dashboard authorization, not a token refresh. A
+	// server may have lost its registry since our last connection. The browser
+	// receives that error directly, so the gateway cannot recover by inspecting
+	// the authorization response. Register afresh on each explicit attempt.
+	// Preserve preconfigured clients when no DCR endpoint is available.
+	if rec.ClientID == "" || rec.RegisterURL != "" {
 		if err := s.registerMCPClient(ctx, &rec); err != nil {
 			return "", err
 		}
@@ -306,6 +311,12 @@ func (s *Server) registerMCPClient(ctx context.Context, rec *store.McpServerRec)
 	}
 	if out.ClientID == "" {
 		return fmt.Errorf("DCR missing client_id")
+	}
+	if rec.ClientID != out.ClientID {
+		// Refresh tokens and pending flows belong to the old registration.
+		rec.RefreshToken = ""
+		rec.CodeVerifier = ""
+		rec.OAuthState = ""
 	}
 	rec.ClientID = out.ClientID
 	rec.ClientSecret = out.ClientSecret
