@@ -62,4 +62,14 @@ func TestContextHashStableAndChanges(t *testing.T) {
 	if e == d {
 		t.Fatal("hash should change when relay source changes")
 	}
+	if err := os.WriteFile(filepath.Join(dir, "project-footer.ts"), []byte("// updated footer\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f, err := ContextHash(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f == e {
+		t.Fatal("hash should change when project-footer.ts changes")
+	}
 }

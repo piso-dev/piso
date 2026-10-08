@@ -57,6 +57,7 @@ COPY package.json /opt/piso/npm/package.json
 # pi auto-discovers them and /reload can reload them.
 COPY piso-models.ts /opt/piso/extensions/piso-models.ts
 COPY activity-state.ts /opt/piso/extensions/activity-state.ts
+COPY project-footer.ts /opt/piso/extensions/project-footer.ts
 
 # --ignore-scripts skips postinstall downloads (pi-browser Chromium, etc.)
 # that hang `docker build`. node-pty still needs a compile.
