@@ -63,6 +63,11 @@ func (c *Client) api() string {
 // Mint returns an installation access token for owner. Empty owner is
 // allowed when the app has exactly one installation.
 func (c *Client) Mint(app store.GithubAppRec, owner string) (string, error) {
+	return c.MintContext(context.Background(), app, owner)
+}
+
+// MintContext is Mint with cancellation for the token request.
+func (c *Client) MintContext(ctx context.Context, app store.GithubAppRec, owner string) (string, error) {
 	inst, err := pickInstallation(app, owner)
 	if err != nil {
 		return "", err
@@ -85,7 +90,7 @@ func (c *Client) Mint(app store.GithubAppRec, owner string) (string, error) {
 		Token     string    `json:"token"`
 		ExpiresAt time.Time `json:"expires_at"`
 	}
-	if err := c.doJSON(http.MethodPost, "/app/installations/"+fmt.Sprintf("%d", inst.ID)+"/access_tokens", jwt, nil, &out); err != nil {
+	if err := c.doJSONContext(ctx, http.MethodPost, "/app/installations/"+fmt.Sprintf("%d", inst.ID)+"/access_tokens", jwt, nil, &out); err != nil {
 		return "", err
 	}
 	if out.Token == "" {
@@ -163,7 +168,12 @@ func (c *Client) ConvertManifest(code string) (appID int64, slug, pem, clientID,
 
 // ListRepos returns full_names across every installation repository page.
 func (c *Client) ListRepos(app store.GithubAppRec, owner string) ([]string, error) {
-	tok, err := c.Mint(app, owner)
+	return c.ListReposContext(context.Background(), app, owner)
+}
+
+// ListReposContext is ListRepos with cancellation across token minting and pages.
+func (c *Client) ListReposContext(ctx context.Context, app store.GithubAppRec, owner string) ([]string, error) {
+	tok, err := c.MintContext(ctx, app, owner)
 	if err != nil {
 		return nil, err
 	}
@@ -174,7 +184,7 @@ func (c *Client) ListRepos(app store.GithubAppRec, owner string) ([]string, erro
 				FullName string `json:"full_name"`
 			} `json:"repositories"`
 		}
-		if err := c.doJSON(http.MethodGet, fmt.Sprintf("/installation/repositories?per_page=100&page=%d", page), tok, nil, &raw); err != nil {
+		if err := c.doJSONContext(ctx, http.MethodGet, fmt.Sprintf("/installation/repositories?per_page=100&page=%d", page), tok, nil, &raw); err != nil {
 			return nil, err
 		}
 		for _, r := range raw.Repositories {

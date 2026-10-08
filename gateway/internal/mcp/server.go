@@ -4,6 +4,7 @@
 package mcp
 
 import (
+	"context"
 	"encoding/hex"
 	"encoding/json"
 	"io"
@@ -42,6 +43,8 @@ type Handler struct {
 	Upsert func(worker, slug, name, rawURL string) (store.McpServerRec, bool, error)
 	// CoordinatorDo is the signed coordinator client. Tests inject a fake.
 	CoordinatorDo CoordinatorDo
+	// GithubRepos lists repository full_names using gateway-owned credentials.
+	GithubRepos func(context.Context, store.GithubAppRec, string) ([]string, error)
 }
 
 // Tool is one MCP tool. Caller always comes from the envelope.
@@ -91,6 +94,7 @@ func New(st *store.Store, pat *patterns.Compiled, dataDir string) *Handler {
 	h.registerInbox()
 	h.registerBoard()
 	h.registerIdentity()
+	h.registerGithub()
 	h.registerIngress()
 	h.registerAsks()
 	return h
