@@ -133,6 +133,7 @@ type WorkerRec struct {
 	ChannelPubkey    string    `json:"channelPubkey,omitempty"`    // Ed25519 hex bound to the MCP channel
 	ChannelBoundAt   time.Time `json:"channelBoundAt,omitempty"`   // when ChannelPubkey was bound
 	Remote           bool      `json:"remote,omitempty"`           // enrolled remote worker (not vpc IP identity)
+	ProjectHidden    bool      `json:"projectHidden,omitempty"`    // hidden from the default project stack
 	InternetDisabled bool      `json:"internetDisabled,omitempty"` // true = gateway refuses egress
 	UpdatedAt        time.Time `json:"updatedAt"`
 }
@@ -923,6 +924,7 @@ func (s *Store) UpsertWorker(rec WorkerRec) (WorkerRec, error) {
 			if rec.PrincipalID == "" {
 				rec.PrincipalID = r.PrincipalID
 			}
+			rec.ProjectHidden = r.ProjectHidden
 			s.state.Workers[i] = rec
 			if err := s.save(); err != nil {
 				return WorkerRec{}, err
@@ -1013,6 +1015,7 @@ func (s *Store) ReplaceRemoteWorkers(rows []WorkerRec) error {
 		r.Remote = true
 		r.UpdatedAt = now
 		if old, ok := prev[r.Name]; ok {
+			r.ProjectHidden = old.ProjectHidden
 			if r.ChannelPubkey == "" {
 				r.ChannelPubkey = old.ChannelPubkey
 				r.ChannelBoundAt = old.ChannelBoundAt

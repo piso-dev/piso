@@ -549,7 +549,10 @@ func cmdDown(args []string) error {
 	if err := runEnv("docker", []string{"compose", "-f", workerFile, "-p", "piso-" + proj.Slug, "down"}, composeEnv); err != nil {
 		return err
 	}
-	fmt.Println("piso: worker stopped (gateway left running)")
+	if err := unregisterWorkerWithGateway(pisoconfig.GatewayURL(), proj.WorkerName()); err != nil {
+		return fmt.Errorf("worker stopped, but project removal failed (retry piso down): %w", err)
+	}
+	fmt.Println("piso: worker stopped and project removed (gateway left running)")
 	return nil
 }
 

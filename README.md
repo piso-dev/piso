@@ -98,6 +98,12 @@ piso dashboard
 - Bind-mounting `C:\...` into Linux is slower than a WSL ext4 path. Prefer WSL checkouts if pi feels disk-bound.
 - `.gitattributes` forces LF for shell scripts copied into the Linux image. Do not recrlf them.
 
+### Project visibility
+
+`piso down` stops the current worker and unregisters it from the gateway, removing its project row on the dashboard's next refresh. Activity history is retained; `piso up` registers the project again. If the gateway cannot be reached, the CLI reports that removal failed; retry `piso down` once it is available.
+
+Use **Hide** on an individual project to remove it from the default stack without stopping its worker. Select **Show → Hidden projects** to find hidden projects and **Restore** them. Visibility is stored in the gateway and shared across browsers; it does not dismiss requests in **Needs you**. Unregistering a worker clears its visibility preference, so a later `piso up` starts visible again.
+
 The dashboard is **http://piso.local** (host port 80 → container 8081). `piso up` adds `127.0.0.1 piso.local` to `/etc/hosts` when it can; otherwise it prints the line to add. If port 80 is taken:
 
 ```bash

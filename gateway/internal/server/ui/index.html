@@ -422,6 +422,8 @@
       .timeline-scroll {
         --timeline-label: 180px;
         overflow-x: auto;
+        /* Keep vertical navigation on the page, not the project stack. */
+        overflow-y: hidden;
         position: relative;
         border: 1px solid var(--line);
         border-radius: 5px;
@@ -496,6 +498,51 @@
         border-bottom: 1px solid var(--line);
         padding: 14px 12px;
         overflow: hidden;
+      }
+      /* Reserve space for the inline hide control without covering long names. */
+      .timeline-label:has(.project-visibility) h2 {
+        padding-right: 24px;
+      }
+      .project-restore {
+        margin-top: 4px;
+      }
+      /* Keep hide quiet until the project is hovered or keyboard-focused. */
+      .timeline-label .project-visibility {
+        position: absolute;
+        top: 5px;
+        right: 6px;
+        width: 24px;
+        height: 24px;
+        padding: 0;
+        border: 0;
+        background: transparent;
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.2;
+        opacity: 0;
+      }
+      .timeline-group:hover .project-visibility,
+      .timeline-group:focus-within .project-visibility {
+        opacity: 0.55;
+      }
+      .timeline-label .project-visibility:hover,
+      .timeline-label .project-visibility:focus-visible {
+        opacity: 1;
+        color: var(--text);
+        background: transparent;
+      }
+      @media (hover: none), (pointer: coarse) {
+        .timeline-label .project-visibility {
+          opacity: 0.55;
+        }
+        .timeline-label .project-visibility:focus-visible {
+          opacity: 1;
+        }
+      }
+      @media (prefers-reduced-motion: no-preference) {
+        .project-visibility {
+          transition: opacity 0.15s ease-out;
+        }
       }
       .timeline-label h2 {
         font-size: 14px;
@@ -1409,8 +1456,8 @@
       function badge(text, tone = "") {
         return `<span class="status ${esc(tone)}">${esc(text)}</span>`;
       }
-      function button(text, action, id = "", cls = "") {
-        return `<button type="button" class="${esc(cls)}" data-action="${esc(action)}" data-id="${esc(id)}">${esc(text)}</button>`;
+      function button(text, action, id = "", cls = "", label = "") {
+        return `<button type="button" class="${esc(cls)}" data-action="${esc(action)}" data-id="${esc(id)}"${label ? ` aria-label="${esc(label)}" title="${esc(label)}"` : ""}>${esc(text)}</button>`;
       }
       function facts(entries) {
         return `<dl class="facts">${entries
@@ -1623,7 +1670,7 @@
         const [title, description] = titles[view];
         document.title = title + " / piso";
         $("#page").innerHTML =
-          `<header class="page-head"><div><h1>${title}</h1><p>${description}</p></div><div class="page-actions">${view === "projects" ? button("Review requests", "go-attention", "", "quiet") : view === "traffic" ? button(paused ? "Resume feed" : "Pause feed", "pause", "", "quiet") : ""}</div></header>${sections[view] ? `<div class="subnav" aria-label="${title} sections">${sections[view].map(([k, t]) => `<button data-action="section" data-id="${k}" aria-pressed="${sub === k}">${t}</button>`).join("")}</div>` : ""}${view === "attention" ? "" : `<div class="toolbar"><label class="search"><span class="sr-label" hidden>Search</span><input id="search" type="search" aria-label="Search ${esc(title)}" placeholder="${view === "projects" ? "Find a project…" : view === "traffic" ? "Find a worker, address, or request…" : "Filter records…"}"></label>${view === "projects" ? '<label>Show <select id="projectFilter"><option value="all">All projects</option><option value="needs">Needs attention</option></select></label>' : view === "traffic" ? '<label>Verdict <select id="verdictFilter"><option value="all">All requests</option><option value="block">Blocked</option><option value="substitute">Substituted</option><option value="allow">Allowed</option></select></label>' : ""}<span class="count" id="resultCount"></span></div>`}<div id="content"></div>`;
+          `<header class="page-head"><div><h1>${title}</h1><p>${description}</p></div><div class="page-actions">${view === "projects" ? button("Review requests", "go-attention", "", "quiet") : view === "traffic" ? button(paused ? "Resume feed" : "Pause feed", "pause", "", "quiet") : ""}</div></header>${sections[view] ? `<div class="subnav" aria-label="${title} sections">${sections[view].map(([k, t]) => `<button data-action="section" data-id="${k}" aria-pressed="${sub === k}">${t}</button>`).join("")}</div>` : ""}${view === "attention" ? "" : `<div class="toolbar"><label class="search"><span class="sr-label" hidden>Search</span><input id="search" type="search" aria-label="Search ${esc(title)}" placeholder="${view === "projects" ? "Find a project…" : view === "traffic" ? "Find a worker, address, or request…" : "Filter records…"}"></label>${view === "projects" ? '<label>Show <select id="projectFilter"><option value="all">Visible projects</option><option value="needs">Needs attention</option><option value="hidden">Hidden projects</option></select></label>' : view === "traffic" ? '<label>Verdict <select id="verdictFilter"><option value="all">All requests</option><option value="block">Blocked</option><option value="substitute">Substituted</option><option value="allow">Allowed</option></select></label>' : ""}<span class="count" id="resultCount"></span></div>`}<div id="content"></div>`;
         $("#search")?.addEventListener("input", (e) => {
           query = e.target.value.toLowerCase();
           renderContent();
@@ -1934,7 +1981,7 @@
         });
       }
       function renderProjects() {
-        if (!loaded.has("workers") && !loaded.has("activities"))
+        if (!loaded.has("workers"))
           return replaceContent(
             '<p class="loading">Loading project activity…</p>',
           );
@@ -1950,12 +1997,14 @@
         });
         list("activities").forEach((a) => {
           const slug = a.targetSlug || a.slug || a.worker;
-          if (slug && slug !== "monitor" && a.ts >= now - TL_HISTORY)
-            ensure(slug).events.push(a);
+          // History alone must not resurrect a project removed by piso down.
+          if (groups.has(slug) && a.ts >= now - TL_HISTORY)
+            groups.get(slug).events.push(a);
         });
         const projects = [...groups.values()]
           .map((p) => {
             p.events.sort((a, b) => b.ts - a.ts);
+            p.hidden = p.workers.every((w) => w.projectHidden);
             p.latest = p.events.find(semantic);
             p.waiting = ["poke", "waiting", "host"].includes(p.latest?.kind);
             return p;
@@ -1967,6 +2016,7 @@
                 p.workers.map((w) => w.context?.project),
                 p.latest?.text,
               ) &&
+              (projectFilter === "hidden" ? p.hidden : !p.hidden) &&
               (projectFilter !== "needs" || p.waiting),
           )
           .sort((a, b) => a.slug.localeCompare(b.slug));
@@ -1975,8 +2025,10 @@
           hideTimelineTip();
           return replaceContent(
             empty(
-              "No matching projects",
-              "Projects appear when workers check in or report activity. Check the project filter.",
+              projectFilter === "hidden" ? "No hidden projects" : "No matching projects",
+              projectFilter === "hidden"
+                ? "Use Hide on a project to move it here. Restore returns it to the visible list."
+                : "Projects appear when workers are registered with piso up. Check the search or Hidden projects filter.",
             ),
           );
         }
@@ -1998,7 +2050,7 @@
                 context = w.context || {};
               const blocks = mergeTimelineEvents(p.events, now);
               timeline.groups.set(p.slug, { blocks });
-              return `<div class="timeline-group" data-slug="${esc(p.slug)}"><div class="timeline-row"><div class="timeline-label"><h2 title="${esc(p.slug)}">${esc(p.slug)}</h2><p title="${esc(context.branch || w.name || "")}">${esc(context.branch || w.name || "")}</p>${p.waiting ? badge("Needs attention", "warn") : p.events.some((e) => e.kind === "active" && now - e.ts < 600000) ? badge("Active", "good") : badge("No recent heartbeat")}</div><div class="timeline-track" data-slug="${esc(p.slug)}">${blocks.map((b) => itemButton(`block:${p.slug}:${b.key}`, { ...b, slug: p.slug }, `timeline-block${semantic(b) ? "" : " heartbeat"}`)).join("")}<span class="timeline-live-line" aria-hidden="true"></span></div></div><div class="timeline-detail" hidden><div class="timeline-label"></div><div class="timeline-detail-lane"></div></div><svg class="timeline-leads" aria-hidden="true"></svg></div>`;
+              return `<div class="timeline-group" data-slug="${esc(p.slug)}"><div class="timeline-row"><div class="timeline-label"><h2 title="${esc(p.slug)}">${esc(p.slug)}</h2>${p.hidden ? button("Restore", "project-restore", p.slug, "quiet small project-restore", `Restore project ${p.slug}`) : button("×", "project-hide", p.slug, "project-visibility", `Hide project ${p.slug}`)}<p title="${esc(context.branch || w.name || "")}">${esc(context.branch || w.name || "")}</p>${p.waiting ? badge("Needs attention", "warn") : p.events.some((e) => e.kind === "active" && now - e.ts < 600000) ? badge("Active", "good") : badge("No recent heartbeat")}</div><div class="timeline-track" data-slug="${esc(p.slug)}">${blocks.map((b) => itemButton(`block:${p.slug}:${b.key}`, { ...b, slug: p.slug }, `timeline-block${semantic(b) ? "" : " heartbeat"}`)).join("")}<span class="timeline-live-line" aria-hidden="true"></span></div></div><div class="timeline-detail" hidden><div class="timeline-label"></div><div class="timeline-detail-lane"></div></div><svg class="timeline-leads" aria-hidden="true"></svg></div>`;
             })
             .join("");
           updateTimeline();
@@ -3334,6 +3386,14 @@
         }
       }
       async function action(name, id, source) {
+        if (name === "project-hide" || name === "project-restore") {
+          const hidden = name === "project-hide";
+          await api("projects/" + enc(id) + "/visibility", "POST", { hidden });
+          await refresh(["workers"]);
+          $("#projectFilter")?.focus({ preventScroll: true });
+          notify(hidden ? "Project moved to Hidden projects." : "Project restored.");
+          return;
+        }
         if (name === "close") return closeDialog();
         if (name === "section") {
           location.hash = "#/" + view + "/" + id;

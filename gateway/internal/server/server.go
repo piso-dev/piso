@@ -561,6 +561,8 @@ func (s *Server) routes(mux *http.ServeMux) {
 	// worker registry (slug↔IP), populated by the host CLI at `piso up`
 	mux.HandleFunc("GET /api/v1/workers", s.handleGetWorkers)
 	mux.HandleFunc("POST /api/v1/workers", s.handlePostWorkers)
+	mux.HandleFunc("DELETE /api/v1/workers/{name}", s.handleDeleteWorker)
+	mux.HandleFunc("POST /api/v1/projects/{slug}/visibility", s.handleProjectVisibility)
 	mux.HandleFunc("POST /api/v1/workers/{name}/internet", s.handleSetWorkerInternet)
 
 	// Host inbox: list / approve / dismiss. Create and cancel are worker-only
