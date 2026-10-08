@@ -178,35 +178,13 @@ func (s *Server) handleImportGithubApp(w http.ResponseWriter, r *http.Request) {
 	}
 	createdSecret := false
 	if rec.ID == "" {
-		// No secretId means "the group the dashboard is working in": reuse
-		// the existing github-app group when there is exactly one, so a
-		// second import lands beside the first app instead of minting a
-		// second GH_TOKEN placeholder.
-		target := in.SecretID
-		if target == "" {
-			groups := map[string]bool{}
-			for _, a := range s.Store.GithubApps() {
-				if sec, ok := s.Store.SecretByID(a.SecretID); ok && sec.Kind == model.SecretKindGithubApp {
-					groups[a.SecretID] = true
-				}
-			}
-			if len(groups) > 1 {
-				writeJSON(w, 409, map[string]string{"error": "select an access secret for this app"})
-				return
-			}
-			if len(groups) == 1 {
-				for id := range groups {
-					target = id
-				}
-			}
-		}
-		fresh, gerr := s.newGithubAppInGroup(target)
+		fresh, created, gerr := s.newGithubAppInGroup(in.SecretID)
 		if gerr != nil {
 			writeJSON(w, gerr.status, map[string]string{"error": gerr.Error()})
 			return
 		}
 		rec = fresh
-		createdSecret = target == ""
+		createdSecret = created
 	}
 	candidate := rec
 	candidate.AppID = in.AppID
@@ -280,7 +258,7 @@ func (s *Server) handleGithubManifest(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else {
-		fresh, err := s.newGithubAppInGroup(in.SecretID)
+		fresh, _, err := s.newGithubAppInGroup(in.SecretID)
 		if err != nil {
 			writeJSON(w, err.status, map[string]string{"error": err.Error()})
 			return
@@ -533,18 +511,28 @@ type githubAppError struct {
 	error
 }
 
-// newGithubAppInGroup creates the group's placeholder secret (GH_TOKEN env
-// key, github-app kind, GitHub host rules) when the group does not exist
-// yet, then returns an empty app record linked to it.
-func (s *Server) newGithubAppInGroup(secretID string) (store.GithubAppRec, *githubAppError) {
+// newGithubAppInGroup defaults to the shared GH_TOKEN routing group. Apps
+// share its placeholder; the router selects an installation for each request.
+// The boolean reports whether this call created the secret, so failed imports
+// never delete a reused group's credentials (even if it has no apps yet).
+func (s *Server) newGithubAppInGroup(secretID string) (store.GithubAppRec, bool, *githubAppError) {
+	if secretID == "" {
+		if existing, ok := s.Store.SecretByEnvKey("GH_TOKEN"); ok {
+			if existing.Kind != model.SecretKindGithubApp || existing.GatewayOnly {
+				return store.GithubAppRec{}, false, &githubAppError{409, fmt.Errorf("GH_TOKEN is already assigned to another secret; free it before connecting GitHub Apps")}
+			}
+			secretID = existing.ID
+		}
+	}
 	var sec store.SecretRec
+	created := false
 	if secretID != "" {
 		found, ok := s.Store.SecretByID(secretID)
 		if !ok {
-			return store.GithubAppRec{}, &githubAppError{404, fmt.Errorf("routing group not found")}
+			return store.GithubAppRec{}, false, &githubAppError{404, fmt.Errorf("routing group not found")}
 		}
 		if found.Kind != model.SecretKindGithubApp {
-			return store.GithubAppRec{}, &githubAppError{400, fmt.Errorf("secret is not a GitHub access group")}
+			return store.GithubAppRec{}, false, &githubAppError{400, fmt.Errorf("secret is not a GitHub access group")}
 		}
 		sec = found
 	} else {
@@ -553,19 +541,16 @@ func (s *Server) newGithubAppInGroup(secretID string) (store.GithubAppRec, *gith
 		for s.Store.PlaceholderTaken(placeholder) {
 			placeholder = "piso_github_" + randID()
 		}
-		envKey := "GH_TOKEN"
-		if _, taken := s.Store.SecretByEnvKey(envKey); taken {
-			envKey = store.DeriveEnvKey("GITHUB_APP_" + randID())
-		}
-		sec = store.SecretRec{ID: "sec_" + randID(), Name: name, Placeholder: placeholder, Kind: model.SecretKindGithubApp, EnvKey: envKey, AllowedHosts: append([]string(nil), githubapp.AllowedHosts...), CreatedAt: time.Now().UTC()}
+		sec = store.SecretRec{ID: "sec_" + randID(), Name: name, Placeholder: placeholder, Kind: model.SecretKindGithubApp, EnvKey: "GH_TOKEN", AllowedHosts: append([]string(nil), githubapp.AllowedHosts...), CreatedAt: time.Now().UTC()}
 		if err := s.Store.AddSecret(sec); err != nil {
-			return store.GithubAppRec{}, &githubAppError{500, err}
+			return store.GithubAppRec{}, false, &githubAppError{500, err}
 		}
 		if err := s.Store.SyncRulesForSecret(sec); err != nil {
-			return store.GithubAppRec{}, &githubAppError{500, err}
+			return store.GithubAppRec{}, false, &githubAppError{500, err}
 		}
+		created = true
 	}
-	return store.GithubAppRec{ID: "gha_" + randID(), SecretID: sec.ID, Placeholder: sec.Placeholder, CreatedAt: time.Now().UTC()}, nil
+	return store.GithubAppRec{ID: "gha_" + randID(), SecretID: sec.ID, Placeholder: sec.Placeholder, CreatedAt: time.Now().UTC()}, created, nil
 }
 
 func (s *Server) ensureGithubApp(name, placeholder string) (store.GithubAppRec, error) {
