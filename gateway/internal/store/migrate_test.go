@@ -76,4 +76,3 @@ func TestApplyMigrationsV3ToV4DefaultsOriginToExpose(t *testing.T) {
 		t.Fatalf("legacy route origin %q", st.Routes[0].Origin)
 	}
 }
-

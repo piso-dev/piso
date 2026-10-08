@@ -167,8 +167,8 @@ type Match struct {
 	Name      string `json:"name"`
 	Severity  string `json:"severity"`
 	Sample    string `json:"sample"` // truncated — never full credential
-	Start     int    `json:"-"`     // byte offset in the scanned buffer
-	End       int    `json:"-"`     // exclusive byte offset
+	Start     int    `json:"-"`      // byte offset in the scanned buffer
+	End       int    `json:"-"`      // exclusive byte offset
 }
 
 // capSample truncates a matched sample so it can't be a full credential leak

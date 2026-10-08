@@ -3,6 +3,7 @@ package githubapp
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -27,8 +28,9 @@ type Client struct {
 }
 
 type cachedToken struct {
-	Token   string
-	Expires time.Time
+	Credential [32]byte
+	Token      string
+	Expires    time.Time
 }
 
 // NewClient returns a Client. httpClient nil uses http.DefaultClient.
@@ -65,8 +67,11 @@ func (c *Client) Mint(app store.GithubAppRec, owner string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	// Route refresh/removal/re-attachment advances UpdatedAt. Retired tokens
+	// remain scanner-visible but cannot be reused after a mapping change.
+	credential := sha256.Sum256([]byte(fmt.Sprintf("%d:%s:%s", app.AppID, app.PrivateKey, app.UpdatedAt.UTC().Format(time.RFC3339Nano))))
 	c.mu.Lock()
-	if tok, ok := c.cache[inst.ID]; ok && tok.Token != "" && tok.Expires.After(c.now().Add(5*time.Minute)) {
+	if tok, ok := c.cache[inst.ID]; ok && tok.Credential == credential && tok.Token != "" && tok.Expires.After(c.now().Add(5*time.Minute)) {
 		c.mu.Unlock()
 		return tok.Token, nil
 	}
@@ -90,7 +95,7 @@ func (c *Client) Mint(app store.GithubAppRec, owner string) (string, error) {
 		out.ExpiresAt = c.now().Add(50 * time.Minute)
 	}
 	c.mu.Lock()
-	c.cache[inst.ID] = cachedToken{Token: out.Token, Expires: out.ExpiresAt}
+	c.cache[inst.ID] = cachedToken{Credential: credential, Token: out.Token, Expires: out.ExpiresAt}
 	c.mu.Unlock()
 	return out.Token, nil
 }
@@ -128,6 +133,9 @@ func (c *Client) FetchInstallation(app store.GithubAppRec, installationID int64)
 	if err := c.doJSON(http.MethodGet, fmt.Sprintf("/app/installations/%d", installationID), jwt, nil, &raw); err != nil {
 		return store.GithubInstallation{}, err
 	}
+	if raw.ID != installationID || strings.TrimSpace(raw.Account.Login) == "" {
+		return store.GithubInstallation{}, fmt.Errorf("github app: unexpected installation identity")
+	}
 	return store.GithubInstallation{
 		ID: raw.ID, Account: strings.ToLower(raw.Account.Login),
 		AccountType: raw.Account.Type, HTMLURL: raw.HTMLURL,
@@ -153,27 +161,31 @@ func (c *Client) ConvertManifest(code string) (appID int64, slug, pem, clientID,
 	return raw.ID, raw.Slug, raw.PEM, raw.ClientID, raw.ClientSecret, raw.WebhookSecret, nil
 }
 
-// ListRepos returns full_names the installation can access (first page).
+// ListRepos returns full_names across every installation repository page.
 func (c *Client) ListRepos(app store.GithubAppRec, owner string) ([]string, error) {
 	tok, err := c.Mint(app, owner)
 	if err != nil {
 		return nil, err
 	}
-	var raw struct {
-		Repositories []struct {
-			FullName string `json:"full_name"`
-		} `json:"repositories"`
-	}
-	if err := c.doJSON(http.MethodGet, "/installation/repositories?per_page=100", tok, nil, &raw); err != nil {
-		return nil, err
-	}
-	out := make([]string, 0, len(raw.Repositories))
-	for _, r := range raw.Repositories {
-		if r.FullName != "" {
-			out = append(out, r.FullName)
+	out := []string{}
+	for page := 1; ; page++ {
+		var raw struct {
+			Repositories []struct {
+				FullName string `json:"full_name"`
+			} `json:"repositories"`
+		}
+		if err := c.doJSON(http.MethodGet, fmt.Sprintf("/installation/repositories?per_page=100&page=%d", page), tok, nil, &raw); err != nil {
+			return nil, err
+		}
+		for _, r := range raw.Repositories {
+			if r.FullName != "" {
+				out = append(out, r.FullName)
+			}
+		}
+		if len(raw.Repositories) < 100 {
+			return out, nil
 		}
 	}
-	return out, nil
 }
 
 // Discover verifies app credentials and loads all installations without saving them.
@@ -304,11 +316,26 @@ func (m *PlaceholderMinter) Mint(placeholder, host, path, body string) (string, 
 	if m == nil || m.Store == nil || m.Client == nil {
 		return "", fmt.Errorf("github app: minter not configured")
 	}
-	app, ok := m.Store.GithubAppByPlaceholder(placeholder)
-	if !ok {
-		return "", fmt.Errorf("github app: no app for placeholder")
+	owner := Owner(host, path, body)
+	var accounts []string
+	var candidates []store.GithubAppRec
+	for _, app := range m.Store.GithubApps() {
+		sec, ok := m.Store.SecretByID(app.SecretID)
+		if !ok || sec.Kind != "github-app" || sec.GatewayOnly || sec.Placeholder != placeholder || app.PrivateKey == "" || app.AppID == 0 {
+			continue
+		}
+		for _, inst := range app.Installations {
+			candidate := app
+			candidate.Installations = []store.GithubInstallation{inst}
+			candidates = append(candidates, candidate)
+			accounts = append(accounts, inst.Account)
+		}
 	}
-	return m.Client.Mint(app, Owner(host, path, body))
+	index, err := ResolveAccount(accounts, owner)
+	if err != nil {
+		return "", err
+	}
+	return m.Client.Mint(candidates[index], owner)
 }
 
 // LiveTokens implements proxy.TokenMinter.

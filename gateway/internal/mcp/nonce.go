@@ -8,10 +8,10 @@ import (
 // nonceCache remembers (pub, nonce) pairs until exp. The gateway rejects a
 // replay inside 2× the freshness window.
 type nonceCache struct {
-	mu      sync.Mutex
-	seen    map[string]time.Time
-	ttl     time.Duration
-	lastGC  time.Time
+	mu     sync.Mutex
+	seen   map[string]time.Time
+	ttl    time.Duration
+	lastGC time.Time
 }
 
 func newNonceCache(ttl time.Duration) *nonceCache {

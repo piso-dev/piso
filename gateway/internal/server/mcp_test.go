@@ -100,7 +100,7 @@ func TestMCPRevokeLeavesPending(t *testing.T) {
 	s := testServer(t)
 	ann := doJSON(t, s.WorkerHandler(), "POST", "/api/v1/worker/mcp", map[string]any{
 		"worker": "piso-worker-demo", "slug": "demo", "name": "ai-boost",
-		"url":    "https://mcp.example.com/mcp",
+		"url": "https://mcp.example.com/mcp",
 	})
 	if ann.Code != 201 {
 		t.Fatalf("announce %d %s", ann.Code, ann.Body.String())

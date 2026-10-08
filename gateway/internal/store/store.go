@@ -36,6 +36,7 @@ type State struct {
 	Contexts        []WorkerCtx         `json:"contexts,omitempty"`
 	McpServers      []McpServerRec      `json:"mcpServers,omitempty"`
 	GithubApps      []GithubAppRec      `json:"githubApps,omitempty"`
+	GithubUser      GithubUserRec       `json:"githubUser,omitempty"`
 	// PiProvider is the shared pi models.json pointer (secret resource id +
 	// plain base URL). Empty means the dashboard has not set one.
 	PiProvider *PiProviderRec `json:"piProvider,omitempty"`
@@ -55,6 +56,7 @@ type PiProviderRec struct {
 
 // JSON-friendly records (this package owns persistence shape).
 type SecretRec struct {
+	GatewayOnly  bool      `json:"gatewayOnly,omitempty"` // gateway-local, never exported or substituted
 	ID           string    `json:"id"`
 	Name         string    `json:"name"`
 	Placeholder  string    `json:"placeholder"`
@@ -646,6 +648,9 @@ func (s *Store) SyncRulesForSecret(rec SecretRec) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	hosts := CanonicalRuleHosts(rec.AllowedHosts)
+	if rec.GatewayOnly {
+		hosts = nil
+	}
 	s.state.Rules = filterRules(s.state.Rules, func(r RuleRec) bool { return r.Placeholder != rec.Placeholder })
 	seq := 0
 	for _, h := range hosts {

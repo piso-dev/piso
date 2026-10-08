@@ -187,6 +187,9 @@ func substituteAll(in Input) ([]string, bool) {
 // treated as having no rule → blocked no-secret-rule (retryable).
 func (in Input) secretAllowedForWorker(token string) bool {
 	sec, ok := in.SecretByPlaceholder[token]
+	if ok && sec.GatewayOnly {
+		return false
+	}
 	if !ok || len(sec.Workers) == 0 {
 		return true
 	}
@@ -248,15 +251,8 @@ func githubAppReady(in Input, token string) bool {
 		return false
 	}
 	owner := githubapp.Owner(in.Host, in.Path, in.Body)
-	if owner == "" {
-		return len(app.Accounts) == 1
-	}
-	for _, a := range app.Accounts {
-		if strings.EqualFold(a, owner) {
-			return true
-		}
-	}
-	return false
+	_, err := githubapp.ResolveAccount(app.Accounts, owner)
+	return err == nil
 }
 
 // lookupRule finds a substitution rule for placeholder on this host.

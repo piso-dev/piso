@@ -174,7 +174,7 @@ func publishAllSecrets(st *store.Store, dataDir string) error {
 	recipients := wrapRecipientIDs(gateways, nil)
 	var first error
 	for _, rec := range st.Secrets() {
-		if rec.Value == "" {
+		if rec.GatewayOnly || rec.Value == "" {
 			continue
 		}
 		hash := plaintextHash(rec.Value)
@@ -214,6 +214,9 @@ func PublishPlaceholder(st *store.Store, dataDir, placeholder string, recipients
 	rec, ok := st.SecretByPlaceholder(placeholder)
 	if !ok {
 		return nil, fmt.Errorf("unknown placeholder %s", placeholder)
+	}
+	if rec.GatewayOnly {
+		return nil, fmt.Errorf("gateway-only secrets cannot be shared")
 	}
 	if rec.Value == "" {
 		return nil, fmt.Errorf("secret has no local value")

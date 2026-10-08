@@ -826,6 +826,37 @@
       .empty p {
         color: var(--muted);
       }
+      .github-gate {
+        text-align: center;
+      }
+      .github-gate .intro-actions {
+        justify-content: center;
+        margin-top: 20px;
+      }
+      .github-callback {
+        grid-column: 1 / -1;
+        min-width: 0;
+        padding: 16px;
+        background: var(--inset);
+        border: 1px solid var(--line);
+        border-radius: 5px;
+      }
+      .github-callback-value {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 12px;
+        margin-top: 10px;
+      }
+      .github-callback code {
+        flex: 1 1 220px;
+        min-width: 0;
+        overflow-wrap: anywhere;
+      }
+      .github-callback small {
+        display: block;
+        margin-top: 8px;
+      }
       .record {
         border-top: 1px solid var(--line);
       }
@@ -971,6 +1002,74 @@
         width: 18px;
         height: 18px;
         accent-color: var(--blue);
+      }
+      .worker-scope .scope-group {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+      .scope-option {
+        flex: 1;
+        padding: 8px 10px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: var(--panel);
+        color: var(--muted);
+        font: inherit;
+        cursor: pointer;
+      }
+      .scope-option.active {
+        border-color: var(--blue);
+        color: var(--blue);
+        font-weight: 600;
+      }
+      #workerPick {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      #workerPick[hidden] {
+        display: none;
+      }
+      #workerList {
+        max-height: 220px;
+        overflow: auto;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+      }
+      .worker-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 7px 10px;
+      }
+      .worker-row + .worker-row {
+        border-top: 1px solid var(--line);
+      }
+      .worker-row[hidden] {
+        display: none;
+      }
+      .worker-name {
+        font-family: var(--mono, monospace);
+        font-size: 12px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .worker-toggle {
+        min-width: 52px;
+        padding: 4px 10px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: var(--panel);
+        color: var(--muted);
+        font: inherit;
+        cursor: pointer;
+      }
+      .worker-toggle.on {
+        border-color: var(--blue);
+        background: var(--blue);
+        color: #fff;
       }
       .suggestions {
         list-style: none;
@@ -1260,6 +1359,13 @@
           }
         }
       }
+      .github-mapping { margin: 24px 0; }
+      .github-mapping h3 { margin-bottom: 12px; }
+      .github-table-scroll { overflow-x: auto; margin-top: 16px; }
+      .github-routing-table { width: 100%; border-collapse: collapse; text-align: left; }
+      .github-routing-table th, .github-routing-table td { padding: 12px 10px; vertical-align: top; border-bottom: 1px solid var(--line); }
+      .github-routing-table td:last-child { min-width: 220px; }
+      .github-routing-table button { margin: 0 4px 6px 0; }
     </style>
   </head>
   <body>
@@ -1354,7 +1460,9 @@
         mcp: "mcp",
         mcpPending: "mcp/pending",
         github: "github-app",
+        githubMappings: "github-app/mappings",
         githubPending: "github-app/pending",
+        githubUser: "github-user",
         connections: "connections",
         secrets: "secrets",
         provider: "pi-provider",
@@ -1615,7 +1723,11 @@
                 loaded.add(key);
                 failures.delete(key);
               })
-              .catch((e) => failures.set(key, e.message))
+              .catch((e) => {
+                failures.set(key, e.message);
+                if (key === "githubUser") data.githubUser = { ...data.githubUser, connected: false };
+                if (key === "githubMappings") data.githubMappings = [];
+              })
               .finally(() => pending.delete(key));
             pending.set(key, job);
             return job;
@@ -2546,7 +2658,7 @@
         ],
         github: [
           "GitHub Apps",
-          "Create an app on your account, then install it on the repositories workers need.",
+          "Each access secret routes requests to the matching account’s app installation. Private keys and installation tokens stay in the gateway.",
           "Connect GitHub",
           "github-connect",
         ],
@@ -2599,10 +2711,29 @@
         const [title, description, add, act] = intros[sub];
         let rows = list(sub);
         const actions = [
-          add ? button(add, act, "", "primary") : "",
-          sub === "github" ? button("Connect existing app", "github-import", "", "quiet") : "",
+          add && (sub !== "github" || data.githubUser?.connected) ? button(add, act, "", "primary") : "",
+          sub === "github" && data.githubUser?.connected ? button("Connect existing app", "github-import", "", "quiet") : "",
         ].filter(Boolean);
         const intro = `<div class="section-intro"><div><h2>${title}</h2><p>${description}</p></div>${actions.length ? `<div class="intro-actions">${actions.join("")}</div>` : ""}</div>`;
+        if (sub === "github") {
+          const github = data.githubUser || {};
+          if (!github.connected) {
+            count(0);
+            return replaceContent(intro + (!github.configured ? `<section class="empty github-gate"><h2>Connect GitHub</h2><p>Add a GitHub OAuth App (client ID and secret) to enable account-scoped app management.</p><div class="intro-actions">${button("Configure GitHub sign-in", "github-user-config", "", "primary")}</div></section>` : `<section class="github-gate"><h3>Sign in to GitHub</h3><p>Verifying your GitHub session unlocks app management on this page. Workers keep using their existing tokens.</p><div class="intro-actions">${button("Sign in with GitHub", "github-user-authorize", "", "primary")}${button("Change OAuth App", "github-user-config", "", "quiet")}</div></section>`));
+          }
+          const signedIn = github.login ? `<p class="muted">Managing apps as <strong>${esc(github.login)}</strong> · ${button("Sign out", "github-user-signout", "", "small quiet")}</p>` : "";
+          const groups = list("githubMappings").filter((g) => matches(JSON.stringify(g)));
+          count(groups.length);
+          return replaceContent(intro + signedIn + (groups.map((g) => {
+            const scope = g.gatewayOnly ? "No workers" : !g.workers?.length || g.workers.includes("*") ? "All workers" : g.workers.join(", ");
+            const rows = (g.apps || []).flatMap((app) => (app.installations?.length ? app.installations : [{account: "Not installed", id: "—"}]).map((inst, index) => {
+              const conflict = (g.conflicts || []).includes(inst.account.toLowerCase());
+              const actions = index ? "" : button(app.status === "needs-register" ? "Create app" : "Install", app.status === "needs-register" ? "github-connect" : "github-install", app.id, "small") + button("Replace credentials", "github-reconnect", app.id, "small") + button("Refresh", "github-refresh", app.id, "small") + button("Remove", "github-remove", app.id, "small danger");
+              return `<tr><td>${esc(inst.account)}${inst.repos?.length ? `<details><summary>${inst.repos.length} repositories</summary>${inst.repos.map((repo) => `<div>${esc(repo)}</div>`).join("")}</details>` : ""}</td><td>${esc(app.name || app.slug)}<br><small>App ${esc(app.appId || "not registered")}</small></td><td>${esc(inst.id)}</td><td>${badge(conflict ? "Ambiguous — blocked" : app.status, conflict || app.status !== "ok" ? "warn" : "good")}</td><td>${actions}</td></tr>`;
+            })).join("");
+            return `<section class="github-mapping"><h3>${esc(g.name)}</h3>${facts([["Environment key", g.envKey], ["Placeholder", g.placeholder], ["Workers", scope], ["Allowed hosts", g.allowedHosts]])}<div class="intro-actions">${button("Edit worker scope", "secret-edit", g.secretId, "small")}${button("Add existing app", "github-import", g.secretId, "small")}${button("Create another app", "github-create-group", g.secretId, "small")}</div>${(g.conflicts || []).length ? `<p role="status">Routing blocked for ${esc(g.conflicts.join(", "))}: remove the duplicate installation mapping.</p>` : ""}${(g.warnings || []).map((warning) => `<p role="status">${esc(warning)}</p>`).join("")}<div class="github-table-scroll"><table class="github-routing-table"><thead><tr><th>Account</th><th>App</th><th>Installation</th><th>Status</th><th>Actions</th></tr></thead><tbody>${rows || '<tr><td colspan="5">No apps connected. Add an existing app or create one.</td></tr>'}</tbody></table></div></section>`;
+          }).join("") || '<p class="muted">No GitHub access secrets yet. Connect an app to create one.</p>'));
+        }
         if (sub === "provider") {
           const p = data.provider || {};
           if ($("#resultCount")) $("#resultCount").textContent = "";
@@ -2917,7 +3048,7 @@
         );
       }
       async function changed(keys) {
-        await refresh(keys);
+        await refresh([...new Set([...keys, ...(keys.some((key) => ["github", "secrets", "githubUser"].includes(key)) ? ["githubMappings", "secrets"] : [])])]);
       }
       function secretForm(id) {
         const s = list("secrets").find((s) => s.id === id) || {};
@@ -2949,7 +3080,8 @@
                 hint: "Comma-separated hostnames. Use * only for intentional global access.",
                 full: true,
               },
-            ),
+            ) +
+            workerScopeField(s),
           "Save secret",
           async (f) => {
             const body = {
@@ -2961,6 +3093,19 @@
             };
             if (!id && !body.placeholder.startsWith("piso_"))
               throw new Error("The placeholder must begin with piso_.");
+            const scope =
+              $("#workerScope .scope-option.active")?.dataset.scope || "all";
+            body.gatewayOnly = scope === "none";
+            const selected = [
+              ...($("#workerList")?.querySelectorAll("button") || []),
+            ]
+              .filter((b) => b.dataset.on === "1")
+              .map((b) => b.dataset.slug);
+            body.workers = scope === "some" ? selected : [];
+            if (scope === "some" && body.workers.length === 0)
+              throw new Error(
+                "Select at least one worker, or choose No workers.",
+              );
             await api(
               "secrets" + (id ? "/" + enc(id) : ""),
               id ? "PUT" : "POST",
@@ -2983,7 +3128,154 @@
                   .replace(/^_+|_+$/g, "");
           };
         }
+        workerScopeInit();
       }
+      // Worker scope: three-way choice. "none" maps to the gateway-only
+      // secret mode (env export AND proxy substitution are both denied);
+      // "all" is the legacy empty-list; "some" shows the worker picker.
+      function workerScopeField(s) {
+        const allWorkers = !s.workers?.length || s.workers.includes("*");
+        const workers = [...new Map(list("workers")
+          .filter((w) => w.slug && w.slug !== "*")
+          .map((w) => [w.slug, w])).values()];
+        // Keep saved workers editable even when absent from the registry.
+        for (const slug of s.workers || []) {
+          if (slug && slug !== "*" && !workers.some((w) => w.slug === slug))
+            workers.push({ slug, name: slug });
+        }
+        // Toggles default ON (per spec); an existing narrow scope preselects
+        // its own workers instead.
+        const preset = (w) =>
+          allWorkers || (s.workers || []).includes(w.slug);
+        const mode = s.gatewayOnly ? "none" : allWorkers ? "all" : "some";
+        return `<div class="field full worker-scope" id="workerScope"><span>Worker access</span><div class="scope-group" role="group" aria-label="Worker access">${[
+          ["none", "No workers"],
+          ["all", "All workers"],
+          ["some", "Select workers"],
+        ]
+          .map(
+            ([value, label]) =>
+              `<button type="button" class="scope-option${mode === value ? " active" : ""}" data-scope="${value}" aria-pressed="${mode === value}">${label}</button>`,
+          )
+          .join("")}</div><div id="workerPick" ${mode === "some" ? "" : "hidden"}><input id="workerSearch" type="search" placeholder="Filter workers" aria-label="Filter workers">${
+          workers.length
+            ? `<div id="workerList">${workers
+                .map((w) => {
+                  const on = preset(w);
+                  return `<div class="worker-row"><span class="worker-name">${esc(w.name || w.slug)}</span><button type="button" class="worker-toggle${on ? " on" : ""}" data-slug="${esc(w.slug)}" data-on="${on ? "1" : "0"}" aria-label="Access for ${esc(w.slug)}" aria-pressed="${on}">${on ? "On" : "Off"}</button></div>`;
+                })
+                .join("")}</div>`
+            : `<p class="muted" id="workerEmpty">No named workers yet. A worker appears here after its first check-in.</p>`
+        }</div><small id="scopeHint">${mode === "none" ? "Gateway only: workers cannot receive or use this secret." : mode === "some" ? "Only the highlighted workers receive this placeholder." : "Every worker receives this placeholder in its environment."}</small></div>`;
+      }
+      function workerScopeInit() {
+        const root = $("#workerScope");
+        if (!root) return;
+        const setMode = (m) => {
+          root.querySelectorAll(".scope-option").forEach((b) => {
+            const on = b.dataset.scope === m;
+            b.classList.toggle("active", on);
+            b.setAttribute("aria-pressed", String(on));
+          });
+          $("#workerPick").hidden = m !== "some";
+          const hint = {
+            none: "Gateway only: workers cannot receive or use this secret.",
+            all: "Every worker receives this placeholder in its environment.",
+            some: "Only the highlighted workers receive this placeholder.",
+          }[m];
+          $("#scopeHint").textContent = hint;
+          const search = $("#workerSearch");
+          if (search && m === "some") search.focus();
+        };
+        root.querySelectorAll(".scope-option").forEach((b) => {
+          b.onclick = () => setMode(b.dataset.scope);
+        });
+        root.querySelectorAll(".worker-toggle").forEach((b) => {
+          b.onclick = () => {
+            const on = b.dataset.on !== "1";
+            b.dataset.on = on ? "1" : "0";
+            b.classList.toggle("on", on);
+            b.setAttribute("aria-pressed", String(on));
+            b.textContent = on ? "On" : "Off";
+          };
+        });
+        const search = $("#workerSearch");
+        if (search)
+          search.oninput = () => {
+            const q = search.value.trim().toLowerCase();
+            root.querySelectorAll("#workerList .worker-row").forEach((row) => {
+              const name = row.querySelector(".worker-name").textContent;
+              const slug = row.querySelector("button").dataset.slug;
+              row.hidden = !`${name} ${slug}`.toLowerCase().includes(q);
+            });
+          };
+      }
+      async function githubUserForm() {
+        const current = data.githubUser || {};
+        const callback = current.callbackUrl || "";
+        formDialog(
+          "GitHub sign-in",
+          "Register a GitHub OAuth App once, then sign in to manage account-scoped apps. The secret is stored in the gateway only.",
+          `<p class="field full"><a href="https://github.com/settings/applications/new" target="_blank" rel="noopener noreferrer">Create a new GitHub OAuth App</a></p>` +
+            `<label class="field full" for="github-oauth-app-id"><span>Client ID</span><input id="github-oauth-app-id" name="clientId" type="text" inputmode="text" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" data-lpignore="true" data-1p-ignore data-bwignore data-protonpass-ignore="true" required value="${esc(current.clientId || "")}"><small>From your OAuth App's developer settings.</small></label>` +
+            field("clientSecret", "Client secret", "", { type: "password", required: true, full: true, hint: "Stored in the gateway only. Re-enter both values to replace the OAuth App." }) +
+            `<div class="github-callback" role="group" aria-labelledby="github-callback-label"><span id="github-callback-label">Authorization callback URL</span><div class="github-callback-value"><code id="github-callback-value">${esc(callback || "Unavailable — close this dialog and refresh to retry.")}</code><button type="button" id="github-callback-copy" aria-label="Copy authorization callback URL" ${callback ? "" : "disabled"}>Copy</button></div><small>Paste this exact URL into your GitHub OAuth App settings.</small><small id="github-callback-status" role="status" aria-live="polite"></small></div>`,
+          "Save",
+          async (f) => {
+            const body = { clientId: f.clientId };
+            if (f.clientSecret) body.clientSecret = f.clientSecret;
+            await api("github-user/config", "PUT", body);
+            await changed(["githubUser"]);
+            return "GitHub OAuth App saved.";
+          },
+        );
+        $("#actionForm").setAttribute("autocomplete", "off");
+        $("#github-callback-copy").onclick = async () => {
+          const status = $("#github-callback-status");
+          try {
+            // piso.local may be HTTP: Clipboard API is secure-context only.
+            if (window.navigator.clipboard?.writeText) {
+              await window.navigator.clipboard.writeText(callback);
+            } else {
+              const active = document.activeElement;
+              const input = document.createElement("textarea");
+              input.value = callback;
+              input.setAttribute("readonly", "");
+              input.style.cssText = "position:fixed;opacity:0;pointer-events:none";
+              $("#actionForm").append(input);
+              try {
+                input.select();
+                if (!document.execCommand("copy")) throw new Error("Copy unavailable");
+              } finally {
+                input.remove();
+                active?.focus();
+              }
+            }
+            status.textContent = "Copied.";
+          } catch {
+            status.textContent = "Could not copy. Select the URL above and copy it manually.";
+          }
+        };
+      }
+
+      function githubUserStart() {
+        const callback = safeURL(data.githubUser?.callbackUrl);
+        if (!callback) throw new Error("Refresh GitHub sign-in status and try again.");
+        // Navigate on the callback origin so the browser-binding cookie is
+        // present when GitHub returns. This endpoint redirects, not JSON.
+        openExternal(new URL("/api/v1/github-user/authorize", callback).href);
+      }
+
+      async function githubUserStop() {
+        try {
+          await api("github-user", "DELETE");
+          await changed(["githubUser"]);
+          notify("Signed out of GitHub.");
+        } catch (error) {
+          notify(error.message, true);
+        }
+      }
+
       function providerForm() {
         const p = data.provider || {};
         formDialog(
@@ -3368,11 +3660,11 @@
           throw e;
         }
       }
-      function githubImportForm() {
+      function githubImportForm(secretId = "", app = null) {
         formDialog(
           "Connect existing app",
           "Reconnect an app you created earlier without registering a new one. Paste the numeric app ID from its settings page and upload its private key file (.pem). The gateway verifies the pair with GitHub before saving, then lists every account or organization the app is installed on. Nothing is saved when verification fails.",
-          field("appId", "App ID", "", {
+          field("appId", "App ID", app?.appId || "", {
             required: true,
             hint: "Numeric ID from https://github.com/settings/apps/<your-app>. Values above 65535 are expected.",
           }) +
@@ -3390,9 +3682,12 @@
               throw new Error(
                 "That file does not look like a private key (.pem).",
               );
+            if (app && Number(f.appId) !== app.appId)
+              throw new Error("Keep the same App ID when replacing credentials. Use Add existing app for another app.");
             const out = await api("github-app/import", "POST", {
               appId: Number(f.appId),
               privateKey: key,
+              ...(secretId ? {secretId} : {}),
             });
             await changed(["github", "githubPending", "connections"]);
             const accounts = (out.installations || [])
@@ -3406,13 +3701,30 @@
         );
       }
 
-      async function githubConnect() {
+      async function githubConnect(id = "", secretId = "") {
+        const accounts = await api("github-user/organizations");
+        formDialog(
+          "Create a private GitHub App",
+          "Choose your personal account or an organization you own. GitHub will confirm registration and repository access; credentials stay in the gateway.",
+          field("account", "App owner", "", { required: true, full: true, choices: [
+            ["", "Choose an account"],
+            [accounts.login, `${accounts.login} — Personal account`],
+            ...(accounts.orgs || []).map((org) => [org.login, `${org.login} — Organization`]),
+          ], hint: "Only active organization owners are listed. Missing an organization? Check its OAuth App access policy on GitHub." }),
+          "Continue on GitHub",
+          async (f) => {
+            await githubCreate(id, secretId, f.account);
+            return "Finish creating and installing your private app on GitHub.";
+          },
+        );
+      }
+      async function githubCreate(id, secretId, account) {
         const tab = window.open("about:blank", "_blank");
         if (!tab) throw new Error("Allow popups to create a GitHub App.");
         tab.opener = null;
         tab.name = "piso-github-" + Date.now();
         try {
-          const out = await api("github-app/manifest", "POST", {});
+          const out = await api("github-app/manifest", "POST", {id, secretId, account});
           if (!out?.manifest || !safeURL(out.action))
             throw new Error(
               "The gateway returned an incomplete GitHub manifest.",
@@ -3498,6 +3810,9 @@
         }
         if (name === "secret-add" || name === "secret-edit")
           return secretForm(id);
+        if (name === "github-user-config") return githubUserForm();
+        if (name === "github-user-authorize") return githubUserStart();
+        if (name === "github-user-signout") return githubUserStop();
         if (name === "provider-edit") return providerForm();
         if (
           ["rule-add", "pattern-add", "exception-add", "domain-add"].includes(
@@ -3563,8 +3878,14 @@
               await changed(["mcp", "mcpPending"]);
             },
           );
-        if (name === "github-connect") return githubConnect();
-        if (name === "github-import") return githubImportForm();
+        if (name === "github-connect") return githubConnect(id);
+        if (name === "github-create-group") return githubConnect("", id);
+        if (name === "github-import") return githubImportForm(id);
+        if (name === "github-reconnect") {
+          const app = list("github").find((app) => app.id === id);
+          if (!app) throw new Error("App not found; refresh the page.");
+          return githubImportForm(app.secretId, app);
+        }
         if (name === "github-install") return githubInstall(id);
         if (name === "github-refresh") {
           await api("github-app/" + enc(id) + "/refresh", "POST", {});
@@ -3689,7 +4010,7 @@
           asks: ["asks"],
           route: ["routes", "workers"],
           mcp: ["mcp", "mcpPending"],
-          github: ["github", "githubPending", "connections"],
+          github: ["github", "githubUser", "githubMappings", "githubPending", "connections"],
         };
         Object.entries(updates).forEach(([event, keys]) =>
           es.addEventListener(event, () => refresh(keys)),
@@ -3711,6 +4032,8 @@
               "mcp",
               "mcpPending",
               "github",
+              "githubMappings",
+              "githubUser",
               "githubPending",
               "connections",
               "routes",

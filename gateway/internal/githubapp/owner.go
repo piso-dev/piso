@@ -29,7 +29,9 @@ func Owner(host, path, body string) string {
 		path = path[:q]
 	}
 	switch host {
-	case "github.com", "www.github.com", "codeload.github.com", "uploads.github.com":
+	case "uploads.github.com":
+		return apiOwner(path)
+	case "github.com", "www.github.com", "codeload.github.com":
 		if o := firstPathOwner(path, githubSiteReserved); o != "" {
 			return o
 		}
@@ -38,7 +40,12 @@ func Owner(host, path, body string) string {
 			return o
 		}
 	}
-	return ownerFromJSON(body)
+	// Only GraphQL variables provide routing hints from a body. Arbitrary
+	// REST payloads (issue text, PR head owners, etc.) are not route selectors.
+	if host == "api.github.com" && path == "graphql" {
+		return ownerFromJSON(body)
+	}
+	return ""
 }
 
 func apiOwner(path string) string {
@@ -99,7 +106,18 @@ func ownerFromJSON(body string) string {
 	if err := json.Unmarshal([]byte(body), &v); err != nil {
 		return ""
 	}
-	return findOwner(v, 0)
+	owners := map[string]bool{}
+	collectOwners(v, owners, 0)
+	if len(owners) > 1 {
+		return "!ambiguous" // Never fall back to the single-installation route.
+	}
+	if len(owners) == 0 {
+		return ""
+	}
+	for owner := range owners {
+		return owner
+	}
+	return ""
 }
 
 func findOwner(v any, depth int) string {
@@ -192,4 +210,35 @@ var githubSiteReserved = map[string]bool{
 	"account": true, "auth": true, "oauth": true, "join": true,
 	"stars": true, "watching": true, "codespaces": true, "copilot": true,
 	"gist": true, "gitignore": true, "site": true, "readme": true,
+}
+
+// collectOwners gathers owner candidates instead of guessing a single one:
+// a body with several distinct owners is ambiguous, not a route selector.
+func collectOwners(v any, owners map[string]bool, depth int) {
+	if depth > 6 {
+		return
+	}
+	switch t := v.(type) {
+	case map[string]any:
+		if nested, ok := t["owner"].(map[string]any); ok {
+			if o := stringField(nested, "login", "name"); o != "" {
+				owners[strings.ToLower(o)] = true
+			}
+		} else if o, _ := t["owner"].(string); o != "" {
+			owners[strings.ToLower(o)] = true
+		}
+		if o, _ := t["org"].(string); o != "" {
+			owners[strings.ToLower(o)] = true
+		}
+		if o := stringField(t, "organization"); o != "" {
+			owners[strings.ToLower(o)] = true
+		}
+		for _, child := range t {
+			collectOwners(child, owners, depth+1)
+		}
+	case []any:
+		for _, child := range t {
+			collectOwners(child, owners, depth+1)
+		}
+	}
 }

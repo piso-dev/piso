@@ -1,9 +1,12 @@
 package server
 
 import (
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"piso/gateway/internal/store"
@@ -24,10 +27,34 @@ func (t handlerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 // githubStubCalls counts hits per fake endpoint.
 type githubStubCalls struct{ app, installations, other int }
 
-// stubGithubServer wires a Server whose GitHub API traffic is answered by a
-// fake api.github.com with exactly two endpoints: GET /app (identity) and
-// GET /app/installations (list). Every test asserts on the returned counters.
-func stubGithubServer(t *testing.T, appID int64, installations []store.GithubInstallation) (*Server, *githubStubCalls) {
+// jwtIssuer extracts the unsigned iss claim from an Authorization header.
+// Signature verification is the gateway's job; the stub only checks that
+// the JWT names the app being called.
+func jwtIssuer(auth string) (int64, error) {
+	parts := strings.Split(strings.TrimPrefix(auth, "Bearer "), ".")
+	if len(parts) != 3 {
+		return 0, fmt.Errorf("not a jwt")
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return 0, err
+	}
+	var claim struct {
+		Iss int64 `json:"iss"`
+	}
+	if err := json.Unmarshal(raw, &claim); err != nil {
+		return 0, err
+	}
+	return claim.Iss, nil
+}
+
+// stubGithubApps wires a Server whose GitHub API traffic is answered by a
+// fake api.github.com. apps is the registry of apps that "exist on GitHub"
+// (app ID → slug): /app returns the identity of the JWT issuer only when it
+// is registered, mirroring GitHub's signature-verified lookup — an app ID
+// whose key GitHub does not know yields 401. Every test asserts on the
+// returned counters.
+func stubGithubApps(t *testing.T, apps map[int64]string, installations []store.GithubInstallation) (*Server, *githubStubCalls) {
 	t.Helper()
 	s := testServer(t)
 	calls := &githubStubCalls{}
@@ -36,11 +63,17 @@ func stubGithubServer(t *testing.T, appID int64, installations []store.GithubIns
 		switch r.URL.Path {
 		case "/app":
 			calls.app++
-			if r.Header.Get("Authorization") == "" {
+			iss, err := jwtIssuer(r.Header.Get("Authorization"))
+			if err != nil {
 				w.WriteHeader(401)
 				return
 			}
-			writeJSON(w, 200, map[string]any{"id": appID, "name": "existing-app", "slug": "existing-app"})
+			slug, ok := apps[iss]
+			if !ok {
+				w.WriteHeader(401)
+				return
+			}
+			writeJSON(w, 200, map[string]any{"id": iss, "name": "existing-app", "slug": slug})
 		case "/app/installations":
 			calls.installations++
 			out := []map[string]any{}
@@ -59,6 +92,11 @@ func stubGithubServer(t *testing.T, appID int64, installations []store.GithubIns
 	})
 	s.HTTP = &http.Client{Transport: handlerTransport{handler: handler}}
 	return s, calls
+}
+
+// stubGithubServer registers a single app in the fake GitHub registry.
+func stubGithubServer(t *testing.T, appID int64, installations []store.GithubInstallation) (*Server, *githubStubCalls) {
+	return stubGithubApps(t, map[int64]string{appID: "existing-app"}, installations)
 }
 
 func importBody(t *testing.T, appID int64) map[string]any {
@@ -141,5 +179,67 @@ func TestImportGithubAppRequiresBothFields(t *testing.T) {
 	}
 	if calls.app != 0 || calls.installations != 0 || calls.other != 0 {
 		t.Fatalf("missing fields must fail before any GitHub call, got %+v", calls)
+	}
+}
+
+func TestImportGithubAppAppendsToGroup(t *testing.T) {
+	s, calls := stubGithubApps(t, map[int64]string{42: "personal-app", 43: "org-app"}, []store.GithubInstallation{{ID: 9, Account: "alpha", AccountType: "User"}})
+	if w := doJSON(t, s.ControlHandler(), "POST", "/api/v1/github-app/import", importBody(t, 42)); w.Code != 200 {
+		t.Fatalf("first import: %d %s", w.Code, w.Body.String())
+	}
+	// Second import with a different app ID lands in the same group and
+	// does not replace the first app.
+	w := doJSON(t, s.ControlHandler(), "POST", "/api/v1/github-app/import", importBody(t, 43))
+	if w.Code != 200 {
+		t.Fatalf("second import: %d %s", w.Code, w.Body.String())
+	}
+	apps := s.Store.GithubApps()
+	if len(apps) != 2 {
+		t.Fatalf("want 2 apps, got %+v", apps)
+	}
+	if apps[0].SecretID != apps[1].SecretID {
+		t.Fatal("apps must share one routing group secret")
+	}
+	if apps[0].Placeholder != apps[1].Placeholder || apps[0].Placeholder == "" {
+		t.Fatal("apps must share one placeholder")
+	}
+	if sec, ok := s.Store.SecretByID(apps[0].SecretID); !ok || sec.Kind != "github-app" || sec.EnvKey != "GH_TOKEN" {
+		t.Fatalf("group secret %+v", sec)
+	}
+	if calls.app != 2 || calls.installations != 2 {
+		t.Fatalf("expected /app + /app/installations per import, got %+v", calls)
+	}
+	// Same app ID again is a reconnect, not a third app.
+	w = doJSON(t, s.ControlHandler(), "POST", "/api/v1/github-app/import", importBody(t, 42))
+	if w.Code != 200 {
+		t.Fatalf("reconnect: %d %s", w.Code, w.Body.String())
+	}
+	if apps = s.Store.GithubApps(); len(apps) != 2 {
+		t.Fatalf("reconnect must not add an app, got %d", len(apps))
+	}
+}
+
+func TestImportGithubAppUnknownGroup404(t *testing.T) {
+	s, calls := stubGithubServer(t, 42, nil)
+	w := doJSON(t, s.ControlHandler(), "POST", "/api/v1/github-app/import",
+		map[string]any{"appId": 42, "privateKey": testGithubAppPEM(t).PrivateKey, "secretId": "sec_nope"})
+	if w.Code != 404 {
+		t.Fatalf("%d %s", w.Code, w.Body.String())
+	}
+	if calls.app != 0 || len(s.Store.GithubApps()) != 0 {
+		t.Fatal("unknown group must fail before any GitHub call")
+	}
+}
+
+func TestImportGithubAppFailedImportLeavesNoPlaceholder(t *testing.T) {
+	s, _ := stubGithubServer(t, 42, nil)
+	// Wrong app ID: Discover fails; the auto-created group secret must be
+	// removed so a failed import leaves no GH_TOKEN placeholder behind.
+	w := doJSON(t, s.ControlHandler(), "POST", "/api/v1/github-app/import", importBody(t, 999))
+	if w.Code != 502 {
+		t.Fatalf("%d %s", w.Code, w.Body.String())
+	}
+	if len(s.Store.GithubApps()) != 0 || len(s.Store.Secrets()) != 0 {
+		t.Fatalf("failed import must clean up, apps=%d secrets=%d", len(s.Store.GithubApps()), len(s.Store.Secrets()))
 	}
 }

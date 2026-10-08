@@ -37,7 +37,9 @@ type Server struct {
 	// HTTP is used for MCP OAuth discovery/DCR/token (tests inject).
 	HTTP *http.Client
 	// DenyPeer overrides worker-vpc detection on the control plane (tests).
-	DenyPeer denyPeerFunc
+	DenyPeer          denyPeerFunc
+	githubOAuthMu     sync.Mutex
+	githubOAuthStates map[string]githubOAuthAttempt
 
 	// directMu guards workers that have checked in on the public URL.
 	// Not persisted: a gateway restart must see a fresh direct check-in
@@ -140,6 +142,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	})
 	s.registerTechnocore(mux)
 	s.registerGithubApp(mux)
+	s.registerGithubUser(mux)
 	mux.HandleFunc("GET /api/v1/connections", s.handleConnections)
 
 	// CA cert for distribution
@@ -170,6 +173,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 			EnvKey       string   `json:"envKey"`
 			AllowedHosts []string `json:"allowedHosts"`
 			Workers      []string `json:"workers"`
+			GatewayOnly  bool     `json:"gatewayOnly"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 			writeJSON(w, 400, map[string]string{"error": "bad json"})
@@ -196,7 +200,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 		rec := store.SecretRec{
 			ID: "sec_" + randID(), Name: in.Name, Placeholder: in.Placeholder,
 			Value: in.Value, EnvKey: in.EnvKey, AllowedHosts: in.AllowedHosts,
-			Workers: in.Workers, CreatedAt: time.Now().UTC(),
+			Workers: in.Workers, GatewayOnly: in.GatewayOnly, CreatedAt: time.Now().UTC(),
 		}
 		if err := s.Store.AddSecret(rec); err != nil {
 			writeJSON(w, 500, map[string]string{"error": err.Error()})
@@ -219,15 +223,17 @@ func (s *Server) routes(mux *http.ServeMux) {
 
 	// PUT /api/v1/secrets/{id} — edit an existing secret (dashboard modal).
 	// The real value is never returned over GET, so an empty value means
-	// "keep the existing value". Placeholder and worker scoping are
-	// intentionally not editable here (substitution rules reference the
-	// placeholder; scoping is set at creation via add-monitor / the API).
+	// "keep the existing value". Placeholder is intentionally not editable
+	// here because substitution rules reference it. Omitted worker-scope
+	// fields preserve existing access restrictions.
 	mux.HandleFunc("PUT /api/v1/secrets/{id}", func(w http.ResponseWriter, r *http.Request) {
 		var in struct {
-			Name         string   `json:"name"`
-			Value        string   `json:"value"` // empty = keep existing
-			EnvKey       string   `json:"envKey"`
-			AllowedHosts []string `json:"allowedHosts"`
+			Name         string    `json:"name"`
+			Value        string    `json:"value"` // empty = keep existing
+			EnvKey       string    `json:"envKey"`
+			AllowedHosts []string  `json:"allowedHosts"`
+			Workers      *[]string `json:"workers"`
+			GatewayOnly  *bool     `json:"gatewayOnly"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 			writeJSON(w, 400, map[string]string{"error": "bad json"})
@@ -260,6 +266,14 @@ func (s *Server) routes(mux *http.ServeMux) {
 		// captures are replayed so an edit that newly allows a host also
 		// unblocks requests that were stuck on it.
 		rec.AllowedHosts = in.AllowedHosts
+		// Explicit scope updates replace the previous values. Omission must
+		// not broaden access for older clients editing unrelated fields.
+		if in.GatewayOnly != nil {
+			rec.GatewayOnly = *in.GatewayOnly
+		}
+		if in.Workers != nil {
+			rec.Workers = *in.Workers
+		}
 		if err := s.Store.ReplaceSecret(rec); err != nil {
 			writeJSON(w, 500, map[string]string{"error": err.Error()})
 			return
@@ -729,7 +743,7 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 func storeRecToSummary(rc store.SecretRec) model.SecretSummary {
 	return model.SecretSummary{
 		ID: rc.ID, Name: rc.Name, Placeholder: rc.Placeholder, Kind: rc.Kind, EnvKey: rc.EnvKey,
-		AllowedHosts: rc.AllowedHosts, Workers: rc.Workers, CreatedAt: rc.CreatedAt,
+		AllowedHosts: rc.AllowedHosts, Workers: rc.Workers, GatewayOnly: rc.GatewayOnly, CreatedAt: rc.CreatedAt,
 		TechnocoreID: rc.TechnocoreID,
 	}
 }

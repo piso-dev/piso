@@ -16,6 +16,7 @@ const (
 
 // GithubInstallation is one GitHub account/org the app is installed on.
 type GithubInstallation struct {
+	AccountID   int64    `json:"accountId,omitempty"`
 	ID          int64    `json:"id"`
 	Account     string   `json:"account"`
 	AccountType string   `json:"accountType,omitempty"`
@@ -25,6 +26,9 @@ type GithubInstallation struct {
 
 // GithubAppRec is a gateway-owned GitHub App. The PEM never leaves state.json.
 type GithubAppRec struct {
+	OwnerID       int64                `json:"ownerId,omitempty"`
+	Owner         string               `json:"owner,omitempty"`
+	OwnerType     string               `json:"ownerType,omitempty"`
 	ID            string               `json:"id"`
 	SecretID      string               `json:"secretId"`
 	Name          string               `json:"name"`
@@ -35,6 +39,9 @@ type GithubAppRec struct {
 	ClientID      string               `json:"clientId,omitempty"`
 	ClientSecret  string               `json:"clientSecret,omitempty"`
 	WebhookSecret string               `json:"webhookSecret,omitempty"`
+	InstallState  string               `json:"installState,omitempty"`
+	StateExpires  time.Time            `json:"stateExpires,omitempty"`
+	RefreshError  string               `json:"refreshError,omitempty"`
 	ManifestState string               `json:"manifestState,omitempty"`
 	Installations []GithubInstallation `json:"installations,omitempty"`
 	CreatedAt     time.Time            `json:"createdAt"`
@@ -64,6 +71,7 @@ func (r GithubAppRec) ToSummary() model.GithubApp {
 	return model.GithubApp{
 		ID: r.ID, SecretID: r.SecretID, Name: r.Name, Placeholder: r.Placeholder,
 		AppID: r.AppID, Slug: r.Slug, Status: r.Status(),
+		OwnerID: r.OwnerID, Owner: r.Owner, OwnerType: r.OwnerType,
 		Installations: inst, CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt,
 	}
 }
@@ -110,12 +118,39 @@ func (s *Store) GithubAppByState(state string) (GithubAppRec, bool) {
 	return GithubAppRec{}, false
 }
 
+// ConsumeGithubInstallState atomically validates and removes a callback nonce.
+func (s *Store) ConsumeGithubInstallState(state string, now time.Time) (GithubAppRec, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if state != "" {
+		for i, rec := range s.state.GithubApps {
+			if rec.InstallState == state && rec.StateExpires.After(now) {
+				rec.InstallState = ""
+				rec.StateExpires = time.Time{}
+				s.state.GithubApps[i] = rec
+				if err := s.save(); err != nil {
+					return GithubAppRec{}, err
+				}
+				return copyGithubApp(rec), nil
+			}
+		}
+	}
+	return GithubAppRec{}, fmt.Errorf("invalid installation state")
+}
+
 func (s *Store) GithubAppViews() map[string]model.GithubAppView {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	out := map[string]model.GithubAppView{}
 	for _, r := range s.state.GithubApps {
-		if r.Placeholder == "" {
+		placeholder := ""
+		for _, sec := range s.state.Secrets {
+			if sec.ID == r.SecretID && sec.Kind == model.SecretKindGithubApp && !sec.GatewayOnly {
+				placeholder = sec.Placeholder
+				break
+			}
+		}
+		if placeholder == "" {
 			continue
 		}
 		accounts := make([]string, 0, len(r.Installations))
@@ -124,10 +159,12 @@ func (s *Store) GithubAppViews() map[string]model.GithubAppView {
 				accounts = append(accounts, strings.ToLower(i.Account))
 			}
 		}
-		out[r.Placeholder] = model.GithubAppView{
-			HasPEM:   strings.TrimSpace(r.PrivateKey) != "" && r.AppID != 0,
-			Accounts: accounts,
+		view := out[placeholder]
+		if strings.TrimSpace(r.PrivateKey) != "" && r.AppID != 0 {
+			view.HasPEM = true
+			view.Accounts = append(view.Accounts, accounts...)
 		}
+		out[placeholder] = view
 	}
 	return out
 }
@@ -137,6 +174,17 @@ func (s *Store) UpsertGithubApp(rec GithubAppRec) (GithubAppRec, error) {
 	defer s.mu.Unlock()
 	if rec.ID == "" {
 		return GithubAppRec{}, fmt.Errorf("github app id required")
+	}
+	linked := false
+	for _, sec := range s.state.Secrets {
+		if sec.ID == rec.SecretID && sec.Kind == model.SecretKindGithubApp {
+			rec.Placeholder = sec.Placeholder
+			linked = true
+			break
+		}
+	}
+	if !linked {
+		return GithubAppRec{}, fmt.Errorf("github app requires a github-app secret")
 	}
 	rec.UpdatedAt = time.Now().UTC()
 	for i, existing := range s.state.GithubApps {
@@ -173,6 +221,12 @@ func (s *Store) DeleteGithubApp(id string) error {
 		out = append(out, r)
 	}
 	s.state.GithubApps = out
+	for _, app := range out {
+		if app.SecretID == secretID {
+			secretID = ""
+			break
+		}
+	}
 	if secretID != "" {
 		secs := s.state.Secrets[:0]
 		for _, rec := range s.state.Secrets {

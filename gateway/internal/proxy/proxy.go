@@ -286,9 +286,11 @@ func (h *Handler) Replay(ctx context.Context, rec store.Record) (*http.Response,
 		return nil, dec, fmt.Errorf("still blocked: %v", dec.Reasons)
 	}
 	if dec.Action == model.ActionSubstitute {
-		applySubstitution(req, body, dec, h.Store, scanner.ScanRequest(req, scanner.Options{
+		if err := applySubstitution(req, body, dec, h.Store, scanner.ScanRequest(req, scanner.Options{
 			Worker: h.workerID(req), Secrets: h.scanSecrets(), Patterns: h.Patterns,
-		}), h.Minter)
+		}), h.Minter); err != nil {
+			return nil, model.Decision{Action: model.ActionBlock}, err
+		}
 	}
 	out, err := h.forward(ctx, req, rec.Scheme)
 	return out, dec, err
@@ -383,7 +385,12 @@ func (h *Handler) process(ctx context.Context, req *http.Request, scheme string)
 		return resp, false
 
 	case model.ActionSubstitute:
-		applySubstitution(req, body, dec, h.Store, scan, h.Minter)
+		if err := applySubstitution(req, body, dec, h.Store, scan, h.Minter); err != nil {
+			rec.Action, rec.Status = string(model.ActionBlock), http.StatusBadGateway
+			rec.Reasons = []string{"credential-resolution-failed"}
+			h.Store.AppendLog(rec)
+			return &http.Response{StatusCode: http.StatusBadGateway, Status: "502 Bad Gateway", Proto: "HTTP/1.1", ProtoMajor: 1, ProtoMinor: 1, Header: http.Header{"X-Piso-Reason": {"credential-resolution-failed"}}, Body: io.NopCloser(bytes.NewReader(nil)), Request: req, Close: true}, false
+		}
 		rec.Action = string(model.ActionSubstitute)
 		rec.Status = http.StatusOK
 		rec.Reasons = toStrings(dec.Reasons)
@@ -633,10 +640,10 @@ func isRetryableUpstream(err error) bool {
 // rewritten: a whole-body ReplaceAll would leak the real secret to the model
 // whenever chat text mentioned the same piso_ token (including the provider
 // key sitting in Authorization). Pass the original body bytes from process.
-func applySubstitution(req *http.Request, origBody []byte, dec model.Decision, st *store.Store, scan scanner.Result, mint TokenMinter) {
+func applySubstitution(req *http.Request, origBody []byte, dec model.Decision, st *store.Store, scan scanner.Result, mint TokenMinter) error {
 	pm := placeholderMap(st)
 	if len(dec.Substituted) == 0 {
-		return
+		return nil
 	}
 	host := ""
 	path := ""
@@ -649,16 +656,15 @@ func applySubstitution(req *http.Request, origBody []byte, dec model.Decision, s
 	for _, tok := range dec.Substituted {
 		s, ok := pm[tok]
 		if !ok {
-			continue
+			return fmt.Errorf("secret unavailable")
 		}
 		if s.Kind == model.SecretKindGithubApp {
 			if mint == nil {
-				continue
+				return fmt.Errorf("github token minter unavailable")
 			}
 			real, err := mint.Mint(tok, host, path, body)
 			if err != nil || real == "" {
-				log.Printf("proxy: github-app mint %s: %v", tok, err)
-				continue
+				return fmt.Errorf("github token mint failed")
 			}
 			sub[tok] = real
 			continue
@@ -668,7 +674,7 @@ func applySubstitution(req *http.Request, origBody []byte, dec model.Decision, s
 		}
 	}
 	if len(sub) == 0 {
-		return
+		return nil
 	}
 	for name, vals := range req.Header {
 		auth := http.CanonicalHeaderKey(name) == "Authorization"
@@ -696,7 +702,7 @@ func applySubstitution(req *http.Request, origBody []byte, dec model.Decision, s
 		}
 	}
 	if len(origBody) == 0 {
-		return
+		return nil
 	}
 	nb := origBody
 	if rewritten, ok := substituteJSONSkippingChat(origBody, sub); ok {
@@ -709,6 +715,7 @@ func applySubstitution(req *http.Request, origBody []byte, dec model.Decision, s
 	req.Body = io.NopCloser(bytes.NewReader(nb))
 	req.ContentLength = int64(len(nb))
 	req.Header.Set("Content-Length", fmt.Sprint(len(nb)))
+	return nil
 }
 
 // substituteJSONSkippingChat rewrites string values in a JSON body except
@@ -812,6 +819,7 @@ func placeholderMap(st *store.Store) map[string]model.Secret {
 		if r.Placeholder != "" {
 			out[r.Placeholder] = model.Secret{
 				ID: r.ID, Name: r.Name, Placeholder: r.Placeholder, Value: r.Value, Kind: r.Kind,
+				Workers: r.Workers, AllowedHosts: r.AllowedHosts, GatewayOnly: r.GatewayOnly,
 			}
 		}
 	}

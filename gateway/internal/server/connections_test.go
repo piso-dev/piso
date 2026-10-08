@@ -32,8 +32,11 @@ func TestConnectionsIncludesThreeServices(t *testing.T) {
 
 func TestConnectionsGithubOK(t *testing.T) {
 	s := testServer(t)
+	if err := s.Store.AddSecret(store.SecretRec{ID: "sec_g1", Name: "GitHub", Kind: "github-app", Placeholder: "piso_g1"}); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := s.Store.UpsertGithubApp(store.GithubAppRec{
-		ID: "g1", Name: "piso", AppID: 1, PrivateKey: "pem",
+		ID: "g1", SecretID: "sec_g1", Name: "piso", AppID: 1, PrivateKey: "pem",
 		Installations: []store.GithubInstallation{{ID: 9, Account: "org"}},
 	}); err != nil {
 		t.Fatal(err)

@@ -24,7 +24,7 @@ const helpers = [
   .map(([from, to]) => script.slice(from, to))
   .join("\n");
 
-function settingsHarness(t, sub) {
+function settingsHarness(t, sub, mappings = [], githubUser = { connected: true, configured: true, login: "octocat" }) {
   const dom = new JSDOM(
     `<div id="content"></div><span id="resultCount"></span><div id="toast" hidden></div>`,
     { url: "http://piso.local/" },
@@ -40,6 +40,8 @@ function settingsHarness(t, sub) {
     query: "",
     loaded: new Set(["github", "githubPending", "connections"]),
     data: {
+      githubMappings: mappings,
+      githubUser,
       github: [
         {
           id: "gha_1",
@@ -123,6 +125,56 @@ test("github section groups Connect GitHub and Connect existing app at the right
   const css = fs.readFileSync(`${__dirname}/index.html`, "utf8");
   assert.match(css, /\.intro-actions\s*{[^}]*justify-content:\s*flex-end/);
   assert.match(css, /\.intro-actions\s*{[^}]*gap:\s*8px/);
+});
+
+test("GitHub mappings show shared routes, scope, conflicts and group-specific actions", (t) => {
+  const document = settingsHarness(t, "github", [{
+    secretId: "sec_shared", name: "Team <access>", envKey: "GH_TOKEN", placeholder: "piso_shared",
+    workers: ["alpha"], allowedHosts: ["api.github.com"], conflicts: ["acme"], warnings: ["Repository listing incomplete"],
+    apps: [
+      {id: "app_a", name: "Personal app", appId: 10, status: "ok", installations: [{id:101, account:"Acme", repos:["Acme/repo"]}]},
+      {id: "app_b", name: "Org app", appId: 20, status: "ok", installations: [{id:202, account:"acme"}]},
+    ],
+  }, {secretId:"sec_private", name:"Gateway only", gatewayOnly:true, apps:[], conflicts:[], warnings:[]}]);
+  const groups = document.querySelectorAll(".github-mapping");
+  assert.equal(groups.length, 2);
+  assert.equal(groups[0].querySelector("h3").textContent, "Team <access>");
+  assert.equal(groups[0].querySelectorAll("tbody tr").length, 2);
+  assert.match(groups[0].textContent, /GH_TOKEN/);
+  assert.match(groups[0].textContent, /piso_shared/);
+  assert.match(groups[0].textContent, /alpha/);
+  assert.match(groups[0].textContent, /Acme\/repo/);
+  assert.match(groups[0].textContent, /Ambiguous — blocked/);
+  assert.match(groups[0].textContent, /Repository listing incomplete/);
+  assert.equal(groups[0].querySelector('[data-action="github-import"]').dataset.id, "sec_shared");
+  assert.equal(groups[0].querySelector('[data-action="secret-edit"]').dataset.id, "sec_shared");
+  assert.equal(groups[0].querySelector('[data-action="github-reconnect"]').dataset.id, "app_a");
+  assert.match(groups[1].textContent, /No workers/);
+  assert.match(groups[1].textContent, /No apps connected/);
+});
+
+for (const [label, user, action] of [
+  ["unconfigured", {}, "github-user-config"],
+  ["signed out or revoked", { configured: true, connected: false }, "github-user-authorize"],
+]) {
+  test(`GitHub ${label} gate hides cached mappings and management actions`, (t) => {
+    const document = settingsHarness(t, "github", [{ name: "Hidden group", secretId: "secret", apps: [] }], user);
+    assert.ok(document.querySelector(`[data-action="${action}"]`));
+    assert.equal(document.querySelector(".github-mapping"), null);
+    assert.equal(document.querySelector('[data-action="github-connect"]'), null);
+    assert.equal(document.querySelector('[data-action="github-import"]'), null);
+    assert.doesNotMatch(document.body.textContent, /Hidden group/);
+  });
+}
+
+test("OAuth setup button is centered inside its gate below the description", (t) => {
+  const document = settingsHarness(t, "github", [], {});
+  const gate = document.querySelector(".empty.github-gate");
+  assert.ok(gate);
+  assert.match(gate.querySelector("p").textContent, /Add a GitHub OAuth App/);
+  assert.ok(gate.querySelector("p + .intro-actions [data-action=github-user-config]"));
+  assert.match(html, /\.github-gate\s*\{[^}]*text-align:\s*center/);
+  assert.match(html, /\.github-gate \.intro-actions\s*\{[^}]*justify-content:\s*center/);
 });
 
 test("single-action sections keep the same right-aligned wrapper", (t) => {

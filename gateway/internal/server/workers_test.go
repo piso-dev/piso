@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 )
+
 func TestPostWorkersRegistersAndLists(t *testing.T) {
 	s := testServer(t)
 	ch := s.ControlHandler()

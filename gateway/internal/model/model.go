@@ -20,6 +20,7 @@ const (
 // the gateway (memory + host-mounted file). The worker only ever sees the
 // placeholder.
 type Secret struct {
+	GatewayOnly  bool      `json:"gatewayOnly,omitempty"`  // never usable by workers
 	ID           string    `json:"id"`                     // stable id
 	Name         string    `json:"name"`                   // human name, e.g. "anthropic"
 	Placeholder  string    `json:"placeholder"`            // e.g. "piso_anthropic_abc123"
@@ -151,6 +152,9 @@ const (
 
 // GithubApp is the log-safe view of a gateway-owned GitHub App.
 type GithubApp struct {
+	OwnerID       int64                    `json:"ownerId,omitempty"`
+	Owner         string                   `json:"owner,omitempty"`
+	OwnerType     string                   `json:"ownerType,omitempty"`
 	ID            string                   `json:"id"`
 	SecretID      string                   `json:"secretId,omitempty"`
 	Name          string                   `json:"name"`
@@ -226,6 +230,7 @@ type CapturedRequest struct {
 
 // SecretSummary is the log-safe view of a secret (never Value).
 type SecretSummary struct {
+	GatewayOnly  bool      `json:"gatewayOnly,omitempty"`
 	ID           string    `json:"id"`
 	Name         string    `json:"name"`
 	Placeholder  string    `json:"placeholder"`
@@ -247,6 +252,7 @@ func (s *Secret) ToSummary() SecretSummary {
 		Placeholder:  s.Placeholder,
 		AllowedHosts: s.AllowedHosts,
 		Workers:      s.Workers,
+		GatewayOnly:  s.GatewayOnly,
 		CreatedAt:    s.CreatedAt,
 	}
 }
