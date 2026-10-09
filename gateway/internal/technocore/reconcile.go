@@ -99,6 +99,8 @@ func (r *Reconciler) once() error {
 	if id.Status != tc.StatusActive || id.ServerURL == "" {
 		return nil
 	}
+	// Enrollment must retry even when unrelated secret/provider sync fails.
+	localErr := syncLocalWorkers(r.st, id)
 	if err := syncSecrets(r.st, r.dataDir, id); err != nil {
 		return err
 	}
@@ -111,7 +113,7 @@ func (r *Reconciler) once() error {
 	if err := syncPiProvider(r.st, r.dataDir, id); err != nil {
 		return err
 	}
-	return nil
+	return localErr
 }
 
 func growBackoff(current time.Duration) time.Duration {

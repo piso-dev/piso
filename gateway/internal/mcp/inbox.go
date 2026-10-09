@@ -157,7 +157,10 @@ func unpairedDoc() map[string]any {
 }
 
 func (h *Handler) coord(caller store.WorkerRec, method, path string, extra url.Values, body []byte) (int, map[string]any, *rpcError) {
-	if strings.TrimSpace(caller.PrincipalID) == "" || h.CoordinatorDo == nil {
+	if strings.TrimSpace(caller.PrincipalID) == "" {
+		return 0, nil, &rpcError{Code: codeServer, Message: "worker not enrolled with coordinator; local enrollment is pending"}
+	}
+	if h.CoordinatorDo == nil {
 		return 0, unpairedDoc(), nil
 	}
 	q := url.Values{}

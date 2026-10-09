@@ -929,6 +929,10 @@ func (s *Store) UpsertWorker(rec WorkerRec) (WorkerRec, error) {
 			if rec.PrincipalID == "" {
 				rec.PrincipalID = r.PrincipalID
 			}
+			if !r.Remote && !rec.Remote {
+				rec.ChannelPubkey = r.ChannelPubkey
+				rec.ChannelBoundAt = r.ChannelBoundAt
+			}
 			rec.ProjectHidden = r.ProjectHidden
 			s.state.Workers[i] = rec
 			if err := s.save(); err != nil {

@@ -13,13 +13,9 @@ import (
 
 func TestInboxListUnpaired(t *testing.T) {
 	h := New(nil, nil, t.TempDir())
-	out, err := h.toolInboxList(store.WorkerRec{Name: "piso-worker-demo", Slug: "demo"}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	doc := out.(map[string]any)
-	if doc["status"] != "unpaired" {
-		t.Fatalf("%v", doc)
+	_, rpcErr := h.toolInboxList(store.WorkerRec{Name: "piso-worker-demo", Slug: "demo"}, nil)
+	if rpcErr == nil || !strings.Contains(rpcErr.Message, "not enrolled") {
+		t.Fatalf("expected not-enrolled error, got %v", rpcErr)
 	}
 }
 

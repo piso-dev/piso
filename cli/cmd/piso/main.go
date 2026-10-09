@@ -250,7 +250,9 @@ func cmdUp(args []string) error {
 	}
 	// Register the worker's slug↔IP identity with the gateway so request logs
 	// can be tagged with the project slug. Refreshed on every `piso up`.
-	_ = registerWorkerWithGateway(proj)
+	if err := registerWorkerWithGateway(proj); err != nil {
+		fmt.Fprintf(os.Stderr, "piso: warning: worker registration: %v\n", err)
+	}
 	// Compose up returns when the container is created, NOT when the
 	// entrypoint has copied ~650MB of extensions into a fresh agent volume.
 	// Attach before that finishes is the first-start exit 137.
@@ -309,6 +311,17 @@ func registerWorkerWithGateway(proj pisoconfig.Project) error {
 	if resp.StatusCode != 200 {
 		b, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("gateway %d %s", resp.StatusCode, strings.TrimSpace(string(b)))
+	}
+	var registered struct {
+		PrincipalID string `json:"principalId"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&registered); err != nil {
+		return fmt.Errorf("worker registration response: %w", err)
+	}
+	if registered.PrincipalID == "" {
+		fmt.Fprintln(os.Stderr, "piso: coordinator worker enrollment pending; local startup continues and gateway retries automatically")
+	} else {
+		fmt.Printf("piso: coordinator worker enrolled (%s)\n", registered.PrincipalID)
 	}
 	return nil
 }

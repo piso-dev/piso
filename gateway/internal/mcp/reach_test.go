@@ -90,13 +90,11 @@ func TestRoutesOwnWorkerOnly(t *testing.T) {
 
 func TestAsksUnpairedAndCoordinator(t *testing.T) {
 	h := New(nil, nil, t.TempDir())
-	out, rpcErr := h.toolApprovalRequest(store.WorkerRec{Name: "piso-worker-demo", Slug: "demo"}, json.RawMessage(`{"action":"publish","title":"Ship"}`))
-	if rpcErr != nil {
-		t.Fatal(rpcErr.Message)
+	_, rpcErr := h.toolApprovalRequest(store.WorkerRec{Name: "piso-worker-demo", Slug: "demo"}, json.RawMessage(`{"action":"publish","title":"Ship"}`))
+	if rpcErr == nil || !strings.Contains(rpcErr.Message, "not enrolled") {
+		t.Fatalf("expected not-enrolled error, got %v", rpcErr)
 	}
-	if out.(map[string]any)["status"] != "unpaired" {
-		t.Fatalf("%v", out)
-	}
+	h = New(nil, nil, t.TempDir())
 	var gotPath, gotWorker, gotBody string
 	h.CoordinatorDo = func(method, path string, query url.Values, body []byte) (int, []byte, error) {
 		gotPath, gotWorker, gotBody = path, query.Get("worker"), string(body)
