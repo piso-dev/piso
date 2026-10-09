@@ -27,7 +27,7 @@ func TestBoostHTTPRoundTrip(t *testing.T) {
 			json.NewEncoder(w).Encode(map[string]any{"client_id": "piso", "client_secret": "secret", "redirect_uris": []string{callback}})
 		case "/oauth/token/":
 			tokenCalls++
-			io.WriteString(w, `{"access_token":"access","refresh_token":"refresh","token_type":"Bearer","scope":"boosters:read boosters:suggest","expires_in":900,"refresh_token_expires_in":2592000}`)
+			io.WriteString(w, `{"access_token":"access","refresh_token":"refresh","token_type":"Bearer","scope":"boosters:read boosters:suggest suggestions:review","expires_in":900,"refresh_token_expires_in":2592000}`)
 		default:
 			http.NotFound(w, r)
 		}

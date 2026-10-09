@@ -390,6 +390,7 @@
       }
       .notice .actions {
         margin-top: 10px;
+        padding: 8px 0;
       }
       [hidden] {
         display: none !important;
@@ -898,6 +899,7 @@
       }
       .record-body .actions {
         margin-top: 18px;
+        padding: 8px 0;
       }
       .facts {
         display: grid;
@@ -1595,6 +1597,7 @@
           ["secrets", "Secrets"],
           ["mcp", "MCP servers"],
           ["github", "GitHub"],
+          ["aiBoost", "AI Boost"],
           ["connections", "Connections"],
           ["provider", "Model provider"],
         ],
@@ -2740,6 +2743,7 @@
           "Create GitHub App",
           "github-connect",
         ],
+        aiBoost: ["AI Boost", "Review suggestions for your connected library. Workers can suggest; only you can approve or reject."],
         connections: [
           "Gateway connections",
           "Service login status. These tokens are never held by workers.",
@@ -2865,6 +2869,7 @@
         ].filter(Boolean);
         const intro = `<div class="section-intro"><div><h2>${title}</h2><p>${description}</p></div>${actions.length ? `<div class="intro-actions">${actions.join("")}</div>` : ""}</div>`;
         if (sub === "github") return renderGithub(intro);
+        if (sub === "aiBoost") return renderBoostReview(intro);
         if (sub === "provider") {
           const p = data.provider || {};
           if ($("#resultCount")) $("#resultCount").textContent = "";
@@ -3345,6 +3350,61 @@
             });
           };
       }
+      const boostReview = {items: [], status: "submitted", cursor: "", nextCursor: "", previousCursor: "", loading: false, loaded: false, error: ""};
+      async function loadBoostSuggestions(cursor = "") {
+        if (boostReview.loading) return;
+        boostReview.loading = true;
+        boostReview.error = "";
+        if (sub === "aiBoost") renderSettings();
+        try {
+          const page = await api(`ai-boost/suggestions?status=${enc(boostReview.status)}&cursor=${enc(cursor)}`);
+          Object.assign(boostReview, page, {cursor, loaded: true});
+        } catch (err) {
+          boostReview.error = err.message;
+          boostReview.items = [];
+          boostReview.nextCursor = boostReview.previousCursor = "";
+        } finally {
+          boostReview.loading = false;
+          if (sub === "aiBoost") renderSettings();
+        }
+      }
+      function renderBoostReview(intro) {
+        const connection = data.aiBoost || {};
+        const connected = connection.status === "ok";
+        count(0);
+        const controls = `<div class="intro-actions">${button(connected ? "Reconnect" : "Connect AI Boost", "boost-authorize")}${connection.configured ? button("Disconnect", "boost-disconnect", "", "danger") : ""}</div>`;
+        if (!connected) return replaceContent(intro + controls + empty("Connect your library", "Sign in to AI Boost to fetch suggestions for the library you chose."));
+        const rows = boostReview.items.filter(r => matches(r.name, r.description, r.status));
+        count(rows.length);
+        replaceContent(intro + controls + `<div class="section-intro"><label for="boostStatus">Status <select id="boostStatus" ${boostReview.loading ? "disabled" : ""}>${[["submitted","Awaiting review"],["converted","Approved"],["rejected","Rejected"],["","All"]].map(([v,label]) => `<option value="${v}" ${boostReview.status === v ? "selected" : ""}>${label}</option>`).join("")}</select></label>${button(boostReview.loading ? "Loading…" : "Fetch suggestions", "boost-review-refresh")}</div>` +
+          (boostReview.error ? `<div class="notice error" role="alert">${esc(boostReview.error)}</div>` : "") +
+          rows.map(r => record(`boost-${r.id}`, r.name, r.description, badge(r.status), facts([["Revision",r.revision],["Library",r.destination?.name],["Updated",r.updatedAt]]) + `<div class="actions">${button("Review suggestion", "boost-preview", r.id)}</div>`)).join("") +
+          (!rows.length && !boostReview.loading && !boostReview.error ? empty(boostReview.loaded ? "No suggestions in this view" : "Fetch the review queue", boostReview.loaded ? "Choose another status or fetch again after a worker submits a suggestion." : "Fetch suggestions directly from the connected AI Boost library.") : "") +
+          `<div class="actions" style="padding: 14px 0 6px">${boostReview.previousCursor ? button("Previous page", "boost-review-page", boostReview.previousCursor) : ""}${boostReview.nextCursor ? button("Next page", "boost-review-page", boostReview.nextCursor) : ""}</div>`);
+        $("#boostStatus").onchange = e => { boostReview.status = e.target.value; loadBoostSuggestions(""); };
+        document.querySelectorAll('[data-action="boost-review-refresh"], [data-action="boost-review-page"]').forEach(b => b.disabled = boostReview.loading);
+      }
+      async function boostPreview(id) {
+        const item = await api(`ai-boost/suggestions/${enc(id)}`);
+        const preview = facts([["Status", item.status], ["Revision", item.revision], ["Library", item.destination?.name], ["Library ID", item.destination?.tagId], ["Visibility", item.destination?.visibility], ["Description", item.description], ["Suggested tags", item.suggestedTags], ["Rationale", item.rationale]]) +
+          `<h3>Markdown content</h3><pre style="white-space:pre-wrap;overflow-wrap:anywhere;max-height:45vh;overflow:auto;padding:12px 16px;background:var(--inset);border-radius:5px">${esc(item.content?.body || "")}</pre>` +
+          (item.decision ? facts([["Decision", item.decision.action], ["Feedback", item.decision.feedback]]) : "");
+        if (item.status !== "submitted") {
+          mountDialog(item.name, preview + "<p>This suggestion has already been decided.</p>" + button("Close", "close"));
+          return;
+        }
+        let attempted = false;
+        formDialog(item.name, "Approve creates a private booster in the library shown below. Your decision applies only to this displayed revision.", preview +
+          field("decision", "Decision", "", {choices: [["", "Choose a decision"], ["approve", "Approve and create booster"], ["reject", "Reject"]], required: true, full: true}) +
+          field("feedback", "Feedback (optional)", "", {type: "textarea", full: true}), "Confirm decision", async values => {
+            if (attempted) throw new Error("Close and reopen this preview to check the latest state before deciding again.");
+            if (!["approve", "reject"].includes(values.decision)) throw new Error("Choose approve or reject.");
+            attempted = true;
+            await api(`ai-boost/suggestions/${enc(item.id)}/${values.decision}`, "POST", {expectedRevision: item.revision, feedback: values.feedback});
+            await loadBoostSuggestions(boostReview.cursor);
+            return values.decision === "approve" ? "Suggestion approved." : "Suggestion rejected.";
+          });
+      }
       function boostStart() {
         // Open synchronously so popup blockers cannot strand a pending flow.
         const tab = window.open("about:blank", "_blank");
@@ -3359,6 +3419,7 @@
       function boostDisconnect() {
         confirmAction("Disconnect AI Boost?", "This deletes the tokens in Piso only. The AI Boost grant is not revoked and can remain active until it expires.", "Disconnect", async () => {
           await api("ai-boost/disconnect", "POST", {});
+          Object.assign(boostReview, {items: [], loaded: false, nextCursor: "", previousCursor: ""});
           await changed(["aiBoost", "connections"]);
         });
       }
@@ -3962,6 +4023,9 @@
         }
         if (name === "secret-add" || name === "secret-edit")
           return secretForm(id);
+        if (name === "boost-review-refresh") return loadBoostSuggestions("");
+        if (name === "boost-review-page") return loadBoostSuggestions(id);
+        if (name === "boost-preview") return boostPreview(id);
         if (name === "boost-authorize") return boostStart();
         if (name === "boost-disconnect") return boostDisconnect();
         if (name === "github-user-config") return githubUserForm();

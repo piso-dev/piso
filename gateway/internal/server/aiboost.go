@@ -42,7 +42,7 @@ func (s *Server) boostConnection() connectionView {
 	out.Status = v.Status
 	switch v.Status {
 	case "ok":
-		out.Detail = "Connected · read and suggest only"
+		out.Detail = "Connected · worker suggestions and dashboard review"
 	case "needs-auth":
 		out.Detail = "Reconnect needed"
 	}
@@ -57,6 +57,9 @@ func (s *Server) registerAIBoost(mux *http.ServeMux) {
 	mount("POST /api/v1/ai-boost/register", s.handleBoostRegister)
 	mount("POST /api/v1/ai-boost/authorize", s.handleBoostAuthorize)
 	mount("POST /api/v1/ai-boost/disconnect", s.handleBoostDisconnect)
+	mount("GET /api/v1/ai-boost/suggestions", s.handleBoostSuggestions)
+	mount("GET /api/v1/ai-boost/suggestions/{id}", s.handleBoostSuggestion)
+	mount("POST /api/v1/ai-boost/suggestions/{id}/{action}", s.handleBoostDecision)
 }
 func boostHeaders(w http.ResponseWriter) {
 	w.Header().Set("Cache-Control", "no-store")

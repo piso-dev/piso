@@ -18,7 +18,7 @@ import (
 	"time"
 )
 
-const Scope = "boosters:read boosters:suggest"
+const Scope = "boosters:read boosters:suggest suggestions:review"
 const CallbackPath = "/oauth/ai-boost/callback"
 
 var ErrReconnect = errors.New("AI Boost needs reconnecting in Connections")
@@ -240,7 +240,17 @@ func (c *Client) token(ctx context.Context, form url.Values) (tokens, error) {
 }
 func validScope(s string) bool {
 	fields := strings.Fields(s)
-	return len(fields) == 2 && ((fields[0] == "boosters:read" && fields[1] == "boosters:suggest") || (fields[1] == "boosters:read" && fields[0] == "boosters:suggest"))
+	required := map[string]bool{"boosters:read": true, "boosters:suggest": true, "suggestions:review": true}
+	if len(fields) != len(required) {
+		return false
+	}
+	for _, field := range fields {
+		if !required[field] {
+			return false
+		}
+		delete(required, field)
+	}
+	return len(required) == 0
 }
 func (c *Client) commit(r record) error {
 	if err := c.vault.save(r); err != nil {
@@ -305,10 +315,15 @@ type APIError struct{ Status int }
 func (e *APIError) Error() string { return fmt.Sprintf("AI Boost API returned HTTP %d", e.Status) }
 
 // request is deliberately private. Callers cannot choose origins, methods, or
-// arbitrary endpoints (in particular, approval/publishing endpoints).
+// arbitrary endpoints. OAuth credentials stay in the gateway; worker MCP only
+// exposes List/Get/Suggest, while Decide is bound to host-only dashboard routes.
 func (c *Client) request(ctx context.Context, method, path string, body []byte, key string) ([]byte, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	return c.requestLocked(ctx, method, path, body, key)
+}
+
+func (c *Client) requestLocked(ctx context.Context, method, path string, body []byte, key string) ([]byte, error) {
 	if c.rec.Status != "ok" {
 		return nil, ErrReconnect
 	}

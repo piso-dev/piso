@@ -29,7 +29,7 @@ func TestBoostBrowserFlow(t *testing.T) {
 				t.Error("incorrect exchange", r.Form)
 			}
 			exchanged = true
-			io.WriteString(w, `{"access_token":"sensitive-access","refresh_token":"sensitive-refresh","token_type":"Bearer","scope":"boosters:read boosters:suggest","expires_in":900,"refresh_token_expires_in":2592000}`)
+			io.WriteString(w, `{"access_token":"sensitive-access","refresh_token":"sensitive-refresh","token_type":"Bearer","scope":"boosters:read boosters:suggest suggestions:review","expires_in":900,"refresh_token_expires_in":2592000}`)
 		case "/api/library/boosters/22222222-2222-2222-2222-222222222222/":
 			if r.Header.Get("Authorization") != "Bearer sensitive-access" {
 				t.Error("worker read did not use gateway token")
@@ -40,7 +40,30 @@ func TestBoostBrowserFlow(t *testing.T) {
 				t.Error("stored token was not used")
 			}
 			io.WriteString(w, `{"items":[],"next":null,"previous":null}`)
+		case "/api/booster-suggestions/11111111-1111-1111-1111-111111111111/", "/api/booster-suggestions/11111111-1111-1111-1111-111111111111/approve/":
+			status := "submitted"
+			if r.Method == "POST" {
+				if r.Header.Get("Authorization") != "Bearer sensitive-access" {
+					t.Error("gateway token missing")
+				}
+				var d struct {
+					ExpectedRevision int `json:"expectedRevision"`
+				}
+				json.NewDecoder(r.Body).Decode(&d)
+				if d.ExpectedRevision != 3 {
+					w.WriteHeader(409)
+					return
+				}
+				status = "converted"
+			} else if r.Header.Get("Authorization") != "Bearer sensitive-access" {
+				t.Error("agent token missing")
+			}
+			writeJSON(w, 200, map[string]any{"id": "11111111-1111-1111-1111-111111111111", "status": status, "revision": 3, "content": map[string]string{"format": "markdown", "body": "# Review"}})
 		case "/api/booster-suggestions/":
+			if r.Method == "GET" {
+				io.WriteString(w, `{"items":[],"next":null,"previous":null}`)
+				return
+			}
 			if r.Method != "POST" || r.Header.Get("Authorization") != "Bearer sensitive-access" || r.Header.Get("Idempotency-Key") != "stable-submission" {
 				t.Error("incorrect suggestion request")
 			}
@@ -106,7 +129,7 @@ func TestBoostBrowserFlow(t *testing.T) {
 		t.Fatal(status.Body.String())
 	}
 	connections := doJSON(t, h, "GET", "/api/v1/connections", nil)
-	if !strings.Contains(connections.Body.String(), "read and suggest only") {
+	if !strings.Contains(connections.Body.String(), "worker suggestions and dashboard review") {
 		t.Fatal(connections.Body.String())
 	}
 	disk, err := os.ReadFile(filepath.Join(s.DataDir, "aiboost", "aiboost.enc"))
@@ -157,6 +180,30 @@ func TestBoostBrowserFlow(t *testing.T) {
 			t.Fatalf("%s: %s (%v)", call.name, plaintext, err)
 		}
 	}
+	// Dashboard review uses the same gateway credential but is never a worker tool.
+	for _, path := range []string{"/api/v1/ai-boost", "/api/v1/ai-boost/suggestions", "/api/v1/ai-boost/suggestions/11111111-1111-1111-1111-111111111111"} {
+		got := doJSON(t, h, "GET", path, nil)
+		if got.Code != 200 || strings.Contains(got.Body.String(), "sensitive-access") {
+			t.Fatal(path, got.Code, got.Body.String())
+		}
+	}
+	decisionPath := "/api/v1/ai-boost/suggestions/11111111-1111-1111-1111-111111111111/approve"
+	stale := doJSON(t, h, "POST", decisionPath, map[string]any{"expectedRevision": 2})
+	if stale.Code != 409 {
+		t.Fatal(stale.Code, stale.Body.String())
+	}
+	invalid := doJSON(t, h, "POST", decisionPath, map[string]any{"expectedRevision": 3, "content": "overwrite"})
+	if invalid.Code != 400 {
+		t.Fatal(invalid.Code)
+	}
+	approved := doJSON(t, h, "POST", decisionPath, map[string]any{"expectedRevision": 3, "feedback": "Good"})
+	if approved.Code != 200 || !strings.Contains(approved.Body.String(), "converted") {
+		t.Fatal(approved.Code, approved.Body.String())
+	}
+	workerResult := doJSON(t, s.WorkerHandler(), "POST", decisionPath, map[string]any{"expectedRevision": 3})
+	if workerResult.Code == 200 {
+		t.Fatal("worker reached review route")
+	}
 	disconnect := doJSON(t, h, "POST", "/api/v1/ai-boost/disconnect", map[string]string{})
 	if disconnect.Code != 204 {
 		t.Fatal(disconnect.Code)
@@ -168,7 +215,7 @@ func TestBoostBrowserFlow(t *testing.T) {
 func TestBoostControlCSRFAndWorkerBoundary(t *testing.T) {
 	s := testServer(t)
 	s.DataDir = t.TempDir()
-	for _, path := range []string{"register", "authorize", "disconnect"} {
+	for _, path := range []string{"register", "authorize", "disconnect", "suggestions/11111111-1111-1111-1111-111111111111/approve", "suggestions/11111111-1111-1111-1111-111111111111/reject"} {
 		req := httptest.NewRequest("POST", "https://piso.example/api/v1/ai-boost/"+path, strings.NewReader(`{}`))
 		req.Header.Set("Origin", "https://evil.example")
 		req.Header.Set("Sec-Fetch-Site", "cross-site")
@@ -179,7 +226,7 @@ func TestBoostControlCSRFAndWorkerBoundary(t *testing.T) {
 		}
 	}
 	s.DenyPeer = func(string) bool { return true }
-	for _, path := range []string{"/api/v1/ai-boost", "/oauth/ai-boost/callback?state=x"} {
+	for _, path := range []string{"/api/v1/ai-boost", "/api/v1/ai-boost/suggestions", "/api/v1/ai-boost/suggestions/11111111-1111-1111-1111-111111111111", "/oauth/ai-boost/callback?state=x"} {
 		w := doJSON(t, s.ControlHandler(), "GET", path, nil)
 		if w.Code != 403 {
 			t.Fatalf("worker reached control %s", path)
