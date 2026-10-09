@@ -1,4 +1,4 @@
-"""Exercise entrypoint Git setup with real gh/git, without network access."""
+"""Exercise image and entrypoint Git setup with real gh/git, without network access."""
 import os
 from pathlib import Path
 import shutil
@@ -48,6 +48,32 @@ class GitConfigTests(unittest.TestCase):
         self.assertIn('ENV GIT_CONFIG_GLOBAL=/root/.pi/agent/gitconfig',
                       (WORKER / 'Dockerfile').read_text())
         self.assertIn('${GIT_CONFIG_GLOBAL:-/root/.pi/agent/gitconfig}', SETUP)
+
+    def test_image_setup_without_runtime_credentials(self):
+        dockerfile = (WORKER / 'Dockerfile').read_text()
+        command = next(line.removeprefix('RUN ') for line in dockerfile.splitlines()
+                       if line.startswith('RUN GIT_CONFIG_GLOBAL=/etc/gitconfig '))
+        system_config = self.root / 'system-gitconfig'
+        command = command.replace('/etc/gitconfig', '"$GIT_CONFIG_SYSTEM"')
+        env = dict(self.env, GIT_CONFIG_SYSTEM=str(system_config))
+        env.pop('GH_TOKEN')
+        env.pop('GIT_CONFIG_NOSYSTEM')
+        result = subprocess.run(
+            ['bash', '-ec', command], env=env, cwd=self.root,
+            text=True, capture_output=True, timeout=10,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn('build-only-not-a-credential', system_config.read_text())
+        self.assertNotIn('piso_', system_config.read_text())
+        # An empty mounted agent volume must not hide the baked helpers.
+        self.config.parent.mkdir()
+        self.config.write_text('')
+        for host in ('github.com', 'gist.github.com'):
+            helpers = subprocess.check_output(
+                ['git', 'config', '--get-all', f'credential.https://{host}.helper'],
+                env=env, cwd=self.root, text=True,
+            ).splitlines()
+            self.assertEqual(helpers, ['', f'!{shutil.which("gh")} auth git-credential'])
 
     def test_setup_and_repeated_boot_preserve_settings(self):
         first = self.setup_git()

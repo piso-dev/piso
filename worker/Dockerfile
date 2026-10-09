@@ -34,6 +34,12 @@ RUN apt-get update \
   && ln -sf /usr/bin/fdfind /usr/local/bin/fd \
   && rm -rf /var/lib/apt/lists/*
 
+# Bake credential helpers into system config, outside the runtime agent volume.
+# gh 2.23 requires a token for setup-git even though setup is local-only. This
+# dummy is command-scoped, never stored; gh reads the real placeholder at runtime.
+# Redirect gh's --global writes to /etc/gitconfig for image-wide defaults.
+RUN GIT_CONFIG_GLOBAL=/etc/gitconfig GH_TOKEN=build-only-not-a-credential gh auth setup-git --hostname github.com
+
 # Bun (pi's networking runtime)
 RUN curl -fsSL https://bun.sh/install | bash -s "bun-v1.2.11" \
   && ln -s /root/.bun/bin/bun /usr/local/bin/bun
