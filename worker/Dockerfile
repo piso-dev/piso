@@ -163,6 +163,10 @@ ENV HTTPS_PROXY=http://127.0.0.1:18080 \
     TMPDIR=/root/.pi/agent/tmp \
     NODE_COMPILE_CACHE=/root/.pi/agent/.node-compile-cache
 
+# Git/gh need a writable global config; keep it on the persistent agent
+# volume. Image ENV also reaches docker exec sessions, unlike shell exports.
+ENV GIT_CONFIG_GLOBAL=/root/.pi/agent/gitconfig
+
 WORKDIR /workspace
 
 COPY entrypoint.sh /usr/local/bin/piso-entrypoint

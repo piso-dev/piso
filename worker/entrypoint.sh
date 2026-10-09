@@ -15,6 +15,14 @@ NODE_COMPILE_CACHE="${NODE_COMPILE_CACHE:-/root/.pi/agent/.node-compile-cache}"
 export TMPDIR NODE_COMPILE_CACHE
 mkdir -p "$PISO_LOG_DIR" "$TMPDIR" "$NODE_COMPILE_CACHE" 2>/dev/null || true
 
+# Configure Git on the persistent volume, not the read-only /root/.gitconfig.
+# gh reads GH_TOKEN; Git subprocesses need this helper to send the placeholder
+# to the gateway. setup-git is local-only and safe to repeat on every boot.
+export GIT_CONFIG_GLOBAL="${GIT_CONFIG_GLOBAL:-/root/.pi/agent/gitconfig}"
+if ! (mkdir -p "$(dirname "$GIT_CONFIG_GLOBAL")" && gh auth setup-git --hostname github.com); then
+  echo "piso: GitHub credential-helper setup failed; Git authentication may be unavailable" >&2
+fi
+
 # Remote workers need the piso MITM CA *and* public CAs (coordinator Let's Encrypt).
 if [ -f /piso-ca.pem ]; then
   bundle="$TMPDIR/piso-ca-bundle.pem"

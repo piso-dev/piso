@@ -3,6 +3,7 @@ package technocore
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"regexp"
 
@@ -41,7 +42,11 @@ func enrollLocalWorker(st *store.Store, id tc.Identity, worker store.WorkerRec) 
 	if json.Unmarshal(payload, &out) != nil || !localPrincipalID.MatchString(out.PrincipalID) || out.PrincipalID == id.PrincipalID || out.Slug != worker.Slug {
 		return fmt.Errorf("invalid local worker enrollment response")
 	}
-	return st.BindLocalWorkerPrincipal(worker.Name, worker.Slug, out.PrincipalID)
+	if err := st.BindLocalWorkerPrincipal(worker.Name, worker.Slug, out.PrincipalID); err != nil {
+		return err
+	}
+	log.Printf("technocore: enrolled local worker %s (%s)", worker.Name, out.PrincipalID)
+	return nil
 }
 
 func syncLocalWorkers(st *store.Store, id tc.Identity) error {
