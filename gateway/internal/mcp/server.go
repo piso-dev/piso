@@ -46,8 +46,10 @@ type Handler struct {
 	CoordinatorDo CoordinatorDo
 	// GithubRepos lists repository full_names using gateway-owned credentials.
 	GithubRepos func(context.Context, store.GithubAppRec, string) ([]string, error)
-	// BoostGet fetches one coordinator-authorized upstream ID with gateway credentials.
-	BoostGet func(context.Context, string) (aiboost.Booster, error)
+	// AI Boost is authoritative; these use gateway credentials, not coordinator grants.
+	BoostList    func(context.Context, string, string) (aiboost.Page, error)
+	BoostGet     func(context.Context, string) (aiboost.Booster, error)
+	BoostSuggest func(context.Context, aiboost.Draft, string) (aiboost.Suggestion, error)
 }
 
 // Tool is one MCP tool. Caller always comes from the envelope.

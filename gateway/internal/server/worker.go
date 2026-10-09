@@ -60,6 +60,20 @@ func (s *Server) mcpHandler() *mcp.Handler {
 		}
 	}
 	h.GithubRepos = githubClient.ListReposContext
+	h.BoostList = func(ctx context.Context, query, cursor string) (aiboost.Page, error) {
+		client, err := s.boostClient()
+		if err != nil {
+			return aiboost.Page{}, err
+		}
+		return client.List(ctx, query, cursor)
+	}
+	h.BoostSuggest = func(ctx context.Context, draft aiboost.Draft, key string) (aiboost.Suggestion, error) {
+		client, err := s.boostClient()
+		if err != nil {
+			return aiboost.Suggestion{}, err
+		}
+		return client.Suggest(ctx, draft, key)
+	}
 	h.BoostGet = func(ctx context.Context, id string) (aiboost.Booster, error) {
 		client, err := s.boostClient()
 		if err != nil {

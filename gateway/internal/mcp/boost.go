@@ -6,10 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"net/http"
+	"net/url"
 	"regexp"
-	"sort"
-	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -23,9 +21,13 @@ func (h *Handler) registerBoost() {
 	str := func(description string) map[string]any {
 		return map[string]any{"type": "string", "description": description}
 	}
-	h.Register(Tool{Name: "boost_search", Description: "Search the coordinator catalog of boosters this worker may read. Returns local IDs for boost_get; does not search the account-wide AI Boost library.", InputSchema: map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{"q": str("Optional title, slug or collection search (up to 500 characters)."), "offset": map[string]any{"type": "integer", "minimum": 0}, "limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 25}}}, Call: h.toolBoostSearch})
-	h.Register(Tool{Name: "boost_get", Description: "Read a permitted booster using its coordinator ID from boost_search. Fetches current AI Boost Markdown through the gateway; returns an excerpt capped at 8000 characters and the full content hash.", InputSchema: map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{"id": str("Coordinator booster ID, not an AI Boost ID.")}, "required": []string{"id"}}, Call: h.toolBoostGet})
-	h.Register(Tool{Name: "boost_suggest", Description: "Persist a booster proposal for human approval in the coordinator. Does not send to AI Boost, approve, or publish. Check the returned approvalId with approval_status instead of resubmitting.", InputSchema: map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{"booster": str("Optional coordinator booster ID to change."), "title": str("Proposal title (up to 300 characters)."), "body": str("Proposed Markdown or diff (up to 20000 characters)."), "why": str("Rationale (up to 500 characters)."), "collection": str("Optional collection label (not an authorization grant or publishing destination).")}, "required": []string{"title", "body"}}, Write: true, Call: h.toolBoostSuggest})
+	h.Register(Tool{Name: "boost_search", Description: "Search AI Boost's shared library using gateway credentials. Returns AI Boost IDs and cursor pagination (up to 25 items). No coordinator catalog or grants required.", InputSchema: map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{"q": str("Optional name/description search, up to 500 characters."), "cursor": str("Cursor from nextCursor or previousCursor, not a URL.")}}, Call: h.toolBoostSearch})
+	h.Register(Tool{Name: "boost_get", Description: "Get current metadata and full Markdown directly from AI Boost using an ID returned by boost_search.", InputSchema: map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{"id": str("AI Boost booster UUID.")}, "required": []string{"id"}}, Call: h.toolBoostGet})
+	h.Register(Tool{Name: "boost_suggest", Description: "Submit a new booster suggestion to AI Boost for review there; does not approve or publish. Reuse the same idempotencyKey and payload on retries; use a new key for a new submission. Returns AI Boost's suggestion ID, status and revision.", InputSchema: map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{
+		"name": str("Booster name, 1–255 characters."), "description": str("Description, 1–10000 characters."),
+		"content":       map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{"format": map[string]any{"type": "string", "enum": []string{"markdown"}}, "body": str("Nonblank Markdown, at most 100000 UTF-8 bytes. Whitespace is preserved.")}, "required": []string{"format", "body"}},
+		"suggestedTags": map[string]any{"type": "array", "maxItems": 30, "items": map[string]any{"type": "string", "maxLength": 100}},
+		"rationale":     str("Why this booster is useful, 1–10000 characters."), "idempotencyKey": str("Stable unique submission key, 1–128 characters (for example a UUID). Persist and reuse on retries.")}, "required": []string{"name", "description", "content", "rationale", "idempotencyKey"}}, Write: true, Call: h.toolBoostSuggest})
 }
 
 func boostArgs(raw json.RawMessage, out any) *rpcError {
@@ -46,162 +48,132 @@ func boostArgs(raw json.RawMessage, out any) *rpcError {
 	return nil
 }
 
-// Every operation uses the envelope principal through coord. Missing pairing,
-// missing grants and coordinator failures never fall back to account-wide reads.
-func (h *Handler) boostCoord(caller store.WorkerRec, method, path string, body []byte) (map[string]any, *rpcError) {
-	status, doc, err := h.coord(caller, method, path, nil, body)
+func boostError(err error) *rpcError {
+	message := "AI Boost request failed"
+	if errors.Is(err, aiboost.ErrReconnect) {
+		message = "AI Boost needs sign-in in the dashboard"
+	}
+	var apiErr *aiboost.APIError
+	if errors.As(err, &apiErr) {
+		switch apiErr.Status {
+		case 400:
+			message = "AI Boost rejected the request payload"
+		case 403:
+			message = "AI Boost credential does not permit this operation"
+		case 404:
+			message = "AI Boost item not found in the connected library"
+		case 409:
+			message = "AI Boost conflict: idempotency key already used with a different payload; do not blindly retry"
+		case 429:
+			message = "AI Boost rate limit reached; retry later with the same submission key and payload"
+		}
+	}
+	// Never relay upstream response bodies or transport errors containing credentials.
+	return &rpcError{Code: codeServer, Message: message}
+}
+
+func boostUnavailable() *rpcError {
+	return &rpcError{Code: codeServer, Message: "AI Boost unavailable; connect in the dashboard"}
+}
+
+// Extract only an opaque cursor. Never follow provider-supplied pagination URLs
+// or send gateway credentials to their host.
+func boostCursor(link *string) (any, error) {
+	if link == nil {
+		return nil, nil
+	}
+	u, err := url.Parse(*link)
 	if err != nil {
 		return nil, err
 	}
-	if status == 0 {
-		return nil, &rpcError{Code: codeServer, Message: "coordinator unpaired"}
+	cursor := u.Query().Get("cursor")
+	if cursor == "" || len(cursor) > 4096 {
+		return nil, errors.New("invalid cursor")
 	}
-	if status < 200 || status >= 300 {
-		return nil, coordErr(status, doc)
-	}
-	return doc, nil
+	return cursor, nil
 }
 
-// Whitelist catalog fields rather than relaying arbitrary coordinator metadata.
-func boostMetadata(row map[string]any) map[string]any {
-	out := map[string]any{}
-	for _, key := range []string{"id", "slug", "title", "collection", "version", "contentHash"} {
-		if v, ok := row[key].(string); ok {
-			out[key] = v
-		}
-	}
-	return out
-}
-
-func (h *Handler) toolBoostSearch(caller store.WorkerRec, args json.RawMessage) (any, *rpcError) {
+func (h *Handler) toolBoostSearch(_ store.WorkerRec, args json.RawMessage) (any, *rpcError) {
 	var in struct {
 		Q      string `json:"q"`
-		Offset int    `json:"offset"`
-		Limit  *int   `json:"limit"`
+		Cursor string `json:"cursor"`
 	}
 	if err := boostArgs(args, &in); err != nil {
 		return nil, err
 	}
-	limit := 25
-	if in.Limit != nil {
-		limit = *in.Limit
-	}
-	if utf8.RuneCountInString(in.Q) > 500 || in.Offset < 0 || limit < 1 || limit > 25 {
+	if utf8.RuneCountInString(in.Q) > 500 || len(in.Cursor) > 4096 {
 		return nil, &rpcError{Code: codeInvalidParams, Message: "invalid search bounds"}
 	}
-	doc, err := h.boostCoord(caller, http.MethodGet, "/api/v1/boosters", nil)
+	if h.BoostList == nil {
+		return nil, boostUnavailable()
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	page, err := h.BoostList(ctx, in.Q, in.Cursor)
 	if err != nil {
-		return nil, err
+		return nil, boostError(err)
 	}
-	rows, ok := doc["boosters"].([]any)
-	if !ok {
-		return nil, &rpcError{Code: codeServer, Message: "invalid coordinator catalog"}
+	next, err := boostCursor(page.Next)
+	if err != nil {
+		return nil, boostError(err)
 	}
-	sort.SliceStable(rows, func(i, j int) bool {
-		a, _ := rows[i].(map[string]any)
-		b, _ := rows[j].(map[string]any)
-		ai, _ := a["id"].(string)
-		bi, _ := b["id"].(string)
-		return ai < bi
-	})
-	query := strings.ToLower(strings.TrimSpace(in.Q))
-	matches := 0
-	items := []map[string]any{}
-	for _, v := range rows {
-		row, ok := v.(map[string]any)
-		if !ok {
-			continue
-		}
-		metadata := boostMetadata(row)
-		haystack := ""
-		for _, key := range []string{"title", "slug", "collection"} {
-			if s, ok := metadata[key].(string); ok {
-				haystack += " " + s
-			}
-		}
-		if !strings.Contains(strings.ToLower(haystack), query) {
-			continue
-		}
-		if matches >= in.Offset && len(items) < limit {
-			items = append(items, metadata)
-		}
-		matches++
+	previous, err := boostCursor(page.Previous)
+	if err != nil {
+		return nil, boostError(err)
 	}
-	var next any
-	if matches > in.Offset && matches-in.Offset > len(items) {
-		next = in.Offset + len(items)
+	if page.Items == nil {
+		page.Items = []aiboost.Booster{}
 	}
-	return map[string]any{"status": "ok", "source": "coordinator", "boosters": items, "nextOffset": next}, nil
+	return map[string]any{"items": page.Items, "nextCursor": next, "previousCursor": previous}, nil
 }
 
-func (h *Handler) toolBoostGet(caller store.WorkerRec, args json.RawMessage) (any, *rpcError) {
+func (h *Handler) toolBoostGet(_ store.WorkerRec, args json.RawMessage) (any, *rpcError) {
 	var in struct {
 		ID string `json:"id"`
 	}
 	if err := boostArgs(args, &in); err != nil {
 		return nil, err
 	}
-	id := in.ID
-	if !boostID.MatchString(id) {
-		return nil, &rpcError{Code: codeInvalidParams, Message: "coordinator booster UUID required"}
-	}
-	doc, err := h.boostCoord(caller, http.MethodGet, "/api/v1/boosters/"+id, nil)
-	if err != nil {
-		return nil, err
-	}
-	if doc["id"] != id {
-		return nil, &rpcError{Code: codeServer, Message: "invalid coordinator booster"}
-	}
-	upstream, ok := doc["aiBoostId"].(string)
-	if !ok || upstream == "" {
-		return nil, &rpcError{Code: codeServer, Message: "booster has no AI Boost catalog mapping"}
+	if !boostID.MatchString(in.ID) {
+		return nil, &rpcError{Code: codeInvalidParams, Message: "AI Boost booster UUID required"}
 	}
 	if h.BoostGet == nil {
-		return nil, &rpcError{Code: codeServer, Message: "AI Boost unavailable; connect in the dashboard"}
+		return nil, boostUnavailable()
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	booster, fetchErr := h.BoostGet(ctx, upstream)
-	if fetchErr != nil {
-		msg := "AI Boost fetch failed"
-		if errors.Is(fetchErr, aiboost.ErrReconnect) {
-			msg = "AI Boost needs sign-in in the dashboard"
-		}
-		return nil, &rpcError{Code: codeServer, Message: msg}
+	booster, err := h.BoostGet(ctx, in.ID)
+	if err != nil {
+		return nil, boostError(err)
 	}
-	if booster.ID != upstream || booster.Content.Format != "markdown" {
-		return nil, &rpcError{Code: codeServer, Message: "invalid AI Boost booster"}
+	if booster.ID != in.ID || booster.Content.Format != "markdown" {
+		return nil, boostError(errors.New("invalid booster"))
 	}
-	excerpt := booster.Excerpt()
-	out := boostMetadata(doc)
-	out["title"] = excerpt.Name
-	out["version"] = excerpt.Version
-	out["contentHash"] = excerpt.SHA256
-	out["excerpt"] = excerpt.Text
-	out["truncated"] = excerpt.Truncated
-	out["status"] = "ok"
-	return out, nil
+	return booster, nil
 }
 
-func (h *Handler) toolBoostSuggest(caller store.WorkerRec, args json.RawMessage) (any, *rpcError) {
+func (h *Handler) toolBoostSuggest(_ store.WorkerRec, args json.RawMessage) (any, *rpcError) {
 	var in struct {
-		Booster    string `json:"booster,omitempty"`
-		Title      string `json:"title"`
-		Body       string `json:"body"`
-		Why        string `json:"why,omitempty"`
-		Collection string `json:"collection,omitempty"`
+		aiboost.Draft
+		IdempotencyKey string `json:"idempotencyKey"`
 	}
 	if err := boostArgs(args, &in); err != nil {
 		return nil, err
 	}
-	in.Title = strings.TrimSpace(in.Title)
-	in.Body = strings.TrimSpace(in.Body)
-	if in.Title == "" || in.Body == "" || utf8.RuneCountInString(in.Title) > 300 || utf8.RuneCountInString(in.Body) > 20000 || utf8.RuneCountInString(in.Why) > 500 || utf8.RuneCountInString(in.Collection) > 120 {
-		return nil, &rpcError{Code: codeInvalidParams, Message: "title and body required within proposal size limits"}
+	if err := in.Draft.Validate(in.IdempotencyKey); err != nil {
+		return nil, &rpcError{Code: codeInvalidParams, Message: err.Error()}
 	}
-	if in.Booster != "" && !boostID.MatchString(in.Booster) {
-		return nil, &rpcError{Code: codeInvalidParams, Message: "coordinator booster UUID required"}
+	if in.SuggestedTags == nil {
+		in.SuggestedTags = []string{}
 	}
-	raw, _ := json.Marshal(in)
-	return h.boostCoord(caller, http.MethodPost, "/api/v1/boosters/proposals", raw)
+	if h.BoostSuggest == nil {
+		return nil, boostUnavailable()
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	suggestion, err := h.BoostSuggest(ctx, in.Draft, in.IdempotencyKey)
+	if err != nil {
+		return nil, boostError(err)
+	}
+	return suggestion, nil
 }

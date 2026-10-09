@@ -229,7 +229,7 @@ func Test401RetryAndSuggestionIdempotency(t *testing.T) {
 		}
 		return response(201, `{"id":"suggestion","status":"submitted","revision":1}`), nil
 	})
-	out, err := c.Suggest(context.Background(), Draft{Name: "Go", Content: Content{"markdown", "# Go"}}, "draft-uuid")
+	out, err := c.Suggest(context.Background(), Draft{Name: "Go", Description: "Go guidance", Rationale: "Useful guidance", Content: Content{"markdown", "# Go"}}, "draft-uuid")
 	if err != nil || out.ID != "suggestion" || attempts != 2 {
 		t.Fatal(out, err, attempts)
 	}

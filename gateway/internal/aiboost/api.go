@@ -71,7 +71,7 @@ func (c *Client) Get(ctx context.Context, id string) (Booster, error) {
 }
 
 // Excerpt hashes the full upstream Markdown, but returns at most 8,000 runes.
-// Authorization and worker collection filtering must happen before calling Get.
+// AI Boost enforces the connected library credential on every read.
 type Excerpt struct {
 	ID        string `json:"id"`
 	Name      string `json:"name"`
@@ -110,14 +110,46 @@ type Suggestion struct {
 	} `json:"destination"`
 }
 
+// Validate matches the delegated AI Boost suggestion input contract.
+func (d Draft) Validate(key string) error {
+	if len(key) < 1 || len(key) > 128 || strings.TrimSpace(key) != key {
+		return errors.New("stable Idempotency-Key required (1–128 printable ASCII characters)")
+	}
+	for _, r := range key {
+		if r < 33 || r > 126 {
+			return errors.New("Idempotency-Key must be printable ASCII without spaces")
+		}
+	}
+	for _, field := range []struct {
+		value string
+		max   int
+	}{{d.Name, 255}, {d.Description, 10000}, {d.Rationale, 10000}} {
+		if strings.TrimSpace(field.value) == "" || utf8.RuneCountInString(field.value) > field.max || !utf8.ValidString(field.value) {
+			return errors.New("name, description and rationale required within AI Boost size limits")
+		}
+	}
+	if d.Content.Format != "markdown" || strings.TrimSpace(d.Content.Body) == "" || len(d.Content.Body) > 100000 || !utf8.ValidString(d.Content.Body) {
+		return errors.New("content must be nonblank Markdown of at most 100000 UTF-8 bytes")
+	}
+	if len(d.SuggestedTags) > 30 {
+		return errors.New("at most 30 suggestedTags allowed")
+	}
+	for _, tag := range d.SuggestedTags {
+		if strings.TrimSpace(tag) == "" || utf8.RuneCountInString(tag) > 100 || !utf8.ValidString(tag) {
+			return errors.New("suggestedTags must be nonblank strings of at most 100 characters")
+		}
+	}
+	return nil
+}
+
 // Suggest never approves or publishes. The caller persists a UUID with the
 // draft, reuses it on retries, and mints a new one for a changed payload.
 func (c *Client) Suggest(ctx context.Context, draft Draft, key string) (Suggestion, error) {
-	if len(key) < 1 || len(key) > 128 || strings.ContainsAny(key, "\r\n") {
-		return Suggestion{}, errors.New("stable Idempotency-Key required (1–128 characters)")
+	if err := draft.Validate(key); err != nil {
+		return Suggestion{}, err
 	}
-	if draft.Content.Format != "markdown" || len(draft.Content.Body) > 100000 || !utf8.ValidString(draft.Content.Body) {
-		return Suggestion{}, errors.New("suggestion must contain Markdown of at most 100000 UTF-8 bytes")
+	if draft.SuggestedTags == nil {
+		draft.SuggestedTags = []string{}
 	}
 	body, err := json.Marshal(draft)
 	if err != nil {

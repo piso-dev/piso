@@ -40,6 +40,16 @@ func TestBoostBrowserFlow(t *testing.T) {
 				t.Error("stored token was not used")
 			}
 			io.WriteString(w, `{"items":[],"next":null,"previous":null}`)
+		case "/api/booster-suggestions/":
+			if r.Method != "POST" || r.Header.Get("Authorization") != "Bearer sensitive-access" || r.Header.Get("Idempotency-Key") != "stable-submission" {
+				t.Error("incorrect suggestion request")
+			}
+			var payload map[string]any
+			if json.NewDecoder(r.Body).Decode(&payload) != nil || payload["name"] != "Go" {
+				t.Error("incorrect suggestion payload")
+			}
+			w.WriteHeader(201)
+			io.WriteString(w, `{"id":"suggestion-id","status":"submitted","revision":1}`)
 		default:
 			http.NotFound(w, r)
 		}
@@ -110,22 +120,16 @@ func TestBoostBrowserFlow(t *testing.T) {
 	if _, err := s.boost.List(context.Background(), "Go", ""); err != nil {
 		t.Fatal("authenticated library request", err)
 	}
-	// Real encrypted worker channel -> coordinator authorization -> gateway vault -> provider.
-	worker := registerLocal(t, s, "192.168.107.50")
-	worker.PrincipalID = "envelope-principal"
-	if _, err := s.Store.UpsertWorker(worker); err != nil {
-		t.Fatal(err)
-	}
+	// Real encrypted worker channel -> gateway vault -> provider, without coordinator pairing.
+	registerLocal(t, s, "192.168.107.50")
 	channel := s.mcpHandler()
 	channel.CoordinatorDo = func(method, path string, query url.Values, body []byte) (int, []byte, error) {
-		if method != "GET" || path != "/api/v1/boosters/11111111-1111-1111-1111-111111111111" || query.Get("worker") != worker.PrincipalID {
-			t.Fatalf("unexpected coordinator call: %s %s %v", method, path, query)
-		}
-		return 200, []byte(`{"id":"11111111-1111-1111-1111-111111111111","aiBoostId":"22222222-2222-2222-2222-222222222222"}`), nil
+		t.Fatalf("boost called coordinator: %s %s", method, path)
+		return 0, nil, nil
 	}
 	pub, priv := workerKeys(t)
 	sealed, response := sealCall(t, gwPub, pub, priv, "tools/call", map[string]any{
-		"name": "boost_get", "arguments": map[string]any{"id": "11111111-1111-1111-1111-111111111111"},
+		"name": "boost_get", "arguments": map[string]any{"id": "22222222-2222-2222-2222-222222222222"},
 	}, time.Now())
 	result := postMCP(t, channel, "192.168.107.50", sealed, nil)
 	if result.Code != 200 {
@@ -134,6 +138,24 @@ func TestBoostBrowserFlow(t *testing.T) {
 	plaintext, err := response.OpenResponse(result.Body.Bytes())
 	if err != nil || !strings.Contains(string(plaintext), "Worker guidance") || strings.Contains(string(plaintext), "sensitive-") {
 		t.Fatalf("worker response: %s (%v)", plaintext, err)
+	}
+	for _, call := range []struct {
+		name     string
+		args     map[string]any
+		expected string
+	}{
+		{"boost_search", map[string]any{"q": "Go"}, "nextCursor"},
+		{"boost_suggest", map[string]any{"name": "Go", "description": "Go guidance", "rationale": "Useful", "content": map[string]any{"format": "markdown", "body": "# Go"}, "idempotencyKey": "stable-submission"}, "suggestion-id"},
+	} {
+		sealed, response := sealCall(t, gwPub, pub, priv, "tools/call", map[string]any{"name": call.name, "arguments": call.args}, time.Now())
+		result := postMCP(t, channel, "192.168.107.50", sealed, nil)
+		if result.Code != 200 {
+			t.Fatal(result.Code)
+		}
+		plaintext, err := response.OpenResponse(result.Body.Bytes())
+		if err != nil || !strings.Contains(string(plaintext), call.expected) || strings.Contains(string(plaintext), "sensitive-") {
+			t.Fatalf("%s: %s (%v)", call.name, plaintext, err)
+		}
 	}
 	disconnect := doJSON(t, h, "POST", "/api/v1/ai-boost/disconnect", map[string]string{})
 	if disconnect.Code != 204 {
