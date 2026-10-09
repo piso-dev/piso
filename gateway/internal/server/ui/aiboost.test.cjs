@@ -22,26 +22,33 @@ function harness(t) {
   slice('function record(','function routeURL('),slice('function button(','function facts('),slice('function facts(','function notify('),
   slice('function replaceContent(','function count('),slice('function count(','function mountDialog('),
   slice('const intros = {','function renderSettings()'),slice('function renderSettings()','async function changed('),
-  slice('function boostForm()','async function githubUserForm()'),slice('function field(','function formDialog(')
+  slice('function boostStart()','async function githubUserForm()'),slice('function field(','function formDialog(')
  ].join('\n');
  vm.runInContext(helpers,ctx);
  return {dom,sandbox,ctx,calls,run:s=>vm.runInContext(s,ctx)};
 }
-test('Connections renders AI Boost status, configure, reconnect and disconnect controls',t=>{
+test('Connections renders one-click connect, reconnect and disconnect controls',t=>{
  const h=harness(t);h.run('renderSettings()');
  assert.match(h.dom.window.document.body.textContent,/Connected · read and suggest only/);
  assert.ok(h.dom.window.document.querySelector('[data-action="boost-authorize"]'));
  assert.ok(h.dom.window.document.querySelector('[data-action="boost-disconnect"]'));
  h.sandbox.data.aiBoost.configured=false;h.run('renderSettings()');
- assert.ok(h.dom.window.document.querySelector('[data-action="boost-config"]'));
+ assert.ok(h.dom.window.document.querySelector('[data-action="boost-authorize"]'));
+ assert.equal(h.dom.window.document.querySelector('[data-action="boost-config"]'),null);
+ assert.match(h.dom.window.document.body.textContent,/Connect AI Boost/);
+ assert.doesNotMatch(h.dom.window.document.body.textContent,/Callback URL|API origin|Configure AI Boost/);
  h.sandbox.data.aiBoost.configured=true;h.sandbox.data.connections.connections[0].status='needs-auth';h.run('renderSettings()');
  assert.match(h.dom.window.document.body.textContent,/Reconnect AI Boost/);
 });
 test('sign-in opens synchronously and obtains a host POST ticket before navigating',async t=>{
- const h=harness(t);const tab={opener:{},location:{},close(){}};h.sandbox.window.open=()=>tab;
+ const h=harness(t);h.sandbox.data.aiBoost.configured=false;
+ const tab={opener:{},location:{},close(){}};h.sandbox.window.open=()=>tab;
  h.run('boostStart()');assert.equal(tab.opener,null);
  await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(h.calls.length,1);
  assert.equal(h.calls[0].path,'ai-boost/authorize');assert.equal(h.calls[0].method,'POST');
+ assert.equal(JSON.stringify(h.calls[0].body),'{}');
+ assert.equal(h.sandbox.form,undefined);
  assert.match(tab.location.href,/\/oauth\/ai-boost\/start\?ticket=/);
 });
 test('disconnect clearly states local-only and requires confirmation',async t=>{

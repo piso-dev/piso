@@ -3013,7 +3013,7 @@
                   ? button("Manage GitHub", "go-github", "", "small")
                   : r.id === "ai-boost"
                     ? (!data.aiBoost?.configured
-                        ? button("Configure AI Boost", "boost-config", "", "small")
+                        ? button("Connect AI Boost", "boost-authorize", "", "small")
                         : button(r.status === "needs-auth" ? "Reconnect AI Boost" : "Sign in to AI Boost", "boost-authorize", "", "small") + button("Disconnect", "boost-disconnect", "", "small danger"))
                     : "";
             }
@@ -3344,20 +3344,6 @@
               row.hidden = !`${name} ${slug}`.toLowerCase().includes(q);
             });
           };
-      }
-      function boostForm() {
-        formDialog(
-          "Connect AI Boost",
-          "Register this gateway once. Tokens stay encrypted in the gateway. Use an exact HTTPS callback; loopback HTTP requires AI Boost to enable it.",
-          field("baseUrl", "AI Boost API origin", "https://api.ai-boost.io", { type: "url", required: true, full: true }) +
-          field("redirectUri", "Callback URL", "", { type: "url", required: true, full: true, hint: "Must end in /oauth/ai-boost/callback and route to this gateway. Registration fixes this URL." }),
-          "Register gateway",
-          async (f) => {
-            await api("ai-boost/register", "POST", f);
-            await changed(["aiBoost", "connections"]);
-            return "Gateway registered. Sign in to AI Boost to choose a library.";
-          },
-        );
       }
       function boostStart() {
         // Open synchronously so popup blockers cannot strand a pending flow.
@@ -3976,7 +3962,6 @@
         }
         if (name === "secret-add" || name === "secret-edit")
           return secretForm(id);
-        if (name === "boost-config") return boostForm();
         if (name === "boost-authorize") return boostStart();
         if (name === "boost-disconnect") return boostDisconnect();
         if (name === "github-user-config") return githubUserForm();

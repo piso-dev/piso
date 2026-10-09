@@ -86,8 +86,10 @@ func validateConfig(base, redirect string) error {
 		return errors.New("callback must be an absolute URL ending in " + CallbackPath)
 	}
 	loopback := r.Hostname() == "127.0.0.1" || r.Hostname() == "localhost" || r.Hostname() == "::1"
-	if r.Scheme != "https" && !(r.Scheme == "http" && loopback) {
-		return errors.New("callback requires HTTPS (HTTP is allowed only for loopback)")
+	// Permit only the dashboard apex, never worker subdomains or other .local hosts.
+	localDashboard := r.Hostname() == "piso.local"
+	if r.Scheme != "https" && !(r.Scheme == "http" && (loopback || localDashboard)) {
+		return errors.New("callback requires HTTPS (HTTP is allowed only for loopback or piso.local)")
 	}
 	return nil
 }

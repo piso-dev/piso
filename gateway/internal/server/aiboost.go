@@ -104,8 +104,13 @@ func (s *Server) handleBoostAuthorize(w http.ResponseWriter, r *http.Request) {
 	}
 	summary := c.Summary()
 	if !summary.Configured {
-		http.Error(w, "Configure AI Boost first", 400)
-		return
+		// Use the host's published web port, never request Host/Forwarded headers
+		// or a worker URL. The browser returns to the local gateway listener.
+		if err := c.Configure(r.Context(), "https://api.ai-boost.io", githubAppHomepage()+aiboost.CallbackPath); err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		summary = c.Summary()
 	}
 	ticket, err := randomURLToken(32)
 	if err != nil {
