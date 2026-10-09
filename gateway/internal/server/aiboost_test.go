@@ -18,6 +18,7 @@ func TestBoostBrowserFlow(t *testing.T) {
 	s, _, gwPub, _ := mcpFixture(t)
 	const callback = "https://piso.example/oauth/ai-boost/callback"
 	var exchanged bool
+	editCalls := 0
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/oauth/register/":
@@ -59,6 +60,16 @@ func TestBoostBrowserFlow(t *testing.T) {
 				t.Error("agent token missing")
 			}
 			writeJSON(w, 200, map[string]any{"id": "11111111-1111-1111-1111-111111111111", "status": status, "revision": 3, "content": map[string]string{"format": "markdown", "body": "# Review"}})
+		case "/api/booster-suggestions/33333333-3333-3333-3333-333333333333/":
+			editCalls++
+			if r.Method != "PATCH" || r.Header.Get("Authorization") != "Bearer sensitive-access" || r.Header.Get("Idempotency-Key") != "" || r.URL.RawQuery != "" {
+				t.Error("incorrect edit request")
+			}
+			var payload map[string]any
+			if json.NewDecoder(r.Body).Decode(&payload) != nil || len(payload) != 3 || payload["expectedRevision"] != float64(1) || payload["name"] != "Updated suggestion" || payload["changeSummary"] != "Clarify name" {
+				t.Error("incorrect edit payload", payload)
+			}
+			io.WriteString(w, `{"id":"33333333-3333-3333-3333-333333333333","status":"submitted","revision":2,"name":"Updated suggestion","description":"Original description","content":{"format":"markdown","body":"# Original body"},"suggestedTags":[],"rationale":"Useful","destination":{"tagId":"library-id","name":"Library","visibility":"private"}}`)
 		case "/api/booster-suggestions/":
 			if r.Method == "GET" {
 				io.WriteString(w, `{"items":[],"next":null,"previous":null}`)
@@ -180,7 +191,38 @@ func TestBoostBrowserFlow(t *testing.T) {
 			t.Fatalf("%s: %s (%v)", call.name, plaintext, err)
 		}
 	}
-	// Dashboard review uses the same gateway credential but is never a worker tool.
+	// Exercise the new tool through the actual encrypted handler and HTTP client.
+	sealed, response = sealCall(t, gwPub, pub, priv, "tools/call", map[string]any{
+		"name": "boost_edit_suggestion", "arguments": map[string]any{
+			"id": "33333333-3333-3333-3333-333333333333", "expectedRevision": 1,
+			"name": "Updated suggestion", "changeSummary": "Clarify name",
+		},
+	}, time.Now())
+	result = postMCP(t, channel, "192.168.107.50", sealed, nil)
+	if result.Code != 200 {
+		t.Fatal(result.Code)
+	}
+	plaintext, err = response.OpenResponse(result.Body.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var edited struct {
+		Error  json.RawMessage `json:"error"`
+		Result struct {
+			Content []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"result"`
+	}
+	if json.Unmarshal(plaintext, &edited) != nil || len(edited.Error) != 0 || len(edited.Result.Content) != 1 || edited.Result.Content[0].Type != "text" {
+		t.Fatalf("invalid edit RPC response: %s", plaintext)
+	}
+	const wantEdit = `{"id":"33333333-3333-3333-3333-333333333333","status":"submitted","revision":2,"name":"Updated suggestion","description":"Original description","content":{"format":"markdown","body":"# Original body"},"suggestedTags":[],"rationale":"Useful","destination":{"tagId":"library-id","name":"Library","visibility":"private"}}`
+	if edited.Result.Content[0].Text != wantEdit || editCalls != 1 {
+		t.Fatalf("edit response = %s, calls = %d", edited.Result.Content[0].Text, editCalls)
+	}
+	// Dashboard decisions use the same gateway credential but are never worker tools.
 	for _, path := range []string{"/api/v1/ai-boost", "/api/v1/ai-boost/suggestions", "/api/v1/ai-boost/suggestions/11111111-1111-1111-1111-111111111111"} {
 		got := doJSON(t, h, "GET", path, nil)
 		if got.Code != 200 || strings.Contains(got.Body.String(), "sensitive-access") {

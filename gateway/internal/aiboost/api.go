@@ -124,6 +124,10 @@ func (d Draft) Validate(key string) error {
 			return errors.New("Idempotency-Key must be printable ASCII without spaces")
 		}
 	}
+	return d.validatePayload()
+}
+
+func (d Draft) validatePayload() error {
 	for _, field := range []struct {
 		value string
 		max   int

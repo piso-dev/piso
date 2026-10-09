@@ -18,6 +18,7 @@ import (
 var boostID = regexp.MustCompile(`^[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}$`)
 
 func (h *Handler) registerBoost() {
+	h.registerBoostEditSuggestion()
 	str := func(description string) map[string]any {
 		return map[string]any{"type": "string", "description": description}
 	}

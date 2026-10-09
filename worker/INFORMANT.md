@@ -25,8 +25,8 @@ Do this **briefly and often** — one short line, not prose:
 - **This run is done and you need the human's next input** (a question, an
   approval, a choice — not a background blocker):
   `activity_post` with `kind=waiting`, `text="Need you to pick the auth approach"`
-- **A step is OUT OF BOUNDS for this sandboxed worker** (ssh, docker, any
-  credential-bearing git, privileged writes): do NOT attempt it — call
+- **A step is OUT OF BOUNDS for this sandboxed worker** (ssh, docker,
+  privileged writes): do NOT attempt it — call
   `host_request` instead. See the CAPABILITIES section for the format.
   `host_request` with `command="git clone git@github.com:org/repo.git"`,
   `resultPath="/workspace/repo"`
@@ -82,8 +82,8 @@ Request protocol, probe cautions) is appended below by the entrypoint from
 /opt/piso/CAPABILITIES.md on every boot — read it before attempting anything
 you suspect is out of bounds. Two things to internalize up front:
 
-- Never attempt ssh, docker, any credential-bearing git, or privileged
-  writes: call `host_request` with the exact command and a `/workspace/...`
-  result path instead, and check that path later.
+- Never attempt ssh, docker, or privileged writes: call `host_request` with
+  the exact command and a `/workspace/...` result path instead, and check
+  that path later.
 - Fetch your live boundaries once per session with the piso MCP tool
   `capabilities`; if the call fails, treat capabilities as BLOCKED.

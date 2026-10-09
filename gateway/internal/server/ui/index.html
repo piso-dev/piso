@@ -1169,6 +1169,81 @@
       .dialog-content .form-grid {
         margin-top: 16px;
       }
+      .boost-review-toolbar {
+        padding-top: 20px;
+        align-items: center;
+      }
+      .boost-fetch {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 12px 16px;
+      }
+      .boost-refresh-icon { width: 18px; height: 18px; flex-shrink: 0; }
+      @media (prefers-reduced-motion: no-preference) {
+        .boost-fetch[aria-busy="true"] .boost-refresh-icon {
+          animation: boost-refresh-spin 1s linear infinite;
+        }
+      }
+      @keyframes boost-refresh-spin { to { transform: rotate(360deg); } }
+      dialog.boost-review-dialog {
+        width: min(760px, calc(100% - 32px));
+        height: min(840px, calc(100dvh - 40px));
+        overflow: hidden;
+      }
+      dialog.boost-review-dialog[open] { display: flex; flex-direction: column; }
+      .boost-review-dialog .dialog-head { flex: 0 0 auto; }
+      .boost-review-dialog .dialog-head h2 { min-width: 0; overflow-wrap: anywhere; }
+      .boost-review-dialog .dialog-content {
+        display: flex;
+        flex: 1;
+        min-height: 0;
+        padding: 0;
+      }
+      .boost-review-form {
+        display: flex;
+        flex-direction: column;
+        width: 100%;
+        min-width: 0;
+        min-height: 0;
+      }
+      .boost-review-scroll {
+        flex: 1;
+        min-height: 0;
+        overflow-y: auto;
+        overscroll-behavior: contain;
+        scrollbar-gutter: stable;
+        padding: 8px clamp(18px, 4vw, 26px) 24px;
+        display: flex;
+        flex-direction: column;
+        gap: 20px;
+      }
+      .boost-review-scroll > * { flex-shrink: 0; }
+      .boost-review-scroll > p { color: var(--muted); }
+      .boost-markdown { min-width: 0; }
+      .boost-markdown pre {
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        padding: 16px;
+        margin: 12px 0 0;
+        background: var(--inset);
+        border-radius: 5px;
+        line-height: 1.6;
+      }
+      .boost-review-footer {
+        flex: 0 0 auto;
+        padding: 18px clamp(18px, 4vw, 26px);
+        border-top: 1px solid var(--line);
+        background: var(--panel);
+      }
+      .boost-review-footer .notice { margin: 0 0 16px; }
+      .boost-review-decisions {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+        gap: 12px;
+      }
+      .boost-review-decisions button { min-height: 52px; padding: 14px 18px; font-size: 15px; }
+      .boost-review-decisions button:only-child { grid-column: 1 / -1; }
       #toast {
         position: fixed;
         bottom: 24px;
@@ -1691,9 +1766,10 @@
         clearTimeout(toastTimer);
         toastTimer = setTimeout(() => ($("#toast").hidden = true), 6500);
       }
-      function mountDialog(title, html) {
+      function mountDialog(title, html, className = "") {
         if (dialogBusy) return;
         if (!$("#dialog").open) dialogReturn = document.activeElement;
+        $("#dialog").className = className;
         $("#dialogTitle").textContent = title;
         $("#dialogContent").innerHTML = html;
         if (!$("#dialog").open) $("#dialog").showModal();
@@ -3376,7 +3452,7 @@
         if (!connected) return replaceContent(intro + controls + empty("Connect your library", "Sign in to AI Boost to fetch suggestions for the library you chose."));
         const rows = boostReview.items.filter(r => matches(r.name, r.description, r.status));
         count(rows.length);
-        replaceContent(intro + controls + `<div class="section-intro"><label for="boostStatus">Status <select id="boostStatus" ${boostReview.loading ? "disabled" : ""}>${[["submitted","Awaiting review"],["converted","Approved"],["rejected","Rejected"],["","All"]].map(([v,label]) => `<option value="${v}" ${boostReview.status === v ? "selected" : ""}>${label}</option>`).join("")}</select></label>${button(boostReview.loading ? "Loading…" : "Fetch suggestions", "boost-review-refresh")}</div>` +
+        replaceContent(intro + controls + `<div class="section-intro boost-review-toolbar"><label for="boostStatus">Status <select id="boostStatus" ${boostReview.loading ? "disabled" : ""}>${[["submitted","Awaiting review"],["converted","Approved"],["rejected","Rejected"],["","All"]].map(([v,label]) => `<option value="${v}" ${boostReview.status === v ? "selected" : ""}>${label}</option>`).join("")}</select></label><button type="button" class="boost-fetch" data-action="boost-review-refresh" aria-busy="${boostReview.loading}"><svg class="boost-refresh-icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M6.1 6.1A8 8 0 0 1 20 12M4 12a8 8 0 0 0 13.9 5.9"/></svg><span>${boostReview.loading ? "Loading…" : "Fetch suggestions"}</span></button></div>` +
           (boostReview.error ? `<div class="notice error" role="alert">${esc(boostReview.error)}</div>` : "") +
           rows.map(r => record(`boost-${r.id}`, r.name, r.description, badge(r.status), facts([["Revision",r.revision],["Library",r.destination?.name],["Updated",r.updatedAt]]) + `<div class="actions">${button("Review suggestion", "boost-preview", r.id)}</div>`)).join("") +
           (!rows.length && !boostReview.loading && !boostReview.error ? empty(boostReview.loaded ? "No suggestions in this view" : "Fetch the review queue", boostReview.loaded ? "Choose another status or fetch again after a worker submits a suggestion." : "Fetch suggestions directly from the connected AI Boost library.") : "") +
@@ -3386,24 +3462,53 @@
       }
       async function boostPreview(id) {
         const item = await api(`ai-boost/suggestions/${enc(id)}`);
-        const preview = facts([["Status", item.status], ["Revision", item.revision], ["Library", item.destination?.name], ["Library ID", item.destination?.tagId], ["Visibility", item.destination?.visibility], ["Description", item.description], ["Suggested tags", item.suggestedTags], ["Rationale", item.rationale]]) +
-          `<h3>Markdown content</h3><pre style="white-space:pre-wrap;overflow-wrap:anywhere;max-height:45vh;overflow:auto;padding:12px 16px;background:var(--inset);border-radius:5px">${esc(item.content?.body || "")}</pre>` +
+        if (dialogBusy) return;
+        const pending = item.status === "submitted";
+        const details = facts([["Status", item.status], ["Revision", item.revision], ["Library", item.destination?.name], ["Library ID", item.destination?.tagId], ["Visibility", item.destination?.visibility], ["Description", item.description], ["Suggested tags", item.suggestedTags], ["Rationale", item.rationale]]) +
           (item.decision ? facts([["Decision", item.decision.action], ["Feedback", item.decision.feedback]]) : "");
-        if (item.status !== "submitted") {
-          mountDialog(item.name, preview + "<p>This suggestion has already been decided.</p>" + button("Close", "close"));
-          return;
-        }
+        mountDialog(item.name, `<form id="boostReviewForm" class="boost-review-form">
+          <div class="boost-review-scroll" tabindex="0" role="region" aria-label="Suggestion details and Markdown">
+            <p>${pending ? "Approve creates a private booster in the library shown below. Your decision applies only to this displayed revision." : "This suggestion has already been decided."}</p>
+            ${details}
+            <section class="boost-markdown" aria-labelledby="boostMarkdownTitle"><h3 id="boostMarkdownTitle">Markdown content</h3><pre>${esc(item.content?.body || "")}</pre></section>
+            ${pending ? field("feedback", "Feedback (optional)", "", {type: "textarea", full: true}) : ""}
+          </div>
+          <footer class="boost-review-footer">
+            <div id="boostReviewError" class="notice error" role="alert" hidden></div>
+            <div class="boost-review-decisions">${pending ? '<button type="submit" name="decision" value="reject" class="danger">Reject</button><button type="submit" name="decision" value="approve" class="primary">Approve</button>' : button("Close", "close")}</div>
+          </footer>
+        </form>`, "boost-review-dialog");
+        if (!pending) return;
         let attempted = false;
-        formDialog(item.name, "Approve creates a private booster in the library shown below. Your decision applies only to this displayed revision.", preview +
-          field("decision", "Decision", "", {choices: [["", "Choose a decision"], ["approve", "Approve and create booster"], ["reject", "Reject"]], required: true, full: true}) +
-          field("feedback", "Feedback (optional)", "", {type: "textarea", full: true}), "Confirm decision", async values => {
-            if (attempted) throw new Error("Close and reopen this preview to check the latest state before deciding again.");
-            if (!["approve", "reject"].includes(values.decision)) throw new Error("Choose approve or reject.");
-            attempted = true;
-            await api(`ai-boost/suggestions/${enc(item.id)}/${values.decision}`, "POST", {expectedRevision: item.revision, feedback: values.feedback});
+        const form = $("#boostReviewForm");
+        form.onsubmit = async e => {
+          e.preventDefault();
+          if (attempted || dialogBusy) return;
+          const decision = e.submitter?.value;
+          if (!["approve", "reject"].includes(decision)) return;
+          attempted = true;
+          dialogBusy = true;
+          $("#closeDialog").disabled = true;
+          form.querySelectorAll("button").forEach(b => b.disabled = true);
+          form.setAttribute("aria-busy", "true");
+          const errorBox = $("#boostReviewError");
+          errorBox.hidden = true;
+          try {
+            await api(`ai-boost/suggestions/${enc(item.id)}/${decision}`, "POST", {expectedRevision: item.revision, feedback: form.elements.feedback.value});
+            dialogBusy = false;
+            closeDialog();
+            notify(decision === "approve" ? "Suggestion approved." : "Suggestion rejected.");
             await loadBoostSuggestions(boostReview.cursor);
-            return values.decision === "approve" ? "Suggestion approved." : "Suggestion rejected.";
-          });
+          } catch (error) {
+            errorBox.textContent = error.message + " Close and reopen this preview to check the latest state before deciding again.";
+            errorBox.hidden = false;
+            // An ambiguous failure may have committed: leave both actions disabled.
+          } finally {
+            dialogBusy = false;
+            $("#closeDialog").disabled = false;
+            form.removeAttribute("aria-busy");
+          }
+        };
       }
       function boostStart() {
         // Open synchronously so popup blockers cannot strand a pending flow.

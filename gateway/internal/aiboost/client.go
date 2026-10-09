@@ -316,7 +316,7 @@ func (e *APIError) Error() string { return fmt.Sprintf("AI Boost API returned HT
 
 // request is deliberately private. Callers cannot choose origins, methods, or
 // arbitrary endpoints. OAuth credentials stay in the gateway; worker MCP only
-// exposes List/Get/Suggest, while Decide is bound to host-only dashboard routes.
+// exposes List/Get/Suggest/EditSuggestion; Decide is host-only.
 func (c *Client) request(ctx context.Context, method, path string, body []byte, key string) ([]byte, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -351,7 +351,8 @@ func (c *Client) requestLocked(ctx context.Context, method, path string, body []
 		}
 		raw, readErr := io.ReadAll(io.LimitReader(resp.Body, 2<<20+1))
 		resp.Body.Close()
-		if resp.StatusCode == 401 {
+		// Revision-locked edits are never replayed, even after a 401.
+		if resp.StatusCode == 401 && method != http.MethodPatch {
 			if attempt == 0 {
 				if err := c.refresh(ctx); err != nil {
 					return nil, err

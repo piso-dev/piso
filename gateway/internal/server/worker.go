@@ -74,6 +74,13 @@ func (s *Server) mcpHandler() *mcp.Handler {
 		}
 		return client.Suggest(ctx, draft, key)
 	}
+	h.BoostEditSuggestion = func(ctx context.Context, id string, edit aiboost.SuggestionEdit) (aiboost.Suggestion, error) {
+		client, err := s.boostClient()
+		if err != nil {
+			return aiboost.Suggestion{}, err
+		}
+		return client.EditSuggestion(ctx, id, edit)
+	}
 	h.BoostGet = func(ctx context.Context, id string) (aiboost.Booster, error) {
 		client, err := s.boostClient()
 		if err != nil {

@@ -15,8 +15,13 @@ everything below is simple:
   there is visible to the host.
 - HTTP(S) egress is proxied through the gateway. Real credentials are never
   available; the proxy substitutes `piso_…` placeholders or blocks/ flags the
-  request. Public fetches (package registries, docs, public git over https)
-  generally work.
+  request. Public fetches (package registries, docs) generally work.
+- Git over HTTPS to GitHub works. Boot configures a global
+  `credential.https://github.com.helper` that shells out to
+  `gh auth git-credential`, so `clone`/`fetch`/`pull`/`push` send the
+  gateway's `piso_github_…` placeholder instead of a real token. Nothing to
+  set up per run; `gist.github.com` is covered too. Use HTTPS remote URLs
+  (`https://github.com/owner/repo.git`), never `git@github.com:owner/repo.git`.
 - Any dev-server port you bind is automatically published as
   `http://<slug>-<port>.piso.local` (or `?route=` on the apex) — no host
   ceremony needed.
@@ -34,8 +39,10 @@ everything below is simple:
 - **`pi mcp login` / in-worker MCP OAuth.** The callback is
   `http://127.0.0.1:<port>/callback` inside this container; the host browser
   cannot finish it. A real Bearer is 407'd. Use `piso-mcp-add` (below).
-- **git clone/push/pull over ssh**, or any git operation requiring
-  credentials the substitution layer cannot satisfy.
+- **git clone/push/pull over ssh** (`git@host:owner/repo.git`) — no keys, no
+  route, and it hangs rather than failing. HTTPS with the gh credential helper
+  is the supported path; only a host whose credentials the substitution layer
+  cannot satisfy is out of bounds.
 - **docker / podman / any container control**.
 - **Real credentials**: you only ever hold `piso_…` placeholders; you cannot
   mint, fetch, or use real values.
@@ -59,12 +66,12 @@ including when the original attempt used `gh` with a full URL. Do not repeat
 it if the same parsed-name command already failed, and never delete a partial
 clone or an existing destination automatically.
 
-This fallback does not override sandbox boundaries. Credential-bearing
-clones, proxy/auth denials, forbidden destinations, and pending host requests
-require the Host Action Request protocol rather than an in-worker retry.
-In those cases, use the parsed-name `gh repo clone` command in the host
-request with a `/workspace/...` result path. Never bypass the proxy or retry
-in a loop.
+This fallback does not override sandbox boundaries. Proxy or auth denials,
+hosts whose credentials the substitution layer cannot satisfy, forbidden
+destinations, and pending host requests require the Host Action Request
+protocol rather than an in-worker retry. In those cases, use the parsed-name
+`gh repo clone` command in the host request with a `/workspace/...` result
+path. Never bypass the proxy or retry in a loop.
 
 ## Host Action Request protocol
 
@@ -73,7 +80,7 @@ For any out-of-bounds step, do all of the following:
 1. **In your reply**, emit a request the human can act on, with the exact
    command and a rendezvous path for the result (always under `/workspace`):
    ```
-   HOST ACTION REQUEST: clone the private repo
+   HOST ACTION REQUEST: clone over ssh
      COMMAND: cd /abs/path && git clone git@github.com:org/repo.git
      RESULT:  /workspace/repo   (then I can continue with the vendoring)
    ```
@@ -139,9 +146,11 @@ If `piso-mcp-add` is not on PATH, do those two steps by hand — still never
 ## Probing cautiously
 
 If you must verify a boundary yourself, wrap the probe in `timeout 3` — an
-unproxied ssh/git connection will hang indefinitely in this network:
+unproxied ssh connection will hang indefinitely in this network, while HTTPS
+goes through the proxy and answers:
 
 ```bash
 timeout 3 git ls-remote git@github.com:org/repo.git   # will hang→timeout; don't bother
+timeout 3 git ls-remote https://github.com/org/repo.git   # proxied; fast 404/auth error
 timeout 3 curl -sI https://example.com                # fine through the proxy
 ```
