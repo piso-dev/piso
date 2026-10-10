@@ -1878,7 +1878,8 @@
               })
               .catch((e) => {
                 failures.set(key, e.message);
-                if (key === "githubUser") data.githubUser = { ...data.githubUser, connected: false };
+                // Keep the last known GitHub session on verification/network errors.
+                // Only a successful status response may change connected state.
                 if (key === "githubMappings") data.githubMappings = [];
               })
               .finally(() => pending.delete(key));

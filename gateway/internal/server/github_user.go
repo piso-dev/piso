@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -24,6 +25,8 @@ type githubIdentity struct {
 	Type  string `json:"type"`
 }
 
+var errGithubUserSignIn = errors.New("sign in to GitHub first")
+
 func githubUserCallback() string { return githubAppPublicBase() + "/api/v1/github-user/callback" }
 
 func (s *Server) githubUserJSON(r *http.Request, path, token string, out any) error {
@@ -38,8 +41,11 @@ func (s *Server) githubUserJSON(r *http.Request, path, token string, out any) er
 		return fmt.Errorf("GitHub is unavailable")
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
-		return fmt.Errorf("GitHub returned HTTP %d; reconnect or check organization policy", resp.StatusCode)
+	if resp.StatusCode == http.StatusUnauthorized {
+		return errGithubUserSignIn
+	}
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("GitHub returned HTTP %d; retry or check organization policy", resp.StatusCode)
 	}
 	return json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(out)
 }
@@ -52,13 +58,16 @@ func (s *Server) verifiedGithubUser(r *http.Request) (githubIdentity, error) {
 	tok, ok := s.githubUserToken()
 	var identity githubIdentity
 	if !ok {
-		return identity, fmt.Errorf("sign in to GitHub first")
+		return identity, errGithubUserSignIn
 	}
 	if err := s.githubUserJSON(r, "/user", tok, &identity); err != nil {
 		return identity, err
 	}
-	if identity.ID <= 0 || identity.ID != s.Store.GithubUser().AccountID || identity.Login == "" {
-		return identity, fmt.Errorf("GitHub identity changed; sign in again")
+	if identity.ID <= 0 || identity.Login == "" {
+		return identity, fmt.Errorf("GitHub returned an incomplete identity; retry")
+	}
+	if identity.ID != s.Store.GithubUser().AccountID {
+		return identity, fmt.Errorf("GitHub identity changed: %w", errGithubUserSignIn)
 	}
 	return identity, nil
 }
@@ -72,6 +81,12 @@ func (s *Server) registerGithubUser(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/github-user", func(w http.ResponseWriter, r *http.Request) {
 		u := s.Store.GithubUser()
 		_, identityErr := s.verifiedGithubUser(r)
+		// An unavailable verification is not evidence of a revoked token.
+		// Return an error so the dashboard retains its last known session state.
+		if identityErr != nil && !errors.Is(identityErr, errGithubUserSignIn) {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "GitHub sign-in verification is unavailable; retry shortly"})
+			return
+		}
 		connected := identityErr == nil
 		secret, configured := s.Store.SecretByID(u.ClientSecretID)
 		configured = configured && secret.GatewayOnly && secret.Value != ""

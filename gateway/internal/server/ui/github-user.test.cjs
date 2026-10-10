@@ -23,6 +23,32 @@ function harness(t) {
  return {context, document:dom.window.document, calls, opened, window:dom.window};
 }
 
+test('status refresh preserves session on failure, recovers, and honors confirmed sign-out', async t => {
+ const h = harness(t);
+ Object.assign(h.context, {
+  endpoints:{githubUser:'github-user'}, pending:new Map(), loaded:new Set(), failures:new Map(),
+  renderGlobal:()=>{}, renderContent:()=>{}, lastRefresh:0,
+ });
+ vm.runInContext(slice('async function refresh(', 'async function health('), h.context);
+ const session = h.context.data.githubUser;
+ h.context.api = async () => { throw new Error('GitHub verification unavailable'); };
+ await vm.runInContext('refresh()', h.context);
+ assert.equal(h.context.data.githubUser, session);
+ assert.equal(h.context.data.githubUser.connected, true);
+ assert.equal(h.context.failures.get('githubUser'), 'GitHub verification unavailable');
+ assert.equal(h.context.pending.size, 0);
+ h.context.api = async () => ({...session, connected:true});
+ await vm.runInContext('refresh()', h.context);
+ assert.equal(h.context.data.githubUser.connected, true);
+ assert.equal(h.context.failures.has('githubUser'), false);
+ h.context.api = async () => ({...session, connected:false});
+ await vm.runInContext('refresh()', h.context);
+ assert.equal(h.context.data.githubUser.connected, false);
+ h.context.api = async () => { throw new Error('Network unavailable'); };
+ await vm.runInContext('refresh()', h.context);
+ assert.equal(h.context.data.githubUser.connected, false);
+});
+
 test('sign-in action navigates via GET on callback origin, not a JSON POST', t => {
  const h = harness(t);
  vm.runInContext('githubUserStart()', h.context);
