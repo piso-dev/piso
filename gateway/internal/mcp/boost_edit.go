@@ -17,14 +17,17 @@ func (h *Handler) registerBoostEditSuggestion() {
 	}
 	h.Register(Tool{
 		Name:        "boost_edit_suggestion",
-		Description: "Edit a submitted AI Boost suggestion using its ID and last observed revision. Omitted fields stay unchanged; content replaces the full Markdown object; [] clears tags. Returns the updated suggestion and revision. Does not approve or publish. Never blindly retry after a conflict or ambiguous failure: inspect the current suggestion in the dashboard first; do not guess a newer revision.",
+		Description: "Edit a submitted new-booster or new-version AI Boost suggestion using its ID and last observed revision. Version proposals accept baseVersionId, version, content, changelog, rationale; new boosters accept name, description, content, suggestedTags, rationale. Do not mix type-specific fields. Omitted fields stay unchanged; content replaces the full Markdown object; [] clears tags. Does not approve or publish. After a conflict or ambiguous failure, use boost_get_suggestion first; never guess a newer revision.",
 		InputSchema: map[string]any{"type": "object", "additionalProperties": false, "required": []string{"id", "expectedRevision"}, "properties": map[string]any{
-			"id":               map[string]any{"type": "string", "description": "Suggestion UUID returned by boost_suggest (not a booster ID).", "pattern": boostID.String()},
+			"id":               map[string]any{"type": "string", "description": "Suggestion UUID returned by submission or boost_list_suggestions (not a booster ID).", "pattern": boostID.String()},
 			"expectedRevision": map[string]any{"type": "integer", "minimum": 1, "description": "Last observed suggestion revision; must still be submitted at this revision."},
 			"changeSummary":    map[string]any{"type": "string", "maxLength": 2000, "description": "Optional revision note; not a payload change on its own."},
 			"name":             str("Replacement name.", 255),
 			"description":      str("Replacement description.", 10000),
 			"rationale":        str("Replacement rationale.", 10000),
+			"baseVersionId":    map[string]any{"type": "string", "pattern": boostID.String(), "description": "Rebase a version proposal onto this published version UUID."},
+			"version":          str("Replacement strict SemVer for a version proposal.", 32),
+			"changelog":        str("Replacement changelog for a version proposal.", 10000),
 			"content": map[string]any{"type": "object", "additionalProperties": false, "required": []string{"format", "body"}, "properties": map[string]any{
 				"format": map[string]any{"type": "string", "enum": []string{"markdown"}},
 				"body":   str("Nonblank Markdown, at most 100000 UTF-8 bytes; whitespace preserved.", 100000),
@@ -34,6 +37,9 @@ func (h *Handler) registerBoostEditSuggestion() {
 			map[string]any{"required": []string{"name"}}, map[string]any{"required": []string{"description"}},
 			map[string]any{"required": []string{"content"}}, map[string]any{"required": []string{"suggestedTags"}},
 			map[string]any{"required": []string{"rationale"}},
+			map[string]any{"required": []string{"baseVersionId"}},
+			map[string]any{"required": []string{"version"}},
+			map[string]any{"required": []string{"changelog"}},
 		}}, Write: true, Call: h.toolBoostEditSuggestion,
 	})
 }
@@ -72,7 +78,7 @@ func (h *Handler) toolBoostEditSuggestion(_ store.WorkerRec, args json.RawMessag
 			case 401:
 				return nil, &rpcError{Code: codeServer, Message: "AI Boost rejected edit authentication; check the connection and current suggestion before retrying"}
 			case 409:
-				return nil, &rpcError{Code: codeServer, Message: "AI Boost suggestion changed or was already decided; inspect the current suggestion in the dashboard before editing again; do not guess a newer revision"}
+				return nil, &rpcError{Code: codeServer, Message: "AI Boost suggestion changed or was already decided; use boost_get_suggestion before editing again; do not guess a newer revision"}
 			case 429:
 				return nil, &rpcError{Code: codeServer, Message: "AI Boost rate limit reached; check the current suggestion before retrying later"}
 			}

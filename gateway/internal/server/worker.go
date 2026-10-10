@@ -81,6 +81,27 @@ func (s *Server) mcpHandler() *mcp.Handler {
 		}
 		return client.EditSuggestion(ctx, id, edit)
 	}
+	h.BoostListSuggestions = func(ctx context.Context, status, cursor string) (aiboost.SuggestionPage, error) {
+		client, err := s.boostClient()
+		if err != nil {
+			return aiboost.SuggestionPage{}, err
+		}
+		return client.Suggestions(ctx, status, cursor)
+	}
+	h.BoostGetSuggestion = func(ctx context.Context, id string) (aiboost.Suggestion, error) {
+		client, err := s.boostClient()
+		if err != nil {
+			return aiboost.Suggestion{}, err
+		}
+		return client.GetSuggestion(ctx, id)
+	}
+	h.BoostSuggestVersion = func(ctx context.Context, draft aiboost.VersionDraft, key string) (aiboost.Suggestion, error) {
+		client, err := s.boostClient()
+		if err != nil {
+			return aiboost.Suggestion{}, err
+		}
+		return client.SuggestVersion(ctx, draft, key)
+	}
 	h.BoostGet = func(ctx context.Context, id string) (aiboost.Booster, error) {
 		client, err := s.boostClient()
 		if err != nil {

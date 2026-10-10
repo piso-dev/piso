@@ -19,6 +19,7 @@ var boostID = regexp.MustCompile(`^[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-
 
 func (h *Handler) registerBoost() {
 	h.registerBoostEditSuggestion()
+	h.registerBoostSuggestions()
 	str := func(description string) map[string]any {
 		return map[string]any{"type": "string", "description": description}
 	}
@@ -64,7 +65,7 @@ func boostError(err error) *rpcError {
 		case 404:
 			message = "AI Boost item not found in the connected library"
 		case 409:
-			message = "AI Boost conflict: idempotency key already used with a different payload; do not blindly retry"
+			message = "AI Boost conflict: submission key, base version or proposed version conflicts with current state; inspect the suggestion and booster before retrying"
 		case 429:
 			message = "AI Boost rate limit reached; retry later with the same submission key and payload"
 		}

@@ -19,6 +19,9 @@ type SuggestionEdit struct {
 	Content          *Content  `json:"content,omitempty"`
 	SuggestedTags    *[]string `json:"suggestedTags,omitempty"`
 	Rationale        *string   `json:"rationale,omitempty"`
+	BaseVersionID    *string   `json:"baseVersionId,omitempty"`
+	Version          *string   `json:"version,omitempty"`
+	Changelog        *string   `json:"changelog,omitempty"`
 }
 
 func (e SuggestionEdit) Validate(id string) error {
@@ -31,7 +34,22 @@ func (e SuggestionEdit) Validate(id string) error {
 	if !utf8.ValidString(e.ChangeSummary) || utf8.RuneCountInString(e.ChangeSummary) > 2000 {
 		return errors.New("changeSummary must be at most 2000 characters")
 	}
-	if e.Name == nil && e.Description == nil && e.Content == nil && e.SuggestedTags == nil && e.Rationale == nil {
+	versionFields := e.BaseVersionID != nil || e.Version != nil || e.Changelog != nil
+	if versionFields && (e.Name != nil || e.Description != nil || e.SuggestedTags != nil) {
+		return errors.New("cannot mix new-booster and version-suggestion fields")
+	}
+	if e.BaseVersionID != nil && !uuid.MatchString(*e.BaseVersionID) {
+		return errors.New("baseVersionId must be a UUID")
+	}
+	if e.Version != nil {
+		if err := validateVersion(*e.Version); err != nil {
+			return err
+		}
+	}
+	if e.Changelog != nil && !validVersionText(*e.Changelog) {
+		return errors.New("changelog must be nonblank and at most 10000 characters")
+	}
+	if !versionFields && e.Name == nil && e.Description == nil && e.Content == nil && e.SuggestedTags == nil && e.Rationale == nil {
 		return errors.New("provide at least one suggestion payload field")
 	}
 	// Reuse submission bounds without reading or replacing omitted fields.

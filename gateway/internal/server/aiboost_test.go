@@ -14,6 +14,8 @@ import (
 	"time"
 )
 
+const versionProposalResponse = `{"id":"44444444-4444-4444-4444-444444444444","type":"new_version","status":"submitted","revision":1,"boosterId":"22222222-2222-2222-2222-222222222222","baseVersionId":"11111111-1111-1111-1111-111111111111","version":"1.1.0","content":{"format":"markdown","body":"# Updated"},"changelog":"New checks","rationale":"Useful","review":{"title":"New version of Go","action":"Publish new version","baseVersion":"1.0.0","proposedVersion":"1.1.0"}}`
+
 func TestBoostBrowserFlow(t *testing.T) {
 	s, _, gwPub, _ := mcpFixture(t)
 	const callback = "https://piso.example/oauth/ai-boost/callback"
@@ -70,16 +72,52 @@ func TestBoostBrowserFlow(t *testing.T) {
 				t.Error("incorrect edit payload", payload)
 			}
 			io.WriteString(w, `{"id":"33333333-3333-3333-3333-333333333333","status":"submitted","revision":2,"name":"Updated suggestion","description":"Original description","content":{"format":"markdown","body":"# Original body"},"suggestedTags":[],"rationale":"Useful","destination":{"tagId":"library-id","name":"Library","visibility":"private"}}`)
+		case "/api/booster-suggestions/44444444-4444-4444-4444-444444444444/":
+			if r.Header.Get("Authorization") != "Bearer sensitive-access" {
+				t.Error("version read/edit missing gateway token")
+			}
+			if r.Method == "PATCH" {
+				var payload map[string]any
+				if json.NewDecoder(r.Body).Decode(&payload) != nil || len(payload) != 4 || payload["expectedRevision"] != float64(1) || payload["version"] != "1.2.0" || payload["baseVersionId"] != "11111111-1111-1111-1111-111111111111" || payload["changelog"] != "Rebased" {
+					t.Error("incorrect version edit", payload)
+				}
+				io.WriteString(w, strings.ReplaceAll(strings.ReplaceAll(versionProposalResponse, `"revision":1`, `"revision":2`), "1.1.0", "1.2.0"))
+			} else if r.Method == "GET" {
+				io.WriteString(w, versionProposalResponse)
+			} else {
+				t.Error("unexpected version request method", r.Method)
+			}
 		case "/api/booster-suggestions/":
 			if r.Method == "GET" {
-				io.WriteString(w, `{"items":[],"next":null,"previous":null}`)
+				if r.Header.Get("Authorization") != "Bearer sensitive-access" {
+					t.Error("suggestion list missing gateway token")
+				}
+				if r.URL.Query().Get("cursor") == "page==" {
+					if r.URL.Query().Get("status") != "submitted" {
+						t.Error("status filter lost")
+					}
+					io.WriteString(w, `{"items":[`+versionProposalResponse+`],"next":"https://untrusted.example/?cursor=next%3D%3D","previous":null}`)
+				} else {
+					io.WriteString(w, `{"items":[],"next":null,"previous":null}`)
+				}
 				return
 			}
 			if r.Method != "POST" || r.Header.Get("Authorization") != "Bearer sensitive-access" || r.Header.Get("Idempotency-Key") != "stable-submission" {
 				t.Error("incorrect suggestion request")
 			}
 			var payload map[string]any
-			if json.NewDecoder(r.Body).Decode(&payload) != nil || payload["name"] != "Go" {
+			if json.NewDecoder(r.Body).Decode(&payload) != nil {
+				t.Fatal("invalid suggestion JSON")
+			}
+			if payload["type"] == "new_version" {
+				if len(payload) != 7 || payload["boosterId"] != "22222222-2222-2222-2222-222222222222" || payload["baseVersionId"] != "11111111-1111-1111-1111-111111111111" || payload["version"] != "1.1.0" || payload["changelog"] != "New checks" || payload["rationale"] != "Useful" {
+					t.Error("incorrect version suggestion payload", payload)
+				}
+				w.WriteHeader(201)
+				io.WriteString(w, versionProposalResponse)
+				return
+			}
+			if payload["name"] != "Go" {
 				t.Error("incorrect suggestion payload")
 			}
 			w.WriteHeader(201)
@@ -179,6 +217,10 @@ func TestBoostBrowserFlow(t *testing.T) {
 		expected string
 	}{
 		{"boost_search", map[string]any{"q": "Go"}, "nextCursor"},
+		{"boost_list_suggestions", map[string]any{"status": "submitted", "cursor": "page=="}, "next=="},
+		{"boost_get_suggestion", map[string]any{"id": "44444444-4444-4444-4444-444444444444"}, "Publish new version"},
+		{"boost_suggest_version", map[string]any{"boosterId": "22222222-2222-2222-2222-222222222222", "baseVersionId": "11111111-1111-1111-1111-111111111111", "version": "1.1.0", "content": map[string]any{"format": "markdown", "body": "# Updated"}, "changelog": "New checks", "rationale": "Useful", "idempotencyKey": "stable-submission"}, "new_version"},
+		{"boost_edit_suggestion", map[string]any{"id": "44444444-4444-4444-4444-444444444444", "expectedRevision": 1, "baseVersionId": "11111111-1111-1111-1111-111111111111", "version": "1.2.0", "changelog": "Rebased"}, "1.2.0"},
 		{"boost_suggest", map[string]any{"name": "Go", "description": "Go guidance", "rationale": "Useful", "content": map[string]any{"format": "markdown", "body": "# Go"}, "idempotencyKey": "stable-submission"}, "suggestion-id"},
 	} {
 		sealed, response := sealCall(t, gwPub, pub, priv, "tools/call", map[string]any{"name": call.name, "arguments": call.args}, time.Now())

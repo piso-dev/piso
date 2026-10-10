@@ -316,7 +316,7 @@ func (e *APIError) Error() string { return fmt.Sprintf("AI Boost API returned HT
 
 // request is deliberately private. Callers cannot choose origins, methods, or
 // arbitrary endpoints. OAuth credentials stay in the gateway; worker MCP only
-// exposes List/Get/Suggest/EditSuggestion; Decide is host-only.
+// exposes library and suggestion reads/submissions/edits; Decide is host-only.
 func (c *Client) request(ctx context.Context, method, path string, body []byte, key string) ([]byte, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

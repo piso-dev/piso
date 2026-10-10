@@ -18,6 +18,9 @@ const editID = "33333333-3333-3333-3333-333333333333"
 func TestEditSuggestionPartialPayload(t *testing.T) {
 	for _, payload := range []string{
 		`{"expectedRevision":2,"name":"New name"}`,
+		`{"expectedRevision":2,"baseVersionId":"11111111-1111-1111-1111-111111111111","version":"1.2.0","changelog":"Rebased"}`,
+		`{"expectedRevision":2,"version":"1.2.0"}`,
+		`{"expectedRevision":2,"changelog":"New checks"}`,
 		`{"expectedRevision":2,"suggestedTags":[]}`,
 		`{"expectedRevision":2,"content":{"format":"markdown","body":"\n# New\n  preserved  \n"}}`,
 		`{"expectedRevision":2,"changeSummary":"why","description":"New description","rationale":"New rationale","suggestedTags":["tag"]}`,

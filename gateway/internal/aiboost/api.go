@@ -103,11 +103,17 @@ type Suggestion struct {
 	Status   string `json:"status"`
 	Revision int    `json:"revision"`
 	Draft
-	CreatedAt   string          `json:"createdAt,omitempty"`
-	UpdatedAt   string          `json:"updatedAt,omitempty"`
-	Decision    json.RawMessage `json:"decision,omitempty"`
-	Result      json.RawMessage `json:"result,omitempty"`
-	Destination struct {
+	Type          string            `json:"type,omitempty"`
+	BoosterID     string            `json:"boosterId,omitempty"`
+	BaseVersionID string            `json:"baseVersionId,omitempty"`
+	Version       string            `json:"version,omitempty"`
+	Changelog     string            `json:"changelog,omitempty"`
+	Review        *SuggestionReview `json:"review,omitempty"`
+	CreatedAt     string            `json:"createdAt,omitempty"`
+	UpdatedAt     string            `json:"updatedAt,omitempty"`
+	Decision      json.RawMessage   `json:"decision,omitempty"`
+	Result        json.RawMessage   `json:"result,omitempty"`
+	Destination   struct {
 		TagID      string `json:"tagId"`
 		Name       string `json:"name"`
 		Visibility string `json:"visibility"`
