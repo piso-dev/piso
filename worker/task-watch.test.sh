@@ -24,43 +24,57 @@ got=$(printf '%s\n' '{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"u
 got=$(printf '%s\n' '{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"unknown tool"}}' | pick)
 [ "$got" = "error" ] && ok "unknown tool → error" || bad "unknown tool → error (got $got)"
 
+U1=11111111-1111-1111-1111-111111111111
+U2=22222222-2222-2222-2222-222222222222
+U3=33333333-3333-3333-3333-333333333333
+U4=44444444-4444-4444-4444-444444444444
+U5=55555555-5555-5555-5555-555555555555
+U6=66666666-6666-6666-6666-666666666666
+U7=77777777-7777-7777-7777-777777777777
+U8=88888888-8888-8888-8888-888888888888
+U9=99999999-9999-9999-9999-999999999999
+UA=aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
+UB=bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb
+UC=cccccccc-cccc-cccc-cccc-cccccccccccc
+UD=dddddddd-dddd-dddd-dddd-dddddddddddd
+
 held='{"status":"ok","tasks":[
-  {"id":"aaa","heldByMe":false,"assignedToMe":true,"claimable":true,"priority":10},
-  {"id":"bbb","heldByMe":true,"assignedToMe":true,"claimable":false,"priority":0}
+  {"id":"'$U2'","resumable":false,"claimable":true,"priority":10},
+  {"id":"'$U1'","resumable":true,"claimable":false,"priority":0}
 ]}'
 got=$(printf '%s\n' "$held" | pick)
-[ "$got" = "resume bbb" ] && ok "heldByMe beats claimable" || bad "heldByMe beats claimable (got $got)"
+[ "$got" = "resume $U1" ] && ok "resumable beats claimable" || bad "resumable beats claimable (got $got)"
 
-assigned='{"status":"ok","tasks":[
-  {"id":"low","heldByMe":false,"assignedToMe":false,"claimable":true,"priority":5},
-  {"id":"mine","heldByMe":false,"assignedToMe":true,"claimable":true,"priority":0}
+resume_prio='{"status":"ok","tasks":[
+  {"id":"'$U4'","resumable":true,"claimable":false,"priority":5},
+  {"id":"'$U3'","resumable":true,"claimable":false,"priority":9}
 ]}'
-got=$(printf '%s\n' "$assigned" | pick)
-[ "$got" = "start mine" ] && ok "assignedToMe beats higher-priority unassigned" || bad "assignedToMe beats (got $got)"
+got=$(printf '%s\n' "$resume_prio" | pick)
+[ "$got" = "resume $U3" ] && ok "resumable highest priority first" || bad "resumable priority (got $got)"
 
 prio='{"status":"ok","tasks":[
-  {"id":"a","heldByMe":false,"assignedToMe":false,"claimable":true,"priority":1},
-  {"id":"b","heldByMe":false,"assignedToMe":false,"claimable":true,"priority":3}
+  {"id":"'$U6'","claimable":true,"priority":1},
+  {"id":"'$U5'","claimable":true,"priority":3}
 ]}'
 got=$(printf '%s\n' "$prio" | pick)
-[ "$got" = "start b" ] && ok "higher priority first" || bad "higher priority first (got $got)"
+[ "$got" = "start $U5" ] && ok "higher priority first" || bad "higher priority first (got $got)"
 
 ids='{"status":"ok","tasks":[
-  {"id":"m","heldByMe":false,"assignedToMe":false,"claimable":true,"priority":1},
-  {"id":"k","heldByMe":false,"assignedToMe":false,"claimable":true,"priority":1}
+  {"id":"'$U8'","claimable":true,"priority":1},
+  {"id":"'$U7'","claimable":true,"priority":1}
 ]}'
 got=$(printf '%s\n' "$ids" | pick)
-[ "$got" = "start k" ] && ok "same priority → id asc" || bad "id asc (got $got)"
+[ "$got" = "start $U7" ] && ok "same priority → id asc" || bad "id asc (got $got)"
 
 blocked='{"status":"ok","tasks":[
-  {"id":"nope","heldByMe":false,"assignedToMe":true,"claimable":false,"dependenciesMet":false,"directiveActive":true,"priority":9}
+  {"id":"'$U3'","claimable":false,"priority":9}
 ]}'
 got=$(printf '%s\n' "$blocked" | pick)
 [ "$got" = "sleep" ] && ok "claimable false → sleep" || bad "claimable false → sleep (got $got)"
 
-wrapped='{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"{\"status\":\"ok\",\"tasks\":[{\"id\":\"t1\",\"heldByMe\":false,\"assignedToMe\":true,\"claimable\":true,\"priority\":0}]}"}]}}'
+wrapped='{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"{\"status\":\"ok\",\"tasks\":[{\"id\":\"'$U9'\",\"claimable\":true,\"priority\":0}]}"}]}}'
 got=$(printf '%s\n' "$wrapped" | pick)
-[ "$got" = "start t1" ] && ok "unwrap MCP tools/call" || bad "unwrap MCP tools/call (got $got)"
+[ "$got" = "start $U9" ] && ok "unwrap MCP tools/call" || bad "unwrap MCP tools/call (got $got)"
 
 # --- loop ---
 root=$(mktemp -d)
@@ -113,6 +127,7 @@ run_watch() {
     PISO_MCP="$root/bin/piso-mcp" \
     PISO_PI="$root/bin/pi" \
     PISO_TASK_PICK="$(pwd)/task-pick.py" \
+    PISO_TASK_SESSION_DIR="$root/sessions" \
     PISO_PI_STATUS="$1" \
     PISO_TASK_IDLE_SECS=0 \
     PISO_TASK_SCAN_SECS=0 \
@@ -138,20 +153,20 @@ printf '%s\n' "$out" | grep -q '^unpaired$' && ok "loop unpaired" || bad "loop u
 if [ -s "$PI_LOG" ]; then bad "unpaired must not start pi"; else ok "unpaired does not start pi"; fi
 
 : >"$PI_LOG"
-FAKE_MCP_OUT='{"status":"ok","tasks":[{"id":"held-1","heldByMe":true,"assignedToMe":true,"claimable":false,"priority":0}]}'
+FAKE_MCP_OUT='{"status":"ok","tasks":[{"id":"'$UA'","resumable":true,"claimable":false,"priority":0}]}'
 out=$(run_watch "$root/bin/pi-status-down" 1)
-printf '%s\n' "$out" | grep -q 'resume held-1' && ok "loop resume" || bad "loop resume ($out)"
-grep -q 'PISO_TASK_ID=held-1' "$PI_LOG" && ok "resume exports PISO_TASK_ID" || bad "resume exports PISO_TASK_ID"
-grep -q -- '--session task-held-1' "$PI_LOG" && ok "resume uses task session" || bad "resume uses task session ($(cat "$PI_LOG"))"
+printf '%s\n' "$out" | grep -q "resume $UA" && ok "loop resume" || bad "loop resume ($out)"
+grep -q "PISO_TASK_ID=$UA" "$PI_LOG" && ok "resume exports PISO_TASK_ID" || bad "resume exports PISO_TASK_ID"
+grep -q -- "--session $root/sessions/task-$UA.jsonl" "$PI_LOG" && ok "resume uses task session" || bad "resume uses task session ($(cat "$PI_LOG"))"
 
 : >"$PI_LOG"
-FAKE_MCP_OUT='{"status":"ok","tasks":[{"id":"new-1","heldByMe":false,"assignedToMe":true,"claimable":true,"priority":0}]}'
+FAKE_MCP_OUT='{"status":"ok","tasks":[{"id":"'$UB'","resumable":false,"claimable":true,"priority":0}]}'
 out=$(run_watch "$root/bin/pi-status-down" 1)
-printf '%s\n' "$out" | grep -q 'start new-1' && ok "loop start" || bad "loop start ($out)"
-grep -q -- '--session task-new-1' "$PI_LOG" && ok "start uses task session" || bad "start uses task session"
+printf '%s\n' "$out" | grep -q "start $UB" && ok "loop start" || bad "loop start ($out)"
+grep -q -- "--session $root/sessions/task-$UB.jsonl" "$PI_LOG" && ok "start uses task session" || bad "start uses task session"
 
 : >"$PI_LOG"
-FAKE_MCP_OUT='{"status":"ok","tasks":[{"id":"should-not","heldByMe":false,"assignedToMe":true,"claimable":true,"priority":0}]}'
+FAKE_MCP_OUT='{"status":"ok","tasks":[{"id":"'$U3'","resumable":false,"claimable":true,"priority":0}]}'
 out=$(run_watch "$root/bin/pi-status-idle" 1)
 printf '%s\n' "$out" | grep -q 'wait pi' && ok "pi running → wait" || bad "pi running → wait ($out)"
 if [ -s "$PI_LOG" ]; then bad "wait pi must not start pi"; else ok "wait pi does not start pi"; fi
@@ -159,13 +174,13 @@ if [ -s "$PI_LOG" ]; then bad "wait pi must not start pi"; else ok "wait pi does
 : >"$PI_LOG"
 queue="$root/queue.jsonl"
 printf '%s\n' \
-  '{"status":"ok","tasks":[{"id":"one","heldByMe":false,"assignedToMe":true,"claimable":true,"priority":0}]}' \
-  '{"status":"ok","tasks":[{"id":"two","heldByMe":false,"assignedToMe":true,"claimable":true,"priority":0}]}' \
+  '{"status":"ok","tasks":[{"id":"'$UC'","resumable":false,"claimable":true,"priority":0}]}' \
+  '{"status":"ok","tasks":[{"id":"'$UD'","resumable":false,"claimable":true,"priority":0}]}' \
   >"$queue"
 FAKE_MCP_QUEUE="$queue"
 FAKE_MCP_OUT=""
 out=$(run_watch "$root/bin/pi-status-down" 2)
-printf '%s\n' "$out" | grep -q 'start one' && printf '%s\n' "$out" | grep -q 'start two' && ok "chained tasks start without idle" || bad "chained tasks ($out)"
+printf '%s\n' "$out" | grep -q "start $UC" && printf '%s\n' "$out" | grep -q "start $UD" && ok "chained tasks start without idle" || bad "chained tasks ($out)"
 printf '%s\n' "$out" | grep -q 'peek empty' && bad "chained tasks slept" || ok "chained tasks did not sleep"
 unset FAKE_MCP_QUEUE
 

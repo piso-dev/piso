@@ -19,13 +19,18 @@ func (h *Handler) registerAsks() {
 	}
 	h.Register(Tool{
 		Name:        "approval_request",
-		Description: "Ask a human to allow an action.",
+		Description: "Ask a human to allow an action. With taskId, requires attemptId, requestId, summary, checkpoint; atomically waits and ends execution. Exit after success.",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"action":  map[string]any{"type": "string"},
 				"title":   map[string]any{"type": "string"},
 				"payload": map[string]any{"type": "object"},
+				"taskId": map[string]any{"type": "string"},
+				"attemptId": map[string]any{"type": "string"},
+				"requestId": map[string]any{"type": "string"},
+				"summary": map[string]any{"type": "string"},
+				"checkpoint": map[string]any{"type": "string"},
 			},
 			"required": []string{"action", "title"},
 		},
@@ -51,7 +56,7 @@ func (h *Handler) registerAsks() {
 	})
 	h.Register(Tool{
 		Name:        "human_action_request",
-		Description: "Ask a human to do something the system cannot do.",
+		Description: "Ask for an external action. With taskId, requires attemptId, requestId, summary, checkpoint; atomically waits and ends execution. Exit after success.",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -60,6 +65,10 @@ func (h *Handler) registerAsks() {
 				"instructions": map[string]any{"type": "string"},
 				"verification": map[string]any{"type": "string"},
 				"taskId":       map[string]any{"type": "string"},
+				"attemptId": map[string]any{"type": "string"},
+				"requestId": map[string]any{"type": "string"},
+				"summary": map[string]any{"type": "string"},
+				"checkpoint": map[string]any{"type": "string"},
 			},
 			"required": []string{"category", "title", "instructions"},
 		},
@@ -124,34 +133,28 @@ func (h *Handler) toolHumanActionList(caller store.WorkerRec, args json.RawMessa
 	return h.listCoord(caller, args, "/api/v1/human-actions", "humanActions")
 }
 
-func (h *Handler) toolApprovalRequest(caller store.WorkerRec, args json.RawMessage) (any, *rpcError) {
-	if err := rejectWorkerArg(args); err != nil {
-		return nil, err
+func (h *Handler) postAsk(caller store.WorkerRec, args json.RawMessage, path string) (any, *rpcError) {
+	if err := rejectWorkerArg(args); err != nil { return nil, err }
+	var body map[string]any
+	if err := json.Unmarshal(args, &body); err != nil || body == nil {
+		return nil, &rpcError{Code: codeInvalidParams, Message: "object required"}
 	}
-	var in struct {
-		Action  string         `json:"action"`
-		Title   string         `json:"title"`
-		Payload map[string]any `json:"payload"`
+	if id, _ := body["taskId"].(string); id != "" {
+		for _, key := range []string{"attemptId", "requestId", "summary", "checkpoint"} {
+			value, _ := body[key].(string)
+			if strings.TrimSpace(value) == "" {
+				return nil, &rpcError{Code: codeInvalidParams, Message: key + " required for task-linked ask"}
+			}
+		}
 	}
-	if err := json.Unmarshal(args, &in); err != nil || strings.TrimSpace(in.Action) == "" || strings.TrimSpace(in.Title) == "" {
-		return nil, &rpcError{Code: codeInvalidParams, Message: "action and title required"}
-	}
-	body := map[string]any{"action": strings.TrimSpace(in.Action), "title": strings.TrimSpace(in.Title)}
-	if in.Payload != nil {
-		body["payload"] = in.Payload
-	}
-	raw, _ := json.Marshal(body)
-	status, doc, rpcErr := h.coord(caller, http.MethodPost, "/api/v1/approvals", nil, raw)
-	if rpcErr != nil {
-		return nil, rpcErr
-	}
-	if status == 0 {
-		return doc, nil
-	}
-	if status >= 400 {
-		return nil, coordErr(status, doc)
-	}
+	status, doc, rpcErr := h.coord(caller, http.MethodPost, path, nil, args)
+	if rpcErr != nil { return nil, rpcErr }
+	if status >= 400 { return nil, coordErr(status, doc) }
 	return doc, nil
+}
+
+func (h *Handler) toolApprovalRequest(caller store.WorkerRec, args json.RawMessage) (any, *rpcError) {
+	return h.postAsk(caller, args, "/api/v1/approvals")
 }
 
 func (h *Handler) toolApprovalStatus(caller store.WorkerRec, args json.RawMessage) (any, *rpcError) {
@@ -182,42 +185,7 @@ func (h *Handler) toolApprovalStatus(caller store.WorkerRec, args json.RawMessag
 }
 
 func (h *Handler) toolHumanActionRequest(caller store.WorkerRec, args json.RawMessage) (any, *rpcError) {
-	if err := rejectWorkerArg(args); err != nil {
-		return nil, err
-	}
-	var in struct {
-		Category     string `json:"category"`
-		Title        string `json:"title"`
-		Instructions string `json:"instructions"`
-		Verification string `json:"verification"`
-		TaskID       string `json:"taskId"`
-	}
-	if err := json.Unmarshal(args, &in); err != nil || strings.TrimSpace(in.Category) == "" || strings.TrimSpace(in.Title) == "" || strings.TrimSpace(in.Instructions) == "" {
-		return nil, &rpcError{Code: codeInvalidParams, Message: "category, title, and instructions required"}
-	}
-	body := map[string]any{
-		"category":     strings.TrimSpace(in.Category),
-		"title":        strings.TrimSpace(in.Title),
-		"instructions": strings.TrimSpace(in.Instructions),
-	}
-	if strings.TrimSpace(in.Verification) != "" {
-		body["verification"] = strings.TrimSpace(in.Verification)
-	}
-	if strings.TrimSpace(in.TaskID) != "" {
-		body["taskId"] = strings.TrimSpace(in.TaskID)
-	}
-	raw, _ := json.Marshal(body)
-	status, doc, rpcErr := h.coord(caller, http.MethodPost, "/api/v1/human-actions", nil, raw)
-	if rpcErr != nil {
-		return nil, rpcErr
-	}
-	if status == 0 {
-		return doc, nil
-	}
-	if status >= 400 {
-		return nil, coordErr(status, doc)
-	}
-	return doc, nil
+	return h.postAsk(caller, args, "/api/v1/human-actions")
 }
 
 func (h *Handler) toolHumanActionStatus(caller store.WorkerRec, args json.RawMessage) (any, *rpcError) {

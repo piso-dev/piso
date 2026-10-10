@@ -46,6 +46,8 @@ services:
       PISO_WORKER_NAME: piso-worker-PROJ-SLUG
       PISO_WORKER_SLUG: PROJ-SLUG
       PISO_HULL: cloud_ship
+      # Task-first standalone workers pull runnable work from their shared queue.
+      PISO_TASK_LOOP: "1"
       PISO_PUBLIC_URL_FILE: /etc/piso/public-url
       PISO_EGRESS_LISTEN_PORT: "18080"
       PLANNOTATOR_REMOTE: "1"

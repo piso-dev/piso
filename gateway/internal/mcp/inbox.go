@@ -25,7 +25,7 @@ func (h *Handler) registerInbox() {
 	}
 	h.Register(Tool{
 		Name:        "inbox_list",
-		Description: "Tasks this worker holds or may claim, plus visible directives. Includes peek flags for the unattended watcher.",
+		Description: "Runnable work this worker may claim or resume. Excludes waiting, terminal, and other workers’ leased tasks.",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -36,80 +36,46 @@ func (h *Handler) registerInbox() {
 	})
 	h.Register(Tool{
 		Name:        "inbox_get",
-		Description: "One directive or task: body, plan, dependencies, budget, lease.",
+		Description: "Read authorized task context in any state: directives, feedback, waits, checkpoint, artifacts, and execution history.",
 		InputSchema: idSchema,
 		Call:        h.toolInboxGet,
 	})
-	h.Register(Tool{
-		Name:        "task_claim",
-		Description: "Take a lease on a task. Conflict if someone else holds it.",
-		InputSchema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"id":  map[string]any{"type": "string"},
-				"ttl": map[string]any{"type": "integer"},
+	// All writes carry an idempotency key; attemptId fences every execution write.
+	for _, spec := range []struct {
+		name string
+		description string
+		required []string
+	}{
+		{"claim", "Claim runnable work atomically. Returns attemptId; a conflict is normal.", nil},
+		{"renew", "Renew the current unexpired execution lease.", []string{"attemptId"}},
+		{"update", "Persist findings, artifacts, and a handoff checkpoint.", []string{"attemptId", "summary"}},
+		{"wait", "Atomically checkpoint, create a wait, and end execution. Exit after success.", []string{"attemptId", "summary", "checkpoint", "reason"}},
+		{"release", "Checkpoint and give runnable work back without blocking it.", []string{"attemptId", "summary", "checkpoint"}},
+		{"complete", "Finish work whose acceptance criteria are met; a PR normally waits for review instead.", []string{"attemptId", "summary"}},
+		{"fail", "Terminal failure of the goal, supported by evidence. Use wait/stuck for uncertainty.", []string{"attemptId", "summary", "evidence"}},
+	} {
+		op := spec.name
+		properties := map[string]any{}
+		for _, key := range []string{"id", "requestId", "attemptId", "summary", "checkpoint", "question", "evidence"} {
+			properties[key] = map[string]any{"type": "string"}
+		}
+		properties["reason"] = map[string]any{"type": "string", "enum": []string{"review", "needs_input", "external_dependency", "stuck"}}
+		properties["ttl"] = map[string]any{"type": "integer", "minimum": 60, "maximum": 86400}
+		properties["artifacts"] = map[string]any{"type": "array", "items": map[string]any{"type": "object"}}
+		required := append([]string{"id", "requestId"}, spec.required...)
+		h.Register(Tool{
+			Name: "task_" + op, Description: spec.description,
+			InputSchema: map[string]any{"type": "object", "properties": properties, "required": required, "additionalProperties": false},
+			Write: true,
+			Call: func(caller store.WorkerRec, args json.RawMessage) (any, *rpcError) {
+				var body map[string]any
+				if err := json.Unmarshal(args, &body); err != nil || body == nil {
+					return nil, &rpcError{Code: codeInvalidParams, Message: "object required"}
+				}
+				return h.postTask(caller, args, "/"+op, body)
 			},
-			"required": []string{"id"},
-		},
-		Write: true,
-		Call:  h.toolTaskClaim,
-	})
-	h.Register(Tool{
-		Name:        "task_renew",
-		Description: "Extend the lease on a task this worker holds.",
-		InputSchema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"id":  map[string]any{"type": "string"},
-				"ttl": map[string]any{"type": "integer"},
-			},
-			"required": []string{"id"},
-		},
-		Write: true,
-		Call:  h.toolTaskRenew,
-	})
-	h.Register(Tool{
-		Name:        "task_release",
-		Description: "Give a claimed task back.",
-		InputSchema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"id":     map[string]any{"type": "string"},
-				"reason": map[string]any{"type": "string"},
-			},
-			"required": []string{"id"},
-		},
-		Write: true,
-		Call:  h.toolTaskRelease,
-	})
-	h.Register(Tool{
-		Name:        "task_complete",
-		Description: "Finish a claimed task with a summary.",
-		InputSchema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"id":      map[string]any{"type": "string"},
-				"summary": map[string]any{"type": "string"},
-			},
-			"required": []string{"id", "summary"},
-		},
-		Write: true,
-		Call:  h.toolTaskComplete,
-	})
-	h.Register(Tool{
-		Name:        "task_fail",
-		Description: "Stop a claimed task with a reason.",
-		InputSchema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"id":     map[string]any{"type": "string"},
-				"reason": map[string]any{"type": "string"},
-			},
-			"required": []string{"id", "reason"},
-		},
-		Write: true,
-		Call:  h.toolTaskFail,
-	})
+		})
+	}
 	h.Register(Tool{
 		Name:        "directive_propose",
 		Description: "Suggest a goal. It is not active until a human approves.",
@@ -291,66 +257,13 @@ func (h *Handler) postTask(caller store.WorkerRec, args json.RawMessage, suffix 
 	return doc, nil
 }
 
+// Named entry point retained for callers that claim directly rather than via tools/call.
 func (h *Handler) toolTaskClaim(caller store.WorkerRec, args json.RawMessage) (any, *rpcError) {
-	var in struct {
-		TTL *int `json:"ttl"`
-	}
-	_ = json.Unmarshal(args, &in)
-	body := map[string]any{}
-	if in.TTL != nil {
-		body["ttl"] = *in.TTL
+	var body map[string]any
+	if err := json.Unmarshal(args, &body); err != nil || body == nil {
+		return nil, &rpcError{Code: codeInvalidParams, Message: "object required"}
 	}
 	return h.postTask(caller, args, "/claim", body)
-}
-
-func (h *Handler) toolTaskRenew(caller store.WorkerRec, args json.RawMessage) (any, *rpcError) {
-	var in struct {
-		TTL *int `json:"ttl"`
-	}
-	_ = json.Unmarshal(args, &in)
-	body := map[string]any{}
-	if in.TTL != nil {
-		body["ttl"] = *in.TTL
-	}
-	return h.postTask(caller, args, "/renew", body)
-}
-
-func (h *Handler) toolTaskRelease(caller store.WorkerRec, args json.RawMessage) (any, *rpcError) {
-	var in struct {
-		Reason string `json:"reason"`
-	}
-	_ = json.Unmarshal(args, &in)
-	body := map[string]any{}
-	if strings.TrimSpace(in.Reason) != "" {
-		body["reason"] = strings.TrimSpace(in.Reason)
-	}
-	return h.postTask(caller, args, "/release", body)
-}
-
-func (h *Handler) toolTaskComplete(caller store.WorkerRec, args json.RawMessage) (any, *rpcError) {
-	var in struct {
-		Summary string `json:"summary"`
-	}
-	if err := json.Unmarshal(args, &in); err != nil || strings.TrimSpace(in.Summary) == "" {
-		if err := rejectWorkerArg(args); err != nil {
-			return nil, err
-		}
-		return nil, &rpcError{Code: codeInvalidParams, Message: "summary required"}
-	}
-	return h.postTask(caller, args, "/complete", map[string]any{"summary": strings.TrimSpace(in.Summary)})
-}
-
-func (h *Handler) toolTaskFail(caller store.WorkerRec, args json.RawMessage) (any, *rpcError) {
-	var in struct {
-		Reason string `json:"reason"`
-	}
-	if err := json.Unmarshal(args, &in); err != nil || strings.TrimSpace(in.Reason) == "" {
-		if err := rejectWorkerArg(args); err != nil {
-			return nil, err
-		}
-		return nil, &rpcError{Code: codeInvalidParams, Message: "reason required"}
-	}
-	return h.postTask(caller, args, "/fail", map[string]any{"reason": strings.TrimSpace(in.Reason)})
 }
 
 func (h *Handler) toolDirectivePropose(caller store.WorkerRec, args json.RawMessage) (any, *rpcError) {

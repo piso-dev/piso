@@ -45,6 +45,12 @@ func (s *Server) handleAskResolve(w http.ResponseWriter, r *http.Request) {
 	s.proxyAskWrite(w, r, http.MethodPost, "/api/v1/human-actions/"+r.PathValue("id")+"/resolve")
 }
 
+// handleTaskRespond forwards a human review/guidance/cancel decision on a task
+// wait. The coordinator keeps the wait and task transition atomic.
+func (s *Server) handleTaskRespond(w http.ResponseWriter, r *http.Request) {
+	s.proxyAskWrite(w, r, http.MethodPost, "/api/v1/tasks/"+r.PathValue("id")+"/human-respond")
+}
+
 func (s *Server) proxyAskWrite(w http.ResponseWriter, r *http.Request, method, path string) {
 	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<16))
 	if err != nil {

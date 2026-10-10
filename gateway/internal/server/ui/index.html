@@ -1601,6 +1601,11 @@
             })[c],
         );
       const enc = encodeURIComponent;
+      // Idempotency key for human task decisions; the coordinator dedupes on it.
+      const rid = () =>
+        self.crypto && crypto.randomUUID
+          ? crypto.randomUUID()
+          : "r-" + Date.now() + "-" + Math.random().toString(16).slice(2);
       const endpoints = {
         workers: "workers",
         activities: "activities?window=3h",
@@ -2664,7 +2669,32 @@
       }
       function renderAttention() {
         const cards = [];
-        list("asks").forEach((a) =>
+        const waitLabels = {
+          review: "Ready for review",
+          needs_input: "Needs input",
+          external_dependency: "Blocked",
+          stuck: "Stuck",
+        };
+        list("asks").forEach((a) => {
+          if (a.kind === "task_wait") {
+            const reason = a.reason || "stuck";
+            const actions =
+              reason === "review"
+                ? button("Accept", "ask-accept", a.id, "primary") +
+                  button("Request changes", "ask-request_changes", a.id) +
+                  button("Cancel task", "ask-cancel", a.id, "danger")
+                : button("Resolve", "ask-resolve", a.id, "primary") +
+                  button("Cancel task", "ask-cancel", a.id, "danger");
+            return cards.push(
+              askCard(
+                waitLabels[reason] || "Waiting",
+                a.from || "",
+                a.title || "Task",
+                a.question || "The worker is waiting for you.",
+                actions,
+              ),
+            );
+          }
           cards.push(
             askCard(
               a.kind === "human" ? "Human task" : "Decision",
@@ -2680,8 +2710,8 @@
                 : button("Approve", "ask-approved", a.id, "primary") +
                     button("Reject", "ask-rejected", a.id, "danger"),
             ),
-          ),
-        );
+          );
+        });
         list("plans").forEach((p) =>
           cards.push(
             askCard(
@@ -4181,6 +4211,23 @@
           const a = list("asks").find((a) => a.id === id);
           if (!a) return;
           const decision = name.slice(4);
+          if (a.kind === "task_wait") {
+            const prompts = {
+              accept: "Acceptance note for the completed work",
+              request_changes: "What needs to change? Work becomes runnable again.",
+              resolve: "Resolution or guidance for the worker",
+              cancel: "Why is this task cancelled?",
+            };
+            const summary = window.prompt(prompts[decision] || "Note", "");
+            if (summary === null) return;
+            await api("tasks/" + enc(a.taskId) + "/respond", "POST", {
+              action: decision,
+              summary: summary || "",
+              waitId: a.id,
+              requestId: rid(),
+            });
+            return changed(["asks"]);
+          }
           await api(
             "asks/" +
               (a.kind === "human" ? "human-actions/" : "approvals/") +

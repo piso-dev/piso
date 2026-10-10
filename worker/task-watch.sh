@@ -2,7 +2,7 @@
 # piso-task-watch — unattended inbox loop (no LLM).
 #
 # Peek inbox_list over the sealed piso-mcp channel, pick one task with
-# task-pick.py (heldByMe → resume, claimable → start, else sleep), run one
+# task-pick.py (resumable → resume, claimable → start, else sleep), run one
 # pi session for that task id, never start a second pi.
 #
 # Enabled by the entrypoint when PISO_TASK_LOOP=1. Not a tool. Not a long-poll.
@@ -30,13 +30,16 @@ PI_STATUS="${PISO_PI_STATUS:-/usr/local/lib/piso-activity-state.py}"
 IDLE_SECS="${PISO_TASK_IDLE_SECS:-300}"
 SCAN_SECS="${PISO_TASK_SCAN_SECS:-3}"
 MAX="${PISO_TASK_WATCH_MAX:-0}"
+SESSION_DIR="${PISO_TASK_SESSION_DIR:-/root/.pi/agent/task-sessions}"
+mkdir -p "$SESSION_DIR"
+export PISO_TASK_EXCLUDE=""
 
 pi_status() {
   python3 "$PI_STATUS" 2>/dev/null | head -1
 }
 
 peek() {
-  "$MCP" call tools/call '{"name":"inbox_list","arguments":{}}'
+  timeout 30 "$MCP" call tools/call '{"name":"inbox_list","arguments":{}}'
 }
 
 decide() {
@@ -47,11 +50,15 @@ start_pi() {
   local mode="$1" id="$2"
   export PISO_TASK_ID="$id"
   echo "$mode $id"
-  "$PI_BIN" --session "task-${id}" -p "Unattended run for task ${id}. Claim it if you do not hold it; continue if you do. Do not claim another task. Complete, fail, release, or file an ask, then exit. Do not sit at the prompt."
+  "$PI_BIN" --session "$SESSION_DIR/task-${id}.jsonl" -p "Unattended run for task ${id}. Read inbox_get for current feedback and checkpoint. Claim with a fresh requestId; keep the returned attemptId for all writes and renew the lease while working. A conflict means exit, not retry. Do not claim another task. Checkpoint and complete, fail with evidence, release, or task_wait, then exit. A PR normally means wait/review. Task-linked approval and human-action requests also wait atomically. Never sit at the prompt."
+  # Each task gets at most one launch per sweep, even when several sessions
+  # fail before changing state. New work can still run without a 300s delay.
+  export PISO_TASK_EXCLUDE="${PISO_TASK_EXCLUDE:+${PISO_TASK_EXCLUDE},}${id}"
 }
 
 idle_sleep() {
   sleep "$IDLE_SECS"
+  export PISO_TASK_EXCLUDE=""
 }
 
 error_sleep() {

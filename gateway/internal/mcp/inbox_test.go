@@ -126,14 +126,20 @@ func TestTaskClaimConflict(t *testing.T) {
 
 func TestTaskCompleteRequiresSummary(t *testing.T) {
 	h := New(nil, nil, t.TempDir())
-	h.CoordinatorDo = func(method, path string, query url.Values, body []byte) (int, []byte, error) {
-		t.Fatal("no call")
-		return 0, nil, nil
+	tool, ok := h.tools["task_complete"]
+	if !ok {
+		t.Fatal("task_complete not registered")
 	}
-	_, rpcErr := h.toolTaskComplete(store.WorkerRec{PrincipalID: "prin-1"}, json.RawMessage(`{"id":"t1"}`))
-	if rpcErr == nil || rpcErr.Message != "summary required" {
-		t.Fatalf("%v", rpcErr)
+	var required []string
+	if raw, ok := tool.InputSchema["required"].([]string); ok {
+		required = raw
 	}
+	for _, name := range required {
+		if name == "summary" {
+			return
+		}
+	}
+	t.Fatalf("summary must be required, got %v", required)
 }
 
 func TestDirectivePropose(t *testing.T) {
@@ -165,6 +171,7 @@ func TestToolListIncludesInbox(t *testing.T) {
 	for _, want := range []string{
 		"whoami", "mcp_add", "inbox_list", "inbox_get",
 		"task_claim", "task_renew", "task_release", "task_complete", "task_fail",
+		"task_update", "task_wait",
 		"directive_propose",
 	} {
 		if !names[want] {
@@ -189,7 +196,7 @@ func TestInboxGetAndFail(t *testing.T) {
 	if err != nil || got.(map[string]any)["id"] != "t1" {
 		t.Fatalf("%v %v", got, err)
 	}
-	got, err = h.toolTaskFail(store.WorkerRec{PrincipalID: "p"}, json.RawMessage(`{"id":"t1","reason":"blocked"}`))
+	got, err = h.tools["task_fail"].Call(store.WorkerRec{PrincipalID: "p"}, json.RawMessage(`{"id":"t1","requestId":"r1","attemptId":"a1","summary":"blocked","evidence":"no route"}`))
 	if err != nil || got.(map[string]any)["status"] != "failed" {
 		t.Fatalf("%v %v", got, err)
 	}

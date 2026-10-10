@@ -600,6 +600,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/asks", s.handleAsksList)
 	mux.HandleFunc("POST /api/v1/asks/approvals/{id}/decide", s.handleAskApprove)
 	mux.HandleFunc("POST /api/v1/asks/human-actions/{id}/resolve", s.handleAskResolve)
+	mux.HandleFunc("POST /api/v1/tasks/{id}/respond", s.handleTaskRespond)
 }
 
 // reloadPatterns swaps the live compiled library in both the server and the
