@@ -17,16 +17,16 @@ func reviewFixture(t *testing.T) (*Client, *[]string) {
 	connect(t, c)
 	c.http.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
 		seen = append(seen, r.URL.Path)
-		if r.Method == "GET" && strings.Contains(r.URL.Path, "/api/booster-suggestions/") && r.Header.Get("Authorization") != "Bearer access-token-never-public" {
+		if r.Method == "GET" && strings.Contains(r.URL.Path, "/api/drafts/") && r.Header.Get("Authorization") != "Bearer access-token-never-public" {
 			t.Error("review reads must use the gateway bearer")
 		}
 		rec := httptest.NewRecorder()
 		switch {
-		case r.URL.Path == "/api/booster-suggestions/" && r.Method == "GET":
-			io.WriteString(rec, `{"items":[{"id":"11111111-1111-1111-1111-111111111111","status":"submitted","revision":1,"name":"Go","description":"d","content":{"format":"markdown","body":"# b"}}],"next":"`+c.rec.BaseURL+`/api/booster-suggestions/?cursor=abc","previous":null}`)
-		case r.URL.Path == "/api/booster-suggestions/11111111-1111-1111-1111-111111111111/" && r.Method == "GET":
+		case r.URL.Path == "/api/drafts/" && r.Method == "GET":
+			io.WriteString(rec, `{"items":[{"id":"11111111-1111-1111-1111-111111111111","status":"submitted","revision":1,"name":"Go","description":"d","content":{"format":"markdown","body":"# b"}}],"next":"`+c.rec.BaseURL+`/api/drafts/?cursor=abc","previous":null}`)
+		case r.URL.Path == "/api/drafts/11111111-1111-1111-1111-111111111111/" && r.Method == "GET":
 			io.WriteString(rec, `{"id":"11111111-1111-1111-1111-111111111111","status":"submitted","revision":2,"name":"Go","description":"d","content":{"format":"markdown","body":"# b"}}`)
-		case r.URL.Path == "/api/booster-suggestions/11111111-1111-1111-1111-111111111111/approve/" && r.Method == "POST":
+		case r.URL.Path == "/api/drafts/11111111-1111-1111-1111-111111111111/approve/" && r.Method == "POST":
 			if r.Header.Get("Authorization") != "Bearer access-token-never-public" {
 				t.Error("decision must use the same gateway bearer")
 			}
@@ -51,29 +51,29 @@ type roundTripperFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
-func TestSuggestionsPageMapping(t *testing.T) {
+func TestDraftsPageMapping(t *testing.T) {
 	c, _ := reviewFixture(t)
-	page, err := c.Suggestions(context.Background(), "submitted", "")
+	page, err := c.Drafts(context.Background(), "submitted", "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(page.Items) != 1 || page.NextCursor != "abc" || page.PreviousCursor != "" {
 		t.Fatal("cursor mapping failed", page)
 	}
-	if _, err = c.Suggestions(context.Background(), "bogus", ""); err == nil {
+	if _, err = c.Drafts(context.Background(), "bogus", ""); err == nil {
 		t.Fatal("unknown status accepted")
 	}
 }
-func TestGetSuggestion(t *testing.T) {
+func TestGetDraft(t *testing.T) {
 	c, _ := reviewFixture(t)
-	item, err := c.GetSuggestion(context.Background(), "11111111-1111-1111-1111-111111111111")
+	item, err := c.GetDraft(context.Background(), "11111111-1111-1111-1111-111111111111")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if item.Revision != 2 || item.Content.Body != "# b" {
-		t.Fatal("suggestion payload mismatch", item)
+		t.Fatal("draft payload mismatch", item)
 	}
-	if _, err = c.GetSuggestion(context.Background(), "nope"); err == nil {
+	if _, err = c.GetDraft(context.Background(), "nope"); err == nil {
 		t.Fatal("non-UUID accepted")
 	}
 }
@@ -86,7 +86,7 @@ func TestDecideUsesGatewayCredential(t *testing.T) {
 	if out.Status != "converted" {
 		t.Fatal("decision result mismatch", out)
 	}
-	if len(*seen) != 1 || (*seen)[0] != "/api/booster-suggestions/11111111-1111-1111-1111-111111111111/approve/" {
+	if len(*seen) != 1 || (*seen)[0] != "/api/drafts/11111111-1111-1111-1111-111111111111/approve/" {
 		t.Fatal("expected one decision request", *seen)
 	}
 }

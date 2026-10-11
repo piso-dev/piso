@@ -67,40 +67,40 @@ func (s *Server) mcpHandler() *mcp.Handler {
 		}
 		return client.List(ctx, query, cursor)
 	}
-	h.BoostSuggest = func(ctx context.Context, draft aiboost.Draft, key string) (aiboost.Suggestion, error) {
+	h.BoostDraft = func(ctx context.Context, draft aiboost.DraftPayload, key string) (aiboost.Draft, error) {
 		client, err := s.boostClient()
 		if err != nil {
-			return aiboost.Suggestion{}, err
+			return aiboost.Draft{}, err
 		}
-		return client.Suggest(ctx, draft, key)
+		return client.Draft(ctx, draft, key)
 	}
-	h.BoostEditSuggestion = func(ctx context.Context, id string, edit aiboost.SuggestionEdit) (aiboost.Suggestion, error) {
+	h.BoostEditDraft = func(ctx context.Context, id string, edit aiboost.DraftEdit) (aiboost.Draft, error) {
 		client, err := s.boostClient()
 		if err != nil {
-			return aiboost.Suggestion{}, err
+			return aiboost.Draft{}, err
 		}
-		return client.EditSuggestion(ctx, id, edit)
+		return client.EditDraft(ctx, id, edit)
 	}
-	h.BoostListSuggestions = func(ctx context.Context, status, cursor string) (aiboost.SuggestionPage, error) {
+	h.BoostListDrafts = func(ctx context.Context, status, cursor string) (aiboost.DraftPage, error) {
 		client, err := s.boostClient()
 		if err != nil {
-			return aiboost.SuggestionPage{}, err
+			return aiboost.DraftPage{}, err
 		}
-		return client.Suggestions(ctx, status, cursor)
+		return client.Drafts(ctx, status, cursor)
 	}
-	h.BoostGetSuggestion = func(ctx context.Context, id string) (aiboost.Suggestion, error) {
+	h.BoostGetDraft = func(ctx context.Context, id string) (aiboost.Draft, error) {
 		client, err := s.boostClient()
 		if err != nil {
-			return aiboost.Suggestion{}, err
+			return aiboost.Draft{}, err
 		}
-		return client.GetSuggestion(ctx, id)
+		return client.GetDraft(ctx, id)
 	}
-	h.BoostSuggestVersion = func(ctx context.Context, draft aiboost.VersionDraft, key string) (aiboost.Suggestion, error) {
+	h.BoostDraftVersion = func(ctx context.Context, draft aiboost.VersionDraft, key string) (aiboost.Draft, error) {
 		client, err := s.boostClient()
 		if err != nil {
-			return aiboost.Suggestion{}, err
+			return aiboost.Draft{}, err
 		}
-		return client.SuggestVersion(ctx, draft, key)
+		return client.DraftVersion(ctx, draft, key)
 	}
 	h.BoostGet = func(ctx context.Context, id string) (aiboost.Booster, error) {
 		client, err := s.boostClient()

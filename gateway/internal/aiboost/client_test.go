@@ -208,7 +208,7 @@ func TestInvalidGrantAndAmbiguousRefreshDisconnect(t *testing.T) {
 		})
 	}
 }
-func Test401RetryAndSuggestionIdempotency(t *testing.T) {
+func Test401RetryAndDraftIdempotency(t *testing.T) {
 	c, _, _ := fixture(t)
 	connect(t, c)
 	transport := c.http.Transport
@@ -227,10 +227,10 @@ func Test401RetryAndSuggestionIdempotency(t *testing.T) {
 		if r.Header.Get("Idempotency-Key") != "draft-uuid" || string(raw) != body {
 			t.Error("retry changed idempotency or payload")
 		}
-		return response(201, `{"id":"suggestion","status":"submitted","revision":1}`), nil
+		return response(201, `{"id":"draft","status":"submitted","revision":1}`), nil
 	})
-	out, err := c.Suggest(context.Background(), Draft{Name: "Go", Description: "Go guidance", Rationale: "Useful guidance", Content: Content{"markdown", "# Go"}}, "draft-uuid")
-	if err != nil || out.ID != "suggestion" || attempts != 2 {
+	out, err := c.Draft(context.Background(), DraftPayload{Name: "Go", Description: "Go guidance", Rationale: "Useful guidance", Content: Content{"markdown", "# Go"}}, "draft-uuid")
+	if err != nil || out.ID != "draft" || attempts != 2 {
 		t.Fatal(out, err, attempts)
 	}
 }

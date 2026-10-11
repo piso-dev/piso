@@ -867,6 +867,8 @@
       }
       .task-row { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 18px 0; border-bottom: 1px solid var(--line); text-decoration: none; }
       .task-row strong { overflow-wrap: anywhere; min-width: 0; }
+      .task-pagination { padding-top: 24px; }
+      .task-pagination button:disabled { cursor: default; }
       .task-detail { max-width: 76ch; }
       .task-detail section, .task-update { margin-top: 24px; }
       .task-prose { white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -2102,7 +2104,7 @@
         replaceContent(`<div class="subnav" aria-label="Task status">${["active", "finished"].map(g => `<button data-action="task-group" data-id="${g}" aria-pressed="${taskUI.group === g}">${g === "active" ? "Active" : "Finished"}</button>`).join("")}</div>
           <form id="taskSearchForm" class="toolbar"><label class="search">Search titles<input id="taskSearch" type="search" maxlength="300" value="${esc(taskUI.searchDraft)}"></label><button type="submit">Search</button></form>
           ${notice}<div class="task-list" aria-busy="${taskUI.loading}">${taskUI.rows.map(t => `<a class="task-row" href="#/tasks/${enc(t.id)}"><strong>${esc(t.title)}</strong>${badge(taskStatus(t), t.status === "failed" ? "bad" : t.status === "done" ? "good" : "")}</a>`).join("") || (taskUI.loading ? '<p role="status">Loading tasks…</p>' : taskUI.error ? "" : empty(taskUI.search ? "No matching tasks" : taskUI.group === "active" ? "No active tasks" : "No finished tasks", taskUI.group === "active" ? "Create a task. Eligible workers pick up queued work automatically." : "Completed, failed, and cancelled tasks appear here."))}</div>
-          <div class="actions"><button data-action="task-prev" ${!taskUI.previous.length || taskUI.loading ? "disabled" : ""}>Previous</button><span>Page ${taskUI.previous.length + 1}</span><button data-action="task-next" ${!taskUI.next || taskUI.loading ? "disabled" : ""}>Next</button></div>`);
+          ${taskUI.previous.length || taskUI.next ? `<nav class="actions task-pagination" aria-label="Task pages"><button data-action="task-prev" ${!taskUI.previous.length || taskUI.loading ? "disabled" : ""}>Previous</button><span>Page ${taskUI.previous.length + 1}</span><button data-action="task-next" ${!taskUI.next || taskUI.loading ? "disabled" : ""}>Next</button></nav>` : ""}`);
         $("#taskSearch").oninput = e => { taskUI.searchDraft = e.target.value; };
         $("#taskSearchForm").onsubmit = e => { e.preventDefault(); taskUI.search = $("#taskSearch").value.trim(); taskUI.cursor = ""; taskUI.previous = []; taskUI.rows = []; taskUI.next = null; loadTasks(); };
         restoreLinkFocus();
@@ -2979,7 +2981,7 @@
           "Create GitHub App",
           "github-connect",
         ],
-        aiBoost: ["AI Boost", "Review suggestions for your connected library. Workers can suggest; only you can approve or reject."],
+        aiBoost: ["AI Boost", "Review drafts for your connected library. Workers can submit drafts; only you can approve or reject."],
         connections: [
           "Gateway connections",
           "Service login status. These tokens are never held by workers.",
@@ -3587,13 +3589,13 @@
           };
       }
       const boostReview = {items: [], status: "submitted", cursor: "", nextCursor: "", previousCursor: "", loading: false, loaded: false, error: ""};
-      async function loadBoostSuggestions(cursor = "") {
+      async function loadBoostDrafts(cursor = "") {
         if (boostReview.loading) return;
         boostReview.loading = true;
         boostReview.error = "";
         if (sub === "aiBoost") renderSettings();
         try {
-          const page = await api(`ai-boost/suggestions?status=${enc(boostReview.status)}&cursor=${enc(cursor)}`);
+          const page = await api(`ai-boost/drafts?status=${enc(boostReview.status)}&cursor=${enc(cursor)}`);
           Object.assign(boostReview, page, {cursor, loaded: true});
         } catch (err) {
           boostReview.error = err.message;
@@ -3609,33 +3611,35 @@
         const connected = connection.status === "ok";
         count(0);
         const controls = `<div class="intro-actions">${button(connected ? "Reconnect" : "Connect AI Boost", "boost-authorize")}${connection.configured ? button("Disconnect", "boost-disconnect", "", "danger") : ""}</div>`;
-        if (!connected) return replaceContent(intro + controls + empty("Connect your library", "Sign in to AI Boost to fetch suggestions for the library you chose."));
-        const rows = boostReview.items.filter(r => matches(r.name, r.description, r.status));
+        if (!connected) return replaceContent(intro + controls + empty("Connect your library", "Sign in to AI Boost to fetch drafts for the library you chose."));
+        const rows = boostReview.items.filter(r => matches(r.review?.title, r.name, r.description, r.changelog, r.status));
         count(rows.length);
-        replaceContent(intro + controls + `<div class="section-intro boost-review-toolbar"><label for="boostStatus">Status <select id="boostStatus" ${boostReview.loading ? "disabled" : ""}>${[["submitted","Awaiting review"],["converted","Approved"],["rejected","Rejected"],["","All"]].map(([v,label]) => `<option value="${v}" ${boostReview.status === v ? "selected" : ""}>${label}</option>`).join("")}</select></label><button type="button" class="boost-fetch" data-action="boost-review-refresh" aria-busy="${boostReview.loading}"><svg class="boost-refresh-icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M6.1 6.1A8 8 0 0 1 20 12M4 12a8 8 0 0 0 13.9 5.9"/></svg><span>${boostReview.loading ? "Loading…" : "Fetch suggestions"}</span></button></div>` +
+        replaceContent(intro + controls + `<div class="section-intro boost-review-toolbar"><label for="boostStatus">Status <select id="boostStatus" ${boostReview.loading ? "disabled" : ""}>${[["submitted","Awaiting review"],["converted","Approved"],["rejected","Rejected"],["","All"]].map(([v,label]) => `<option value="${v}" ${boostReview.status === v ? "selected" : ""}>${label}</option>`).join("")}</select></label><button type="button" class="boost-fetch" data-action="boost-review-refresh" aria-busy="${boostReview.loading}"><svg class="boost-refresh-icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M6.1 6.1A8 8 0 0 1 20 12M4 12a8 8 0 0 0 13.9 5.9"/></svg><span>${boostReview.loading ? "Loading…" : "Fetch drafts"}</span></button></div>` +
           (boostReview.error ? `<div class="notice error" role="alert">${esc(boostReview.error)}</div>` : "") +
-          rows.map(r => record(`boost-${r.id}`, r.name, r.description, badge(r.status), facts([["Revision",r.revision],["Library",r.destination?.name],["Updated",r.updatedAt]]) + `<div class="actions">${button("Review suggestion", "boost-preview", r.id)}</div>`)).join("") +
-          (!rows.length && !boostReview.loading && !boostReview.error ? empty(boostReview.loaded ? "No suggestions in this view" : "Fetch the review queue", boostReview.loaded ? "Choose another status or fetch again after a worker submits a suggestion." : "Fetch suggestions directly from the connected AI Boost library.") : "") +
+          rows.map(r => record(`boost-${r.id}`, r.review?.title || r.name, r.type === "new_version" ? `${r.review?.baseVersion || r.baseVersionId} → ${r.version}` : r.description, badge(r.status), facts([["Revision",r.revision],["Library",r.destination?.name],["Updated",r.updatedAt]]) + `<div class="actions">${button("Review draft", "boost-preview", r.id)}</div>`)).join("") +
+          (!rows.length && !boostReview.loading && !boostReview.error ? empty(boostReview.loaded ? "No drafts in this view" : "Fetch the review queue", boostReview.loaded ? "Choose another status or fetch again after a worker submits a draft." : "Fetch drafts directly from the connected AI Boost library.") : "") +
           `<div class="actions" style="padding: 14px 0 6px">${boostReview.previousCursor ? button("Previous page", "boost-review-page", boostReview.previousCursor) : ""}${boostReview.nextCursor ? button("Next page", "boost-review-page", boostReview.nextCursor) : ""}</div>`);
-        $("#boostStatus").onchange = e => { boostReview.status = e.target.value; loadBoostSuggestions(""); };
+        $("#boostStatus").onchange = e => { boostReview.status = e.target.value; loadBoostDrafts(""); };
         document.querySelectorAll('[data-action="boost-review-refresh"], [data-action="boost-review-page"]').forEach(b => b.disabled = boostReview.loading);
       }
       async function boostPreview(id) {
-        const item = await api(`ai-boost/suggestions/${enc(id)}`);
+        const item = await api(`ai-boost/drafts/${enc(id)}`);
         if (dialogBusy) return;
         const pending = item.status === "submitted";
-        const details = facts([["Status", item.status], ["Revision", item.revision], ["Library", item.destination?.name], ["Library ID", item.destination?.tagId], ["Visibility", item.destination?.visibility], ["Description", item.description], ["Suggested tags", item.suggestedTags], ["Rationale", item.rationale]]) +
+        const versionDraft = item.type === "new_version";
+        const approveLabel = versionDraft ? "Publish new version" : "Create new booster";
+        const details = facts([["Status", item.status], ["Revision", item.revision], ["Library", item.destination?.name], ["Library ID", item.destination?.tagId], ["Visibility", item.destination?.visibility], ...(versionDraft ? [["Booster", item.review?.boosterName], ["Booster ID", item.boosterId], ["Base version", item.review?.baseVersion], ["Base version ID", item.baseVersionId], ["Proposed version", item.version], ["Changelog", item.changelog]] : [["Description", item.description], ["Suggested tags", item.suggestedTags]]), ["Rationale", item.rationale]]) +
           (item.decision ? facts([["Decision", item.decision.action], ["Feedback", item.decision.feedback]]) : "");
-        mountDialog(item.name, `<form id="boostReviewForm" class="boost-review-form">
-          <div class="boost-review-scroll" tabindex="0" role="region" aria-label="Suggestion details and Markdown">
-            <p>${pending ? "Approve creates a private booster in the library shown below. Your decision applies only to this displayed revision." : "This suggestion has already been decided."}</p>
+        mountDialog(item.review?.title || item.name, `<form id="boostReviewForm" class="boost-review-form">
+          <div class="boost-review-scroll" tabindex="0" role="region" aria-label="Draft details and Markdown">
+            <p>${pending ? (versionDraft ? "Approval publishes a new version of the existing booster." : "Approval creates a private booster in the library shown below.") + " Your decision applies only to this displayed revision." : "This draft has already been decided."}</p>
             ${details}
             <section class="boost-markdown" aria-labelledby="boostMarkdownTitle"><h3 id="boostMarkdownTitle">Markdown content</h3><pre>${esc(item.content?.body || "")}</pre></section>
             ${pending ? field("feedback", "Feedback (optional)", "", {type: "textarea", full: true}) : ""}
           </div>
           <footer class="boost-review-footer">
             <div id="boostReviewError" class="notice error" role="alert" hidden></div>
-            <div class="boost-review-decisions">${pending ? '<button type="submit" name="decision" value="reject" class="danger">Reject</button><button type="submit" name="decision" value="approve" class="primary">Approve</button>' : button("Close", "close")}</div>
+            <div class="boost-review-decisions">${pending ? `<button type="submit" name="decision" value="reject" class="danger">Reject</button><button type="submit" name="decision" value="approve" class="primary">${approveLabel}</button>` : button("Close", "close")}</div>
           </footer>
         </form>`, "boost-review-dialog");
         if (!pending) return;
@@ -3654,11 +3658,11 @@
           const errorBox = $("#boostReviewError");
           errorBox.hidden = true;
           try {
-            await api(`ai-boost/suggestions/${enc(item.id)}/${decision}`, "POST", {expectedRevision: item.revision, feedback: form.elements.feedback.value});
+            await api(`ai-boost/drafts/${enc(item.id)}/${decision}`, "POST", {expectedRevision: item.revision, feedback: form.elements.feedback.value});
             dialogBusy = false;
             closeDialog();
-            notify(decision === "approve" ? "Suggestion approved." : "Suggestion rejected.");
-            await loadBoostSuggestions(boostReview.cursor);
+            notify(decision === "approve" ? "Draft approved." : "Draft rejected.");
+            await loadBoostDrafts(boostReview.cursor);
           } catch (error) {
             errorBox.textContent = error.message + " Close and reopen this preview to check the latest state before deciding again.";
             errorBox.hidden = false;
@@ -4295,8 +4299,8 @@
         }
         if (name === "secret-add" || name === "secret-edit")
           return secretForm(id);
-        if (name === "boost-review-refresh") return loadBoostSuggestions("");
-        if (name === "boost-review-page") return loadBoostSuggestions(id);
+        if (name === "boost-review-refresh") return loadBoostDrafts("");
+        if (name === "boost-review-page") return loadBoostDrafts(id);
         if (name === "boost-preview") return boostPreview(id);
         if (name === "boost-authorize") return boostStart();
         if (name === "boost-disconnect") return boostDisconnect();

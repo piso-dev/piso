@@ -8,10 +8,10 @@ import (
 	"unicode/utf8"
 )
 
-// SuggestionEdit preserves omitted fields. Content replaces the entire content
+// DraftEdit preserves omitted fields. Content replaces the entire content
 // object; a non-nil empty SuggestedTags clears tags. AI Boost atomically checks
 // the grant, submitted status and expected revision before creating a revision.
-type SuggestionEdit struct {
+type DraftEdit struct {
 	ExpectedRevision int       `json:"expectedRevision"`
 	ChangeSummary    string    `json:"changeSummary,omitempty"`
 	Name             *string   `json:"name,omitempty"`
@@ -24,9 +24,9 @@ type SuggestionEdit struct {
 	Changelog        *string   `json:"changelog,omitempty"`
 }
 
-func (e SuggestionEdit) Validate(id string) error {
+func (e DraftEdit) Validate(id string) error {
 	if !uuid.MatchString(id) {
-		return errors.New("AI Boost suggestion UUID required")
+		return errors.New("AI Boost draft UUID required")
 	}
 	if e.ExpectedRevision < 1 {
 		return errors.New("expectedRevision must be a positive integer")
@@ -36,7 +36,7 @@ func (e SuggestionEdit) Validate(id string) error {
 	}
 	versionFields := e.BaseVersionID != nil || e.Version != nil || e.Changelog != nil
 	if versionFields && (e.Name != nil || e.Description != nil || e.SuggestedTags != nil) {
-		return errors.New("cannot mix new-booster and version-suggestion fields")
+		return errors.New("cannot mix new-booster and version-draft fields")
 	}
 	if e.BaseVersionID != nil && !uuid.MatchString(*e.BaseVersionID) {
 		return errors.New("baseVersionId must be a UUID")
@@ -50,10 +50,10 @@ func (e SuggestionEdit) Validate(id string) error {
 		return errors.New("changelog must be nonblank and at most 10000 characters")
 	}
 	if !versionFields && e.Name == nil && e.Description == nil && e.Content == nil && e.SuggestedTags == nil && e.Rationale == nil {
-		return errors.New("provide at least one suggestion payload field")
+		return errors.New("provide at least one draft payload field")
 	}
 	// Reuse submission bounds without reading or replacing omitted fields.
-	d := Draft{Name: "valid", Description: "valid", Rationale: "valid", Content: Content{Format: "markdown", Body: "valid"}}
+	d := DraftPayload{Name: "valid", Description: "valid", Rationale: "valid", Content: Content{Format: "markdown", Body: "valid"}}
 	if e.Name != nil {
 		d.Name = *e.Name
 	}
@@ -75,23 +75,23 @@ func (e SuggestionEdit) Validate(id string) error {
 	return d.validatePayload()
 }
 
-// EditSuggestion never auto-retries or advances expectedRevision. An ambiguous
-// failure must be reconciled against the current suggestion before another edit.
-func (c *Client) EditSuggestion(ctx context.Context, id string, edit SuggestionEdit) (Suggestion, error) {
+// EditDraft never auto-retries or advances expectedRevision. An ambiguous
+// failure must be reconciled against the current draft before another edit.
+func (c *Client) EditDraft(ctx context.Context, id string, edit DraftEdit) (Draft, error) {
 	if err := edit.Validate(id); err != nil {
-		return Suggestion{}, err
+		return Draft{}, err
 	}
 	body, err := json.Marshal(edit)
 	if err != nil {
-		return Suggestion{}, err
+		return Draft{}, err
 	}
-	raw, err := c.request(ctx, http.MethodPatch, "/api/booster-suggestions/"+id+"/", body, "")
+	raw, err := c.request(ctx, http.MethodPatch, "/api/drafts/"+id+"/", body, "")
 	if err != nil {
-		return Suggestion{}, err
+		return Draft{}, err
 	}
-	var out Suggestion
+	var out Draft
 	if json.Unmarshal(raw, &out) != nil || out.ID != id || out.Status != "submitted" || out.Revision <= 1 || out.Revision-1 != edit.ExpectedRevision {
-		return Suggestion{}, errors.New("invalid AI Boost suggestion edit response")
+		return Draft{}, errors.New("invalid AI Boost draft edit response")
 	}
 	return out, nil
 }

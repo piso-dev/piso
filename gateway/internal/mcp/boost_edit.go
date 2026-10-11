@@ -11,16 +11,16 @@ import (
 	"piso/gateway/internal/store"
 )
 
-func (h *Handler) registerBoostEditSuggestion() {
+func (h *Handler) registerBoostEditDraft() {
 	str := func(description string, max int) map[string]any {
 		return map[string]any{"type": "string", "description": description, "minLength": 1, "maxLength": max}
 	}
 	h.Register(Tool{
-		Name:        "boost_edit_suggestion",
-		Description: "Edit a submitted new-booster or new-version AI Boost suggestion using its ID and last observed revision. Version proposals accept baseVersionId, version, content, changelog, rationale; new boosters accept name, description, content, suggestedTags, rationale. Do not mix type-specific fields. Omitted fields stay unchanged; content replaces the full Markdown object; [] clears tags. Does not approve or publish. After a conflict or ambiguous failure, use boost_get_suggestion first; never guess a newer revision.",
+		Name:        "boost_edit_draft",
+		Description: "Edit a submitted new-booster or new-version AI Boost draft using its ID and last observed revision. Version proposals accept baseVersionId, version, content, changelog, rationale; new boosters accept name, description, content, suggestedTags, rationale. Do not mix type-specific fields. Omitted fields stay unchanged; content replaces the full Markdown object; [] clears tags. Does not approve or publish. After a conflict or ambiguous failure, use boost_get_draft first; never guess a newer revision.",
 		InputSchema: map[string]any{"type": "object", "additionalProperties": false, "required": []string{"id", "expectedRevision"}, "properties": map[string]any{
-			"id":               map[string]any{"type": "string", "description": "Suggestion UUID returned by submission or boost_list_suggestions (not a booster ID).", "pattern": boostID.String()},
-			"expectedRevision": map[string]any{"type": "integer", "minimum": 1, "description": "Last observed suggestion revision; must still be submitted at this revision."},
+			"id":               map[string]any{"type": "string", "description": "Draft UUID returned by submission or boost_list_drafts (not a booster ID).", "pattern": boostID.String()},
+			"expectedRevision": map[string]any{"type": "integer", "minimum": 1, "description": "Last observed draft revision; must still be submitted at this revision."},
 			"changeSummary":    map[string]any{"type": "string", "maxLength": 2000, "description": "Optional revision note; not a payload change on its own."},
 			"name":             str("Replacement name.", 255),
 			"description":      str("Replacement description.", 10000),
@@ -40,14 +40,14 @@ func (h *Handler) registerBoostEditSuggestion() {
 			map[string]any{"required": []string{"baseVersionId"}},
 			map[string]any{"required": []string{"version"}},
 			map[string]any{"required": []string{"changelog"}},
-		}}, Write: true, Call: h.toolBoostEditSuggestion,
+		}}, Write: true, Call: h.toolBoostEditDraft,
 	})
 }
 
-func (h *Handler) toolBoostEditSuggestion(_ store.WorkerRec, args json.RawMessage) (any, *rpcError) {
+func (h *Handler) toolBoostEditDraft(_ store.WorkerRec, args json.RawMessage) (any, *rpcError) {
 	var in struct {
 		ID string `json:"id"`
-		aiboost.SuggestionEdit
+		aiboost.DraftEdit
 	}
 	if err := boostArgs(args, &in); err != nil {
 		return nil, err
@@ -62,29 +62,29 @@ func (h *Handler) toolBoostEditSuggestion(_ store.WorkerRec, args json.RawMessag
 			}
 		}
 	}
-	if err := in.SuggestionEdit.Validate(in.ID); err != nil {
+	if err := in.DraftEdit.Validate(in.ID); err != nil {
 		return nil, &rpcError{Code: codeInvalidParams, Message: err.Error()}
 	}
-	if h.BoostEditSuggestion == nil {
+	if h.BoostEditDraft == nil {
 		return nil, boostUnavailable()
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	out, err := h.BoostEditSuggestion(ctx, in.ID, in.SuggestionEdit)
+	out, err := h.BoostEditDraft(ctx, in.ID, in.DraftEdit)
 	if err != nil {
 		var upstream *aiboost.APIError
 		if errors.As(err, &upstream) {
 			switch upstream.Status {
 			case 401:
-				return nil, &rpcError{Code: codeServer, Message: "AI Boost rejected edit authentication; check the connection and current suggestion before retrying"}
+				return nil, &rpcError{Code: codeServer, Message: "AI Boost rejected edit authentication; check the connection and current draft before retrying"}
 			case 409:
-				return nil, &rpcError{Code: codeServer, Message: "AI Boost suggestion changed or was already decided; use boost_get_suggestion before editing again; do not guess a newer revision"}
+				return nil, &rpcError{Code: codeServer, Message: "AI Boost draft changed or was already decided; use boost_get_draft before editing again; do not guess a newer revision"}
 			case 429:
-				return nil, &rpcError{Code: codeServer, Message: "AI Boost rate limit reached; check the current suggestion before retrying later"}
+				return nil, &rpcError{Code: codeServer, Message: "AI Boost rate limit reached; check the current draft before retrying later"}
 			}
 		}
 		e := boostError(err)
-		e.Message += "; edit was not automatically retried; check the current suggestion before retrying"
+		e.Message += "; edit was not automatically retried; check the current draft before retrying"
 		return nil, e
 	}
 	return out, nil

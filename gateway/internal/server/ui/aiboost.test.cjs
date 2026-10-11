@@ -10,7 +10,7 @@ function harness(t) {
  t.after(()=>dom.window.close());
  const calls=[];
  const sandbox={document:dom.window.document,window:dom.window,location:dom.window.location,URL,count:()=>{},sub:'connections',query:'',loaded:new Set(['connections']),
-  data:{connections:{connections:[{id:'ai-boost',name:'AI Boost',status:'ok',detail:'Connected · worker suggestions and dashboard review'}]},aiBoost:{configured:true}},
+  data:{connections:{connections:[{id:'ai-boost',name:'AI Boost',status:'ok',detail:'Connected · worker drafts and dashboard review'}]},aiBoost:{configured:true}},
   $:s=>dom.window.document.querySelector(s), matches:()=>true,list:()=>[],hideProject:false,ingressPort:80,
   api:async(path,method,body)=>{calls.push({path,method,body});return {url:'https://piso.example/oauth/ai-boost/start?ticket=one'}},
   changed:async()=>{},refresh:async()=>{},action:async()=>{},errorDialog:e=>{throw e},safeURL:s=>s,
@@ -30,7 +30,7 @@ function harness(t) {
 }
 test('Connections renders one-click connect, reconnect and disconnect controls',t=>{
  const h=harness(t);h.run('renderSettings()');
- assert.match(h.dom.window.document.body.textContent,/Connected · worker suggestions and dashboard review/);
+ assert.match(h.dom.window.document.body.textContent,/Connected · worker drafts and dashboard review/);
  assert.ok(h.dom.window.document.querySelector('[data-action="boost-authorize"]'));
  assert.ok(h.dom.window.document.querySelector('[data-action="boost-disconnect"]'));
  h.sandbox.data.aiBoost.configured=false;h.run('renderSettings()');
@@ -63,7 +63,7 @@ test('AI Boost tab follows GitHub and renders fetch, pagination, setup and error
  h.sandbox.sub='aiBoost';h.sandbox.data.aiBoost.status='ok';
  h.run('renderSettings()');assert.doesNotMatch(h.dom.window.document.body.textContent,/Review access is not configured|separate reviewer/);
  h.sandbox.api=async()=>({items:[{id:'one',name:'<img src=x onerror=alert(1)>',status:'submitted',revision:3}],nextCursor:'opaque'});
- await h.run('loadBoostSuggestions()');
+ await h.run('loadBoostDrafts()');
  assert.equal(h.dom.window.document.querySelector('img'),null);
  const fetch=h.dom.window.document.querySelector('[data-action="boost-review-refresh"]');
  assert.ok(fetch.querySelector('svg[aria-hidden="true"]'));
@@ -71,7 +71,7 @@ test('AI Boost tab follows GitHub and renders fetch, pagination, setup and error
  assert.equal(fetch.getAttribute('aria-busy'),'false');
  assert.equal(h.dom.window.document.querySelector('[data-action="boost-review-page"]').dataset.id,'opaque');
  h.sandbox.api=async()=>{throw new Error('Queue unavailable')};
- await h.run('loadBoostSuggestions()');
+ await h.run('loadBoostDrafts()');
  assert.match(h.dom.window.document.querySelector('[role="alert"]').textContent,/Queue unavailable/);
  assert.equal(h.dom.window.document.querySelector('[data-action="boost-preview"]'),null);
 });
@@ -100,8 +100,25 @@ test('preview stacks details above Markdown, with two footer actions outside the
  assert.equal(scroll.querySelector('pre').textContent,'<script>evil()</script>');
  assert.ok(scroll.querySelector('.facts').compareDocumentPosition(scroll.querySelector('.boost-markdown')) & 4);
  assert.equal(scroll.querySelector('button'),null);
- assert.deepEqual([...doc.querySelectorAll('.boost-review-footer button')].map(b=>b.textContent),['Reject','Approve']);
+ assert.deepEqual([...doc.querySelectorAll('.boost-review-footer button')].map(b=>b.textContent),['Reject','Create new booster']);
  assert.equal(doc.querySelector('select[name="decision"]'),null);
+});
+test('version drafts show target, base, proposed version and publication action',async t=>{
+ const h=harness(t);h.sandbox.sub='aiBoost';h.sandbox.data.aiBoost.status='ok';
+ const item={id:'version-draft',type:'new_version',status:'submitted',revision:4,boosterId:'booster-id',baseVersionId:'base-id',version:'1.2.0',changelog:'<img src=x onerror=evil()>',content:{body:'# New content'},review:{title:'New version of Go',boosterName:'Go',baseVersion:'1.1.0'}};
+ h.sandbox.api=async(path)=>{h.calls.push({path});return path.includes('?')?{items:[item]}:item};
+ await h.run('loadBoostDrafts()');
+ assert.match(h.dom.window.document.querySelector('#content').textContent,/New version of Go/);
+ assert.match(h.dom.window.document.querySelector('#content').textContent,/1.1.0 → 1.2.0/);
+ await h.run('boostPreview("version-draft")');
+ assert.equal(h.calls[1].path,'ai-boost/drafts/version-draft');
+ assert.equal(h.sandbox.dialog[0],'New version of Go');
+ const doc=h.dom.window.document;
+ assert.equal(doc.querySelector('[value="approve"]').textContent,'Publish new version');
+ const details=doc.querySelector('.boost-review-scroll');
+ for(const value of ['booster-id','base-id','1.1.0','1.2.0','Changelog']) assert.ok(details.textContent.includes(value));
+ assert.equal(details.querySelector('img'),null);
+ assert.doesNotMatch(details.textContent,/creates a private booster/);
 });
 test('decision locks displayed revision, blocks duplicate clicks and stays disabled after conflict',async t=>{
  const h=harness(t);let posts=[];let fail;
@@ -114,9 +131,9 @@ test('decision locks displayed revision, blocks duplicate clicks and stays disab
  const first=submit(h,'approve');await submit(h,'reject');
  assert.equal(posts.length,1);assert.equal(h.sandbox.dialogBusy,true);
  assert.equal(h.dom.window.document.querySelector('#closeDialog').disabled,true);
- fail(new Error('Suggestion changed'));await first;
+ fail(new Error('Draft changed'));await first;
  assert.equal(posts[0].body.expectedRevision,7);assert.equal(posts[0].body.feedback,'ok');
- assert.equal(posts[0].path,'ai-boost/suggestions/one/approve');
+ assert.equal(posts[0].path,'ai-boost/drafts/one/approve');
  assert.match(h.dom.window.document.querySelector('[role="alert"]').textContent,/Close and reopen/);
  assert.ok([...h.dom.window.document.querySelectorAll('.boost-review-decisions button')].every(b=>b.disabled));
  assert.equal(h.dom.window.document.querySelector('#closeDialog').disabled,false);
@@ -133,9 +150,9 @@ test('decided preview is read-only; successful rejection closes modal and refres
  const calls=[];h.sandbox.api=async(path,method,body)=>{calls.push({path,method,body});return {items:[]};};
  h.dom.window.document.querySelector('[name="feedback"]').value='Not useful';
  await submit(h,'reject');
- assert.equal(calls[0].path,'ai-boost/suggestions/one/reject');
+ assert.equal(calls[0].path,'ai-boost/drafts/one/reject');
  assert.equal(calls[0].body.feedback,'Not useful');assert.equal(calls[0].body.expectedRevision,2);
- assert.match(calls[1].path,/suggestions\?status=/);
+ assert.match(calls[1].path,/drafts\?status=/);
  assert.equal(h.dom.window.document.querySelector('#boostReviewForm'),null);
- assert.equal(h.sandbox.notification,'Suggestion rejected.');
+ assert.equal(h.sandbox.notification,'Draft rejected.');
 });

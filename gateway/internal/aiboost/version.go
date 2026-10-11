@@ -9,9 +9,9 @@ import (
 	"unicode/utf8"
 )
 
-// SuggestionReview preserves the provider's distinction between creating a
+// DraftReview preserves the provider's distinction between creating a
 // booster and publishing a version. Publication remains a host-only decision.
-type SuggestionReview struct {
+type DraftReview struct {
 	Title           string `json:"title"`
 	Action          string `json:"action"`
 	BoosterID       string `json:"boosterId,omitempty"`
@@ -60,29 +60,29 @@ func (d VersionDraft) Validate(key string) error {
 		return errors.New("changelog must be nonblank and at most 10000 characters")
 	}
 	// Share the key, content and rationale bounds with new-booster submissions.
-	return (Draft{Name: "valid", Description: "valid", Content: d.Content, Rationale: d.Rationale}).Validate(key)
+	return (DraftPayload{Name: "valid", Description: "valid", Content: d.Content, Rationale: d.Rationale}).Validate(key)
 }
 
-// SuggestVersion uses the same idempotent submission endpoint as Suggest.
+// DraftVersion uses the same idempotent submission endpoint as Draft.
 // AI Boost validates live membership, eligibility, base identity and precedence.
-func (c *Client) SuggestVersion(ctx context.Context, draft VersionDraft, key string) (Suggestion, error) {
+func (c *Client) DraftVersion(ctx context.Context, draft VersionDraft, key string) (Draft, error) {
 	if err := draft.Validate(key); err != nil {
-		return Suggestion{}, err
+		return Draft{}, err
 	}
 	body, err := json.Marshal(struct {
 		Type string `json:"type"`
 		VersionDraft
 	}{"new_version", draft})
 	if err != nil {
-		return Suggestion{}, err
+		return Draft{}, err
 	}
-	raw, err := c.request(ctx, "POST", "/api/booster-suggestions/", body, key)
+	raw, err := c.request(ctx, "POST", "/api/drafts/", body, key)
 	if err != nil {
-		return Suggestion{}, err
+		return Draft{}, err
 	}
-	var out Suggestion
+	var out Draft
 	if json.Unmarshal(raw, &out) != nil || !uuid.MatchString(out.ID) || out.Revision < 1 || out.Type != "new_version" || out.BoosterID != draft.BoosterID {
-		return Suggestion{}, errors.New("invalid AI Boost version suggestion")
+		return Draft{}, errors.New("invalid AI Boost version draft")
 	}
 	return out, nil
 }

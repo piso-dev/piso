@@ -11,7 +11,7 @@ import (
 	"testing"
 )
 
-const versionSuggestionJSON = `{"id":"33333333-3333-3333-3333-333333333333","type":"new_version","status":"submitted","revision":1,"boosterId":"22222222-2222-2222-2222-222222222222","baseVersionId":"11111111-1111-1111-1111-111111111111","version":"1.1.0","content":{"format":"markdown","body":"\n# Updated\n  preserved  \n"},"changelog":"New checks","rationale":"Useful","review":{"title":"New version of Go","action":"Publish new version","boosterId":"22222222-2222-2222-2222-222222222222","boosterName":"Go","baseVersionId":"11111111-1111-1111-1111-111111111111","baseVersion":"1.0.0","proposedVersion":"1.1.0"}}`
+const versionDraftJSON = `{"id":"33333333-3333-3333-3333-333333333333","type":"new_version","status":"submitted","revision":1,"boosterId":"22222222-2222-2222-2222-222222222222","baseVersionId":"11111111-1111-1111-1111-111111111111","version":"1.1.0","content":{"format":"markdown","body":"\n# Updated\n  preserved  \n"},"changelog":"New checks","rationale":"Useful","review":{"title":"New version of Go","action":"Publish new version","boosterId":"22222222-2222-2222-2222-222222222222","boosterName":"Go","baseVersionId":"11111111-1111-1111-1111-111111111111","baseVersion":"1.0.0","proposedVersion":"1.1.0"}}`
 
 func validVersionDraft() VersionDraft {
 	return VersionDraft{
@@ -64,7 +64,7 @@ func TestVersionSubmissionAndReads(t *testing.T) {
 		switch {
 		case r.Method == "POST":
 			posts++
-			if r.URL.Path != "/api/booster-suggestions/" || r.Header.Get("Idempotency-Key") != "stable-version" {
+			if r.URL.Path != "/api/drafts/" || r.Header.Get("Idempotency-Key") != "stable-version" {
 				t.Fatal("wrong submission request")
 			}
 			var got map[string]any
@@ -72,27 +72,27 @@ func TestVersionSubmissionAndReads(t *testing.T) {
 				t.Fatal("bad version payload", got)
 			}
 			rec.WriteHeader(201)
-			io.WriteString(rec, versionSuggestionJSON)
-		case r.URL.Path == "/api/booster-suggestions/":
+			io.WriteString(rec, versionDraftJSON)
+		case r.URL.Path == "/api/drafts/":
 			if r.URL.Query().Get("status") != "submitted" || r.URL.Query().Get("cursor") != "opaque==" {
 				t.Fatal("wrong filters", r.URL)
 			}
-			fmt.Fprintf(rec, `{"items":[%s],"next":"https://untrusted.example/?cursor=next%%3D%%3D","previous":null}`, versionSuggestionJSON)
-		case r.URL.Path == "/api/booster-suggestions/"+editID+"/":
-			io.WriteString(rec, versionSuggestionJSON)
+			fmt.Fprintf(rec, `{"items":[%s],"next":"https://untrusted.example/?cursor=next%%3D%%3D","previous":null}`, versionDraftJSON)
+		case r.URL.Path == "/api/drafts/"+editID+"/":
+			io.WriteString(rec, versionDraftJSON)
 		default:
 			t.Fatal("unexpected path", r.URL)
 		}
 		return rec.Result(), nil
 	})
-	check := func(out Suggestion) {
+	check := func(out Draft) {
 		t.Helper()
 		if out.Type != "new_version" || out.BoosterID != validVersionDraft().BoosterID || out.BaseVersionID != validVersionDraft().BaseVersionID || out.Version != "1.1.0" || out.Changelog != "New checks" || out.Content.Body != validVersionDraft().Content.Body || out.Review == nil || out.Review.BaseVersion != "1.0.0" || out.Review.Action != "Publish new version" {
 			t.Fatal("version metadata lost", out)
 		}
 	}
 	for i := 0; i < 2; i++ {
-		out, err := c.SuggestVersion(context.Background(), validVersionDraft(), "stable-version")
+		out, err := c.DraftVersion(context.Background(), validVersionDraft(), "stable-version")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -101,12 +101,12 @@ func TestVersionSubmissionAndReads(t *testing.T) {
 	if posts != 2 {
 		t.Fatal(posts)
 	}
-	page, err := c.Suggestions(context.Background(), "submitted", "opaque==")
+	page, err := c.Drafts(context.Background(), "submitted", "opaque==")
 	if err != nil || len(page.Items) != 1 || page.NextCursor != "next==" || page.PreviousCursor != "" {
 		t.Fatal(page, err)
 	}
 	check(page.Items[0])
-	out, err := c.GetSuggestion(context.Background(), editID)
+	out, err := c.GetDraft(context.Background(), editID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +115,7 @@ func TestVersionSubmissionAndReads(t *testing.T) {
 
 func TestVersionEditValidation(t *testing.T) {
 	ptr := func(s string) *string { return &s }
-	for _, e := range []SuggestionEdit{
+	for _, e := range []DraftEdit{
 		{ExpectedRevision: 1, BaseVersionID: ptr(validVersionDraft().BaseVersionID)},
 		{ExpectedRevision: 1, Version: ptr("1.2.0")},
 		{ExpectedRevision: 1, Changelog: ptr("Changed")},
@@ -124,7 +124,7 @@ func TestVersionEditValidation(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for _, e := range []SuggestionEdit{
+	for _, e := range []DraftEdit{
 		{ExpectedRevision: 1, BaseVersionID: ptr("../x")},
 		{ExpectedRevision: 1, Version: ptr("v1.2.0")},
 		{ExpectedRevision: 1, Changelog: ptr(" ")},

@@ -15,7 +15,7 @@ import (
 
 const editID = "33333333-3333-3333-3333-333333333333"
 
-func TestEditSuggestionPartialPayload(t *testing.T) {
+func TestEditDraftPartialPayload(t *testing.T) {
 	for _, payload := range []string{
 		`{"expectedRevision":2,"name":"New name"}`,
 		`{"expectedRevision":2,"baseVersionId":"11111111-1111-1111-1111-111111111111","version":"1.2.0","changelog":"Rebased"}`,
@@ -31,7 +31,7 @@ func TestEditSuggestionPartialPayload(t *testing.T) {
 			calls := 0
 			c.http.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
 				calls++
-				if r.Method != "PATCH" || r.URL.Path != "/api/booster-suggestions/"+editID+"/" || r.URL.RawQuery != "" || r.Header.Get("Authorization") != "Bearer access-token-never-public" || r.Header.Get("Idempotency-Key") != "" || r.Header.Get("Content-Type") != "application/json" {
+				if r.Method != "PATCH" || r.URL.Path != "/api/drafts/"+editID+"/" || r.URL.RawQuery != "" || r.Header.Get("Authorization") != "Bearer access-token-never-public" || r.Header.Get("Idempotency-Key") != "" || r.Header.Get("Content-Type") != "application/json" {
 					t.Fatal("incorrect edit request")
 				}
 				body, _ := io.ReadAll(r.Body)
@@ -47,11 +47,11 @@ func TestEditSuggestionPartialPayload(t *testing.T) {
 				fmt.Fprintf(rec, `{"id":%q,"status":"submitted","revision":3}`, editID)
 				return rec.Result(), nil
 			})
-			var edit SuggestionEdit
+			var edit DraftEdit
 			if err := json.Unmarshal([]byte(payload), &edit); err != nil {
 				t.Fatal(err)
 			}
-			out, err := c.EditSuggestion(context.Background(), editID, edit)
+			out, err := c.EditDraft(context.Background(), editID, edit)
 			if err != nil || out.ID != editID || out.Revision != 3 || calls != 1 {
 				t.Fatal(out, err, calls)
 			}
@@ -59,14 +59,14 @@ func TestEditSuggestionPartialPayload(t *testing.T) {
 	}
 }
 
-func TestEditSuggestionValidationBeforeNetwork(t *testing.T) {
+func TestEditDraftValidationBeforeNetwork(t *testing.T) {
 	c, _, _ := fixture(t)
 	c.http.Transport = roundTripperFunc(func(*http.Request) (*http.Response, error) {
 		t.Fatal("invalid edit reached network")
 		return nil, nil
 	})
 	str := func(s string) *string { return &s }
-	for _, edit := range []SuggestionEdit{
+	for _, edit := range []DraftEdit{
 		{ExpectedRevision: 0, Name: str("name")},
 		{ExpectedRevision: 1},
 		{ExpectedRevision: 1, ChangeSummary: "summary alone"},
@@ -82,16 +82,16 @@ func TestEditSuggestionValidationBeforeNetwork(t *testing.T) {
 		{ExpectedRevision: 1, SuggestedTags: new([]string)},
 		{ExpectedRevision: 1, Name: str("name"), ChangeSummary: strings.Repeat("x", 2001)},
 	} {
-		if _, err := c.EditSuggestion(context.Background(), editID, edit); err == nil {
+		if _, err := c.EditDraft(context.Background(), editID, edit); err == nil {
 			t.Fatal("accepted invalid edit", edit)
 		}
 	}
-	if _, err := c.EditSuggestion(context.Background(), "../approve", SuggestionEdit{ExpectedRevision: 1, Name: str("name")}); err == nil {
+	if _, err := c.EditDraft(context.Background(), "../approve", DraftEdit{ExpectedRevision: 1, Name: str("name")}); err == nil {
 		t.Fatal("accepted invalid ID")
 	}
 }
 
-func TestEditSuggestionNoReplayOrLeak(t *testing.T) {
+func TestEditDraftNoReplayOrLeak(t *testing.T) {
 	for _, status := range []int{301, 307, 308, 400, 401, 403, 404, 409, 429, 500} {
 		t.Run(fmt.Sprint(status), func(t *testing.T) {
 			c, _, _ := fixture(t)
@@ -106,7 +106,7 @@ func TestEditSuggestionNoReplayOrLeak(t *testing.T) {
 				return rec.Result(), nil
 			})
 			name := "updated"
-			_, err := c.EditSuggestion(context.Background(), editID, SuggestionEdit{ExpectedRevision: 1, Name: &name})
+			_, err := c.EditDraft(context.Background(), editID, DraftEdit{ExpectedRevision: 1, Name: &name})
 			var apiErr *APIError
 			if !errors.As(err, &apiErr) || apiErr.Status != status || calls != 1 || strings.Contains(err.Error(), "sensitive") {
 				t.Fatal(err, calls)
@@ -115,7 +115,7 @@ func TestEditSuggestionNoReplayOrLeak(t *testing.T) {
 	}
 }
 
-func TestEditSuggestionAmbiguousResponses(t *testing.T) {
+func TestEditDraftAmbiguousResponses(t *testing.T) {
 	for _, body := range []string{"", `{"id":"wrong","status":"submitted","revision":2}`, `{"id":"` + editID + `","status":"submitted","revision":1}`, `{"id":"` + editID + `","status":"converted","revision":2}`, strings.Repeat("x", (2<<20)+1), "transport-failure"} {
 		c, _, _ := fixture(t)
 		connect(t, c)
@@ -130,14 +130,14 @@ func TestEditSuggestionAmbiguousResponses(t *testing.T) {
 			return rec.Result(), nil
 		})
 		name := "updated"
-		_, err := c.EditSuggestion(context.Background(), editID, SuggestionEdit{ExpectedRevision: 1, Name: &name})
+		_, err := c.EditDraft(context.Background(), editID, DraftEdit{ExpectedRevision: 1, Name: &name})
 		if err == nil || calls != 1 || strings.Contains(err.Error(), "sensitive") {
 			t.Fatal(err, calls)
 		}
 	}
 }
 
-func TestEditSuggestionRefreshBeforeSending(t *testing.T) {
+func TestEditDraftRefreshBeforeSending(t *testing.T) {
 	c, _, _ := fixture(t)
 	connect(t, c)
 	c.rec.AccessExpires = time.Now()
@@ -157,7 +157,7 @@ func TestEditSuggestionRefreshBeforeSending(t *testing.T) {
 		return rec.Result(), nil
 	})
 	name := "updated"
-	_, err := c.EditSuggestion(context.Background(), editID, SuggestionEdit{ExpectedRevision: 1, Name: &name})
+	_, err := c.EditDraft(context.Background(), editID, DraftEdit{ExpectedRevision: 1, Name: &name})
 	if err != nil || refreshes != 1 || patches != 1 {
 		t.Fatal(err, refreshes, patches)
 	}

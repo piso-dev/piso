@@ -46,12 +46,31 @@ test('Tasks follows Projects; empty, active, finished and pagination are real AP
   assert.equal(h.doc.querySelector('[data-view="projects"]').nextElementSibling.dataset.view, 'tasks');
   assert.match(h.doc.querySelector('.task-row').textContent, /Queued/);
   assert.equal(h.doc.querySelector('.task-row script'), null);
+  assert.equal(h.w.getComputedStyle(h.doc.querySelector('.task-pagination')).paddingTop, '24px');
+  assert.equal(h.doc.querySelector('[data-action="task-prev"]').disabled, true);
+  assert.equal(h.w.getComputedStyle(h.doc.querySelector('[data-action="task-prev"]')).cursor, 'default');
+  assert.equal(h.w.getComputedStyle(h.doc.querySelector('[data-action="task-next"]')).cursor, 'pointer');
   click(h.doc, 'task-next'); await tick();
   assert.match(h.calls.at(-1).path, /cursor=cursor%3A2/);
   assert.match(h.doc.querySelector('#content').textContent, /Page 2/);
+  assert.ok(h.doc.querySelector('.task-pagination')); // Last page still needs Previous.
+  assert.equal(h.doc.querySelector('[data-action="task-next"]').disabled, true);
+  assert.equal(h.w.getComputedStyle(h.doc.querySelector('[data-action="task-next"]')).cursor, 'default');
+  click(h.doc, 'task-prev'); await tick();
+  assert.match(h.doc.querySelector('.task-pagination').textContent, /Page 1/);
   h.doc.querySelector('[data-action="task-group"][data-id="finished"]').click(); await tick();
   assert.match(h.doc.querySelector('.task-row').textContent, /Done/);
   assert.doesNotMatch(h.calls.at(-1).path, /cursor=/);
+});
+
+test('paginator is absent for empty and single-page results', async t => {
+  let tasks = [];
+  const h = await harness(t, () => ({tasks, nextCursor: null}));
+  assert.equal(h.doc.querySelector('.task-pagination'), null);
+  tasks = [{id: 'one', title: 'Only task', status: 'open'}];
+  await h.w.taskTest.loadTasks();
+  assert.ok(h.doc.querySelector('.task-row'));
+  assert.equal(h.doc.querySelector('.task-pagination'), null);
 });
 
 test('create submits one UUID and preserves identical payload after ambiguous failure', async t => {

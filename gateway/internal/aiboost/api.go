@@ -91,28 +91,28 @@ func (b Booster) Excerpt() Excerpt {
 	return Excerpt{b.ID, b.Name, b.Version, string(runes), hex.EncodeToString(sum[:]), truncated}
 }
 
-type Draft struct {
+type DraftPayload struct {
 	Name          string   `json:"name"`
 	Description   string   `json:"description"`
 	Content       Content  `json:"content"`
 	SuggestedTags []string `json:"suggestedTags"`
 	Rationale     string   `json:"rationale"`
 }
-type Suggestion struct {
+type Draft struct {
 	ID       string `json:"id"`
 	Status   string `json:"status"`
 	Revision int    `json:"revision"`
-	Draft
-	Type          string            `json:"type,omitempty"`
-	BoosterID     string            `json:"boosterId,omitempty"`
-	BaseVersionID string            `json:"baseVersionId,omitempty"`
-	Version       string            `json:"version,omitempty"`
-	Changelog     string            `json:"changelog,omitempty"`
-	Review        *SuggestionReview `json:"review,omitempty"`
-	CreatedAt     string            `json:"createdAt,omitempty"`
-	UpdatedAt     string            `json:"updatedAt,omitempty"`
-	Decision      json.RawMessage   `json:"decision,omitempty"`
-	Result        json.RawMessage   `json:"result,omitempty"`
+	DraftPayload
+	Type          string          `json:"type,omitempty"`
+	BoosterID     string          `json:"boosterId,omitempty"`
+	BaseVersionID string          `json:"baseVersionId,omitempty"`
+	Version       string          `json:"version,omitempty"`
+	Changelog     string          `json:"changelog,omitempty"`
+	Review        *DraftReview    `json:"review,omitempty"`
+	CreatedAt     string          `json:"createdAt,omitempty"`
+	UpdatedAt     string          `json:"updatedAt,omitempty"`
+	Decision      json.RawMessage `json:"decision,omitempty"`
+	Result        json.RawMessage `json:"result,omitempty"`
 	Destination   struct {
 		TagID      string `json:"tagId"`
 		Name       string `json:"name"`
@@ -120,8 +120,8 @@ type Suggestion struct {
 	} `json:"destination"`
 }
 
-// Validate matches the delegated AI Boost suggestion input contract.
-func (d Draft) Validate(key string) error {
+// Validate matches the delegated AI Boost draft input contract.
+func (d DraftPayload) Validate(key string) error {
 	if len(key) < 1 || len(key) > 128 || strings.TrimSpace(key) != key {
 		return errors.New("stable Idempotency-Key required (1–128 printable ASCII characters)")
 	}
@@ -133,7 +133,7 @@ func (d Draft) Validate(key string) error {
 	return d.validatePayload()
 }
 
-func (d Draft) validatePayload() error {
+func (d DraftPayload) validatePayload() error {
 	for _, field := range []struct {
 		value string
 		max   int
@@ -156,26 +156,26 @@ func (d Draft) validatePayload() error {
 	return nil
 }
 
-// Suggest never approves or publishes. The caller persists a UUID with the
+// Draft never approves or publishes. The caller persists a UUID with the
 // draft, reuses it on retries, and mints a new one for a changed payload.
-func (c *Client) Suggest(ctx context.Context, draft Draft, key string) (Suggestion, error) {
+func (c *Client) Draft(ctx context.Context, draft DraftPayload, key string) (Draft, error) {
 	if err := draft.Validate(key); err != nil {
-		return Suggestion{}, err
+		return Draft{}, err
 	}
 	if draft.SuggestedTags == nil {
 		draft.SuggestedTags = []string{}
 	}
 	body, err := json.Marshal(draft)
 	if err != nil {
-		return Suggestion{}, err
+		return Draft{}, err
 	}
-	raw, err := c.request(ctx, "POST", "/api/booster-suggestions/", body, key)
+	raw, err := c.request(ctx, "POST", "/api/drafts/", body, key)
 	if err != nil {
-		return Suggestion{}, err
+		return Draft{}, err
 	}
-	var out Suggestion
+	var out Draft
 	if json.Unmarshal(raw, &out) != nil || out.ID == "" {
-		return Suggestion{}, errors.New("invalid AI Boost suggestion")
+		return Draft{}, errors.New("invalid AI Boost draft")
 	}
 	return out, nil
 }

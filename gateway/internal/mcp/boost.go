@@ -18,18 +18,18 @@ import (
 var boostID = regexp.MustCompile(`^[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}$`)
 
 func (h *Handler) registerBoost() {
-	h.registerBoostEditSuggestion()
-	h.registerBoostSuggestions()
+	h.registerBoostEditDraft()
+	h.registerBoostDrafts()
 	str := func(description string) map[string]any {
 		return map[string]any{"type": "string", "description": description}
 	}
 	h.Register(Tool{Name: "boost_search", Description: "Search AI Boost's shared library using gateway credentials. Returns AI Boost IDs and cursor pagination (up to 25 items). No coordinator catalog or grants required.", InputSchema: map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{"q": str("Optional name/description search, up to 500 characters."), "cursor": str("Cursor from nextCursor or previousCursor, not a URL.")}}, Call: h.toolBoostSearch})
 	h.Register(Tool{Name: "boost_get", Description: "Get current metadata and full Markdown directly from AI Boost using an ID returned by boost_search.", InputSchema: map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{"id": str("AI Boost booster UUID.")}, "required": []string{"id"}}, Call: h.toolBoostGet})
-	h.Register(Tool{Name: "boost_suggest", Description: "Submit a new booster suggestion to AI Boost for review there; does not approve or publish. Reuse the same idempotencyKey and payload on retries; use a new key for a new submission. Returns AI Boost's suggestion ID, status and revision.", InputSchema: map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{
+	h.Register(Tool{Name: "boost_draft", Description: "Submit a new booster draft to AI Boost for review there; does not approve or publish. Reuse the same idempotencyKey and payload on retries; use a new key for a new submission. Returns AI Boost's draft ID, status and revision.", InputSchema: map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{
 		"name": str("Booster name, 1–255 characters."), "description": str("Description, 1–10000 characters."),
 		"content":       map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{"format": map[string]any{"type": "string", "enum": []string{"markdown"}}, "body": str("Nonblank Markdown, at most 100000 UTF-8 bytes. Whitespace is preserved.")}, "required": []string{"format", "body"}},
 		"suggestedTags": map[string]any{"type": "array", "maxItems": 30, "items": map[string]any{"type": "string", "maxLength": 100}},
-		"rationale":     str("Why this booster is useful, 1–10000 characters."), "idempotencyKey": str("Stable unique submission key, 1–128 characters (for example a UUID). Persist and reuse on retries.")}, "required": []string{"name", "description", "content", "rationale", "idempotencyKey"}}, Write: true, Call: h.toolBoostSuggest})
+		"rationale":     str("Why this booster is useful, 1–10000 characters."), "idempotencyKey": str("Stable unique submission key, 1–128 characters (for example a UUID). Persist and reuse on retries.")}, "required": []string{"name", "description", "content", "rationale", "idempotencyKey"}}, Write: true, Call: h.toolBoostDraft})
 }
 
 func boostArgs(raw json.RawMessage, out any) *rpcError {
@@ -65,7 +65,7 @@ func boostError(err error) *rpcError {
 		case 404:
 			message = "AI Boost item not found in the connected library"
 		case 409:
-			message = "AI Boost conflict: submission key, base version or proposed version conflicts with current state; inspect the suggestion and booster before retrying"
+			message = "AI Boost conflict: submission key, base version or proposed version conflicts with current state; inspect the draft and booster before retrying"
 		case 429:
 			message = "AI Boost rate limit reached; retry later with the same submission key and payload"
 		}
@@ -154,28 +154,28 @@ func (h *Handler) toolBoostGet(_ store.WorkerRec, args json.RawMessage) (any, *r
 	return booster, nil
 }
 
-func (h *Handler) toolBoostSuggest(_ store.WorkerRec, args json.RawMessage) (any, *rpcError) {
+func (h *Handler) toolBoostDraft(_ store.WorkerRec, args json.RawMessage) (any, *rpcError) {
 	var in struct {
-		aiboost.Draft
+		aiboost.DraftPayload
 		IdempotencyKey string `json:"idempotencyKey"`
 	}
 	if err := boostArgs(args, &in); err != nil {
 		return nil, err
 	}
-	if err := in.Draft.Validate(in.IdempotencyKey); err != nil {
+	if err := in.DraftPayload.Validate(in.IdempotencyKey); err != nil {
 		return nil, &rpcError{Code: codeInvalidParams, Message: err.Error()}
 	}
 	if in.SuggestedTags == nil {
 		in.SuggestedTags = []string{}
 	}
-	if h.BoostSuggest == nil {
+	if h.BoostDraft == nil {
 		return nil, boostUnavailable()
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	suggestion, err := h.BoostSuggest(ctx, in.Draft, in.IdempotencyKey)
+	draft, err := h.BoostDraft(ctx, in.DraftPayload, in.IdempotencyKey)
 	if err != nil {
 		return nil, boostError(err)
 	}
-	return suggestion, nil
+	return draft, nil
 }

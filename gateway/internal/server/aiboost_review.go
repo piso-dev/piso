@@ -24,37 +24,37 @@ func boostReviewError(w http.ResponseWriter, err error) {
 		case 401, 403:
 			status, message = 403, "AI Boost denied review access. Reconnect AI Boost to authorize dashboard review."
 		case 404:
-			status, message = 404, "Suggestion not found in this connection."
+			status, message = 404, "Draft not found in this connection."
 		case 409:
-			status, message = 409, "Suggestion changed or was already decided. Close and reopen the preview before deciding again."
+			status, message = 409, "Draft changed or was already decided. Close and reopen the preview before deciding again."
 		case 429:
 			status, message = 429, "AI Boost rate limit reached. Try again later."
 		}
 	}
 	http.Error(w, message, status)
 }
-func (s *Server) handleBoostSuggestions(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleBoostDrafts(w http.ResponseWriter, r *http.Request) {
 	boostHeaders(w)
 	c, err := s.boostClient()
 	if err != nil {
 		boostReviewError(w, err)
 		return
 	}
-	page, err := c.Suggestions(r.Context(), r.URL.Query().Get("status"), r.URL.Query().Get("cursor"))
+	page, err := c.Drafts(r.Context(), r.URL.Query().Get("status"), r.URL.Query().Get("cursor"))
 	if err != nil {
 		boostReviewError(w, err)
 		return
 	}
 	writeJSON(w, 200, page)
 }
-func (s *Server) handleBoostSuggestion(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleBoostDraft(w http.ResponseWriter, r *http.Request) {
 	boostHeaders(w)
 	c, err := s.boostClient()
 	if err != nil {
 		boostReviewError(w, err)
 		return
 	}
-	item, err := c.GetSuggestion(r.Context(), r.PathValue("id"))
+	item, err := c.GetDraft(r.Context(), r.PathValue("id"))
 	if err != nil {
 		boostReviewError(w, err)
 		return
