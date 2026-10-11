@@ -17,6 +17,7 @@ from __future__ import print_function
 
 import json
 import os
+import random
 import sys
 import uuid
 
@@ -26,6 +27,14 @@ def _priority(task):
         return int(task.get("priority") or 0)
     except (TypeError, ValueError):
         return 0
+
+
+def _choose(rows):
+    """Highest priority wins; ties are broken at random so that N idle
+    workers spread across N tasks instead of stampeding the same head task."""
+    best = max(_priority(task) for task in rows)
+    top = [_id(task) for task in rows if _priority(task) == best]
+    return random.choice(top)
 
 
 def _id(task):
@@ -93,19 +102,16 @@ def pick(doc):
     if not isinstance(tasks, list):
         return "error"
 
-    def sort_key(task):
-        return (-_priority(task), _id(task))
-
     tasks = [task for task in tasks if isinstance(task, dict) and _id(task)]
     # A failed/no-op session should not starve other eligible tasks this tick.
     excluded = set(os.environ.get("PISO_TASK_EXCLUDE", "").split(","))
     tasks = [task for task in tasks if _id(task) not in excluded]
-    held = sorted([t for t in tasks if t.get("resumable") is True], key=sort_key)
+    held = [t for t in tasks if t.get("resumable") is True]
     if held:
-        return "resume " + _id(held[0])
-    candidates = sorted([t for t in tasks if t.get("claimable") is True], key=sort_key)
+        return "resume " + _choose(held)
+    candidates = [t for t in tasks if t.get("claimable") is True]
     if candidates:
-        return "start " + _id(candidates[0])
+        return "start " + _choose(candidates)
     return "sleep"
 
 

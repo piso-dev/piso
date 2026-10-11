@@ -12,15 +12,20 @@ chat. When it is unset, these unattended-only rules do not apply.
 - Claim that task with `task_claim(id, requestId)`. A successful claim returns
   `attemptId` and `leaseExpiresAt`. A conflict/not-runnable result means exit.
   Never claim another task in this process. Do not invent worker assignments.
+  When `PISO_TASK_ATTEMPT` is set the watcher already claimed the task for this
+  session: use that `attemptId` and do not re-claim.
 - Use the returned `attemptId` on every execution write. Use a fresh unique
   `requestId` per logical mutation; retry a transport failure with the SAME
   requestId and identical arguments. Never reuse an old claim receipt to
   start a new execution.
-- Renew with `task_renew` well before expiry (at least every five minutes for
-  the default thirty-minute lease). Do not start a blocking command that can
-  outlive the lease: use bounded/polled commands and renew between polls.
-  If renewal fails or the lease expires, stop side effects and exit. A stale
-  attempt cannot write task state even if its old local process is still up.
+- Renew with `task_renew` well before expiry. The default lease is five
+  minutes, and `piso-task-watch` sends a heartbeat renewal every minute while
+  this session runs, so a crashed worker frees its task in minutes rather than
+  half an hour. A checkpoint `task_update` also renews the lease. Do not start
+  a blocking command that can outlive the lease: use bounded/polled commands
+  and renew between polls. If renewal fails or the lease expires, stop side
+  effects and exit. A stale attempt cannot write task state even if its old
+  local process is still up.
 
 ## Work and handoff
 

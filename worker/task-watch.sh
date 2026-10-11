@@ -2,8 +2,9 @@
 # piso-task-watch — unattended inbox loop (no LLM).
 #
 # Peek inbox_list over the sealed piso-mcp channel, pick one task with
-# task-pick.py (resumable → resume, claimable → start, else sleep), run one
-# pi session for that task id, never start a second pi.
+# task-pick.py (resumable → resume, claimable → start, else sleep), claim it
+# BEFORE spending a model session, then run one pi session for that task,
+# renewing the lease with a heartbeat until pi exits. Never start a second pi.
 #
 # Enabled by the entrypoint when PISO_TASK_LOOP=1. Not a tool. Not a long-poll.
 set -u
@@ -28,7 +29,10 @@ fi
 PICK="${PISO_TASK_PICK:-/usr/local/lib/piso-task-pick.py}"
 PI_STATUS="${PISO_PI_STATUS:-/usr/local/lib/piso-activity-state.py}"
 IDLE_SECS="${PISO_TASK_IDLE_SECS:-300}"
+# Jitter the idle wake so a fleet booted together does not stampede inbox_list.
+IDLE_JITTER="${PISO_TASK_IDLE_JITTER:-60}"
 SCAN_SECS="${PISO_TASK_SCAN_SECS:-3}"
+HEARTBEAT_SECS="${PISO_TASK_HEARTBEAT_SECS:-60}"
 MAX="${PISO_TASK_WATCH_MAX:-0}"
 SESSION_DIR="${PISO_TASK_SESSION_DIR:-/root/.pi/agent/task-sessions}"
 mkdir -p "$SESSION_DIR"
@@ -46,18 +50,105 @@ decide() {
   python3 "$PICK"
 }
 
+new_request_id() {
+  python3 -c 'import uuid; print(uuid.uuid4())'
+}
+
+# Print attemptId from a tools/call response, or exit nonzero on a conflict.
+extract_attempt() {
+  python3 -c '
+import json
+import sys
+
+
+def unwrap(doc):
+    if not isinstance(doc, dict):
+        return None
+    if "result" in doc and isinstance(doc.get("result"), dict):
+        doc = doc.get("result")
+    if doc.get("isError") is True:
+        return None
+    if "content" in doc and "attemptId" not in doc:
+        parts = []
+        for item in doc.get("content") or []:
+            if isinstance(item, dict) and item.get("type") == "text":
+                parts.append(item.get("text") or "")
+        blob = "".join(parts).strip()
+        if not blob:
+            return None
+        try:
+            doc = json.loads(blob)
+        except ValueError:
+            return None
+    return doc
+
+
+try:
+    doc = unwrap(json.load(sys.stdin))
+except ValueError:
+    doc = None
+if not isinstance(doc, dict) or not doc.get("attemptId"):
+    sys.exit(1)
+print(doc["attemptId"])
+'
+}
+
+# Take the lease before launching pi. In a multi-worker race the loser pays one
+# cheap HTTP call instead of a full model boot; TASKLOOP says a conflict exits.
+claim_attempt() {
+  local id="$1" raw
+  if ! raw=$(timeout 30 "$MCP" call tools/call \
+      "{\"name\":\"task_claim\",\"arguments\":{\"id\":\"${id}\",\"requestId\":\"$(new_request_id)\"}}" 2>/dev/null); then
+    return 1
+  fi
+  printf '%s\n' "$raw" | extract_attempt
+}
+
+# Renew the lease while pi runs. The default lease is short, so a crashed watcher
+# frees the task in minutes rather than half an hour.
+heartbeat() {
+  local id="$1" attempt="$2"
+  while :; do
+    sleep "$HEARTBEAT_SECS"
+    timeout 30 "$MCP" call tools/call \
+      "{\"name\":\"task_renew\",\"arguments\":{\"id\":\"${id}\",\"attemptId\":\"${attempt}\",\"requestId\":\"$(new_request_id)\"}}" \
+      >/dev/null 2>&1 || true
+  done
+}
+
 start_pi() {
-  local mode="$1" id="$2"
+  local mode="$1" id="$2" attempt="$3" hb=""
   export PISO_TASK_ID="$id"
+  export PISO_TASK_ATTEMPT="$attempt"
   echo "$mode $id"
-  "$PI_BIN" --session "$SESSION_DIR/task-${id}.jsonl" -p "Unattended run for task ${id}. Read inbox_get for current feedback and checkpoint. Claim with a fresh requestId; keep the returned attemptId for all writes and renew the lease while working. A conflict means exit, not retry. Do not claim another task. Checkpoint and complete, fail with evidence, release, or task_wait, then exit. A PR normally means wait/review. Task-linked approval and human-action requests also wait atomically. Never sit at the prompt."
+  if [ "$HEARTBEAT_SECS" -gt 0 ]; then
+    heartbeat "$id" "$attempt" &
+    hb=$!
+  fi
+  "$PI_BIN" --session "$SESSION_DIR/task-${id}.jsonl" -p "Unattended run for task ${id}. The watcher already claimed it and exported PISO_TASK_ATTEMPT=${attempt}; read inbox_get for current feedback and checkpoint, then use that attemptId for all writes and renew the lease while working. A conflict means exit, not retry. Do not claim another task. Checkpoint and complete, fail with evidence, release, or task_wait, then exit. A PR normally means wait/review. Task-linked approval and human-action requests also wait atomically. Never sit at the prompt."
+  if [ -n "$hb" ]; then
+    kill "$hb" 2>/dev/null
+    wait "$hb" 2>/dev/null
+  fi
+  unset PISO_TASK_ATTEMPT
   # Each task gets at most one launch per sweep, even when several sessions
   # fail before changing state. New work can still run without a 300s delay.
   export PISO_TASK_EXCLUDE="${PISO_TASK_EXCLUDE:+${PISO_TASK_EXCLUDE},}${id}"
 }
 
+# A claim that loses the race is excluded for this sweep so the loop moves on.
+skip_lost() {
+  local id="$1"
+  echo "claim lost $id"
+  export PISO_TASK_EXCLUDE="${PISO_TASK_EXCLUDE:+${PISO_TASK_EXCLUDE},}${id}"
+}
+
 idle_sleep() {
-  sleep "$IDLE_SECS"
+  local jitter=0
+  if [ "$IDLE_JITTER" -gt 0 ]; then
+    jitter=$((RANDOM % IDLE_JITTER))
+  fi
+  sleep $((IDLE_SECS + jitter))
   export PISO_TASK_EXCLUDE=""
 }
 
@@ -107,10 +198,20 @@ while true; do
   decision=$(printf '%s\n' "$raw" | decide)
   case "$decision" in
     resume\ *)
-      start_pi resume "${decision#resume }"
+      id="${decision#resume }"
+      if attempt=$(claim_attempt "$id"); then
+        start_pi resume "$id" "$attempt"
+      else
+        skip_lost "$id"
+      fi
       ;;
     start\ *)
-      start_pi start "${decision#start }"
+      id="${decision#start }"
+      if attempt=$(claim_attempt "$id"); then
+        start_pi start "$id" "$attempt"
+      else
+        skip_lost "$id"
+      fi
       ;;
     unpaired)
       echo "unpaired"

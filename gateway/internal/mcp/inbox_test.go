@@ -38,18 +38,22 @@ func TestInboxRejectsWorkerArg(t *testing.T) {
 
 func TestInboxListPassesEnvelopePrincipal(t *testing.T) {
 	h := New(nil, nil, t.TempDir())
-	var gotWorker, gotPath, gotMethod string
+	var gotWorker, gotPath, gotMethod, gotStatus, gotLimit string
 	h.CoordinatorDo = func(method, path string, query url.Values, body []byte) (int, []byte, error) {
 		gotMethod, gotPath, gotWorker = method, path, query.Get("worker")
+		gotStatus, gotLimit = query.Get("status"), query.Get("limit")
 		return 200, []byte(`{"tasks":[{"id":"t1","heldByMe":true,"claimable":false,"assignedToMe":true}]}`), nil
 	}
 	caller := store.WorkerRec{PrincipalID: "prin-1", Name: "piso-worker-demo", Slug: "demo"}
-	out, rpcErr := h.toolInboxList(caller, json.RawMessage(`{"status":"open"}`))
+	out, rpcErr := h.toolInboxList(caller, json.RawMessage(`{"status":"open","limit":25}`))
 	if rpcErr != nil {
 		t.Fatal(rpcErr.Message)
 	}
 	if gotMethod != http.MethodGet || gotPath != "/api/v1/inbox" || gotWorker != "prin-1" {
 		t.Fatalf("coord %s %s worker=%s", gotMethod, gotPath, gotWorker)
+	}
+	if gotStatus != "open" || gotLimit != "25" {
+		t.Fatalf("filters status=%q limit=%q", gotStatus, gotLimit)
 	}
 	doc := out.(map[string]any)
 	if doc["status"] != "ok" {

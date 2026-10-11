@@ -37,6 +37,7 @@ UA=aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
 UB=bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb
 UC=cccccccc-cccc-cccc-cccc-cccccccccccc
 UD=dddddddd-dddd-dddd-dddd-dddddddddddd
+UE=eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee
 
 held='{"status":"ok","tasks":[
   {"id":"'$U2'","resumable":false,"claimable":true,"priority":10},
@@ -63,8 +64,19 @@ ids='{"status":"ok","tasks":[
   {"id":"'$U8'","claimable":true,"priority":1},
   {"id":"'$U7'","claimable":true,"priority":1}
 ]}'
-got=$(printf '%s\n' "$ids" | pick)
-[ "$got" = "start $U7" ] && ok "same priority → id asc" || bad "id asc (got $got)"
+seen=""
+invalid=0
+for _ in $(seq 1 40); do
+  got=$(printf '%s\n' "$ids" | pick)
+  case "$got" in
+    "start $U7"|"start $U8") ;;
+    *) invalid=1 ;;
+  esac
+  seen="$seen $got"
+done
+printf '%s' "$seen" | grep -q "start $U7" && printf '%s' "$seen" | grep -q "start $U8" \
+  && ok "same priority → random spread" || bad "same priority random (got$seen)"
+[ "$invalid" = "0" ] && ok "random pick stays a candidate" || bad "random pick invalid (got$seen)"
 
 blocked='{"status":"ok","tasks":[
   {"id":"'$U3'","claimable":false,"priority":9}
@@ -84,6 +96,21 @@ mkdir -p "$root/bin"
 cat >"$root/bin/piso-mcp" <<'EOF'
 #!/bin/bash
 set -u
+args="$*"
+if [[ "$args" == *task_claim* ]]; then
+  printf '%s\n' "$args" >>"${CLAIM_LOG:-/dev/null}"
+  if [ "${FAKE_CLAIM_RC:-0}" != "0" ]; then
+    printf '%s\n' '{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"conflict"}}'
+    exit 0
+  fi
+  printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"{\"id\":\"t\",\"status\":\"working\",\"attemptId\":\"'"${FAKE_ATTEMPT:-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee}"'\"}"}]}}'
+  exit 0
+fi
+if [[ "$args" == *task_renew* ]]; then
+  printf '%s\n' "$args" >>"${RENEW_LOG:-/dev/null}"
+  printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"{\"ok\":true}"}]}}'
+  exit 0
+fi
 queue="${FAKE_MCP_QUEUE:-}"
 if [ -n "$queue" ] && [ -f "$queue" ]; then
   line=$(head -1 "$queue")
@@ -103,9 +130,17 @@ chmod +x "$root/bin/piso-mcp"
 cat >"$root/bin/pi" <<'EOF'
 #!/bin/bash
 printf '%s\n' "PISO_TASK_ID=${PISO_TASK_ID-}" >>"${PI_LOG}"
+printf '%s\n' "PISO_TASK_ATTEMPT=${PISO_TASK_ATTEMPT-}" >>"${PI_LOG}"
 printf '%s\n' "$*" >>"${PI_LOG}"
 EOF
 chmod +x "$root/bin/pi"
+
+cat >"$root/bin/pi-slow" <<'EOF'
+#!/bin/bash
+printf '%s\n' "PISO_TASK_ATTEMPT=${PISO_TASK_ATTEMPT-}" >>"${PI_LOG}"
+sleep 2
+EOF
+chmod +x "$root/bin/pi-slow"
 
 cat >"$root/bin/pi-status-down" <<'EOF'
 #!/usr/bin/env python3
@@ -125,22 +160,32 @@ run_watch() {
     PISO_WORKER_NAME="piso-worker-piso" \
     PISO_WORKER_SLUG="piso" \
     PISO_MCP="$root/bin/piso-mcp" \
-    PISO_PI="$root/bin/pi" \
+    PISO_PI="${PISO_PI_BIN:-$root/bin/pi}" \
     PISO_TASK_PICK="$(pwd)/task-pick.py" \
     PISO_TASK_SESSION_DIR="$root/sessions" \
     PISO_PI_STATUS="$1" \
     PISO_TASK_IDLE_SECS=0 \
+    PISO_TASK_IDLE_JITTER="${PISO_TASK_IDLE_JITTER-0}" \
     PISO_TASK_SCAN_SECS=0 \
+    PISO_TASK_HEARTBEAT_SECS="${PISO_TASK_HEARTBEAT_SECS-0}" \
     PISO_TASK_WATCH_MAX="$2" \
     PI_LOG="$PI_LOG" \
     FAKE_MCP_OUT="${FAKE_MCP_OUT-}" \
     FAKE_MCP_RC="${FAKE_MCP_RC-0}" \
     FAKE_MCP_QUEUE="${FAKE_MCP_QUEUE-}" \
+    FAKE_CLAIM_RC="${FAKE_CLAIM_RC-0}" \
+    FAKE_ATTEMPT="${FAKE_ATTEMPT-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee}" \
+    CLAIM_LOG="${CLAIM_LOG-}" \
+    RENEW_LOG="${RENEW_LOG-}" \
     bash ./task-watch.sh
 }
 
 PI_LOG="$root/pi.log"
+CLAIM_LOG="$root/claim.log"
+RENEW_LOG="$root/renew.log"
 : >"$PI_LOG"
+: >"$CLAIM_LOG"
+: >"$RENEW_LOG"
 FAKE_MCP_OUT='{"status":"ok","tasks":[]}'
 out=$(run_watch "$root/bin/pi-status-down" 1)
 printf '%s\n' "$out" | grep -q 'peek empty' && ok "loop empty → peek empty" || bad "loop empty → peek empty ($out)"
@@ -164,6 +209,28 @@ FAKE_MCP_OUT='{"status":"ok","tasks":[{"id":"'$UB'","resumable":false,"claimable
 out=$(run_watch "$root/bin/pi-status-down" 1)
 printf '%s\n' "$out" | grep -q "start $UB" && ok "loop start" || bad "loop start ($out)"
 grep -q -- "--session $root/sessions/task-$UB.jsonl" "$PI_LOG" && ok "start uses task session" || bad "start uses task session"
+grep -q "PISO_TASK_ATTEMPT=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee" "$PI_LOG" && ok "start exports attemptId" || bad "start exports attemptId ($(cat "$PI_LOG"))"
+grep -q "$UB" "${CLAIM_LOG:-/dev/null}" && ok "watch claims before pi" || bad "watch claims before pi"
+
+# A lost race must not spend a pi session.
+: >"$PI_LOG"
+FAKE_MCP_OUT='{"status":"ok","tasks":[{"id":"'$UE'","resumable":false,"claimable":true,"priority":0}]}'
+FAKE_CLAIM_RC=1
+out=$(run_watch "$root/bin/pi-status-down" 1)
+FAKE_CLAIM_RC=0
+printf '%s\n' "$out" | grep -q "claim lost $UE" && ok "claim conflict → skip" || bad "claim conflict skip ($out)"
+if [ -s "$PI_LOG" ]; then bad "claim conflict must not start pi"; else ok "claim conflict does not start pi"; fi
+
+# The watcher heartbeats the lease while pi runs.
+: >"$PI_LOG"
+: >"$RENEW_LOG"
+FAKE_MCP_OUT='{"status":"ok","tasks":[{"id":"'$UB'","resumable":false,"claimable":true,"priority":0}]}'
+PISO_TASK_HEARTBEAT_SECS=1
+PISO_PI_BIN="$root/bin/pi-slow"
+out=$(run_watch "$root/bin/pi-status-down" 1)
+PISO_PI_BIN=""
+PISO_TASK_HEARTBEAT_SECS=0
+grep -q "$UB" "$RENEW_LOG" && ok "watch heartbeats the lease" || bad "watch heartbeats the lease"
 
 : >"$PI_LOG"
 FAKE_MCP_OUT='{"status":"ok","tasks":[{"id":"'$U3'","resumable":false,"claimable":true,"priority":0}]}'

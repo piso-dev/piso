@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"piso/gateway/internal/store"
@@ -25,11 +26,12 @@ func (h *Handler) registerInbox() {
 	}
 	h.Register(Tool{
 		Name:        "inbox_list",
-		Description: "Runnable work this worker may claim or resume. Excludes waiting, terminal, and other workers’ leased tasks.",
+		Description: "Runnable work this worker may claim or resume. Excludes waiting, terminal, and other workers’ leased tasks. Capped at 50 by default; pass limit (max 200).",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"status": map[string]any{"type": "string"},
+				"limit":  map[string]any{"type": "integer", "minimum": 1, "maximum": 200},
 			},
 		},
 		Call: h.toolInboxList,
@@ -42,9 +44,9 @@ func (h *Handler) registerInbox() {
 	})
 	// All writes carry an idempotency key; attemptId fences every execution write.
 	for _, spec := range []struct {
-		name string
+		name        string
 		description string
-		required []string
+		required    []string
 	}{
 		{"claim", "Claim runnable work atomically. Returns attemptId; a conflict is normal.", nil},
 		{"renew", "Renew the current unexpired execution lease.", []string{"attemptId"}},
@@ -66,7 +68,7 @@ func (h *Handler) registerInbox() {
 		h.Register(Tool{
 			Name: "task_" + op, Description: spec.description,
 			InputSchema: map[string]any{"type": "object", "properties": properties, "required": required, "additionalProperties": false},
-			Write: true,
+			Write:       true,
 			Call: func(caller store.WorkerRec, args json.RawMessage) (any, *rpcError) {
 				var body map[string]any
 				if err := json.Unmarshal(args, &body); err != nil || body == nil {
@@ -178,10 +180,14 @@ func (h *Handler) toolInboxList(caller store.WorkerRec, args json.RawMessage) (a
 	extra := url.Values{}
 	var in struct {
 		Status string `json:"status"`
+		Limit  int    `json:"limit"`
 	}
 	_ = json.Unmarshal(args, &in)
 	if strings.TrimSpace(in.Status) != "" {
 		extra.Set("status", strings.TrimSpace(in.Status))
+	}
+	if in.Limit > 0 {
+		extra.Set("limit", strconv.Itoa(in.Limit))
 	}
 	status, doc, rpcErr := h.coord(caller, http.MethodGet, "/api/v1/inbox", extra, nil)
 	if rpcErr != nil {
