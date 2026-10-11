@@ -80,6 +80,11 @@ advisory: saving or activating a provider never waits on it, and a provider
 with no reachable catalog still saves and activates. When no default model is
 known, the extension resolves the first registered model at session start.
 
+The dashboard loads a provider's catalog as soon as its API base URL and
+secret are present, even in the Add provider dialog before it is saved, so the
+default model can be picked on the first pass. The same loaded list is kept on
+the provider card instead of reporting a pending catalog.
+
 The shared profile is a read-only mount. A running session re-reads it every
 15 seconds and applies provider or default changes at its next idle boundary,
 so selecting a provider does not require a restart or `/reload`.

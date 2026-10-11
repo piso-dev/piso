@@ -54,6 +54,7 @@ nonempty draft requires confirmation. No new dependencies or build step.
 ## Validation and limits
 
 - JavaScript syntax parsed successfully after formatting.
+- The piso mark ships as an embedded `ui/favicon.svg`, served same-origin at `/favicon.svg` and `/favicon.ico` with the dashboard. No remote asset is fetched; the single embedded page still has no build step.
 - `go test ./gateway/internal/server` passes with the replacement embedded UI.
 - `git diff --check` passes.
 - Browser verification was attempted but Chromium cannot launch in this worker because system libraries are missing. No system packages were installed. Responsive layouts, focus behavior, popups, and end-to-end mutations still need real-browser verification.

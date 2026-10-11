@@ -26,7 +26,7 @@ const helpers = [
   .map(([from, to]) => script.slice(from, to))
   .join("\n");
 
-function formHarness(t, { catalog, fail = false, baseUrl = "https://api.example.test/v1", provider = {} } = {}) {
+function formHarness(t, { catalog, fail = false, baseUrl = "https://api.example.test/v1", provider = {}, formId = "p-1" } = {}) {
   const dom = new JSDOM(`<dialog id="dialog"><h2 id="dialogTitle"></h2><button id="closeDialog"></button><div id="dialogContent"></div></dialog><div id="toast" hidden></div>`, {
     url: "http://piso.local/",
   });
@@ -63,8 +63,18 @@ function formHarness(t, { catalog, fail = false, baseUrl = "https://api.example.
   };
   sandbox.$ = (s) => window.document.querySelector(s);
   vm.createContext(sandbox);
-  vm.runInContext(`"use strict";\n${helpers}\nproviderForm("p-1");`, sandbox);
+  vm.runInContext(`"use strict";\n${helpers}\nproviderForm(${JSON.stringify(formId)});`, sandbox);
   return { window, calls, dialog: window.document.querySelector("dialog") };
+}
+
+// The models request always carries the live form values so an unsaved
+// provider can load its catalog too.
+function assertCatalogCalls(calls, { id, baseUrl, secretId }) {
+  assert.equal(calls.length, 1);
+  assert.match(calls[0], /^pi-provider\/models\?/);
+  assert.match(calls[0], new RegExp("id=" + (id || "") + "(?:&|$)"));
+  assert.match(calls[0], new RegExp("baseUrl=" + encodeURIComponent(baseUrl)));
+  assert.match(calls[0], new RegExp("secretId=" + encodeURIComponent(secretId)));
 }
 
 test("default model field suggests catalog matches and keeps the saved value", async (t) => {
@@ -77,7 +87,11 @@ test("default model field suggests catalog matches and keeps the saved value", a
   assert.equal(input.getAttribute("role"), "combobox");
   assert.equal(input.getAttribute("aria-controls"), "modelList");
   await new Promise((r) => setTimeout(r, 20));
-  assert.deepEqual(calls, ["pi-provider/models?id=p-1"]);
+  assertCatalogCalls(calls, {
+    id: "p-1",
+    baseUrl: "https://api.example.test/v1",
+    secretId: "sec-1",
+  });
   assert.match(dialog.querySelector("#modelHint").textContent, /3 models available/);
 
   input.value = "model";
@@ -126,8 +140,108 @@ test("an unsaved provider change does not offer the previous catalog", async (t)
   });
   await new Promise((r) => setTimeout(r, 20));
   assert.equal(calls.length, 0);
-  assert.match(dialog.querySelector("#modelHint").textContent, /Save the provider first/);
+  assert.match(dialog.querySelector("#modelHint").textContent, /Enter the API base URL/);
   assert.equal(dialog.querySelector("#modelList").hidden, true);
+});
+
+test("the add modal loads the catalog as soon as the URL and secret are set", async (t) => {
+  const { window, calls, dialog } = formHarness(t, {
+    catalog: { models: ["model-a", "model-b"], catalog: "ok" },
+    formId: "",
+  });
+  const baseUrl = dialog.querySelector("#f-baseUrl");
+  const secret = dialog.querySelector("#f-secretId");
+  baseUrl.value = "https://api.example.test/v1";
+  secret.value = "sec-1";
+  baseUrl.dispatchEvent(new window.Event("input"));
+  assert.equal(calls.length, 0, "no request before the debounce elapses");
+  await new Promise((r) => setTimeout(r, 320));
+  assertCatalogCalls(calls, {
+    id: "",
+    baseUrl: "https://api.example.test/v1",
+    secretId: "sec-1",
+  });
+  assert.match(dialog.querySelector("#modelHint").textContent, /2 models available/);
+});
+
+test("changing the URL discards the previous catalog and reloads", async (t) => {
+  const { window, calls, dialog } = formHarness(t, {
+    catalog: { models: ["model-a"], catalog: "ok" },
+  });
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(calls.length, 1);
+  const baseUrl = dialog.querySelector("#f-baseUrl");
+  baseUrl.value = "https://other.example.test/v1";
+  baseUrl.dispatchEvent(new window.Event("input"));
+  await new Promise((r) => setTimeout(r, 320));
+  assert.equal(calls.length, 2);
+  assert.match(calls[1], /baseUrl=https%3A%2F%2Fother\.example\.test%2Fv1/);
+});
+
+// Provider cards render the catalog text straight from the API view; a
+// checked-but-empty catalog is not the same as "pending".
+function cardText(t, provider) {
+  const dom = new JSDOM(`<dialog id="dialog"><h2 id="dialogTitle"></h2><button id="closeDialog"></button><div id="dialogContent"></div></dialog><div id="toast" hidden></div>`, { url: "http://piso.local/" });
+  t.after(() => dom.window.close());
+  const sandbox = {
+    document: dom.window.document,
+    data: { provider: { providers: [] } },
+    $: (s) => dom.window.document.querySelector(s),
+  };
+  vm.createContext(sandbox);
+  return vm.runInContext(
+    `"use strict";\n${helpers}\nproviderCard(${JSON.stringify(provider)});`,
+    sandbox,
+  );
+}
+
+test("provider cards report the loaded catalog instead of pending", (t) => {
+  const withModels = cardText(t, { id: "p-1", catalog: "ok", models: ["model-a", "model-b"] });
+  assert.match(withModels, /provider-status/);
+  assert.match(withModels, /2 models/);
+  assert.doesNotMatch(withModels, /pending/);
+
+  const empty = cardText(t, { id: "p-2", catalog: "ok", models: [] });
+  assert.match(empty, /no models listed/);
+  assert.doesNotMatch(empty, /pending/);
+
+  const failed = cardText(t, { id: "p-3", catalog: "failed" });
+  assert.match(failed, /model list unavailable/);
+});
+
+// The card view asks the gateway for the same catalog the edit dialog loads,
+// once per provider, so the two never disagree.
+test("provider cards load the same catalog the edit dialog would", async (t) => {
+  const dom = new JSDOM(`<div id="grid"></div>`);
+  t.after(() => dom.window.close());
+  const calls = [];
+  const providers = [{ id: "p-1", catalog: "pending" }];
+  let renders = 0;
+  const sandbox = {
+    document: dom.window.document,
+    data: { provider: { providers } },
+    view: "access",
+    sub: "provider",
+    providerCatalogs: new Set(),
+    api: async (path) => {
+      calls.push(path);
+      return { models: ["model-a", "model-b"], catalog: "ok", checkedAt: "2026-01-01T00:00:00Z" };
+    },
+    renderContent: () => {
+      renders++;
+    },
+  };
+  vm.createContext(sandbox);
+  const loader = script.slice(at("function loadProviderCatalogs("), at("function addPolicy("));
+  vm.runInContext(`"use strict";\n${loader}\nloadProviderCatalogs();`, sandbox);
+  await new Promise((r) => setTimeout(r, 20));
+  assert.deepEqual(calls, ["pi-provider/models?id=p-1"]);
+  assert.equal(providers[0].catalog, "ok");
+  assert.deepEqual(providers[0].models, ["model-a", "model-b"]);
+  assert.equal(renders, 1);
+  vm.runInContext("loadProviderCatalogs();", sandbox);
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(calls.length, 1, "a provider catalog is fetched once per page");
 });
 
 test("model ids from the catalog are escaped in the suggestion list", async (t) => {

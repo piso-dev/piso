@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -304,4 +305,133 @@ func TestPutPiProviderRejectsBadURL(t *testing.T) {
 	if rec.Code != 400 {
 		t.Fatalf("status %d", rec.Code)
 	}
+}
+
+// TestPiProviderModelsFromUnsavedForm is the regression guard for loading a
+// catalog before the provider has ever been saved: the add dialog passes the
+// typed base URL and chosen secret directly.
+func TestPiProviderModelsFromUnsavedForm(t *testing.T) {
+	var gotAuth string
+	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		fmt.Fprint(w, `{"data":[{"id":"model-a"},{"id":"model-b"}]}`)
+	}))
+	defer fake.Close()
+	s, _ := providerTestServer(t, fake)
+	if s.Store.PiProvider() != nil {
+		t.Fatal("expected no saved provider")
+	}
+	q := url.Values{}
+	q.Set("baseUrl", fake.URL+"/v1")
+	q.Set("secretId", "11111111-1111-1111-1111-111111111111")
+	rec := httptest.NewRecorder()
+	s.handleGetPiProviderModels(rec, httptest.NewRequest(http.MethodGet, "/api/v1/pi-provider/models?"+q.Encode(), nil))
+	if rec.Code != 200 {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	var catalog piProviderCatalog
+	if err := json.Unmarshal(rec.Body.Bytes(), &catalog); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(catalog.Models, ",") != "model-a,model-b" || catalog.Catalog != "ok" {
+		t.Fatalf("catalog: %+v", catalog)
+	}
+	if gotAuth != "Bearer sk-test-FAKE-not-written" {
+		t.Fatalf("auth header %q", gotAuth)
+	}
+}
+
+// TestPiProviderModelsChangedURLKeepsStoredCatalog guards the edit dialog:
+// previewing a different endpoint must not overwrite the saved provider's
+// catalog, which only describes the saved URL.
+func TestPiProviderModelsChangedURLKeepsStoredCatalog(t *testing.T) {
+	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"data":[{"id":"new-model"}]}`)
+	}))
+	defer fake.Close()
+	s, _ := providerTestServer(t, fake)
+	if err := s.Store.SetPiProvider(&store.PiProviderRec{
+		ID:       "piso-one",
+		SecretID: "11111111-1111-1111-1111-111111111111",
+		BaseURL:  fake.URL + "/v1",
+		Models:   []string{"old-model"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	q := url.Values{}
+	q.Set("id", "piso-one")
+	q.Set("baseUrl", fake.URL+"/v2")
+	q.Set("secretId", "11111111-1111-1111-1111-111111111111")
+	rec := httptest.NewRecorder()
+	s.handleGetPiProviderModels(rec, httptest.NewRequest(http.MethodGet, "/api/v1/pi-provider/models?"+q.Encode(), nil))
+	if rec.Code != 200 {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	got := s.Store.PiProviderByID("piso-one")
+	if got == nil || strings.Join(got.Models, ",") != "old-model" {
+		t.Fatalf("stored catalog overwritten by a different URL: %+v", got)
+	}
+}
+
+// TestPutPiProviderStoresPickerModels makes the card show the same loaded
+// value the modal offered instead of reporting a pending catalog.
+func TestPutPiProviderStoresPickerModels(t *testing.T) {
+	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"data":[]}`)
+	}))
+	defer fake.Close()
+	s, _ := providerTestServer(t, fake)
+	body := fmt.Sprintf(`{"name":"AIML","secretId":"11111111-1111-1111-1111-111111111111","baseUrl":%q,"defaultModel":"model-b","models":["model-a","model-b","model-a","  "]}`, fake.URL+"/v1")
+	rec := httptest.NewRecorder()
+	s.handlePutPiProvider(rec, httptest.NewRequest(http.MethodPut, "/api/v1/pi-provider", strings.NewReader(body)))
+	if rec.Code != 200 {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	var view piProviderView
+	if err := json.Unmarshal(rec.Body.Bytes(), &view); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(view.Models, ",") != "model-a,model-b" || view.Catalog != "ok" {
+		t.Fatalf("view: %+v", view)
+	}
+	if view.CheckedAt == "" {
+		t.Fatalf("picker models were not stamped: %+v", view)
+	}
+}
+
+// TestPiProviderCheckedEmptyCatalogIsKnown keeps a provider that answered
+// with no models off the "model list pending" path: the card should say the
+// list is empty, not that it is still loading.
+func TestPiProviderCheckedEmptyCatalogIsKnown(t *testing.T) {
+	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"data":[]}`)
+	}))
+	defer fake.Close()
+	s, _ := providerTestServer(t, fake)
+	if err := s.Store.SetPiProvider(&store.PiProviderRec{
+		ID:       "piso-one",
+		SecretID: "11111111-1111-1111-1111-111111111111",
+		BaseURL:  fake.URL + "/v1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Store.SetPiProviderCatalog("piso-one", nil, ""); err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	s.handleGetPiProvider(rec, httptest.NewRequest(http.MethodGet, "/api/v1/pi-provider", nil))
+	var list piProviderListView
+	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range list.Providers {
+		if p.ID != "piso-one" {
+			continue
+		}
+		if p.Catalog != "ok" || p.CheckedAt == "" {
+			t.Fatalf("checked-empty catalog reported as %q: %+v", p.Catalog, p)
+		}
+		return
+	}
+	t.Fatal("seeded provider missing from the list")
 }

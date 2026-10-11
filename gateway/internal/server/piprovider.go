@@ -70,13 +70,14 @@ func (s *Server) handleGetPiProvider(w http.ResponseWriter, r *http.Request) {
 // provider. The dashboard fetches the catalog separately for the picker.
 func (s *Server) handlePutPiProvider(w http.ResponseWriter, r *http.Request) {
 	var in struct {
-		ID           string `json:"id"`
-		Name         string `json:"name"`
-		SecretID     string `json:"secretId"`
-		BaseURL      string `json:"baseUrl"`
-		DefaultModel string `json:"defaultModel"`
-		API          string `json:"api"`
-		Activate     bool   `json:"activate"`
+		ID           string   `json:"id"`
+		Name         string   `json:"name"`
+		SecretID     string   `json:"secretId"`
+		BaseURL      string   `json:"baseUrl"`
+		DefaultModel string   `json:"defaultModel"`
+		API          string   `json:"api"`
+		Models       []string `json:"models"`
+		Activate     bool     `json:"activate"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		writeJSON(w, 400, map[string]string{"error": "bad json"})
@@ -121,15 +122,21 @@ func (s *Server) handlePutPiProvider(w http.ResponseWriter, r *http.Request) {
 	}
 	// Keep the last known catalog; it is advisory and the save path never
 	// refreshes it. A different endpoint invalidates it.
-	if existing != nil {
-		if existing.BaseURL == baseURL {
-			pointer.Models = append([]string(nil), existing.Models...)
-			pointer.CatalogCheckedAt = existing.CatalogCheckedAt
-			pointer.CatalogError = existing.CatalogError
-		}
-		if pointer.DefaultModel != "" && len(pointer.Models) > 0 && !containsString(pointer.Models, pointer.DefaultModel) {
-			warning = "default model is not in the provider's last known catalog; it was saved anyway"
-		}
+	if existing != nil && existing.BaseURL == baseURL {
+		pointer.Models = append([]string(nil), existing.Models...)
+		pointer.CatalogCheckedAt = existing.CatalogCheckedAt
+		pointer.CatalogError = existing.CatalogError
+	}
+	// A picker load is fresher than anything stored. Persisting it here keeps
+	// the provider card showing the same list the modal just offered, which
+	// matters for a brand new provider that had no catalog before.
+	if loaded := cleanModelIDs(in.Models); len(loaded) > 0 {
+		pointer.Models = loaded
+		pointer.CatalogCheckedAt = time.Now().UTC()
+		pointer.CatalogError = ""
+	}
+	if pointer.DefaultModel != "" && len(pointer.Models) > 0 && !containsString(pointer.Models, pointer.DefaultModel) {
+		warning = "default model is not in the provider's last known catalog; it was saved anyway"
 	}
 	var err error
 	if in.Activate {
@@ -251,7 +258,8 @@ func (s *Server) providerViewFor(p *store.PiProviderRec, fs profileFileState) pi
 	switch {
 	case p.CatalogError != "":
 		view.Catalog = "failed"
-	case len(p.Models) > 0:
+	case len(p.Models) > 0 || !p.CatalogCheckedAt.IsZero():
+		// A catalog that loaded but listed no models is known, not pending.
 		view.Catalog = "ok"
 	default:
 		view.Catalog = "pending"
@@ -495,35 +503,65 @@ type piProviderCatalog struct {
 }
 
 func (s *Server) handleGetPiProviderModels(w http.ResponseWriter, r *http.Request) {
-	id := strings.TrimSpace(r.URL.Query().Get("id"))
-	var p *store.PiProviderRec
+	q := r.URL.Query()
+	id := strings.TrimSpace(q.Get("id"))
+	baseURL := strings.TrimSpace(q.Get("baseUrl"))
+	secretID := strings.TrimSpace(q.Get("secretId"))
+	// Resolve the saved profile when the form did not supply its own values.
+	// The add dialog has no id yet, so it types baseUrl/secretId directly;
+	// the edit dialog sends them so an unsaved change loads immediately.
+	var saved *store.PiProviderRec
 	if id != "" {
-		p = s.Store.PiProviderByID(id)
-	} else {
-		p = s.Store.PiProvider()
+		saved = s.Store.PiProviderByID(id)
 	}
-	if p == nil || p.SecretID == "" || p.BaseURL == "" {
+	if saved == nil && baseURL == "" && secretID == "" {
+		saved = s.Store.PiProvider()
+	}
+	if baseURL == "" && saved != nil {
+		baseURL = saved.BaseURL
+	}
+	if secretID == "" && saved != nil {
+		secretID = saved.SecretID
+	}
+	if baseURL == "" || secretID == "" {
 		writeJSON(w, 409, map[string]string{"error": "configure the provider before listing models"})
 		return
 	}
-	rec, ok := s.secretForPiProvider(p.SecretID)
+	if err := validatePiBaseURL(baseURL); err != nil {
+		writeJSON(w, 400, map[string]string{"error": err.Error()})
+		return
+	}
+	rec, ok := s.secretForPiProvider(secretID)
 	if !ok || rec.Value == "" {
 		writeJSON(w, 409, map[string]string{"error": "provider secret is not on this gateway yet"})
 		return
 	}
-	ids, err := s.providerModelIDs(r.Context(), rec.Value, p.BaseURL)
+	// Cached models only describe the same endpoint; a changed URL must not
+	// fall back to another provider's catalog.
+	cached := saved != nil && saved.BaseURL == baseURL
+	ids, err := s.providerModelIDs(r.Context(), rec.Value, baseURL)
 	if err != nil {
-		// Record the failure but keep serving the cached list so the user can
-		// still pick a model.
-		_ = s.Store.SetPiProviderCatalog(p.ID, nil, "provider model catalog is unavailable")
-		out := piProviderCatalog{Models: append([]string(nil), p.Models...), Catalog: "failed", Error: "provider model catalog is unavailable"}
-		if !p.CatalogCheckedAt.IsZero() {
-			out.CheckedAt = p.CatalogCheckedAt.UTC().Format(time.RFC3339)
+		// Record the failure for the saved endpoint but keep serving its
+		// cached list so the user can still pick a model. A changed URL has no
+		// cache to fall back to.
+		if saved != nil && cached {
+			_ = s.Store.SetPiProviderCatalog(saved.ID, nil, "provider model catalog is unavailable")
+		}
+		out := piProviderCatalog{Catalog: "failed", Error: "provider model catalog is unavailable"}
+		if cached {
+			out.Models = append([]string(nil), saved.Models...)
+			if !saved.CatalogCheckedAt.IsZero() {
+				out.CheckedAt = saved.CatalogCheckedAt.UTC().Format(time.RFC3339)
+			}
 		}
 		writeJSON(w, 200, out)
 		return
 	}
-	_ = s.Store.SetPiProviderCatalog(p.ID, ids, "")
+	// Only cache a catalog that describes the saved endpoint; an unsaved
+	// URL change must not overwrite the stored provider's model list.
+	if saved != nil && cached {
+		_ = s.Store.SetPiProviderCatalog(saved.ID, ids, "")
+	}
 	out := piProviderCatalog{Models: ids, Catalog: "ok", CheckedAt: time.Now().UTC().Format(time.RFC3339)}
 	writeJSON(w, 200, out)
 }
@@ -572,6 +610,22 @@ func (s *Server) providerModelIDs(ctx context.Context, apiKey, baseURL string) (
 		ids = append(ids, id)
 	}
 	return ids, nil
+}
+
+// cleanModelIDs normalizes catalog ids supplied by the provider picker:
+// trims, drops empties, and de-dupes while preserving order.
+func cleanModelIDs(values []string) []string {
+	out := make([]string, 0, len(values))
+	seen := map[string]bool{}
+	for _, v := range values {
+		id := strings.TrimSpace(v)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	return out
 }
 
 func containsString(values []string, want string) bool {

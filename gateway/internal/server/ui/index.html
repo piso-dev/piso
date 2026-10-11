@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <meta name="color-scheme" content="dark" />
     <title>piso gateway / dispatch</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <style>
       :root {
         --bg: #16191e;
@@ -1521,38 +1522,44 @@
       }
       .provider-stack { display: flex; flex-direction: column; gap: 12px; margin-top: 20px; }
       .provider-card {
-        display: flex;
-        align-items: stretch;
-        gap: 12px;
+        position: relative;
         border: 1px solid var(--line);
         border-radius: 6px;
         background: var(--inset);
         overflow: hidden;
       }
+      /* The activate button fills the panel, including the strip behind the
+         Edit/Delete actions, so the whole card is the target and highlights
+         as one. The actions float above it and stay independently clickable. */
+      .provider-card:hover { background: color-mix(in srgb, var(--blue) 6%, var(--inset)); }
       .provider-card.active {
         border-color: var(--blue);
-        background: color-mix(in srgb, var(--blue) 8%, transparent);
+        background: color-mix(in srgb, var(--blue) 8%, var(--inset));
       }
+      .provider-card.active:hover { background: color-mix(in srgb, var(--blue) 12%, var(--inset)); }
       .provider-select {
-        flex: 1 1 auto;
-        min-width: 0;
         display: flex;
         flex-direction: column;
         gap: 6px;
         align-items: flex-start;
+        width: 100%;
         text-align: left;
         padding: 16px;
+        padding-right: 116px;
         background: none;
         border: 0;
         color: inherit;
         cursor: pointer;
       }
-      .provider-select:hover { background: color-mix(in srgb, var(--blue) 6%, transparent); }
       .provider-select:focus-visible { outline: 1px solid var(--blue); outline-offset: -2px; }
       .provider-name { display: flex; align-items: center; gap: 8px; font-weight: 600; }
       .provider-meta, .provider-status { color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
       .provider-status.warn { color: var(--amber); }
       .provider-card-actions {
+        position: absolute;
+        top: 0;
+        right: 0;
+        bottom: 0;
         display: flex;
         flex-direction: column;
         justify-content: center;
@@ -1687,6 +1694,9 @@
       const loaded = new Set(),
         failures = new Map(),
         pending = new Map();
+      // Provider ids whose catalog has been fetched for the card view this
+      // page. Keeps the card list from refetching on every render.
+      const providerCatalogs = new Set();
       let view = "projects",
         sub = "",
         query = "",
@@ -3161,6 +3171,7 @@
             .map((w) => `<p class="notice" role="status">${esc(w)}</p>`)
             .join("");
           const cards = providers.map(providerCard).join("");
+          loadProviderCatalogs();
           return replaceContent(
             intro +
               warningHtml +
@@ -3795,11 +3806,15 @@
 
       function providerCard(p) {
         const model = p.defaultModel || p.effectiveModel || "first available";
-        const catalog =
-          p.catalog === "failed"
+        const count = Array.isArray(p.models) ? p.models.length : 0;
+        // Report the same loaded catalog the edit modal shows, so a card never
+        // reports pending once the gateway has answered for the provider.
+        const catalog = count
+          ? count + (count === 1 ? " model" : " models")
+          : p.catalog === "failed"
             ? "model list unavailable"
             : p.catalog === "ok"
-              ? (p.models || []).length + " models"
+              ? "no models listed"
               : "model list pending";
         const active =
           p.active && p.applied
@@ -3811,7 +3826,7 @@
           <button class="provider-select" type="button" data-action="provider-activate" data-id="${esc(p.id)}" aria-pressed="${p.active ? "true" : "false"}">
             <span class="provider-name">${esc(p.name || p.id)} ${active}</span>
             <span class="provider-meta">${esc(p.baseUrl || "No URL")} · default: ${esc(model)}</span>
-            <span class="provider-status${p.catalog === "failed" ? " warn" : ""}">${esc(catalog)}${p.checkedAt ? " · checked " + esc(age(p.checkedAt)) : ""}</span>
+            <span class="provider-status${count ? "" : p.catalog === "failed" ? " warn" : ""}">${esc(catalog)}${p.checkedAt ? " · checked " + esc(age(p.checkedAt)) : ""}</span>
           </button>
           <div class="provider-card-actions">
             ${button("Edit", "provider-edit", p.id, "small")}
@@ -3821,6 +3836,7 @@
       }
       function providerForm(id) {
         const p = (data.provider?.providers || []).find((x) => x.id === id) || {};
+        const catalog = { models: [] };
         formDialog(
           id ? "Edit provider" : "Add provider",
           "A provider is a secret, an API base URL, and an optional default model. Saving writes it to the shared pi profile; activating it makes it the startup default for new sessions. The model list is optional: a provider saves even when its catalog cannot be reached.",
@@ -3845,33 +3861,42 @@
               required: true,
               full: true,
             }) +
-            `<label class="field full" for="f-defaultModel"><span>Default model (optional)</span><input name="defaultModel" id="f-defaultModel" type="text" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="modelList" autocomplete="off" placeholder="First model the provider lists" value="${esc(p.defaultModel || "")}"><ul id="modelList" class="suggestions" role="listbox" hidden></ul><small id="modelHint">Leave empty to use the first model the provider lists.</small></label>`,
+            `<label class="field full" for="f-defaultModel"><span>Default model (optional)</span><input name="defaultModel" id="f-defaultModel" type="text" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="modelList" autocomplete="off" placeholder="First model the provider lists" value="${esc(p.defaultModel || "")}"><ul id="modelList" class="suggestions" role="listbox" hidden></ul><small id="modelHint">Enter the API base URL and choose a secret to load its model list.</small></label>`,
           id ? "Save provider" : "Add provider",
           async (f) => {
-            const out = await api("pi-provider", "PUT", { ...f, id: id || "" });
+            const out = await api("pi-provider", "PUT", {
+              ...f,
+              id: id || "",
+              models: catalog.models,
+            });
             await changed(["provider"]);
             if (out.warning) return out.warning;
             return id ? "Provider saved." : "Provider added.";
           },
         );
-        wireModelAutocomplete(p, id);
+        wireModelAutocomplete(id, catalog);
       }
 
       // Suggest model ids from the provider's live catalog. The gateway holds
-      // the key, so this only returns names. A catalog that cannot be loaded
-      // leaves the field as plain text.
-      function wireModelAutocomplete(provider, id) {
+      // the key, so this only returns names. The catalog loads as soon as a
+      // base URL and secret are present, including before the provider has
+      // been saved, so the first round can already pick a model. A catalog
+      // that cannot be loaded leaves the field as plain text.
+      function wireModelAutocomplete(id, catalog) {
         const input = $("#f-defaultModel");
         const listbox = $("#modelList");
         const hint = $("#modelHint");
-        if (!input || !listbox) return;
+        const baseUrlField = $("#f-baseUrl");
+        const secretField = $("#f-secretId");
+        if (!input || !listbox || !baseUrlField || !secretField) return;
         let models = [];
         let active = -1;
-        const saved = (provider.baseUrl || "") + "\u0000" + (provider.secretId || "");
-        const current = () =>
-          ($("#f-baseUrl")?.value || "") +
-          "\u0000" +
-          ($("#f-secretId")?.value || "");
+        let loadedKey = "";
+        let loadingKey = "";
+        let seq = 0;
+        let timer;
+        const pairKey = () =>
+          baseUrlField.value.trim() + "\u0000" + (secretField.value || "");
         const show = (items) => {
           active = -1;
           listbox.innerHTML = items
@@ -3921,27 +3946,121 @@
           input.value = option.dataset.model;
           show([]);
         });
-        if (!provider.baseUrl || current() !== saved) {
-          hint.textContent = provider.baseUrl
-            ? "Save the provider, then reopen to choose from its model list."
-            : "Save the provider first to load its model list.";
-          return;
+        const setModels = (items) => {
+          models = Array.isArray(items) ? items : [];
+          catalog.models = models;
+        };
+        const applyCatalog = (result) => {
+          setModels(result?.models);
+          if (result?.catalog === "failed") {
+            hint.textContent = models.length
+              ? "Model list unavailable; showing the last known models. Type a model id, or leave empty."
+              : "Model list unavailable. Type a model id, or leave empty; it resolves when the provider responds.";
+          } else if (models.length) {
+            hint.textContent =
+              models.length + " models available. Leave empty for the first one.";
+          } else {
+            hint.textContent = "The provider returned no models.";
+          }
+        };
+        const load = () => {
+          const baseUrl = baseUrlField.value.trim();
+          const secretId = secretField.value;
+          if (!baseUrl || !secretId) {
+            hint.textContent = !baseUrl
+              ? "Enter the API base URL to load its model list."
+              : "Choose an API key secret to load its model list.";
+            if (loadedKey !== pairKey()) {
+              setModels([]);
+              loadedKey = "";
+            }
+            return;
+          }
+          const key = pairKey();
+          if (key === loadedKey || key === loadingKey) return;
+          loadingKey = key;
+          const token = ++seq;
+          hint.textContent = "Loading model list…";
+          const query =
+            "?id=" +
+            encodeURIComponent(id || "") +
+            "&baseUrl=" +
+            encodeURIComponent(baseUrl) +
+            "&secretId=" +
+            encodeURIComponent(secretId);
+          api("pi-provider/models" + query)
+            .then((result) => {
+              if (token !== seq) return;
+              loadingKey = "";
+              loadedKey = key;
+              applyCatalog(result);
+            })
+            .catch(() => {
+              if (token !== seq) return;
+              loadingKey = "";
+              setModels([]);
+              hint.textContent =
+                "Model list unavailable. You can still type a model id.";
+            });
+        };
+        const schedule = () => {
+          clearTimeout(timer);
+          const key = pairKey();
+          // Drop a list that no longer describes the current fields before the
+          // replacement loads, so saving mid-debounce cannot keep stale ids.
+          if (key !== loadedKey && key !== loadingKey) {
+            setModels([]);
+            loadedKey = "";
+            if (baseUrlField.value.trim() && secretField.value)
+              hint.textContent = "Loading model list…";
+          }
+          timer = setTimeout(load, 250);
+        };
+        baseUrlField.addEventListener("input", schedule);
+        baseUrlField.addEventListener("change", schedule);
+        secretField.addEventListener("input", schedule);
+        secretField.addEventListener("change", schedule);
+        if (baseUrlField.value.trim() && secretField.value) load();
+      }
+
+      // A card must not keep saying "model list pending" for a provider whose
+      // catalog the edit dialog would load. Fetch the same endpoint the dialog
+      // uses, once per provider per page, and fold the result into the cached
+      // provider list so the card and dialog agree.
+      function loadProviderCatalogs() {
+        const providers = Array.isArray(data.provider?.providers)
+          ? data.provider.providers
+          : [];
+        for (const provider of providers) {
+          if (!provider.id || providerCatalogs.has(provider.id)) continue;
+          if (Array.isArray(provider.models) && provider.models.length) continue;
+          providerCatalogs.add(provider.id);
+          api("pi-provider/models?id=" + encodeURIComponent(provider.id))
+            .then((result) => {
+              provider.models = Array.isArray(result?.models) ? result.models : [];
+              provider.catalog =
+                result?.catalog === "failed"
+                  ? "failed"
+                  : result?.catalog === "ok"
+                    ? "ok"
+                    : provider.models.length
+                      ? "ok"
+                      : "pending";
+              if (result?.checkedAt) provider.checkedAt = result.checkedAt;
+              provider.catalogError =
+                result?.catalog === "failed"
+                  ? result.error || "provider model catalog is unavailable"
+                  : "";
+            })
+            .catch((e) => {
+              provider.catalog = "failed";
+              provider.catalogError =
+                e?.message || "provider model catalog is unavailable";
+            })
+            .finally(() => {
+              if (view === "access" && sub === "provider") renderContent();
+            });
         }
-        const query = id ? "?id=" + encodeURIComponent(id) : "";
-        api("pi-provider/models" + query)
-          .then((catalog) => {
-            models = Array.isArray(catalog?.models) ? catalog.models : [];
-            hint.textContent =
-              catalog?.catalog === "failed"
-                ? "Model list unavailable. Type a model id, or leave empty; it resolves when the provider responds."
-                : models.length
-                  ? models.length + " models available. Leave empty for the first one."
-                  : "The provider returned no models.";
-          })
-          .catch(() => {
-            hint.textContent =
-              "Model list unavailable. You can still type a model id.";
-          });
       }
       function addPolicy(kind) {
         let fields = "",

@@ -24,7 +24,7 @@ import (
 	"piso/gateway/internal/store"
 )
 
-//go:embed ui/index.html
+//go:embed ui/index.html ui/favicon.svg
 var uiFS embed.FS
 
 // Server bundles the control plane + ingress into http.Handlers.
@@ -133,14 +133,31 @@ func (s *Server) IngressHandler() http.Handler {
 	})
 }
 
-// ui serves the embedded dashboard.
+// ui serves the embedded dashboard and its favicon. Everything else 404s, so
+// an unknown path on the apex can never fall through to the worker proxy.
 func (s *Server) ui(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/" {
+	switch r.URL.Path {
+	case "/":
+		data, _ := uiFS.ReadFile("ui/index.html")
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Write(data)
+	case "/favicon.svg", "/favicon.ico":
+		// Legacy browsers probe /favicon.ico; serve the same mark either way.
+		s.favicon(w, r)
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+func (s *Server) favicon(w http.ResponseWriter, r *http.Request) {
+	data, err := uiFS.ReadFile("ui/favicon.svg")
+	if err != nil {
 		http.NotFound(w, r)
 		return
 	}
-	data, _ := uiFS.ReadFile("ui/index.html")
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Content-Type", "image/svg+xml")
+	w.Header().Set("Cache-Control", "public, max-age=86400")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Write(data)
 }
 
