@@ -10,7 +10,7 @@ An operator supervises isolated coding agents, answers requests that only a huma
 - Type: locally available humanist sans (Segoe UI / system fallback) for reading and controls; Consolas / monospace for addresses, commands and the signal strip. No remote fonts or assets on a credential-bearing console.
 - Layout: left-aligned rail, broad work surface, quiet connection status at the foot. Mobile turns the rail into a wrapping navigation band, never a hidden hamburger.
 - Signature: a live timeline with one fixed 100px row per project, stable alphabetical ordering, and sticky project labels. Fifteen minutes fit the available track width; three hours are available by horizontal scrolling, and scrolling back to the right edge resumes live following immediately. Recent semantic events have bottom-aligned 80%-height panels for 60 seconds; the newest stays at the leading edge and earlier panels slide left with no gaps, fully covering the blocks behind them. Panels are two-section: a 16px trace lane on top, the message body below. Thin lines in the trace lane connect each panel to its event block; the drawer runs on the one-second clock. Panels are passive; only the full-height event blocks respond to hover and focus, with details stacked above them. Activity renders full height like every other kind and never underlaps another kind; a different kind breaks its run. Activity hover/focus shows only the merged duration, such as "14 minutes active".
-- Hierarchy: Projects / Needs you / Traffic, followed by Access / Network / Policy. One attention inbox replaces four competing modal launchers. Incoming events update counts but never steal focus or approve anything.
+- Hierarchy: Projects / Tasks / Needs you / Traffic, followed by Access / Network / Policy. One attention inbox replaces four competing modal launchers. Incoming events update counts but never steal focus or approve anything.
 
 ```
 Desktop                       Narrow
@@ -36,6 +36,20 @@ A grid of status cards and giant counters would be a generic monitoring dashboar
 - SSE status is distinct from API health and Technocore pairing. Polls backstop stream events; partial failures are visible and retryable.
 - Native dialogs supply focus trapping and Escape behavior. Error feedback stays alongside the action; no browser alerts. Destructive actions require confirmation.
 - No runtime dependencies or frontend build step; the existing Go-embedded single HTML asset remains deployable.
+
+## Task dashboard
+
+Tasks sits directly below Projects. It uses compact linked rows rather than
+summary cards, Active / Finished filters, server-side title search, and signed
+cursor pagination. Details show authoritative task state, instructions,
+acceptance criteria, checkpoint, result, artifacts, and updates. Waiting tasks
+link to Needs you for decisions. The visible list/detail polls every ten seconds.
+
+The native New task dialog uses the existing graphite/chalk/blue palette and
+system typography. No worker selection: creation uses the shared Tasks queue.
+Drafts remain in memory only. An ambiguous submission freezes the original
+UUID and payload for retry; validation errors remain editable. Dismissal of a
+nonempty draft requires confirmation. No new dependencies or build step.
 
 ## Validation and limits
 
