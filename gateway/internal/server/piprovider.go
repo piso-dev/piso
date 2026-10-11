@@ -36,45 +36,58 @@ func (s *Server) piProfileDir() string {
 }
 
 type piProviderView struct {
-	SecretID     string `json:"secretId,omitempty"`
-	BaseURL      string `json:"baseUrl,omitempty"`
-	Placeholder  string `json:"placeholder,omitempty"`
-	DefaultModel string `json:"defaultModel"`
-	Applied      bool   `json:"applied"`
-	Warning      string `json:"warning,omitempty"`
-	UpdatedAt    string `json:"updatedAt,omitempty"`
+	ID             string   `json:"id"`
+	Name           string   `json:"name,omitempty"`
+	SecretID       string   `json:"secretId,omitempty"`
+	BaseURL        string   `json:"baseUrl,omitempty"`
+	Placeholder    string   `json:"placeholder,omitempty"`
+	DefaultModel   string   `json:"defaultModel"`
+	EffectiveModel string   `json:"effectiveModel,omitempty"`
+	API            string   `json:"api,omitempty"`
+	Active         bool     `json:"active"`
+	Applied        bool     `json:"applied"`
+	Warning        string   `json:"warning,omitempty"`
+	Catalog        string   `json:"catalog,omitempty"` // ok | failed | pending
+	CatalogError   string   `json:"catalogError,omitempty"`
+	Models         []string `json:"models,omitempty"`
+	CheckedAt      string   `json:"checkedAt,omitempty"`
+	UpdatedAt      string   `json:"updatedAt,omitempty"`
+}
+
+type piProviderListView struct {
+	Providers []piProviderView `json:"providers"`
+	ActiveID  string           `json:"activeId"`
+	Applied   bool             `json:"applied"`
+	Warning   string           `json:"warning,omitempty"`
 }
 
 func (s *Server) handleGetPiProvider(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, 200, s.piProviderView())
+	writeJSON(w, 200, s.piProviderListView())
 }
 
+// handlePutPiProvider adds or updates one profile. It never contacts the
+// provider: a failed catalog fetch must not block saving or activating a
+// provider. The dashboard fetches the catalog separately for the picker.
 func (s *Server) handlePutPiProvider(w http.ResponseWriter, r *http.Request) {
 	var in struct {
+		ID           string `json:"id"`
+		Name         string `json:"name"`
 		SecretID     string `json:"secretId"`
 		BaseURL      string `json:"baseUrl"`
 		DefaultModel string `json:"defaultModel"`
+		API          string `json:"api"`
+		Activate     bool   `json:"activate"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		writeJSON(w, 400, map[string]string{"error": "bad json"})
 		return
 	}
-	secretID := strings.TrimSpace(in.SecretID)
 	baseURL := strings.TrimSpace(in.BaseURL)
-	defaultModel := strings.TrimSpace(in.DefaultModel)
-	if secretID == "" && baseURL == "" {
-		if err := s.Store.SetPiProvider(nil); err != nil {
-			writeJSON(w, 500, map[string]string{"error": err.Error()})
-			return
-		}
-		writeJSON(w, 200, s.piProviderView())
-		return
-	}
 	if err := validatePiBaseURL(baseURL); err != nil {
 		writeJSON(w, 400, map[string]string{"error": err.Error()})
 		return
 	}
-	rec, ok := s.secretForPiProvider(secretID)
+	rec, ok := s.secretForPiProvider(in.SecretID)
 	if !ok {
 		writeJSON(w, 400, map[string]string{"error": "secret not found"})
 		return
@@ -83,64 +96,193 @@ func (s *Server) handlePutPiProvider(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, map[string]string{"error": "secret has no piso_ placeholder"})
 		return
 	}
-	// A default is only useful if the provider actually serves it. Verify
-	// against the live catalog so a typo can't shadow the first-available
-	// fallback inside workers.
-	if defaultModel != "" {
-		ids, err := s.providerModelIDs(r.Context(), rec.Value, baseURL)
-		if err != nil {
-			writeJSON(w, 502, map[string]string{"error": "could not verify the default model with the provider"})
-			return
-		}
-		if !containsString(ids, defaultModel) {
-			current := ""
-			if p := s.Store.PiProvider(); p != nil {
-				current = p.DefaultModel
-			}
-			// Keeping an already-saved model is allowed: the provider may be
-			// briefly unreachable or mid-rename, and blocking the save would
-			// also make the stale value impossible to clear.
-			if defaultModel != current {
-				writeJSON(w, 400, map[string]string{"error": "default model is not in the provider catalog"})
-				return
-			}
-		}
+
+	id := strings.TrimSpace(in.ID)
+	if id != "" && !piprofile.ManagedProviderKey(id) {
+		writeJSON(w, 400, map[string]string{"error": "provider id is not in the piso namespace"})
+		return
 	}
+	existing := (*store.PiProviderRec)(nil)
+	if id != "" {
+		existing = s.Store.PiProviderByID(id)
+	}
+	if id == "" {
+		id = s.uniquePiProviderID(providerIDFrom(in.Name, baseURL, ""))
+	}
+	warning := ""
 	pointer := &store.PiProviderRec{
-		SecretID:     resourceIDFor(rec, secretID),
+		ID:           id,
+		Name:         strings.TrimSpace(in.Name),
+		SecretID:     resourceIDFor(rec, in.SecretID),
 		BaseURL:      baseURL,
-		DefaultModel: defaultModel,
+		DefaultModel: strings.TrimSpace(in.DefaultModel),
+		APIType:      strings.TrimSpace(in.API),
 		UpdatedAt:    time.Now().UTC(),
 	}
-	if err := s.Store.SetPiProvider(pointer); err != nil {
+	// Keep the last known catalog; it is advisory and the save path never
+	// refreshes it. A different endpoint invalidates it.
+	if existing != nil {
+		if existing.BaseURL == baseURL {
+			pointer.Models = append([]string(nil), existing.Models...)
+			pointer.CatalogCheckedAt = existing.CatalogCheckedAt
+			pointer.CatalogError = existing.CatalogError
+		}
+		if pointer.DefaultModel != "" && len(pointer.Models) > 0 && !containsString(pointer.Models, pointer.DefaultModel) {
+			warning = "default model is not in the provider's last known catalog; it was saved anyway"
+		}
+	}
+	var err error
+	if in.Activate {
+		err = s.Store.UpsertPiProviderActive(*pointer)
+	} else {
+		err = s.Store.UpsertPiProvider(*pointer)
+	}
+	if err != nil {
 		writeJSON(w, 500, map[string]string{"error": err.Error()})
 		return
 	}
-	// Best-effort publish. Reconcile retries if the coordinator is down or
-	// this gateway is not enrolled yet.
-	if err := technocore.PublishPiProvider(s.Store, s.DataDir); err != nil {
-		view := s.applyPiProvider()
-		if view.Warning == "" {
-			view.Warning = "saved locally; technocore publish: " + err.Error()
-		}
-		writeJSON(w, 200, view)
-		return
+
+	publishWarning := s.publishPiProvider()
+	s.applyPiProviders()
+	view := s.piProviderViewByID(id)
+	if view == nil {
+		view = &piProviderView{ID: id}
 	}
-	writeJSON(w, 200, s.applyPiProvider())
+	if warning != "" {
+		view.Warning = joinWarning(warning, view.Warning)
+	}
+	if publishWarning != "" {
+		view.Warning = joinWarning(view.Warning, publishWarning)
+	}
+	writeJSON(w, 200, view)
 }
 
-func (s *Server) piProviderView() piProviderView {
-	p := s.Store.PiProvider()
-	if p == nil {
-		return piProviderView{}
+// handleActivatePiProvider selects one profile as the startup default.
+func (s *Server) handleActivatePiProvider(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		ID string `json:"id"`
 	}
-	view := piProviderView{SecretID: p.SecretID, BaseURL: p.BaseURL, DefaultModel: p.DefaultModel}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeJSON(w, 400, map[string]string{"error": "bad json"})
+		return
+	}
+	if err := s.Store.ActivatePiProvider(strings.TrimSpace(in.ID)); err != nil {
+		writeJSON(w, 404, map[string]string{"error": err.Error()})
+		return
+	}
+	s.publishPiProvider()
+	view := s.applyPiProviders()
+	writeJSON(w, 200, view)
+}
+
+// handleDeletePiProvider removes a profile and rewrites the profile files.
+func (s *Server) handleDeletePiProvider(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeJSON(w, 400, map[string]string{"error": "bad json"})
+		return
+	}
+	if err := s.Store.DeletePiProvider(strings.TrimSpace(in.ID)); err != nil {
+		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		return
+	}
+	s.publishPiProvider()
+	writeJSON(w, 200, s.applyPiProviders())
+}
+
+// piProviderViewByID builds the view for one saved profile, or nil.
+func (s *Server) piProviderViewByID(id string) *piProviderView {
+	p := s.Store.PiProviderByID(id)
+	if p == nil {
+		return nil
+	}
+	fs := s.readProfileFiles()
+	view := s.providerViewFor(p, fs)
+	return &view
+}
+
+func (s *Server) piProviderListView() piProviderListView {
+	profiles := s.Store.PiProviderStack()
+	fs := s.readProfileFiles()
+	activeID := s.Store.ActivePiProviderID()
+	out := piProviderListView{Providers: make([]piProviderView, 0, len(profiles)), ActiveID: activeID}
+	var active *store.PiProviderRec
+	for i := range profiles {
+		view := s.providerViewFor(&profiles[i], fs)
+		if view.Active {
+			cp := profiles[i]
+			active = &cp
+			out.Applied = view.Applied
+			out.Warning = view.Warning
+		}
+		out.Providers = append(out.Providers, view)
+	}
+	if active == nil {
+		// No active selection: the profile clears the default and pi falls
+		// back to first-available. That is applied by definition.
+		out.Applied = true
+	}
+	return out
+}
+
+// providerViewFor resolves one profile against the profile files on disk.
+func (s *Server) providerViewFor(p *store.PiProviderRec, fs profileFileState) piProviderView {
+	activeID := s.Store.ActivePiProviderID()
+	view := piProviderView{
+		ID:             p.ID,
+		Name:           p.Name,
+		SecretID:       p.SecretID,
+		BaseURL:        p.BaseURL,
+		DefaultModel:   p.DefaultModel,
+		EffectiveModel: effectivePiModel(p),
+		API:            p.APIType,
+		Active:         p.ID == activeID,
+		CatalogError:   p.CatalogError,
+		Models:         append([]string(nil), p.Models...),
+	}
 	if !p.UpdatedAt.IsZero() {
 		view.UpdatedAt = p.UpdatedAt.UTC().Format(time.RFC3339)
 	}
-	if rec, ok := s.secretForPiProvider(p.SecretID); ok {
-		view.Placeholder = rec.Placeholder
+	if !p.CatalogCheckedAt.IsZero() {
+		view.CheckedAt = p.CatalogCheckedAt.UTC().Format(time.RFC3339)
 	}
+	switch {
+	case p.CatalogError != "":
+		view.Catalog = "failed"
+	case len(p.Models) > 0:
+		view.Catalog = "ok"
+	default:
+		view.Catalog = "pending"
+	}
+	rec, ok := s.secretForPiProvider(p.SecretID)
+	if !ok || !strings.HasPrefix(rec.Placeholder, model.PlaceholderPrefix) {
+		view.Warning = "selected secret is not on this gateway yet"
+		return view
+	}
+	view.Placeholder = rec.Placeholder
+	entry, present := fs.providers[p.ID]
+	view.Applied = present && entry.APIKey == rec.Placeholder && entry.BaseURL == p.BaseURL
+	if !view.Applied {
+		view.Warning = joinWarning(view.Warning, "saved provider settings do not match the worker profile; save again to apply")
+		return view
+	}
+	if view.Active && !fs.settingsMatch {
+		view.Applied = false
+		view.Warning = joinWarning(view.Warning, "worker default model does not match the active provider; save again to apply")
+	}
+	return view
+}
+
+// profileFileState is the dashboard-owned slice of the shared profile.
+type profileFileState struct {
+	providers     map[string]struct{ APIKey, BaseURL string }
+	settingsMatch bool
+}
+
+func (s *Server) readProfileFiles() profileFileState {
+	fs := profileFileState{providers: map[string]struct{ APIKey, BaseURL string }{}}
 	raw, err := os.ReadFile(filepath.Join(s.piProfileDir(), "models.json"))
 	var models struct {
 		Providers map[string]struct {
@@ -148,74 +290,218 @@ func (s *Server) piProviderView() piProviderView {
 			BaseURL string `json:"baseUrl"`
 		} `json:"providers"`
 	}
-	if err == nil && json.Unmarshal(raw, &models) == nil && view.Placeholder != "" {
-		provider := models.Providers[piprofile.ProviderName]
-		view.Applied = provider.APIKey == view.Placeholder && provider.BaseURL == view.BaseURL
+	if err == nil && json.Unmarshal(raw, &models) == nil {
+		for id, entry := range models.Providers {
+			if piprofile.ManagedProviderKey(id) {
+				fs.providers[id] = struct{ APIKey, BaseURL string }{entry.APIKey, entry.BaseURL}
+			}
+		}
 	}
-	raw, err = os.ReadFile(filepath.Join(s.piProfileDir(), "settings.json"))
+	active := s.Store.PiProvider()
+	settingsDefaultProvider, settingsDefaultModel, _ := s.readSettingsDefault()
+	if active == nil {
+		fs.settingsMatch = settingsDefaultProvider == "" && settingsDefaultModel == ""
+		return fs
+	}
+	want := effectivePiModel(active)
+	if want == "" {
+		fs.settingsMatch = settingsDefaultProvider == "" && settingsDefaultModel == ""
+	} else {
+		fs.settingsMatch = settingsDefaultProvider == active.ID && settingsDefaultModel == want
+	}
+	return fs
+}
+
+// readSettingsDefault returns defaultProvider/defaultModel. settingsOK is
+// true when the file was readable and parsed.
+func (s *Server) readSettingsDefault() (provider, model string, ok bool) {
+	raw, err := os.ReadFile(filepath.Join(s.piProfileDir(), "settings.json"))
+	if err != nil {
+		return "", "", false
+	}
 	var settings struct {
 		Provider string `json:"defaultProvider"`
 		Model    string `json:"defaultModel"`
 	}
-	settingsMatch := err == nil && json.Unmarshal(raw, &settings) == nil
-	if p.DefaultModel == "" {
-		settingsMatch = settingsMatch && settings.Provider == "" && settings.Model == ""
-	} else {
-		settingsMatch = settingsMatch && settings.Provider == piprofile.ProviderName && settings.Model == p.DefaultModel
+	if json.Unmarshal(raw, &settings) != nil {
+		return "", "", false
 	}
-	view.Applied = view.Applied && settingsMatch
-	if !view.Applied {
-		view.Warning = "saved provider settings do not match the worker profile; save again to apply"
-	}
-	return view
+	return settings.Provider, settings.Model, true
 }
 
-// applyPiProvider resolves the stored pointer to this gateway's placeholder
-// and writes models.json. A missing secret is not an error: the pointer can
-// arrive before the matching envelope.
-func (s *Server) applyPiProvider() piProviderView {
-	view := s.piProviderView()
-	p := s.Store.PiProvider()
-	if p == nil || p.SecretID == "" || p.BaseURL == "" {
-		return view
+// applyPiProviders rewrites models.json and the active default from the
+// stored stack. A profile whose secret is not on this gateway yet is skipped
+// with a warning rather than failing the write.
+func (s *Server) applyPiProviders() piProviderListView {
+	profiles := s.Store.PiProviderStack()
+	providers := make([]piprofile.Provider, 0, len(profiles))
+	warnings := []string{}
+	for i := range profiles {
+		p := &profiles[i]
+		rec, ok := s.secretForPiProvider(p.SecretID)
+		if !ok || !strings.HasPrefix(rec.Placeholder, model.PlaceholderPrefix) {
+			warnings = append(warnings, fmt.Sprintf("%s: selected secret is not on this gateway yet", piProviderLabel(p)))
+			continue
+		}
+		providers = append(providers, piprofile.Provider{
+			ID:      p.ID,
+			Name:    p.Name,
+			APIKey:  rec.Placeholder,
+			BaseURL: p.BaseURL,
+			API:     p.APIType,
+			Models:  p.Models,
+		})
 	}
-	rec, ok := s.secretForPiProvider(p.SecretID)
-	if !ok || !strings.HasPrefix(rec.Placeholder, model.PlaceholderPrefix) {
-		view.Applied = false
-		view.Warning = "selected secret is not on this gateway yet"
-		return view
-	}
-	if err := piprofile.WriteProviderModels(s.piProfileDir(), rec.Placeholder, p.BaseURL); err != nil {
+	if err := piprofile.WriteProviderStack(s.piProfileDir(), providers); err != nil {
+		view := s.piProviderListView()
 		view.Applied = false
 		view.Warning = err.Error()
 		return view
 	}
-	if err := s.writePiDefaultModel(p.DefaultModel); err != nil {
+	active := s.Store.PiProvider()
+	providerID, modelID := "", ""
+	if active != nil {
+		// Point the default only at a provider that actually made it into
+		// models.json; otherwise pi would chase a missing provider.
+		for _, written := range providers {
+			if written.ID == active.ID {
+				providerID = active.ID
+				modelID = effectivePiModel(active)
+				break
+			}
+		}
+	}
+	if err := piprofile.WriteProviderDefault(s.piProfileDir(), providerID, modelID); err != nil {
+		view := s.piProviderListView()
 		view.Applied = false
 		view.Warning = err.Error()
 		return view
 	}
-	view.Placeholder = rec.Placeholder
-	view.Applied = true
-	view.Warning = ""
+	// The shared profile is bind-mounted read-only into every worker. Pi
+	// sessions re-read it; nothing else to push here.
+	view := s.piProviderListView()
+	if len(warnings) > 0 {
+		view.Warning = joinWarning(view.Warning, strings.Join(warnings, "; "))
+	}
 	return view
 }
 
-// writePiDefaultModel sets the dashboard-owned defaultModel in the shared
-// profile's settings.json, preserving every other key. An empty model clears
-// it so workers fall back to first-available selection.
-func (s *Server) writePiDefaultModel(modelID string) error {
-	return piprofile.WriteDefaultModel(s.piProfileDir(), modelID)
+// publishPiProvider pushes the active pointer to any enrolled coordinator and
+// returns a non-fatal warning when the publish did not go through.
+func (s *Server) publishPiProvider() string {
+	if err := technocore.PublishPiProvider(s.Store, s.DataDir); err != nil {
+		return "saved locally; technocore publish: " + err.Error()
+	}
+	return ""
+}
+
+// effectivePiModel is the model new sessions should start on. An empty
+// explicit default falls back to the last known catalog's first id, which is
+// empty when the catalog has never been fetched.
+func effectivePiModel(p *store.PiProviderRec) string {
+	if p == nil {
+		return ""
+	}
+	if m := strings.TrimSpace(p.DefaultModel); m != "" {
+		return m
+	}
+	for _, m := range p.Models {
+		if m = strings.TrimSpace(m); m != "" {
+			return m
+		}
+	}
+	return ""
+}
+
+func piProviderLabel(p *store.PiProviderRec) string {
+	if strings.TrimSpace(p.Name) != "" {
+		return strings.TrimSpace(p.Name)
+	}
+	return p.ID
+}
+
+func joinWarning(a, b string) string {
+	a, b = strings.TrimSpace(a), strings.TrimSpace(b)
+	switch {
+	case a == "":
+		return b
+	case b == "":
+		return a
+	default:
+		return a + "; " + b
+	}
+}
+
+// providerIDFrom derives a stable, namespaced profile id. A supplied id wins.
+func providerIDFrom(name, baseURL, id string) string {
+	if id = strings.TrimSpace(id); id != "" {
+		return id
+	}
+	base := strings.TrimSpace(name)
+	if base == "" {
+		if u, err := url.Parse(baseURL); err == nil {
+			base = u.Hostname()
+		}
+	}
+	slug := slugify(base)
+	if slug == "" {
+		slug = "provider"
+	}
+	return piprofile.ProviderName + "-" + slug
+}
+
+func slugify(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	var b strings.Builder
+	lastDash := false
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+			lastDash = false
+		default:
+			if !lastDash && b.Len() > 0 {
+				b.WriteByte('-')
+				lastDash = true
+			}
+		}
+	}
+	return strings.Trim(b.String(), "-")
+}
+
+// uniquePiProviderID appends a numeric suffix until the id is free.
+func (s *Server) uniquePiProviderID(base string) string {
+	if s.Store.PiProviderByID(base) == nil {
+		return base
+	}
+	for i := 2; i < 1000; i++ {
+		candidate := fmt.Sprintf("%s-%d", base, i)
+		if s.Store.PiProviderByID(candidate) == nil {
+			return candidate
+		}
+	}
+	return fmt.Sprintf("%s-%d", base, time.Now().UnixNano())
 }
 
 // piProviderCatalog is the model list behind the dashboard's autocomplete.
-// The real key is used only for this host-only request and never returned.
+// The real key is used only for this host-only request and never returned. A
+// failed fetch is a 200 with the last known list and catalog:"failed", never
+// a hard error: the picker stays usable and the profile still saves.
 type piProviderCatalog struct {
-	Models []string `json:"models"`
+	Models    []string `json:"models"`
+	Catalog   string   `json:"catalog"`
+	Error     string   `json:"error,omitempty"`
+	CheckedAt string   `json:"checkedAt,omitempty"`
 }
 
 func (s *Server) handleGetPiProviderModels(w http.ResponseWriter, r *http.Request) {
-	p := s.Store.PiProvider()
+	id := strings.TrimSpace(r.URL.Query().Get("id"))
+	var p *store.PiProviderRec
+	if id != "" {
+		p = s.Store.PiProviderByID(id)
+	} else {
+		p = s.Store.PiProvider()
+	}
 	if p == nil || p.SecretID == "" || p.BaseURL == "" {
 		writeJSON(w, 409, map[string]string{"error": "configure the provider before listing models"})
 		return
@@ -227,10 +513,19 @@ func (s *Server) handleGetPiProviderModels(w http.ResponseWriter, r *http.Reques
 	}
 	ids, err := s.providerModelIDs(r.Context(), rec.Value, p.BaseURL)
 	if err != nil {
-		writeJSON(w, 502, map[string]string{"error": "provider model catalog is unavailable"})
+		// Record the failure but keep serving the cached list so the user can
+		// still pick a model.
+		_ = s.Store.SetPiProviderCatalog(p.ID, nil, "provider model catalog is unavailable")
+		out := piProviderCatalog{Models: append([]string(nil), p.Models...), Catalog: "failed", Error: "provider model catalog is unavailable"}
+		if !p.CatalogCheckedAt.IsZero() {
+			out.CheckedAt = p.CatalogCheckedAt.UTC().Format(time.RFC3339)
+		}
+		writeJSON(w, 200, out)
 		return
 	}
-	writeJSON(w, 200, piProviderCatalog{Models: ids})
+	_ = s.Store.SetPiProviderCatalog(p.ID, ids, "")
+	out := piProviderCatalog{Models: ids, Catalog: "ok", CheckedAt: time.Now().UTC().Format(time.RFC3339)}
+	writeJSON(w, 200, out)
 }
 
 // providerModelIDs calls <baseURL>/models with the real key. Only model IDs

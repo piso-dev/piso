@@ -57,7 +57,60 @@ func TestKeepDashboardModels(t *testing.T) {
 	if KeepDashboardModels([]byte(`{"providers":{"routstr":{"apiKey":"piso_x"}}}`)) {
 		t.Fatal("url-less profile must not block host sync")
 	}
+	if !KeepDashboardModels([]byte(`{"providers":{"piso-openrouter":{"apiKey":"piso_x","baseUrl":"https://x"}}}`)) {
+		t.Fatal("stack provider must keep the dashboard profile")
+	}
 	if KeepDashboardModels(nil) {
 		t.Fatal("empty dest must not block host sync")
+	}
+}
+
+func TestWriteProviderStackReconcilesManagedKeys(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "models.json")
+	orig := []byte(`{"providers":{"other":{"apiKey":"keep"},"piso":{"apiKey":"piso_old","baseUrl":"https://old"},"piso-stale":{"apiKey":"piso_stale","baseUrl":"https://stale"}}}`)
+	if err := os.WriteFile(path, orig, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err := WriteProviderStack(dir, []Provider{
+		{ID: "piso-one", Name: "One", APIKey: "piso_one", BaseURL: "https://one/v1", Models: []string{"m1", "m2"}},
+		{ID: "piso-two", APIKey: "piso_two", BaseURL: "https://two/v1"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := os.ReadFile(path)
+	got := string(raw)
+	// The legacy "piso" key is managed, so it is removed when not in the stack.
+	for _, gone := range []string{`"piso":`, `piso-stale`, "piso_old", "piso_stale"} {
+		if strings.Contains(got, gone) {
+			t.Fatalf("stale managed key %q survived: %s", gone, got)
+		}
+	}
+	for _, want := range []string{`"other"`, `"apiKey": "keep"`, `"piso-one"`, `"piso-two"`, `"id": "m1"`, `"id": "m2"`} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("missing %s in %s", want, got)
+		}
+	}
+	// An empty stack clears every managed key but keeps others.
+	if err := WriteProviderStack(dir, nil); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ = os.ReadFile(path)
+	got = string(raw)
+	if strings.Contains(got, "piso-one") || !strings.Contains(got, `"other"`) {
+		t.Fatalf("empty stack reconcile: %s", got)
+	}
+}
+
+func TestWithProviderDefault(t *testing.T) {
+	out := WithProviderDefault([]byte(`{"prompts":["/x"]}`), "piso-two", "m1")
+	got := string(out)
+	if !strings.Contains(got, `"defaultProvider": "piso-two"`) || !strings.Contains(got, `"defaultModel": "m1"`) || !strings.Contains(got, "prompts") {
+		t.Fatalf("apply: %s", got)
+	}
+	cleared := string(WithProviderDefault(out, "piso-two", ""))
+	if strings.Contains(cleared, "defaultProvider") || strings.Contains(cleared, "defaultModel") {
+		t.Fatalf("clear: %s", cleared)
 	}
 }

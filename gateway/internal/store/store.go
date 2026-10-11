@@ -21,7 +21,7 @@ import (
 
 // CurrentStateVersion is written into state.json. Bump when adding a
 // migration in applyMigrations.
-const CurrentStateVersion = 8
+const CurrentStateVersion = 9
 
 // State is the persisted configuration.
 type State struct {
@@ -37,21 +37,40 @@ type State struct {
 	McpServers      []McpServerRec      `json:"mcpServers,omitempty"`
 	GithubApps      []GithubAppRec      `json:"githubApps,omitempty"`
 	GithubUser      GithubUserRec       `json:"githubUser,omitempty"`
-	// PiProvider is the shared pi models.json pointer (secret resource id +
-	// plain base URL). Empty means the dashboard has not set one.
+	// PiProvider is the legacy single shared pi models.json pointer. It is
+	// migrated into PiProviders on load and never written again.
 	PiProvider *PiProviderRec `json:"piProvider,omitempty"`
+	// PiProviders is the dashboard-managed stack of model provider profiles.
+	// Every entry is written into the shared pi models.json; ActivePiProviderID
+	// names the one new sessions start on.
+	PiProviders        []PiProviderRec `json:"piProviders,omitempty"`
+	ActivePiProviderID string          `json:"activePiProviderId,omitempty"`
 }
 
 // PiProviderRec is not a secret. SecretID is a technocore resource UUID so
 // every gateway can resolve its own piso_ placeholder. BaseURL is written
-// into models.json as-is.
+// into models.json as-is. ID is the stable profile id and also the provider
+// key inside models.json.
 type PiProviderRec struct {
+	ID       string `json:"id,omitempty"`
+	Name     string `json:"name,omitempty"`
 	SecretID string `json:"secretId,omitempty"`
 	BaseURL  string `json:"baseUrl,omitempty"`
 	// DefaultModel is the model id new pi sessions start on. Empty means
-	// pi picks the first model the provider's catalog returns.
-	DefaultModel string    `json:"defaultModel,omitempty"`
-	UpdatedAt    time.Time `json:"updatedAt,omitempty"`
+	// pi picks the first model the provider's catalog returns. It is never a
+	// precondition for saving or activating the provider: a failed catalog
+	// fetch leaves the profile intact and the model unresolved.
+	DefaultModel string `json:"defaultModel,omitempty"`
+	// APIType is the pi models.json api adapter. Empty means
+	// openai-completions.
+	APIType string `json:"api,omitempty"`
+	// Models is the last successfully fetched catalog. It is advisory: it
+	// feeds the dashboard autocomplete and lazy default resolution, never the
+	// save path. CatalogError holds the last failure for display.
+	Models           []string  `json:"models,omitempty"`
+	CatalogCheckedAt time.Time `json:"catalogCheckedAt,omitempty"`
+	CatalogError     string    `json:"catalogError,omitempty"`
+	UpdatedAt        time.Time `json:"updatedAt,omitempty"`
 }
 
 // JSON-friendly records (this package owns persistence shape).
@@ -560,28 +579,190 @@ func (s *Store) SetEnvKey(id, envKey string) error {
 	return fmt.Errorf("secret %s not found", id)
 }
 
-// PiProvider returns the shared pi provider pointer, or nil if unset.
+// defaultPiProviderID is the provider key used for the pre-stack single
+// provider and for coordinator-synced pointers that carry no id. It matches
+// piprofile.ProviderName.
+const defaultPiProviderID = "piso"
+
+// PiProviderStack returns a copy of every provider profile in insertion order.
+func (s *Store) PiProviderStack() []PiProviderRec {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return copyPiProviderRecs(s.state.PiProviders)
+}
+
+// ActivePiProviderID returns the profile id new sessions start on, or "".
+func (s *Store) ActivePiProviderID() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if rec := s.activePiProviderLocked(); rec != nil {
+		return rec.ID
+	}
+	return ""
+}
+
+// PiProvider returns the active provider profile, or nil if none is set.
 func (s *Store) PiProvider() *PiProviderRec {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	if s.state.PiProvider == nil {
+	return copyPiProviderRec(s.activePiProviderLocked())
+}
+
+// PiProviderByID returns one profile by id, or nil.
+func (s *Store) PiProviderByID(id string) *PiProviderRec {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for i := range s.state.PiProviders {
+		if s.state.PiProviders[i].ID == id {
+			return copyPiProviderRec(&s.state.PiProviders[i])
+		}
+	}
+	if s.state.PiProvider != nil && s.state.PiProvider.ID == id {
+		return copyPiProviderRec(s.state.PiProvider)
+	}
+	return nil
+}
+
+func (s *Store) activePiProviderLocked() *PiProviderRec {
+	for i := range s.state.PiProviders {
+		if s.state.PiProviders[i].ID == s.state.ActivePiProviderID {
+			return &s.state.PiProviders[i]
+		}
+	}
+	return s.state.PiProvider
+}
+
+func copyPiProviderRec(rec *PiProviderRec) *PiProviderRec {
+	if rec == nil {
 		return nil
 	}
-	cp := *s.state.PiProvider
+	cp := *rec
+	cp.Models = append([]string(nil), rec.Models...)
 	return &cp
 }
 
-// SetPiProvider stores the shared pointer. A nil or empty record clears it.
+func copyPiProviderRecs(recs []PiProviderRec) []PiProviderRec {
+	out := make([]PiProviderRec, 0, len(recs))
+	for i := range recs {
+		out = append(out, *copyPiProviderRec(&recs[i]))
+	}
+	return out
+}
+
+// SetPiProvider upserts a profile as the active selection. A nil or empty
+// record clears the active selection but keeps the saved profiles. It is kept
+// for the coordinator sync path, which predates the stack and sends a single
+// pointer without an id.
 func (s *Store) SetPiProvider(rec *PiProviderRec) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if rec == nil || (rec.SecretID == "" && rec.BaseURL == "") {
 		s.state.PiProvider = nil
-	} else {
-		cp := *rec
-		s.state.PiProvider = &cp
+		s.state.ActivePiProviderID = ""
+		return s.save()
+	}
+	cp := *rec
+	s.state.PiProvider = nil
+	return s.upsertPiProviderLocked(&cp, true)
+}
+
+// UpsertPiProvider adds or replaces a profile by id, leaving the active
+// selection alone unless nothing is active yet.
+func (s *Store) UpsertPiProvider(rec PiProviderRec) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.upsertPiProviderLocked(&rec, false)
+}
+
+// UpsertPiProviderActive adds or replaces a profile and makes it active.
+func (s *Store) UpsertPiProviderActive(rec PiProviderRec) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.upsertPiProviderLocked(&rec, true)
+}
+
+func (s *Store) upsertPiProviderLocked(rec *PiProviderRec, activate bool) error {
+	cp := *rec
+	cp.Models = append([]string(nil), rec.Models...)
+	if cp.ID == "" {
+		cp.ID = defaultPiProviderID
+	}
+	if cp.UpdatedAt.IsZero() {
+		cp.UpdatedAt = time.Now().UTC()
+	}
+	replaced := false
+	for i := range s.state.PiProviders {
+		if s.state.PiProviders[i].ID == cp.ID {
+			s.state.PiProviders[i] = cp
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		s.state.PiProviders = append(s.state.PiProviders, cp)
+	}
+	if activate || s.state.ActivePiProviderID == "" {
+		s.state.ActivePiProviderID = cp.ID
 	}
 	return s.save()
+}
+
+// DeletePiProvider removes a profile. Deleting the active one falls back to
+// the first remaining profile so the stack never points at a missing id.
+func (s *Store) DeletePiProvider(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	id = strings.TrimSpace(id)
+	kept := s.state.PiProviders[:0]
+	for _, rec := range s.state.PiProviders {
+		if rec.ID != id {
+			kept = append(kept, rec)
+		}
+	}
+	s.state.PiProviders = kept
+	if s.state.PiProvider != nil && s.state.PiProvider.ID == id {
+		s.state.PiProvider = nil
+	}
+	if s.state.ActivePiProviderID == id {
+		s.state.ActivePiProviderID = ""
+		if len(s.state.PiProviders) > 0 {
+			s.state.ActivePiProviderID = s.state.PiProviders[0].ID
+		}
+	}
+	return s.save()
+}
+
+// ActivatePiProvider selects one profile as the startup default.
+func (s *Store) ActivatePiProvider(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	id = strings.TrimSpace(id)
+	for i := range s.state.PiProviders {
+		if s.state.PiProviders[i].ID == id {
+			s.state.ActivePiProviderID = id
+			return s.save()
+		}
+	}
+	return fmt.Errorf("pi provider %s not found", id)
+}
+
+// SetPiProviderCatalog records the last catalog fetch for one profile. A
+// fingerprint of the base URL is not stored; callers pass the profile id.
+func (s *Store) SetPiProviderCatalog(id string, models []string, fetchErr string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.state.PiProviders {
+		if s.state.PiProviders[i].ID != id {
+			continue
+		}
+		s.state.PiProviders[i].CatalogCheckedAt = time.Now().UTC()
+		s.state.PiProviders[i].CatalogError = fetchErr
+		if fetchErr == "" {
+			s.state.PiProviders[i].Models = append([]string(nil), models...)
+		}
+		return s.save()
+	}
+	return nil
 }
 
 // ReplaceSecret overwrites a secret by ID and rewrites worker env files.

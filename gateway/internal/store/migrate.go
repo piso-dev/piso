@@ -87,5 +87,36 @@ func applyMigrations(st *State) bool {
 		st.Version = 8
 		changed = true
 	}
+	// v8→v9: provider stack. The single pi provider pointer becomes the first
+	// profile of the stack, with ID "piso". Later settings land on the stack
+	// fields; the legacy pointer is cleared after conversion.
+	if st.Version < 9 {
+		if st.PiProvider != nil {
+			rec := *st.PiProvider
+			if rec.ID == "" {
+				rec.ID = "piso"
+			}
+			if rec.Name == "" {
+				rec.Name = "Piso"
+			}
+			replaced := false
+			for i := range st.PiProviders {
+				if st.PiProviders[i].ID == rec.ID {
+					st.PiProviders[i] = rec
+					replaced = true
+					break
+				}
+			}
+			if !replaced {
+				st.PiProviders = append(st.PiProviders, rec)
+			}
+			if st.ActivePiProviderID == "" {
+				st.ActivePiProviderID = rec.ID
+			}
+			st.PiProvider = nil
+		}
+		st.Version = 9
+		changed = true
+	}
 	return changed
 }

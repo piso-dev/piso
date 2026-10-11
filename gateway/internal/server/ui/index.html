@@ -1519,6 +1519,47 @@
         clip-path: inset(50%);
         white-space: nowrap;
       }
+      .provider-stack { display: flex; flex-direction: column; gap: 12px; margin-top: 20px; }
+      .provider-card {
+        display: flex;
+        align-items: stretch;
+        gap: 12px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: var(--inset);
+        overflow: hidden;
+      }
+      .provider-card.active {
+        border-color: var(--blue);
+        background: color-mix(in srgb, var(--blue) 8%, transparent);
+      }
+      .provider-select {
+        flex: 1 1 auto;
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        align-items: flex-start;
+        text-align: left;
+        padding: 16px;
+        background: none;
+        border: 0;
+        color: inherit;
+        cursor: pointer;
+      }
+      .provider-select:hover { background: color-mix(in srgb, var(--blue) 6%, transparent); }
+      .provider-select:focus-visible { outline: 1px solid var(--blue); outline-offset: -2px; }
+      .provider-name { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+      .provider-meta, .provider-status { color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+      .provider-status.warn { color: var(--amber); }
+      .provider-card-actions {
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        gap: 8px;
+        padding: 12px;
+        border-left: 1px solid var(--line);
+      }
       @media (max-width: 720px) {
         .github-mapping { padding: 16px; }
         .github-gate { padding: 24px 16px; }
@@ -2987,9 +3028,9 @@
           "Service login status. These tokens are never held by workers.",
         ],
         provider: [
-          "Model provider",
-          "Select the existing secret used as the API key. The gateway shares a pointer, not a duplicate key.",
-          "Configure provider",
+          "Model providers",
+          "Add providers and pick the one new pi sessions start on. The gateway shares secret placeholders, never real keys.",
+          "Add provider",
           "provider-edit",
         ],
         workers: [
@@ -3110,31 +3151,25 @@
         if (sub === "aiBoost") return renderBoostReview(intro);
         if (sub === "provider") {
           const p = data.provider || {};
-          if ($("#resultCount")) $("#resultCount").textContent = "";
+          const providers = Array.isArray(p.providers) ? p.providers : [];
+          if ($("#resultCount"))
+            $("#resultCount").textContent = providers.length
+              ? providers.length + (providers.length === 1 ? " provider" : " providers")
+              : "";
+          const warnings = [p.warning, ...providers.map((x) => x.warning)].filter(Boolean);
+          const warningHtml = warnings
+            .map((w) => `<p class="notice" role="status">${esc(w)}</p>`)
+            .join("");
+          const cards = providers.map(providerCard).join("");
           return replaceContent(
             intro +
-              facts([
-                ["API URL", p.baseUrl || "Not configured"],
-                [
-                  "Secret",
-                  list("secrets").find(
-                    (s) => s.id === p.secretId || s.technocoreId === p.secretId,
-                  )?.name ||
-                    p.secretId ||
-                    "Not selected",
-                ],
-                ["Placeholder", p.placeholder || "Not resolved"],
-                [
-                  "Default model",
-                  p.defaultModel || "First model the provider lists",
-                ],
-                [
-                  "Applied",
-                  p.applied ? "Written to the worker profile" : "Not applied",
-                ],
-                ["Warning", p.warning],
-              ]) +
-              '<p class="muted" style="margin-top:18px">Publish the secret before sharing the configuration. Restart running pi sessions to pick up changes.</p>',
+              warningHtml +
+              (cards
+                ? `<div class="provider-stack">${cards}</div><p class="muted" style="margin-top:18px">Saving writes the shared pi profile. Running sessions switch at their next idle boundary; a reload is never required.</p>`
+                : empty(
+                    "No providers yet",
+                    "Add a provider to choose the model pi sessions start on.",
+                  )),
           );
         }
         if (sub === "connections") rows = data.connections?.connections || [];
@@ -3758,48 +3793,74 @@
         }
       }
 
-      function providerForm() {
-        const p = data.provider || {};
+      function providerCard(p) {
+        const model = p.defaultModel || p.effectiveModel || "first available";
+        const catalog =
+          p.catalog === "failed"
+            ? "model list unavailable"
+            : p.catalog === "ok"
+              ? (p.models || []).length + " models"
+              : "model list pending";
+        const active =
+          p.active && p.applied
+            ? badge("Active", "good")
+            : p.active
+              ? badge("Active — pending apply", "warn")
+              : "";
+        return `<article class="provider-card${p.active ? " active" : ""}">
+          <button class="provider-select" type="button" data-action="provider-activate" data-id="${esc(p.id)}" aria-pressed="${p.active ? "true" : "false"}">
+            <span class="provider-name">${esc(p.name || p.id)} ${active}</span>
+            <span class="provider-meta">${esc(p.baseUrl || "No URL")} · default: ${esc(model)}</span>
+            <span class="provider-status${p.catalog === "failed" ? " warn" : ""}">${esc(catalog)}${p.checkedAt ? " · checked " + esc(age(p.checkedAt)) : ""}</span>
+          </button>
+          <div class="provider-card-actions">
+            ${button("Edit", "provider-edit", p.id, "small")}
+            ${button("Delete", "provider-delete", p.id, "small danger")}
+          </div>
+        </article>`;
+      }
+      function providerForm(id) {
+        const p = (data.provider?.providers || []).find((x) => x.id === id) || {};
         formDialog(
-          "Model provider",
-          "This selection syncs as a secret reference and API URL. New containers start on the default model. Restart running pi sessions after saving.",
-          field(
-            "secretId",
-            "API key secret",
-            list("secrets").find(
-              (s) => s.id === p.secretId || s.technocoreId === p.secretId,
-            )?.technocoreId || p.secretId,
-            {
-              required: true,
-              full: true,
-              choices: [
-                ["", "Select a secret"],
-                ...list("secrets").map((s) => [s.technocoreId || s.id, s.name]),
-              ],
-            },
-          ) +
+          id ? "Edit provider" : "Add provider",
+          "A provider is a secret, an API base URL, and an optional default model. Saving writes it to the shared pi profile; activating it makes it the startup default for new sessions. The model list is optional: a provider saves even when its catalog cannot be reached.",
+          field("name", "Name", p.name, { required: true, full: true }) +
+            field(
+              "secretId",
+              "API key secret",
+              list("secrets").find(
+                (s) => s.id === p.secretId || s.technocoreId === p.secretId,
+              )?.technocoreId || p.secretId,
+              {
+                required: true,
+                full: true,
+                choices: [
+                  ["", "Select a secret"],
+                  ...list("secrets").map((s) => [s.technocoreId || s.id, s.name]),
+                ],
+              },
+            ) +
             field("baseUrl", "API base URL", p.baseUrl, {
               type: "url",
               required: true,
               full: true,
             }) +
-            `<label class="field full" for="f-defaultModel"><span>Default model</span><input name="defaultModel" id="f-defaultModel" type="text" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="modelList" autocomplete="off" placeholder="First model the provider lists" value="${esc(p.defaultModel || "")}"><ul id="modelList" class="suggestions" role="listbox" hidden></ul><small id="modelHint">Leave empty to use the first model the provider lists.</small></label>`,
-          "Save provider",
+            `<label class="field full" for="f-defaultModel"><span>Default model (optional)</span><input name="defaultModel" id="f-defaultModel" type="text" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="modelList" autocomplete="off" placeholder="First model the provider lists" value="${esc(p.defaultModel || "")}"><ul id="modelList" class="suggestions" role="listbox" hidden></ul><small id="modelHint">Leave empty to use the first model the provider lists.</small></label>`,
+          id ? "Save provider" : "Add provider",
           async (f) => {
-            const out = await api("pi-provider", "PUT", f);
+            const out = await api("pi-provider", "PUT", { ...f, id: id || "" });
             await changed(["provider"]);
-            return out.applied
-              ? "Provider saved. Restart running pi sessions."
-              : out.warning || "Saved. Waiting for the secret on this gateway.";
+            if (out.warning) return out.warning;
+            return id ? "Provider saved." : "Provider added.";
           },
         );
-        wireModelAutocomplete(p);
+        wireModelAutocomplete(p, id);
       }
 
       // Suggest model ids from the provider's live catalog. The gateway holds
       // the key, so this only returns names. A catalog that cannot be loaded
       // leaves the field as plain text.
-      function wireModelAutocomplete(provider) {
+      function wireModelAutocomplete(provider, id) {
         const input = $("#f-defaultModel");
         const listbox = $("#modelList");
         const hint = $("#modelHint");
@@ -3866,12 +3927,16 @@
             : "Save the provider first to load its model list.";
           return;
         }
-        api("pi-provider/models")
+        const query = id ? "?id=" + encodeURIComponent(id) : "";
+        api("pi-provider/models" + query)
           .then((catalog) => {
             models = Array.isArray(catalog?.models) ? catalog.models : [];
-            hint.textContent = models.length
-              ? models.length + " models available. Leave empty for the first one."
-              : "The provider returned no models.";
+            hint.textContent =
+              catalog?.catalog === "failed"
+                ? "Model list unavailable. Type a model id, or leave empty; it resolves when the provider responds."
+                : models.length
+                  ? models.length + " models available. Leave empty for the first one."
+                  : "The provider returned no models.";
           })
           .catch(() => {
             hint.textContent =
@@ -4307,7 +4372,28 @@
         if (name === "github-user-config") return githubUserForm();
         if (name === "github-user-authorize") return githubUserStart();
         if (name === "github-user-signout") return githubUserStop();
-        if (name === "provider-edit") return providerForm();
+        if (name === "provider-edit") return providerForm(id);
+        if (name === "provider-activate") {
+          if (!id) return;
+          await api("pi-provider/activate", "POST", { id });
+          await changed(["provider"]);
+          return;
+        }
+        if (name === "provider-delete") {
+          const p =
+            (data.provider?.providers || []).find((x) => x.id === id) || {};
+          return confirmAction(
+            "Delete provider?",
+            "Remove " +
+              (p.name || id) +
+              " from the shared pi profile. Running sessions keep their current model until they reload.",
+            "Delete",
+            async () => {
+              await api("pi-provider/delete", "POST", { id });
+              await changed(["provider"]);
+            },
+          );
+        }
         if (
           ["rule-add", "pattern-add", "exception-add", "domain-add"].includes(
             name,

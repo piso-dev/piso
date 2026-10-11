@@ -125,35 +125,142 @@ func TestPutPiProviderDefaultModel(t *testing.T) {
 	defer fake.Close()
 	s, profile := providerTestServer(t, fake)
 
-	put := func(model string) *httptest.ResponseRecorder {
-		body := fmt.Sprintf(`{"secretId":"11111111-1111-1111-1111-111111111111","baseUrl":%q,"defaultModel":%q}`, fake.URL+"/v1", model)
+	put := func(id, model string) *httptest.ResponseRecorder {
+		body := fmt.Sprintf(`{"id":%q,"secretId":"11111111-1111-1111-1111-111111111111","baseUrl":%q,"defaultModel":%q}`, id, fake.URL+"/v1", model)
 		rec := httptest.NewRecorder()
 		s.handlePutPiProvider(rec, httptest.NewRequest(http.MethodPut, "/api/v1/pi-provider", strings.NewReader(body)))
 		return rec
 	}
-	if rec := put("not-a-model"); rec.Code != 400 {
-		t.Fatalf("unknown model: status %d body %s", rec.Code, rec.Body.String())
+	// A typo is saved, not rejected: the catalog is advisory and the save
+	// path never depends on it.
+	first := put("", "not-a-model")
+	if first.Code != 200 {
+		t.Fatalf("unknown model: status %d body %s", first.Code, first.Body.String())
 	}
-	if rec := put("model-b"); rec.Code != 200 {
+	var view piProviderView
+	if err := json.Unmarshal(first.Body.Bytes(), &view); err != nil {
+		t.Fatal(err)
+	}
+	if view.ID == "" {
+		t.Fatalf("missing generated id: %s", first.Body.String())
+	}
+	if rec := put(view.ID, "model-b"); rec.Code != 200 {
 		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
 	}
 	raw, err := os.ReadFile(filepath.Join(profile, "settings.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(raw), `"defaultProvider": "piso"`) || !strings.Contains(string(raw), `"defaultModel": "model-b"`) {
+	if !strings.Contains(string(raw), `"defaultProvider": "`+view.ID+`"`) || !strings.Contains(string(raw), `"defaultModel": "model-b"`) {
 		t.Fatalf("settings: %s", raw)
 	}
 	// Other settings survive, and clearing the default removes both keys.
 	if err := os.WriteFile(filepath.Join(profile, "settings.json"), []byte(`{"prompts":["/opt/piso/INFORMANT.md"],"defaultModel":"model-b"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if rec := put(""); rec.Code != 200 {
+	if rec := put(view.ID, ""); rec.Code != 200 {
 		t.Fatalf("clear: status %d", rec.Code)
 	}
 	raw, _ = os.ReadFile(filepath.Join(profile, "settings.json"))
 	if strings.Contains(string(raw), "defaultModel") || strings.Contains(string(raw), "defaultProvider") || !strings.Contains(string(raw), "INFORMANT.md") {
 		t.Fatalf("settings after clear: %s", raw)
+	}
+}
+
+// TestPutPiProviderSavesWhenCatalogFails is the regression guard: a provider
+// whose model list cannot be fetched must still save and activate with a
+// default model.
+func TestPutPiProviderSavesWhenCatalogFails(t *testing.T) {
+	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "upstream detail that must not leak", http.StatusUnauthorized)
+	}))
+	defer fake.Close()
+	s, profile := providerTestServer(t, fake)
+	body := fmt.Sprintf(`{"name":"Broken","secretId":"11111111-1111-1111-1111-111111111111","baseUrl":%q,"defaultModel":"chosen-model"}`, fake.URL+"/v1")
+	rec := httptest.NewRecorder()
+	s.handlePutPiProvider(rec, httptest.NewRequest(http.MethodPut, "/api/v1/pi-provider", strings.NewReader(body)))
+	if rec.Code != 200 {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "upstream detail") {
+		t.Fatalf("leaked upstream detail: %s", rec.Body.String())
+	}
+	var view piProviderView
+	if err := json.Unmarshal(rec.Body.Bytes(), &view); err != nil {
+		t.Fatal(err)
+	}
+	if !view.Applied {
+		t.Fatalf("not applied: %+v", view)
+	}
+	raw, err := os.ReadFile(filepath.Join(profile, "settings.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"defaultModel": "chosen-model"`) {
+		t.Fatalf("settings: %s", raw)
+	}
+}
+
+func TestPiProviderStackSaveActivateDelete(t *testing.T) {
+	dir := t.TempDir()
+	profile := filepath.Join(dir, "pi-profile")
+	t.Setenv("PISO_PI_PROFILE", profile)
+	st, err := store.New(filepath.Join(dir, "state.json"), filepath.Join(dir, "log.jsonl"), filepath.Join(dir, "patterns.json"), filepath.Join(dir, "activities.db"), 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"One", "Two"} {
+		if err := st.AddSecret(store.SecretRec{ID: name, Name: name, Placeholder: "piso_" + name, Value: "real-" + name}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s := &Server{Store: st, DataDir: dir}
+	add := func(name, secretID string) piProviderView {
+		body := fmt.Sprintf(`{"name":%q,"secretId":%q,"baseUrl":"https://%s.example/v1"}`, name, secretID, name)
+		rec := httptest.NewRecorder()
+		s.handlePutPiProvider(rec, httptest.NewRequest(http.MethodPut, "/api/v1/pi-provider", strings.NewReader(body)))
+		if rec.Code != 200 {
+			t.Fatalf("add %s: %d %s", name, rec.Code, rec.Body.String())
+		}
+		var view piProviderView
+		if err := json.Unmarshal(rec.Body.Bytes(), &view); err != nil {
+			t.Fatal(err)
+		}
+		return view
+	}
+	one := add("One", "One")
+	two := add("Two", "Two")
+	if one.ID == two.ID {
+		t.Fatalf("ids collided: %s", one.ID)
+	}
+	if st.ActivePiProviderID() != one.ID {
+		t.Fatalf("first add must be active, got %s", st.ActivePiProviderID())
+	}
+	// Activate the second.
+	rec := httptest.NewRecorder()
+	s.handleActivatePiProvider(rec, httptest.NewRequest(http.MethodPost, "/api/v1/pi-provider/activate", strings.NewReader(fmt.Sprintf(`{"id":%q}`, two.ID))))
+	if rec.Code != 200 {
+		t.Fatalf("activate: %d %s", rec.Code, rec.Body.String())
+	}
+	if st.ActivePiProviderID() != two.ID {
+		t.Fatalf("active: %s", st.ActivePiProviderID())
+	}
+	raw, _ := os.ReadFile(filepath.Join(profile, "models.json"))
+	if !strings.Contains(string(raw), `"`+one.ID+`"`) || !strings.Contains(string(raw), `"`+two.ID+`"`) {
+		t.Fatalf("both providers must be written: %s", raw)
+	}
+	// Delete the active provider; the remaining one takes over.
+	rec = httptest.NewRecorder()
+	s.handleDeletePiProvider(rec, httptest.NewRequest(http.MethodPost, "/api/v1/pi-provider/delete", strings.NewReader(fmt.Sprintf(`{"id":%q}`, two.ID))))
+	if rec.Code != 200 {
+		t.Fatalf("delete: %d %s", rec.Code, rec.Body.String())
+	}
+	if st.ActivePiProviderID() != one.ID {
+		t.Fatalf("fallback active: %s", st.ActivePiProviderID())
+	}
+	raw, _ = os.ReadFile(filepath.Join(profile, "models.json"))
+	if strings.Contains(string(raw), `"`+two.ID+`"`) {
+		t.Fatalf("deleted provider still present: %s", raw)
 	}
 }
 
@@ -166,11 +273,21 @@ func TestPiProviderModelsUnavailable(t *testing.T) {
 	s.Store.SetPiProvider(&store.PiProviderRec{SecretID: "11111111-1111-1111-1111-111111111111", BaseURL: fake.URL + "/v1"})
 	rec := httptest.NewRecorder()
 	s.handleGetPiProviderModels(rec, httptest.NewRequest(http.MethodGet, "/api/v1/pi-provider/models", nil))
-	if rec.Code != 502 {
+	if rec.Code != 200 {
 		t.Fatalf("status %d", rec.Code)
 	}
 	if strings.Contains(rec.Body.String(), "secret upstream detail") {
 		t.Fatalf("response forwarded upstream detail: %s", rec.Body.String())
+	}
+	var catalog piProviderCatalog
+	if err := json.Unmarshal(rec.Body.Bytes(), &catalog); err != nil {
+		t.Fatal(err)
+	}
+	if catalog.Catalog != "failed" || catalog.Error == "" {
+		t.Fatalf("catalog: %+v", catalog)
+	}
+	if got := s.Store.PiProvider(); got == nil || got.CatalogError == "" {
+		t.Fatalf("failure not cached: %+v", got)
 	}
 }
 

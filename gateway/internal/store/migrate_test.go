@@ -76,3 +76,27 @@ func TestApplyMigrationsV3ToV4DefaultsOriginToExpose(t *testing.T) {
 		t.Fatalf("legacy route origin %q", st.Routes[0].Origin)
 	}
 }
+
+func TestApplyMigrationsV8ToV9PromotesProviderToStack(t *testing.T) {
+	legacy := &PiProviderRec{SecretID: "sec-1", BaseURL: "https://api.example/v1", DefaultModel: "m1"}
+	st := State{Version: 8, PiProvider: legacy}
+	if !applyMigrations(&st) {
+		t.Fatal("expected rewrite")
+	}
+	if st.Version != CurrentStateVersion {
+		t.Fatalf("version %d", st.Version)
+	}
+	if st.PiProvider != nil {
+		t.Fatalf("legacy pointer not cleared: %+v", st.PiProvider)
+	}
+	if len(st.PiProviders) != 1 || st.ActivePiProviderID != "piso" {
+		t.Fatalf("stack: %+v active %q", st.PiProviders, st.ActivePiProviderID)
+	}
+	if st.PiProviders[0].DefaultModel != "m1" || st.PiProviders[0].BaseURL != "https://api.example/v1" {
+		t.Fatalf("promoted record: %+v", st.PiProviders[0])
+	}
+	// The migration is idempotent.
+	if applyMigrations(&st) {
+		t.Fatal("already-current should be a no-op")
+	}
+}

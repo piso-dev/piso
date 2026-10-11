@@ -13,18 +13,20 @@ const script = html.match(/<script>([\s\S]*)<\/script>/)[1];
 const at = (marker) => script.indexOf(marker);
 const helpers = [
   [at("const esc ="), at("const endpoints")],
+  [at("function age("), at("function badge(")],
   [at("function field("), at("function formDialog(")],
   [at("function button("), at("function facts(")],
   [at("function notify("), at("function mountDialog(")],
   [at("function mountDialog("), at("function closeDialog(")],
   [at("function closeDialog("), at("function field(")],
   [at("function formDialog("), at("function confirmAction(")],
+  [at("function providerCard("), at("function providerForm(")],
   [at("function providerForm("), at("function addPolicy(")],
 ]
   .map(([from, to]) => script.slice(from, to))
   .join("\n");
 
-function formHarness(t, { catalog, fail = false, baseUrl = "https://api.example.test/v1" } = {}) {
+function formHarness(t, { catalog, fail = false, baseUrl = "https://api.example.test/v1", provider = {} } = {}) {
   const dom = new JSDOM(`<dialog id="dialog"><h2 id="dialogTitle"></h2><button id="closeDialog"></button><div id="dialogContent"></div></dialog><div id="toast" hidden></div>`, {
     url: "http://piso.local/",
   });
@@ -45,7 +47,12 @@ function formHarness(t, { catalog, fail = false, baseUrl = "https://api.example.
     dialogBusy: false,
     dialogReturn: null,
     data: {
-      provider: { secretId: "sec-1", baseUrl, defaultModel: "model-b" },
+      provider: {
+        providers: [
+          { id: "p-1", name: "AIML", secretId: "sec-1", baseUrl, defaultModel: "model-b", ...provider },
+        ],
+        activeId: "p-1",
+      },
       secrets: [{ id: "sec-1", name: "AIML", technocoreId: "sec-1" }],
     },
     list: (key) => sandbox.data[key] || [],
@@ -56,13 +63,13 @@ function formHarness(t, { catalog, fail = false, baseUrl = "https://api.example.
   };
   sandbox.$ = (s) => window.document.querySelector(s);
   vm.createContext(sandbox);
-  vm.runInContext(`"use strict";\n${helpers}\nproviderForm();`, sandbox);
+  vm.runInContext(`"use strict";\n${helpers}\nproviderForm("p-1");`, sandbox);
   return { window, calls, dialog: window.document.querySelector("dialog") };
 }
 
 test("default model field suggests catalog matches and keeps the saved value", async (t) => {
   const { window, calls, dialog } = formHarness(t, {
-    catalog: { models: ["model-a", "model-b", "other-model"] },
+    catalog: { models: ["model-a", "model-b", "other-model"], catalog: "ok" },
   });
   const input = dialog.querySelector("#f-defaultModel");
   const list = dialog.querySelector("#modelList");
@@ -70,7 +77,7 @@ test("default model field suggests catalog matches and keeps the saved value", a
   assert.equal(input.getAttribute("role"), "combobox");
   assert.equal(input.getAttribute("aria-controls"), "modelList");
   await new Promise((r) => setTimeout(r, 20));
-  assert.deepEqual(calls, ["pi-provider/models"]);
+  assert.deepEqual(calls, ["pi-provider/models?id=p-1"]);
   assert.match(dialog.querySelector("#modelHint").textContent, /3 models available/);
 
   input.value = "model";
@@ -101,6 +108,17 @@ test("a catalog that cannot be loaded leaves the field as plain text", async (t)
   assert.equal(dialog.querySelector("#f-defaultModel").value, "model-b");
 });
 
+test("a failed catalog is reported without blocking the saved value", async (t) => {
+  const { dialog } = formHarness(t, {
+    catalog: { models: ["cached-model"], catalog: "failed", error: "unavailable" },
+  });
+  await new Promise((r) => setTimeout(r, 20));
+  const hint = dialog.querySelector("#modelHint").textContent;
+  assert.match(hint, /unavailable/);
+  assert.match(hint, /Type a model id/);
+  assert.equal(dialog.querySelector("#f-defaultModel").value, "model-b");
+});
+
 test("an unsaved provider change does not offer the previous catalog", async (t) => {
   const { calls, dialog } = formHarness(t, {
     catalog: { models: ["model-a"] },
@@ -113,7 +131,7 @@ test("an unsaved provider change does not offer the previous catalog", async (t)
 });
 
 test("model ids from the catalog are escaped in the suggestion list", async (t) => {
-  const { window, dialog } = formHarness(t, { catalog: { models: ['<img src=x onerror=alert(1)>'] } });
+  const { window, dialog } = formHarness(t, { catalog: { models: ['<img src=x onerror=alert(1)>'], catalog: "ok" } });
   await new Promise((r) => setTimeout(r, 20));
   const input = dialog.querySelector("#f-defaultModel");
   input.value = "<";

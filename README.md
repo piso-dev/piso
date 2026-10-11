@@ -62,14 +62,27 @@ piso expose 5173 --name preview   # reverse-proxy a worker dev server
 
 `make install` (including `sudo make install` over an existing copy) replaces `$(PREFIX)/bin/piso` and `$(PREFIX)/share/piso`, then runs `piso setup --rebuild` as the login user. That imports any leftover repo `.piso` files that `~/.piso` does not already have, rebuilds the gateway image, recreates the container, and migrates `state.json` on startup. Live secrets in `~/.piso` are kept. Gateway secrets/CA/logs live in `~/.piso` (`PISO_DATA` overrides). Override the share tree with `PISO_HOME`. Secrets filled in the dashboard **Blocked secrets** modal are stored in the gateway; the next `piso attach` exports placeholders only (`ANTHROPIC_API_KEY=piso_…`) from `~/.piso/placeholders.env`. Existing workers need one `piso up` to mount that file.
 
-### Piso model discovery
+### Piso model providers
 
-When `models.json` contains a `piso` provider, piso's bundled pi extension
-refreshes its catalog from `<baseUrl>/models` whenever pi's `/model` selector
-opens. Requests carry only the provider's `piso_…` placeholder; the gateway
-substitutes the real credential. Successful catalogs are cached in the worker's
-persistent `~/.pi/agent/models-store.json`. The static `models.json` entries
-remain the fallback when no cache exists or Piso is unavailable.
+The dashboard manages a stack of model providers. Each profile pairs a
+secret, an API base URL, and an optional default model; one is active and is
+written as `defaultProvider`/`defaultModel` in the shared `settings.json`.
+Every profile is written into the shared `models.json` under the `piso`
+namespace, so workers can switch with `/model` as well. Requests carry only
+the profile's `piso_…` placeholder; the gateway substitutes the real
+credential.
+
+Piso's bundled pi extension registers every profile and refreshes its catalog
+from `<baseUrl>/models` when pi's `/model` selector opens. Successful catalogs
+are cached in the worker's persistent `~/.pi/agent/models-store.json` and are
+also written back to `models.json` as an offline fallback. A catalog fetch is
+advisory: saving or activating a provider never waits on it, and a provider
+with no reachable catalog still saves and activates. When no default model is
+known, the extension resolves the first registered model at session start.
+
+The shared profile is a read-only mount. A running session re-reads it every
+15 seconds and applies provider or default changes at its next idle boundary,
+so selecting a provider does not require a restart or `/reload`.
 
 ### Windows
 

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import pisoModels, { mergeCatalog, normalizeModel } from "./piso-models";
+import pisoModels, { loadProfiles, mergeCatalog, normalizeModel, wireLiveApply } from "./piso-models";
 
 const originalAgentDir = process.env.PI_AGENT_DIR;
 const originalFetch = globalThis.fetch;
@@ -267,5 +267,143 @@ describe("Piso model discovery", () => {
 			provider: "piso",
 			baseUrl: "https://piso.example/v1",
 		});
+	});
+});
+
+describe("Piso provider stack", () => {
+	async function stackDir(providers: unknown, settings: unknown): Promise<string> {
+		const dir = await mkdtemp(join(process.cwd(), ".piso-model-test-"));
+		tempDirs.push(dir);
+		process.env.PI_AGENT_DIR = dir;
+		process.env.PI_OFFLINE = "1";
+		await writeFile(join(dir, "models.json"), JSON.stringify({ providers }));
+		await writeFile(join(dir, "settings.json"), JSON.stringify(settings));
+		return dir;
+	}
+
+	test("registers every dashboard-managed provider and ignores others", async () => {
+		await stackDir(
+			{
+				piso: { apiKey: "piso_one", baseUrl: "https://one/v1", models: [{ id: "m1" }] },
+				"piso-two": { apiKey: "piso_two", baseUrl: "https://two/v1", models: [{ id: "m2" }] },
+				other: { apiKey: "keep", baseUrl: "https://other/v1", models: [{ id: "keep" }] },
+			},
+			{ defaultProvider: "piso", defaultModel: "m1" },
+		);
+		const registrations: Array<{ name: string; config: any }> = [];
+		await pisoModels({
+			registerProvider(name: string, config: unknown) {
+				registrations.push({ name, config });
+			},
+		} as any);
+		expect(registrations.map((r) => r.name)).toEqual(["piso", "piso-two"]);
+		expect(registrations[1].config.models[0].id).toBe("m2");
+	});
+
+	test("loadProfiles promotes the legacy routstr namespace", async () => {
+		await stackDir(
+			{ routstr: { apiKey: "piso_legacy", baseUrl: "https://legacy/v1" } },
+			{},
+		);
+		expect((await loadProfiles()).map((p) => p.id)).toEqual(["piso"]);
+	});
+
+	test("live apply re-registers changed providers and switches the active model", async () => {
+		const dir = await stackDir(
+			{ piso: { apiKey: "piso_one", baseUrl: "https://one/v1", models: [{ id: "m1" }] } },
+			{ defaultProvider: "piso", defaultModel: "m1" },
+		);
+		const setModels: any[] = [];
+		const unregistered: string[] = [];
+		const pi = {
+			registerProvider() {},
+			unregisterProvider(id: string) {
+				unregistered.push(id);
+			},
+			setModel(model: any) {
+				setModels.push(model);
+				return Promise.resolve(true);
+			},
+			on() {
+				return () => {};
+			},
+		};
+		const ctx = {
+			isIdle: () => true,
+			modelRegistry: {
+				find: (provider: string, id: string) => ({ id, provider }),
+				getModelsOfType: (_type: string, provider: string) =>
+					({
+						piso: [{ id: "m1", provider: "piso" }],
+						"piso-two": [{ id: "m2", provider: "piso-two" }],
+					})[provider] ?? [],
+			},
+		};
+		const apply = wireLiveApply(pi as any);
+		await apply(ctx as any, true);
+		expect(setModels.at(-1)?.provider).toBe("piso");
+		expect(setModels.at(-1)?.id).toBe("m1");
+
+		// The dashboard activates a second provider after its catalog failed:
+		// no default model was written, so the first registered model resolves.
+		await writeFile(
+			join(dir, "models.json"),
+			JSON.stringify({
+				providers: {
+					piso: { apiKey: "piso_one", baseUrl: "https://one/v1", models: [{ id: "m1" }] },
+					"piso-two": { apiKey: "piso_two", baseUrl: "https://two/v1", models: [{ id: "m2" }] },
+				},
+			}),
+		);
+		await writeFile(join(dir, "settings.json"), JSON.stringify({ defaultProvider: "piso-two", defaultModel: "" }));
+		await apply(ctx as any, false);
+		expect(setModels.at(-1)?.provider).toBe("piso-two");
+		expect(setModels.at(-1)?.id).toBe("m2");
+
+		// Deleting a provider unregisters it.
+		await writeFile(
+			join(dir, "models.json"),
+			JSON.stringify({ providers: { piso: { apiKey: "piso_one", baseUrl: "https://one/v1", models: [{ id: "m1" }] } } }),
+		);
+		await writeFile(join(dir, "settings.json"), JSON.stringify({ defaultProvider: "piso", defaultModel: "m1" }));
+		await apply(ctx as any, false);
+		expect(unregistered).toContain("piso-two");
+	});
+
+	test("live apply defers while busy and retries when the catalog resolves", async () => {
+		await stackDir(
+			{ piso: { apiKey: "piso_one", baseUrl: "https://one/v1", models: [{ id: "m1" }] } },
+			{ defaultProvider: "piso", defaultModel: "m1" },
+		);
+		const setModels: any[] = [];
+		const pi = {
+			registerProvider() {},
+			unregisterProvider() {},
+			setModel(model: any) {
+				setModels.push(model);
+				return Promise.resolve(true);
+			},
+			on() {
+				return () => {};
+			},
+		};
+		let idle = false;
+		let catalog: any[] = [];
+		const ctx = {
+			isIdle: () => idle,
+			modelRegistry: { find: () => undefined, getModelsOfType: () => catalog },
+		};
+		const apply = wireLiveApply(pi as any);
+		// Busy: the switch waits for an idle boundary.
+		await apply(ctx as any, true);
+		expect(setModels).toHaveLength(0);
+		// Idle, but the provider catalog is not ready yet: keep the change.
+		idle = true;
+		await apply(ctx as any, false);
+		expect(setModels).toHaveLength(0);
+		// The catalog resolves; the next poll applies without a new change.
+		catalog = [{ id: "m1", provider: "piso" }];
+		await apply(ctx as any, false);
+		expect(setModels.at(-1)?.id).toBe("m1");
 	});
 });

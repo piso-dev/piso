@@ -2,24 +2,48 @@ import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Api, Model, ModelsStoreEntry, RefreshModelsContext } from "@earendil-works/pi-ai";
-import type { ExtensionAPI, ProviderModelConfig } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, ProviderConfig, ProviderModelConfig } from "@earendil-works/pi-coding-agent";
 
 const PROVIDER_ID = "piso";
+const LEGACY_PROVIDER_ID = "routstr";
+const MANAGED_PREFIX = "piso-";
 const DEFAULT_CONTEXT_WINDOW = 128_000;
 const DEFAULT_MAX_TOKENS = 16_384;
 const STARTUP_DISCOVERY_TIMEOUT_MS = 10_000;
+// The shared pi profile is a read-only mount the gateway rewrites. Poll it so
+// an already-running session picks up a provider or default change without a
+// restart. 15s keeps a switch feeling live without busy-looping.
+const PROFILE_POLL_MS = 15_000;
 
 type JsonObject = Record<string, unknown>;
 
-type PisoConfig = {
+// ProviderProfile is one dashboard-managed endpoint from models.json.
+export type ProviderProfile = {
+	id: string;
+	name?: string;
 	api?: Api;
 	apiKey: string;
 	baseUrl: string;
-	models?: JsonObject[];
+	models: JsonObject[];
+};
+
+type ActiveDefault = {
+	provider: string;
+	model: string;
 };
 
 function isObject(value: unknown): value is JsonObject {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function managedProviderId(id: string): boolean {
+	return id === PROVIDER_ID || id === LEGACY_PROVIDER_ID || id.startsWith(MANAGED_PREFIX);
+}
+
+// normalizeProviderId maps the legacy namespace onto the current one so a
+// migrated profile does not register a second provider.
+function normalizeProviderId(id: string): string {
+	return id === LEGACY_PROVIDER_ID ? PROVIDER_ID : id;
 }
 
 function positiveNumber(...values: unknown[]): number | undefined {
@@ -133,13 +157,13 @@ export function mergeCatalog(
 	return models;
 }
 
-function persistedModels(models: ProviderModelConfig[], config: PisoConfig): Model<Api>[] {
-	const api = config.api ?? "openai-completions";
+function persistedModels(profile: ProviderProfile, models: ProviderModelConfig[]): Model<Api>[] {
+	const api = profile.api ?? "openai-completions";
 	return models.map((model) => ({
 		...model,
 		api,
-		provider: PROVIDER_ID,
-		baseUrl: config.baseUrl,
+		provider: profile.id,
+		baseUrl: profile.baseUrl,
 	}));
 }
 
@@ -158,15 +182,56 @@ function agentDir(): string {
 	return process.env.PI_AGENT_DIR?.trim() || join(homedir(), ".pi", "agent");
 }
 
+async function readJson(path: string): Promise<unknown> {
+	try {
+		return JSON.parse(await readFile(path, "utf8"));
+	} catch {
+		return undefined;
+	}
+}
+
+// loadProfiles reads every dashboard-managed provider from the shared
+// models.json. The file is secret-free: apiKey is always a piso_ placeholder.
+export async function loadProfiles(dir = agentDir()): Promise<ProviderProfile[]> {
+	const payload = await readJson(join(dir, "models.json"));
+	if (!isObject(payload) || !isObject(payload.providers)) return [];
+	const providers = payload.providers;
+	const byId = new Map<string, ProviderProfile>();
+	for (const [rawId, raw] of Object.entries(providers)) {
+		if (!managedProviderId(rawId) || !isObject(raw)) continue;
+		if (typeof raw.baseUrl !== "string" || !raw.baseUrl.trim()) continue;
+		if (typeof raw.apiKey !== "string" || !raw.apiKey.trim()) continue;
+		const id = normalizeProviderId(rawId);
+		byId.set(id, {
+			id,
+			name: typeof raw.name === "string" && raw.name.trim() ? raw.name.trim() : undefined,
+			api: typeof raw.api === "string" ? (raw.api as Api) : undefined,
+			apiKey: raw.apiKey,
+			baseUrl: raw.baseUrl.replace(/\/+$/, ""),
+			models: Array.isArray(raw.models) ? raw.models.filter(isObject) : [],
+		});
+	}
+	return [...byId.values()];
+}
+
+async function loadActiveDefault(dir = agentDir()): Promise<ActiveDefault> {
+	const payload = await readJson(join(dir, "settings.json"));
+	if (!isObject(payload)) return { provider: "", model: "" };
+	return {
+		provider: typeof payload.defaultProvider === "string" ? payload.defaultProvider : "",
+		model: typeof payload.defaultModel === "string" ? payload.defaultModel.trim() : "",
+	};
+}
+
 // Read Pi's catalog snapshot without modifying the shared, read-only profile.
 // Ignore catalogs from an old dashboard endpoint.
-async function loadStartupModels(config: PisoConfig): Promise<ProviderModelConfig[]> {
+async function loadStartupModels(profile: ProviderProfile): Promise<ProviderModelConfig[]> {
 	try {
 		const payload = JSON.parse(await readFile(join(agentDir(), "models-store.json"), "utf8"));
-		const models = payload?.[PROVIDER_ID]?.models;
+		const models = payload?.[profile.id]?.models;
 		if (!Array.isArray(models)) return [];
 		return models.flatMap((model) => {
-			if (!isObject(model) || model.provider !== PROVIDER_ID || model.baseUrl !== config.baseUrl) return [];
+			if (!isObject(model) || model.provider !== profile.id || model.baseUrl !== profile.baseUrl) return [];
 			const normalized = configModel(model);
 			return normalized ? [normalized] : [];
 		});
@@ -175,35 +240,17 @@ async function loadStartupModels(config: PisoConfig): Promise<ProviderModelConfi
 	}
 }
 
-async function loadConfig(): Promise<PisoConfig | undefined> {
-	let payload: unknown;
-	try {
-		payload = JSON.parse(await readFile(join(agentDir(), "models.json"), "utf8"));
-	} catch {
-		return undefined;
-	}
-	if (!isObject(payload) || !isObject(payload.providers) || !isObject(payload.providers[PROVIDER_ID])) return;
-	const provider = payload.providers[PROVIDER_ID];
-	if (typeof provider.baseUrl !== "string" || !provider.baseUrl.trim()) return;
-	if (typeof provider.apiKey !== "string" || !provider.apiKey.trim()) return;
-	return {
-		api: typeof provider.api === "string" ? (provider.api as Api) : undefined,
-		apiKey: provider.apiKey,
-		baseUrl: provider.baseUrl.replace(/\/+$/, ""),
-		models: Array.isArray(provider.models) ? provider.models.filter(isObject) : [],
-	};
-}
-
-export default async function pisoModels(pi: ExtensionAPI): Promise<void> {
-	const config = await loadConfig();
-	if (!config) return;
-
-	const fallback = (config.models ?? []).flatMap((model) => {
+// buildProviderConfig prepares one provider: cached catalog, then the
+// models.json fallback, then a bounded cold-start discovery. A failed
+// discovery leaves the provider registered with an empty catalog so the
+// session still starts and the default can resolve later.
+async function buildProviderConfig(profile: ProviderProfile): Promise<ProviderConfig> {
+	const fallback = (profile.models ?? []).flatMap((model) => {
 		const normalized = configModel(model);
 		return normalized ? [normalized] : [];
 	});
 
-	let startupModels = await loadStartupModels(config);
+	let startupModels = await loadStartupModels(profile);
 	if (startupModels.length === 0) startupModels = fallback;
 	// Interactive Pi refreshes in the background *after* initial model selection.
 	// Await discovery only on a cold start, using the dashboard's literal scoped
@@ -211,9 +258,9 @@ export default async function pisoModels(pi: ExtensionAPI): Promise<void> {
 	// refresh below continues to use Pi's credential resolution.
 	if (startupModels.length === 0 && !process.env.PI_OFFLINE) {
 		try {
-			if (!config.apiKey.startsWith("piso_")) throw new Error("unsupported bootstrap credential");
-			const response = await fetch(modelsUrl(config.baseUrl), {
-				headers: { accept: "application/json", authorization: `Bearer ${config.apiKey}` },
+			if (!profile.apiKey.startsWith("piso_")) throw new Error("unsupported bootstrap credential");
+			const response = await fetch(modelsUrl(profile.baseUrl), {
+				headers: { accept: "application/json", authorization: `Bearer ${profile.apiKey}` },
 				redirect: "error",
 				signal: AbortSignal.timeout(STARTUP_DISCOVERY_TIMEOUT_MS),
 			});
@@ -226,14 +273,14 @@ export default async function pisoModels(pi: ExtensionAPI): Promise<void> {
 		}
 	}
 
-	pi.registerProvider(PROVIDER_ID, {
-		name: "Piso",
+	const config: ProviderConfig = {
+		name: profile.name ?? "Piso",
 		models: startupModels,
-		baseUrl: config.baseUrl,
-		api: config.api ?? "openai-completions",
+		baseUrl: profile.baseUrl,
+		api: profile.api ?? "openai-completions",
 		async refreshModels(context: RefreshModelsContext): Promise<ProviderModelConfig[]> {
 			const cached = (context.stored?.models ?? [])
-				.filter((model) => model.provider === PROVIDER_ID && model.baseUrl === config.baseUrl)
+				.filter((model) => model.provider === profile.id && model.baseUrl === profile.baseUrl)
 				.map(storedModel);
 			const current = cached.length > 0 ? cached : startupModels;
 			if (!context.allowNetwork) return current;
@@ -245,7 +292,7 @@ export default async function pisoModels(pi: ExtensionAPI): Promise<void> {
 			});
 			if (context.stored?.etag) headers.set("if-none-match", context.stored.etag);
 
-			const response = await fetch(modelsUrl(config.baseUrl), {
+			const response = await fetch(modelsUrl(profile.baseUrl), {
 				headers,
 				redirect: "error",
 				signal: context.signal,
@@ -259,7 +306,7 @@ export default async function pisoModels(pi: ExtensionAPI): Promise<void> {
 			const refreshed = mergeCatalog(catalogEntries(await response.json()), fallback, cached);
 			if (refreshed.length === 0) throw new Error("Piso model discovery returned no models");
 			const entry: ModelsStoreEntry = {
-				models: persistedModels(refreshed, config),
+				models: persistedModels(profile, refreshed),
 				checkedAt: Date.now(),
 				etag: response.headers.get("etag") ?? undefined,
 			};
@@ -267,5 +314,141 @@ export default async function pisoModels(pi: ExtensionAPI): Promise<void> {
 			startupModels = refreshed;
 			return refreshed;
 		},
+	};
+	return config;
+}
+
+export default async function pisoModels(pi: ExtensionAPI): Promise<void> {
+	const profiles = await loadProfiles();
+	if (profiles.length === 0) return;
+	for (const profile of profiles) {
+		pi.registerProvider(profile.id, await buildProviderConfig(profile));
+	}
+	if (typeof pi.on === "function") wireLiveApply(pi, profiles);
+}
+
+// A snapshot signature covers everything the shared profile can change about
+// model selection. Comparing it avoids re-applying on every poll tick.
+function snapshotKey(profiles: ProviderProfile[], active: ActiveDefault): string {
+	return JSON.stringify([
+		profiles.map((p) => [p.id, p.baseUrl, p.api ?? "", p.models.map((m) => m.id)]),
+		active.provider,
+		active.model,
+	]);
+}
+
+function providerConfigKey(profile: ProviderProfile): string {
+	return JSON.stringify([profile.baseUrl, profile.api ?? "", profile.models.map((m) => m.id)]);
+}
+
+type LiveState = {
+	signature: string;
+	configs: Map<string, string>;
+	applied: string;
+	timer?: ReturnType<typeof setInterval>;
+	pending: boolean;
+};
+
+// wireLiveApply re-reads the shared profile and applies changes to a running
+// session at an idle boundary. No restart or manual /reload is needed. It
+// returns the apply function so tests can drive it without waiting on timers.
+// initialProfiles are the providers already registered during extension load,
+// so the first pass does not redo their discovery.
+export function wireLiveApply(
+	pi: ExtensionAPI,
+	initialProfiles: ProviderProfile[] = [],
+): (ctx: ExtensionContext, force: boolean) => Promise<void> {
+	const state: LiveState = { signature: "", configs: new Map(), applied: "", pending: false };
+	for (const profile of initialProfiles) state.configs.set(profile.id, providerConfigKey(profile));
+
+	const apply = async (ctx: ExtensionContext, force: boolean): Promise<void> => {
+		const profiles = await loadProfiles();
+		const active = await loadActiveDefault();
+		const signature = snapshotKey(profiles, active);
+
+		// Reconcile providers even while busy: registration is safe and does
+		// not disturb the in-flight request.
+		const seen = new Set<string>();
+		for (const profile of profiles) {
+			seen.add(profile.id);
+			const key = providerConfigKey(profile);
+			if (state.configs.get(profile.id) === key) continue;
+			try {
+				pi.registerProvider(profile.id, await buildProviderConfig(profile));
+				state.configs.set(profile.id, key);
+			} catch {
+				// A registration failure must not take down the session.
+			}
+		}
+		for (const id of [...state.configs.keys()]) {
+			if (seen.has(id)) continue;
+			try {
+				pi.unregisterProvider(id);
+			} catch {
+				// Ignore: the provider may already be gone.
+			}
+			state.configs.delete(id);
+		}
+
+		if (signature === state.signature && !force) return;
+
+		if (!ctx.isIdle()) {
+			// Defer: agent_end re-applies. Do not record the signature yet, or
+			// the change would be dropped.
+			state.pending = true;
+			return;
+		}
+		if (!active.provider) {
+			state.signature = signature;
+			return;
+		}
+		const modelId = active.model || firstModelId(ctx, active.provider);
+		const model = modelId
+			? ctx.modelRegistry.find(active.provider, modelId) ?? ctx.modelRegistry.getModelsOfType("chat", active.provider)[0]
+			: undefined;
+		if (!model) {
+			// The catalog is not ready. Retry on the next poll instead of
+			// recording the change as applied.
+			return;
+		}
+		const applied = `${active.provider}\u0000${model.id}`;
+		if (applied !== state.applied) {
+			const ok = await pi.setModel(model);
+			if (!ok) return;
+			state.applied = applied;
+		}
+		state.signature = signature;
+	};
+
+	const schedule = (ctx: ExtensionContext): void => {
+		if (state.timer) clearInterval(state.timer);
+		state.timer = setInterval(() => {
+			void apply(ctx, false);
+		}, PROFILE_POLL_MS);
+	};
+
+	pi.on("session_start", async (_event, ctx) => {
+		await apply(ctx, true);
+		schedule(ctx);
 	});
+	pi.on("agent_end", async (_event, ctx) => {
+		if (state.pending) {
+			state.pending = false;
+			await apply(ctx, true);
+		}
+	});
+	pi.on("session_shutdown", () => {
+		if (state.timer) clearInterval(state.timer);
+		state.timer = undefined;
+	});
+	return apply;
+}
+
+// firstModelId picks a deterministic default from the registered catalog when
+// the dashboard could not name one (its catalog fetch failed).
+function firstModelId(ctx: ExtensionContext, provider: string): string | undefined {
+	for (const model of ctx.modelRegistry.getModelsOfType("chat", provider)) {
+		if (model.id) return model.id;
+	}
+	return undefined;
 }
