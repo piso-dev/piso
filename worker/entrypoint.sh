@@ -171,19 +171,27 @@ if [ -x "$NP/build/Release/pty.node" ]; then
   fi
 fi
 
-# Fold the Tier B informant convention AND the sandbox boundary contract into
-# EVERY pi run via the global context file: pi reads ~/.pi/agent/AGENTS.md as
-# a context file on every start (fresh, -r, --session, -p), so the model
-# knows when to emit activity and where the sandbox ends — without any
-# launcher passing flags or conversation-history stuffing.
-# The image's /opt/piso/INFORMANT.md + /opt/piso/CAPABILITIES.md are the
-# sources of truth; the volume persists AGENTS.md, so re-sync whenever the
-# content changes. The monitor gets CAPABILITIES only: its pi is the PM
-# (MONITOR.md governs), and INFORMANT milestones would only pollute its feed.
+# Fold the opening-moves work loop, the Tier B informant convention, AND the
+# sandbox boundary contract into EVERY pi run via the global context file: pi
+# reads ~/.pi/agent/AGENTS.md as a context file on every start (fresh, -r,
+# --session, -p), so the model knows the reflex at task start, when to emit
+# activity, and where the sandbox ends — without any launcher passing flags or
+# conversation-history stuffing.
+# The image's /opt/piso/WORKLOOP.md + /opt/piso/INFORMANT.md +
+# /opt/piso/CAPABILITIES.md are the sources of truth; the volume persists
+# AGENTS.md, so re-sync whenever the content changes. WORKLOOP leads the file:
+# a decision procedure is most likely to fire when it is read first, before the
+# tool catalog. The monitor gets CAPABILITIES only: its pi is the PM
+# (MONITOR.md governs), and neither discovery moves nor INFORMANT milestones
+# belong on its feed.
 # settings.json "prompts" is NOT the contract — it only provides the
 # interactive /INFORMANT cheat-sheet.
 ctx=/tmp/piso-AGENTS.md
 : >"$ctx"
+if [ "${PISO_ROLE:-}" != "monitor" ] && [ -f /opt/piso/WORKLOOP.md ]; then
+  cat /opt/piso/WORKLOOP.md >>"$ctx"
+  printf '\n' >>"$ctx"
+fi
 if [ "${PISO_ROLE:-}" != "monitor" ] && [ -f /opt/piso/INFORMANT.md ]; then
   cat /opt/piso/INFORMANT.md >>"$ctx"
   printf '\n' >>"$ctx"

@@ -13,7 +13,7 @@ import (
 func (h *Handler) registerGithub() {
 	h.Register(Tool{
 		Name:        "github_repositories",
-		Description: "List sorted, unique HTTPS repository URLs across all installed GitHub Apps available to this worker. Fetches every repository page; complete=false and errors identify installations that could not be listed. No credentials are returned.",
+		Description: "List sorted, unique HTTPS repository URLs across all installed GitHub Apps available to this worker. Call this before planning a task that may touch an existing repo, so you build on what is reachable instead of recreating it. Clone what the task needs over HTTPS; do not clone the whole list. Fetches every repository page; complete=false and errors identify installations that could not be listed. No credentials are returned.",
 		InputSchema: map[string]any{"type": "object", "properties": map[string]any{}, "additionalProperties": false},
 		Call:        h.toolGithubRepositories,
 	})

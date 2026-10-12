@@ -188,6 +188,7 @@ COPY --from=relay /out/piso-mcp /usr/local/bin/piso-mcp
 COPY checkin-watch.sh /usr/local/bin/piso-checkin-watch
 COPY egress-forward.py /usr/local/bin/piso-egress-forward
 COPY gateway-post.sh /usr/local/lib/piso-gateway-post.sh
+COPY WORKLOOP.md /opt/piso/WORKLOOP.md
 COPY INFORMANT.md /opt/piso/INFORMANT.md
 COPY CAPABILITIES.md /opt/piso/CAPABILITIES.md
 COPY MONITOR.md /opt/piso/MONITOR.md
