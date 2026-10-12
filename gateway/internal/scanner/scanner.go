@@ -1,5 +1,5 @@
-// Package scanner inspects decoded HTTP requests (headers, query, body) for
-// piso_ placeholders, exact-known real credentials, and credential-looking
+// Package scanner inspects decoded HTTP requests (headers, path, query, body)
+// for piso_ placeholders, exact-known real credentials, and credential-looking
 // patterns. It is the front end of the block/substitute decision.
 package scanner
 
@@ -19,7 +19,13 @@ import (
 
 // PlaceholderRegex matches piso_ tokens. Placeholders are the ONLY credential
 // form the worker is allowed to emit.
-var PlaceholderRegex = regexp.MustCompile(`\bpiso_[A-Za-z0-9_.-]{6,}\b`)
+//
+// Deliberately no leading \b: providers like Telegram embed the credential
+// mid-segment in the URL path (https://api.telegram.org/bot<token>/getMe),
+// where the character before piso_ is a word character and a word boundary
+// would never fire. The trailing \b still anchors the token at the end of a
+// word run, and every issued placeholder ends in a word character (…_<hex>).
+var PlaceholderRegex = regexp.MustCompile(`piso_[A-Za-z0-9_.-]{6,}\b`)
 
 // Options configures a scan.
 type Options struct {
@@ -72,6 +78,16 @@ func ScanRequest(req *http.Request, opts Options) Result {
 			if payload, ok := BasicAuthPayload(v); ok {
 				scanTextInto(&res, payload, opts, loc, name)
 			}
+		}
+	}
+
+	// URL path. Telegram carries the bot token in a path segment
+	// (/bot<token>/getMe); a real credential leaked into a path must also
+	// still scan as a credential, so run the full detector set here too.
+	if req.URL != nil {
+		scanTextInto(&res, req.URL.Path, opts, "path", "")
+		if rp := req.URL.RawPath; rp != "" && rp != req.URL.Path {
+			scanTextInto(&res, rp, opts, "path", "")
 		}
 	}
 

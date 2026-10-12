@@ -1806,6 +1806,40 @@
           )
           .join("")}</dl>`;
       }
+      // findingsSummary renders one line per distinct finding. Transcript-only
+      // hits (a placeholder or pattern-looking string inside messages[]) are
+      // hidden, matching the gateway: they are never substituted or blocked, so
+      // they are conversation, not findings. Remaining repeats collapse to one
+      // line with a ×N suffix; the server already dedupes new records, and this
+      // also folds older records logged before that. The key intentionally omits
+      // the field so the same token in two fields folds together; the first
+      // field is kept for context.
+      function isChatFinding(f) {
+        return (
+          (f.location === "json-body" || f.location === "body") &&
+          (f.field || "").startsWith("messages[")
+        );
+      }
+      function findingsSummary(findings) {
+        const seen = new Map();
+        for (const f of findings || []) {
+          if ((f.kind === "placeholder" || f.kind === "pattern") && isChatFinding(f))
+            continue;
+          const key = [f.kind, f.patternId, f.secretId, f.location, f.token].join(
+            "\u0000",
+          );
+          const cur = seen.get(key);
+          if (cur) cur.count += f.count || 1;
+          else seen.set(key, { ...f, count: f.count || 1 });
+        }
+        return [...seen.values()].map((f) => {
+          const parts = [f.kind, f.patternId, f.location, f.field, f.token].filter(
+            Boolean,
+          );
+          if (f.count > 1) parts.push("×" + f.count);
+          return parts.join(" / ");
+        });
+      }
       function empty(title, description) {
         return `<div class="empty"><h2>${esc(title)}</h2><p>${esc(description)}</p></div>`;
       }
@@ -2993,11 +3027,7 @@
                           ["Reasons", r.reasons],
                           [
                             "Findings",
-                            (r.findings || []).map((f) =>
-                              [f.kind, f.patternId, f.location]
-                                .filter(Boolean)
-                                .join(" / "),
-                            ),
+                            findingsSummary(r.findings),
                           ],
                           ["Request ID", r.id],
                         ],

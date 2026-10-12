@@ -41,6 +41,69 @@ func TestApplySubstitutionRewritesBasicAuth(t *testing.T) {
 	}
 }
 
+func TestApplySubstitutionRewritesURLPath(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.New(dir+"/state.json", dir+"/log.jsonl", dir+"/patterns.json", dir+"/activities.db", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const ph = "piso_telegram_5ef1739b3cf1"
+	const real = "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"
+	if err := st.AddSecret(store.SecretRec{
+		ID: "s1", Name: "telegram", Placeholder: ph, Value: real,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	req, err := http.NewRequest("GET", "https://api.telegram.org/bot"+ph+"/getMe", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	applySubstitution(req, nil, model.Decision{Substituted: []string{ph}}, st, scanner.Result{}, nil)
+	want := "/bot" + real + "/getMe"
+	if req.URL.Path != want {
+		t.Fatalf("path: want %q got %q", want, req.URL.Path)
+	}
+	// The real Telegram token contains ':' — it must stay literal on the wire.
+	if got := req.URL.EscapedPath(); got != want {
+		t.Fatalf("escaped path: want %q got %q", want, got)
+	}
+	if got := req.URL.RequestURI(); got != want {
+		t.Fatalf("request uri: want %q got %q", want, got)
+	}
+	if strings.Contains(req.URL.String(), ph) {
+		t.Fatalf("placeholder left in URL: %q", req.URL.String())
+	}
+}
+
+func TestApplySubstitutionRewritesURLQuery(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.New(dir+"/state.json", dir+"/log.jsonl", dir+"/patterns.json", dir+"/activities.db", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const ph = "piso_telegram_5ef1739b3cf1"
+	const real = "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"
+	if err := st.AddSecret(store.SecretRec{
+		ID: "s1", Name: "telegram", Placeholder: ph, Value: real,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	req, err := http.NewRequest("GET", "https://api.telegram.org/getMe?token="+ph+"&x=1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	applySubstitution(req, nil, model.Decision{Substituted: []string{ph}}, st, scanner.Result{}, nil)
+	if strings.Contains(req.URL.RawQuery, ph) {
+		t.Fatalf("placeholder left in query: %q", req.URL.RawQuery)
+	}
+	if got := req.URL.Query().Get("token"); got != real {
+		t.Fatalf("query token: want %q got %q", real, got)
+	}
+	if got := req.URL.Query().Get("x"); got != "1" {
+		t.Fatalf("unrelated query param lost/reordered: %q", req.URL.RawQuery)
+	}
+}
+
 func TestSubstituteJSONSkippingChatLeavesMessages(t *testing.T) {
 	const ph = "piso_gh_abcdef"
 	const real = "github_pat_THIS_MUST_NOT_ENTER_MESSAGES"

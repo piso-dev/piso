@@ -46,6 +46,9 @@ curl -s -X POST "$API/rules" -H 'Content-Type: application/json' \
   -d '{"placeholder":"piso_httpbin_abc123","host":"httpbin.org","secretId":"x"}' >/dev/null
 AUTH=$(curl -s $P -H "Authorization: Bearer piso_httpbin_abc123" https://httpbin.org/headers | python3 -c "import json,sys; print(json.load(sys.stdin)['headers']['Authorization'])")
 check "placeholder substituted on egress" "[ \"$AUTH\" = 'Bearer sk-REAL-KEY-123456789' ]"
+# Telegram-style: the token is a path segment (/bot<token>/getMe), glued to
+# "bot" with no word boundary before piso_.
+check "placeholder substituted in URL path" "curl -s $P https://httpbin.org/anything/botpiso_httpbin_abc123/getMe | grep -q 'botsk-REAL-KEY-123456789/getMe'"
 
 echo "== 2. real-secret block =="
 curl -s $P -D /tmp/h -H "Authorization: Bearer sk-REAL-KEY-123456789 extra" -o /dev/null https://httpbin.org/anything || true

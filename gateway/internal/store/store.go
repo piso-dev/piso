@@ -272,6 +272,11 @@ type Finding struct {
 	Token     string `json:"token,omitempty"`
 	Location  string `json:"location"`
 	Field     string `json:"field,omitempty"`
+	// Count is how many times this finding occurred in the request. The same
+	// placeholder can appear dozens of times (e.g. re-sent in an LLM
+	// messages[] transcript); findings are collapsed per (kind, pattern,
+	// secret, token, location) at record time and counted here. 0 means 1.
+	Count int `json:"count,omitempty"`
 }
 
 type Capture struct {

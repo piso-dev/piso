@@ -147,6 +147,44 @@ func TestBasicAuthPlaceholderWithoutRuleBlocks(t *testing.T) {
 	}
 }
 
+func TestURLPathPlaceholderSubstitutes(t *testing.T) {
+	// Telegram: the token is a path segment, scanner reports it with
+	// Location "path". It is a credential site, so it needs a host rule and
+	// must substitute like a header/body token.
+	ph := "piso_telegram_5ef1739b3cf1"
+	sec := model.Secret{ID: "s1", Placeholder: ph, Value: "123456:ABC-DEF", AllowedHosts: []string{"api.telegram.org"}}
+	in := Input{
+		Method: "GET", Host: "api.telegram.org", Path: "/bot" + ph + "/getMe",
+		Scan: scanner.Result{
+			Placeholders: []model.Finding{{Kind: model.FindingPlaceholder, Token: ph, Location: "path"}},
+		},
+		SecretByPlaceholder: map[string]model.Secret{ph: sec},
+		Rules:               []model.Rule{{ID: "r1", SecretID: "s1", Host: "api.telegram.org", Placeholder: ph}},
+	}
+	d := Decide(in)
+	if d.Action != model.ActionSubstitute {
+		t.Fatalf("path+placeholder must substitute, got %q %+v", d.Action, d.Reasons)
+	}
+	if len(d.Substituted) != 1 || d.Substituted[0] != ph {
+		t.Fatalf("wrong substituted list: %+v", d.Substituted)
+	}
+}
+
+func TestURLPathPlaceholderWithoutRuleBlocks(t *testing.T) {
+	ph := "piso_telegram_5ef1739b3cf1"
+	in := Input{
+		Method: "GET", Host: "api.telegram.org", Path: "/bot" + ph + "/getMe",
+		Scan: scanner.Result{
+			Placeholders: []model.Finding{{Kind: model.FindingPlaceholder, Token: ph, Location: "path"}},
+		},
+		SecretByPlaceholder: map[string]model.Secret{ph: {ID: "s1", Placeholder: ph, Value: "123456:ABC-DEF"}},
+	}
+	d := Decide(in)
+	if d.Action != model.ActionBlock || d.Reasons[0] != model.ReasonNoSecretRule {
+		t.Fatalf("want block+no-secret-rule, got %q %+v", d.Action, d.Reasons)
+	}
+}
+
 func TestBearerPlaceholderSubstitutes(t *testing.T) {
 	// Imported provider keys become long piso_ tokens. generic-bearer matches
 	// "Bearer " + 24 chars, so the scanner can flag both a pattern and a

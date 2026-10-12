@@ -105,7 +105,7 @@ type Finding struct {
 	PatternID string      `json:"patternId,omitempty"` // for pattern findings
 	SecretID  string      `json:"secretId,omitempty"`  // for real-secret findings
 	Token     string      `json:"token,omitempty"`     // the matched string (placeholder or truncated secret)
-	Location  string      `json:"location"`            // "authorization" | "x-api-key" | "cookie" | "query" | "json-body" | "body" | "header:<name>"
+	Location  string      `json:"location"`            // "authorization" | "x-api-key" | "cookie" | "path" | "query" | "json-body" | "body" | "header:<name>"
 	Field     string      `json:"field,omitempty"`     // JSON field / query param name
 }
 

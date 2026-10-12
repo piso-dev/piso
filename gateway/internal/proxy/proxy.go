@@ -701,6 +701,31 @@ func applySubstitution(req *http.Request, origBody []byte, dec model.Decision, s
 			vals[i] = nv
 		}
 	}
+	// URL path and query. Telegram-style APIs put the credential in the path
+	// (https://api.telegram.org/bot<token>/getMe). Rewrite the decoded path and
+	// clear RawPath so EscapedPath re-encodes it — the real token may contain
+	// ':' which stays literal in a path segment. Query is rewritten on RawQuery
+	// with the real value escaped, so the original query order/encoding is kept
+	// (re-encoding via url.Values would reorder and can break signed queries).
+	if req.URL != nil {
+		if p := req.URL.Path; p != "" {
+			np := p
+			for tok, real := range sub {
+				np = strings.ReplaceAll(np, tok, real)
+			}
+			if np != p {
+				req.URL.Path = np
+				req.URL.RawPath = ""
+			}
+		}
+		if q := req.URL.RawQuery; q != "" {
+			nq := q
+			for tok, real := range sub {
+				nq = strings.ReplaceAll(nq, tok, url.QueryEscape(real))
+			}
+			req.URL.RawQuery = nq
+		}
+	}
 	if len(origBody) == 0 {
 		return nil
 	}
@@ -857,14 +882,30 @@ func recExceptions(st *store.Store) []model.Exception {
 	return out
 }
 
+// toStoreFindings normalizes scanner findings for the request log.
+// Transcript-only noise is dropped (see findingIsChatNoise); what remains is
+// collapsed per (kind, pattern, secret, token, location). The first occurrence
+// keeps its field and a Count of 1; later ones bump Count. The dedupe key uses
+// the FULL token, so two distinct secrets sharing a name prefix never merge.
 func toStoreFindings(scan scanner.Result) []store.Finding {
 	var out []store.Finding
+	index := make(map[string]int, len(scan.Placeholders)+len(scan.PatternHits)+len(scan.RealSecrets))
 	add := func(f model.Finding) {
-		sf := store.Finding{Kind: string(f.Kind), PatternID: f.PatternID, SecretID: f.SecretID, Token: f.Token, Location: f.Location, Field: f.Field}
-		if sf.Token != "" && len(sf.Token) > 24 {
-			sf.Token = sf.Token[:12] + "…"
+		if findingIsChatNoise(f) {
+			return
 		}
-		out = append(out, sf)
+		key := strings.Join([]string{
+			string(f.Kind), f.PatternID, f.SecretID, f.Token, f.Location,
+		}, "\x00")
+		if i, ok := index[key]; ok {
+			out[i].Count++
+			return
+		}
+		index[key] = len(out)
+		out = append(out, store.Finding{
+			Kind: string(f.Kind), PatternID: f.PatternID, SecretID: f.SecretID,
+			Token: displayToken(f.Kind, f.Token), Location: f.Location, Field: f.Field, Count: 1,
+		})
 	}
 	for _, f := range scan.RealSecrets {
 		add(f)
@@ -876,6 +917,46 @@ func toStoreFindings(scan scanner.Result) []store.Finding {
 		add(f)
 	}
 	return out
+}
+
+// findingIsChatNoise reports whether a finding exists only in the LLM
+// transcript (messages[]). The gateway never substitutes placeholders there
+// and never blocks on pattern hits there (policy.egressPatternHits), so
+// logging them just floods Traffic with conversation — often strings that
+// merely look like placeholders (shell function names such as
+// piso_gateway_post, docs, smoke-test literals). A real-secret finding is
+// kept: it blocks even when it appears in the transcript.
+func findingIsChatNoise(f model.Finding) bool {
+	if !scanner.IsChatContent(f.Location, f.Field) {
+		return false
+	}
+	return f.Kind == model.FindingPlaceholder || f.Kind == model.FindingPatternSecret
+}
+
+// displayToken renders a finding token for the log. A placeholder is not a
+// secret — the worker holds it, the gateway substitutes it, and the captured
+// request already stores it whole — and its trailing random id is the only
+// thing that tells two similarly-named secrets apart. Truncating it to a name
+// prefix made distinct findings render identically, so placeholders are kept
+// intact (middle-truncated only if absurdly long). Real-secret and pattern
+// tokens are already redacted by the scanner and stay bounded here.
+func displayToken(kind model.FindingKind, tok string) string {
+	if tok == "" {
+		return ""
+	}
+	if kind == model.FindingPlaceholder {
+		if len(tok) <= 48 {
+			return tok
+		}
+		if i := strings.LastIndex(tok, "_"); i > 5 && i < len(tok)-1 {
+			return tok[:i+1] + "…" + tok[len(tok)-4:]
+		}
+		return tok[:24] + "…" + tok[len(tok)-4:]
+	}
+	if len(tok) > 24 {
+		return tok[:12] + "…"
+	}
+	return tok
 }
 
 func capture(req *http.Request, body []byte) *store.Capture {
