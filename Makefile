@@ -1,4 +1,4 @@
-.PHONY: build test gw-run smoke isolation install setup-install uninstall windows
+.PHONY: build test test-locutus gw-run smoke isolation install setup-install uninstall windows
 
 BIN ?= bin
 # Default matches /usr/local/bin on PATH. Use PREFIX=$$HOME/.local to avoid sudo,
@@ -75,6 +75,10 @@ setup-install:
 
 test:
 	go test ./...
+	$(MAKE) test-locutus
+
+test-locutus:
+	python3 -m unittest discover -s locutus/tests -t locutus
 
 vet:
 	go vet ./...

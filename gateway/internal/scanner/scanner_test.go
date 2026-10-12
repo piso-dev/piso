@@ -99,6 +99,20 @@ func TestBasicAuthPlaceholderDecoded(t *testing.T) {
 	}
 }
 
+func TestDetectsRealTelegramTokenInURLPath(t *testing.T) {
+	// The bot token is glued to "bot"; the telegram-bot pattern must still
+	// catch a leaked real token so policy can block it.
+	const real = "123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw"
+	req := newReq(t, "GET", "https://api.telegram.org/bot"+real+"/getMe", "", nil)
+	res := ScanRequest(req, Options{Patterns: testPatterns(t)})
+	if len(res.PatternHits) == 0 {
+		t.Fatalf("want a pattern hit for a real telegram token in the path")
+	}
+	if !res.LooksCredential() {
+		t.Fatal("real telegram token in the path must look credential")
+	}
+}
+
 func TestBasicAuthRealTokenStillCredential(t *testing.T) {
 	// No piso_ marker inside the payload: decoded scan adds nothing, and the
 	// raw basic-auth pattern hit stands → still looks like a credential.
