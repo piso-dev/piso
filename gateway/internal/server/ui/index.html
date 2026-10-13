@@ -1741,7 +1741,7 @@
           ["mcp", "MCP servers"],
           ["github", "GitHub"],
           ["aiBoost", "AI Boost"],
-          ["connections", "Connections"],
+          ["telegram", "Telegram"],
           ["provider", "Model provider"],
         ],
         network: [
@@ -3063,9 +3063,11 @@
           "github-connect",
         ],
         aiBoost: ["AI Boost", "Review drafts for your connected library. Workers can submit drafts; only you can approve or reject."],
-        connections: [
-          "Gateway connections",
-          "Service login status. These tokens are never held by workers.",
+        telegram: [
+          "Telegram",
+          "Connect a Telegram bot as this gateway's front door. The gateway holds the bot token and polls Telegram; workers only ever see a placeholder.",
+          "Connect to Telegram",
+          "telegram-connect",
         ],
         provider: [
           "Model providers",
@@ -3179,6 +3181,34 @@
         replaceContent(intro + setup + signedIn + (visible.map(githubMapping).join("") || emptyState));
         bindGithubRows();
       }
+      // renderTelegram is the Access > Telegram tab. There is no Telegram
+      // module in the gateway yet, so the tab only explains the connect flow:
+      // no bot token is stored and nothing polls Telegram.
+      function renderTelegram(intro) {
+        count(0);
+        return replaceContent(
+          intro +
+            empty(
+              "No Telegram bot connected",
+              "Connect a bot to give this gateway a Telegram front door. The gateway holds the token and polls Telegram; workers only ever see a placeholder.",
+            ),
+        );
+      }
+      // telegramConnect walks through creating a bot with BotFather. Token
+      // entry is deliberately absent until the gateway can store it.
+      function telegramConnect() {
+        mountDialog(
+          "Connect to Telegram",
+          `<p>Create a bot with BotFather, then give the gateway its token. The gateway stores the token and never exports it; workers use a placeholder instead.</p>
+           <ol>
+             <li>Open <a href="https://t.me/BotFather" target="_blank" rel="noopener noreferrer">@BotFather</a> in Telegram.</li>
+             <li>Send <code>/newbot</code> and follow the prompts to name the bot.</li>
+             <li>Copy the token BotFather returns, e.g. <code>123456789:AAH…</code>.</li>
+           </ol>
+           <p class="muted">Token entry is not wired up yet: the gateway has no Telegram module to store it.</p>
+           <div class="actions">${button("Close", "close")}</div>`,
+        );
+      }
       function renderSettings() {
         const [title, description, add, act] = intros[sub];
         let rows = list(sub);
@@ -3189,6 +3219,7 @@
         const intro = `<div class="section-intro"><div><h2>${title}</h2><p>${description}</p></div>${actions.length ? `<div class="intro-actions">${actions.join("")}</div>` : ""}</div>`;
         if (sub === "github") return renderGithub(intro);
         if (sub === "aiBoost") return renderBoostReview(intro);
+        if (sub === "telegram") return renderTelegram(intro);
         if (sub === "provider") {
           const p = data.provider || {};
           const providers = Array.isArray(p.providers) ? p.providers : [];
@@ -3213,7 +3244,6 @@
                   )),
           );
         }
-        if (sub === "connections") rows = data.connections?.connections || [];
         rows = rows.filter((r) =>
           matches(
             ...Object.entries(r)
@@ -3318,23 +3348,6 @@
                   r.id,
                   "small danger",
                 );
-            }
-            if (sub === "connections") {
-              title = r.name;
-              description = r.detail;
-              status = badge(r.status, r.status === "ok" ? "good" : "warn");
-              body = facts([
-                ["Status", r.status],
-                ["Detail", r.detail],
-              ]);
-              actions =
-                r.id === "github"
-                  ? button("Manage GitHub", "go-github", "", "small")
-                  : r.id === "ai-boost"
-                    ? (!data.aiBoost?.configured
-                        ? button("Connect AI Boost", "boost-authorize", "", "small")
-                        : button(r.status === "needs-auth" ? "Reconnect AI Boost" : "Sign in to AI Boost", "boost-authorize", "", "small") + button("Disconnect", "boost-disconnect", "", "small danger"))
-                    : "";
             }
             if (sub === "workers") {
               title = r.slug || r.name;
@@ -4489,6 +4502,7 @@
           location.hash = "#/access/github";
           return;
         }
+        if (name === "telegram-connect") return telegramConnect();
         if (name === "retry") {
           await health();
           return refresh();
