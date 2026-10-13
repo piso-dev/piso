@@ -542,10 +542,7 @@ func (s *Server) newGithubAppInGroup(secretID string) (store.GithubAppRec, bool,
 			placeholder = "piso_github_" + randID()
 		}
 		sec = store.SecretRec{ID: "sec_" + randID(), Name: name, Placeholder: placeholder, Kind: model.SecretKindGithubApp, EnvKey: "GH_TOKEN", AllowedHosts: append([]string(nil), githubapp.AllowedHosts...), CreatedAt: time.Now().UTC()}
-		if err := s.Store.AddSecret(sec); err != nil {
-			return store.GithubAppRec{}, false, &githubAppError{500, err}
-		}
-		if err := s.Store.SyncRulesForSecret(sec); err != nil {
+		if err := s.storeSecret(sec); err != nil {
 			return store.GithubAppRec{}, false, &githubAppError{500, err}
 		}
 		created = true
@@ -585,10 +582,7 @@ func (s *Server) ensureGithubApp(name, placeholder string) (store.GithubAppRec, 
 		AllowedHosts: append([]string(nil), githubapp.AllowedHosts...),
 		CreatedAt:    now,
 	}
-	if err := s.Store.AddSecret(sec); err != nil {
-		return store.GithubAppRec{}, err
-	}
-	if err := s.Store.SyncRulesForSecret(sec); err != nil {
+	if err := s.storeSecret(sec); err != nil {
 		return store.GithubAppRec{}, err
 	}
 	rec := store.GithubAppRec{

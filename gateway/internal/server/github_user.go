@@ -74,7 +74,7 @@ func (s *Server) verifiedGithubUser(r *http.Request) (githubIdentity, error) {
 
 func (s *Server) saveGithubUserSecret(name, value string) (string, error) {
 	id := "sec_" + randID()
-	err := s.Store.AddSecret(store.SecretRec{ID: id, Name: name, Kind: "github-oauth", Placeholder: "piso_github_oauth_" + randID(), Value: value, GatewayOnly: true, CreatedAt: time.Now().UTC()})
+	err := s.storeSecret(store.SecretRec{ID: id, Name: name, Kind: "github-oauth", Placeholder: "piso_github_oauth_" + randID(), Value: value, GatewayOnly: true, CreatedAt: time.Now().UTC()})
 	return id, err
 }
 func (s *Server) registerGithubUser(mux *http.ServeMux) {

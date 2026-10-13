@@ -234,21 +234,13 @@ func (s *Server) routes(mux *http.ServeMux) {
 			Value: in.Value, EnvKey: in.EnvKey, AllowedHosts: in.AllowedHosts,
 			Workers: in.Workers, GatewayOnly: in.GatewayOnly, CreatedAt: time.Now().UTC(),
 		}
-		if err := s.Store.AddSecret(rec); err != nil {
+		// AllowedHosts is authoritative: seed the placeholder's substitution
+		// rules and auto-replay any captures that were blocked on it, so adding
+		// a secret unblocks them.
+		retried, err := s.saveSecret(r.Context(), rec)
+		if err != nil {
 			writeJSON(w, 500, map[string]string{"error": err.Error()})
 			return
-		}
-		// AllowedHosts is authoritative: seed (or replace) the placeholder's
-		// substitution rules now, then auto-replay any captures that were
-		// blocked on this placeholder so adding a secret unblocks them.
-		if err := s.Store.SyncRulesForSecret(rec); err != nil {
-			writeJSON(w, 500, map[string]string{"error": err.Error()})
-			return
-		}
-		seenRetry := map[string]bool{}
-		retried := []RetryResult{}
-		for _, h := range store.CanonicalRuleHosts(rec.AllowedHosts) {
-			retried = append(retried, s.replayMatches(r.Context(), seenRetry, rec.Placeholder, h)...)
 		}
 		writeJSON(w, 201, map[string]any{"secret": storeRecToSummary(rec), "retried": retried})
 	})
@@ -310,14 +302,10 @@ func (s *Server) routes(mux *http.ServeMux) {
 			writeJSON(w, 500, map[string]string{"error": err.Error()})
 			return
 		}
-		if err := s.Store.SyncRulesForSecret(rec); err != nil {
+		retried, err := s.seedSecretRules(r.Context(), rec)
+		if err != nil {
 			writeJSON(w, 500, map[string]string{"error": err.Error()})
 			return
-		}
-		seenRetry := map[string]bool{}
-		retried := []RetryResult{}
-		for _, h := range store.CanonicalRuleHosts(rec.AllowedHosts) {
-			retried = append(retried, s.replayMatches(r.Context(), seenRetry, rec.Placeholder, h)...)
 		}
 		writeJSON(w, 200, map[string]any{"secret": storeRecToSummary(rec), "retried": retried})
 	})

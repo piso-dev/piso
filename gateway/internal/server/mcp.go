@@ -106,10 +106,7 @@ func (s *Server) upsertMCP(worker, slug, name, rawURL, host, resource string) (s
 		Workers:      []string{slug},
 		CreatedAt:    now,
 	}
-	if err := s.Store.AddSecret(sec); err != nil {
-		return store.McpServerRec{}, false, err
-	}
-	if err := s.Store.SyncRulesForSecret(sec); err != nil {
+	if err := s.storeSecret(sec); err != nil {
 		return store.McpServerRec{}, false, err
 	}
 	rec := store.McpServerRec{
