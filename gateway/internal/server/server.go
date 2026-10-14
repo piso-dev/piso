@@ -22,6 +22,8 @@ import (
 	"piso/gateway/internal/patterns"
 	"piso/gateway/internal/proxy"
 	"piso/gateway/internal/store"
+	"piso/gateway/internal/technocore"
+	"piso/gateway/internal/telegram"
 )
 
 //go:embed ui/index.html ui/favicon.svg
@@ -42,8 +44,12 @@ type Server struct {
 	githubOAuthMu     sync.Mutex
 	githubOAuthStates map[string]githubOAuthAttempt
 	boostMu           sync.Mutex
-	boost             *aiboost.Client
-	boostTickets      map[string]time.Time
+	// Telegram is the Telegram front door: the poller, the update cursor and
+	// the allow-list. It owns the only connection to Telegram; nothing else in
+	// the gateway talks to that API.
+	Telegram     *telegram.Manager
+	boost        *aiboost.Client
+	boostTickets map[string]time.Time
 
 	// directMu guards workers that have checked in on the public URL.
 	// Not persisted: a gateway restart must see a fresh direct check-in
@@ -54,7 +60,11 @@ type Server struct {
 
 // New assembles the server.
 func New(st *store.Store, pat *patterns.Compiled, pr *proxy.Handler, ca *proxy.CA) *Server {
-	return &Server{Store: st, Patterns: pat, Proxy: pr, CA: ca}
+	s := &Server{Store: st, Patterns: pat, Proxy: pr, CA: ca}
+	// The manager is created here but does not run until main starts it, so a
+	// Server in a test is inert: nothing reaches out to Telegram on its own.
+	s.Telegram = telegram.NewManager(st, nil)
+	return s
 }
 
 // ControlHandler returns the host control-plane mux (UI + API). Worker
@@ -173,6 +183,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	s.registerGithubApp(mux)
 	s.registerGithubUser(mux)
 	s.registerAIBoost(mux)
+	s.registerTelegram(mux)
 	mux.HandleFunc("GET /api/v1/connections", s.handleConnections)
 
 	// CA cert for distribution
@@ -310,7 +321,24 @@ func (s *Server) routes(mux *http.ServeMux) {
 		writeJSON(w, 200, map[string]any{"secret": storeRecToSummary(rec), "retried": retried})
 	})
 	mux.HandleFunc("DELETE /api/v1/secrets/{id}", func(w http.ResponseWriter, r *http.Request) {
-		if err := s.Store.DeleteSecret(r.PathValue("id")); err != nil {
+		id := r.PathValue("id")
+		rec, ok := s.Store.SecretByID(id)
+		if !ok {
+			writeJSON(w, 404, map[string]string{"error": "not found"})
+			return
+		}
+		// A replicated secret is deleted by tombstone, not by forgetting: a
+		// peer still holding a copy would otherwise publish it back.
+		if rec.TechnocoreID != "" {
+			v, err := technocore.Revoke(s.dataDir(), rec.TechnocoreID, rec.ContentVersion)
+			if err != nil {
+				log.Printf("secrets: revoke %s: %v", id, err)
+			} else if err := s.Store.RevokeSecret(id, v); err == nil {
+				w.WriteHeader(204)
+				return
+			}
+		}
+		if err := s.Store.DeleteSecret(id); err != nil {
 			writeJSON(w, 500, map[string]string{"error": err.Error()})
 			return
 		}

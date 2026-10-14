@@ -62,7 +62,7 @@ func ValidEnvKey(key string) bool {
 // SecretVisibleToWorker reports whether rec should appear in slug's env file.
 // Empty Workers or a "*" entry means all workers (the default).
 func SecretVisibleToWorker(rec SecretRec, slug string) bool {
-	if rec.GatewayOnly || rec.EnvKey == "" || rec.Placeholder == "" {
+	if rec.GatewayOnly || rec.Revoked || rec.EnvKey == "" || rec.Placeholder == "" {
 		return false
 	}
 	if len(rec.Workers) == 0 {
@@ -171,7 +171,7 @@ func RenderPlaceholdersEnv(secrets []SecretRec) string {
 	seen := map[string]bool{}
 	var rows []pair
 	for _, rec := range secrets {
-		if rec.GatewayOnly || rec.EnvKey == "" || rec.Placeholder == "" {
+		if rec.GatewayOnly || rec.Revoked || rec.EnvKey == "" || rec.Placeholder == "" {
 			continue
 		}
 		if !ValidEnvKey(rec.EnvKey) {

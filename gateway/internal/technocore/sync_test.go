@@ -237,12 +237,134 @@ func TestApplyEnvelopeConflictDifferentValue(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	// Same content_version as the local row: the local copy is an edit the
+	// coordinator has not seen yet, so it is kept rather than clobbered.
 	obj := testEnvelope(t, id, "rid-1", "GitHub PAT", "piso_github_pat_aaa", "new-value")
-	if _, err := applyEnvelope(st, id, obj); err == nil {
-		t.Fatal("expected conflict")
+	if _, err := applyEnvelope(st, id, obj); err != nil {
+		t.Fatal(err)
 	}
 	got, _ := st.SecretByID("local1")
 	if got.Value != "old-value" {
 		t.Fatalf("local overwritten: %+v", got)
+	}
+}
+
+func TestApplyEnvelopeNewerVersionWins(t *testing.T) {
+	st := testStore(t)
+	id, err := tc.Generate("https://s", "gw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AddSecret(store.SecretRec{
+		ID:             "local1",
+		Name:           "GitHub PAT",
+		Placeholder:    "piso_github_pat_aaa",
+		Value:          "old-value",
+		TechnocoreID:   "rid-1",
+		ContentVersion: 1,
+		CreatedAt:      time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	obj := testEnvelope(t, id, "rid-1", "GitHub PAT", "piso_github_pat_aaa", "new-value")
+	obj.ContentVersion = 2
+	if _, err := applyEnvelope(st, id, obj); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := st.SecretByID("local1")
+	if got.Value != "new-value" || got.ContentVersion != 2 {
+		t.Fatalf("newer envelope did not win: %+v", got)
+	}
+}
+
+func TestApplyEnvelopeStaleVersionIsIgnored(t *testing.T) {
+	st := testStore(t)
+	id, err := tc.Generate("https://s", "gw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AddSecret(store.SecretRec{
+		ID:             "local1",
+		Name:           "GitHub PAT",
+		Placeholder:    "piso_github_pat_aaa",
+		Value:          "newer-value",
+		TechnocoreID:   "rid-1",
+		PublishedHash:  plaintextHash("newer-value"),
+		ContentVersion: 5,
+		CreatedAt:      time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	obj := testEnvelope(t, id, "rid-1", "GitHub PAT", "piso_github_pat_aaa", "stale-value")
+	obj.ContentVersion = 4
+	if _, err := applyEnvelope(st, id, obj); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := st.SecretByID("local1")
+	if got.Value != "newer-value" || got.ContentVersion != 5 {
+		t.Fatalf("stale envelope rolled local back: %+v", got)
+	}
+}
+
+func TestApplyEnvelopeRevokedTombstones(t *testing.T) {
+	st := testStore(t)
+	id, err := tc.Generate("https://s", "gw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AddSecret(store.SecretRec{
+		ID:             "local1",
+		Name:           "GitHub PAT",
+		Placeholder:    "piso_github_pat_aaa",
+		Value:          "ghp_secret",
+		TechnocoreID:   "rid-1",
+		PublishedHash:  plaintextHash("ghp_secret"),
+		ContentVersion: 1,
+		CreatedAt:      time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	obj := testEnvelope(t, id, "rid-1", "GitHub PAT", "piso_github_pat_aaa", "ghp_secret")
+	obj.ContentVersion = 2
+	obj.Status = statusRevoked
+	if _, err := applyEnvelope(st, id, obj); err != nil {
+		t.Fatal(err)
+	}
+	got, ok := st.SecretByID("local1")
+	if !ok || !got.Revoked || got.Value != "" || got.ContentVersion != 2 {
+		t.Fatalf("tombstone not applied: %+v", got)
+	}
+	if recs := st.Secrets(); len(recs) != 0 {
+		t.Fatalf("revoked secret still listed: %+v", recs)
+	}
+	// A stale republish of the old value must not resurrect it.
+	stale := testEnvelope(t, id, "rid-1", "GitHub PAT", "piso_github_pat_aaa", "ghp_secret")
+	stale.ContentVersion = 1
+	if _, err := applyEnvelope(st, id, stale); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := st.SecretByID("local1"); !got.Revoked {
+		t.Fatalf("stale envelope resurrected a tombstone: %+v", got)
+	}
+}
+
+func TestApplyEnvelopeGatewayOnlyKeepsNoPlaceholder(t *testing.T) {
+	st := testStore(t)
+	id, err := tc.Generate("https://s", "gw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	obj := testEnvelope(t, id, "rid-9", "Telegram bot", "", "123:abc")
+	obj.ContentVersion = 1
+	obj.Metadata["gatewayOnly"] = true
+	if _, err := applyEnvelope(st, id, obj); err != nil {
+		t.Fatal(err)
+	}
+	got, ok := st.SecretByID("tc_rid-9")
+	if !ok || !got.GatewayOnly {
+		t.Fatalf("gateway-only flag lost: %+v", got)
+	}
+	if got.Placeholder != "" {
+		t.Fatalf("invented a placeholder for a gateway-only secret: %q", got.Placeholder)
 	}
 }

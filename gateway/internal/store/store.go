@@ -37,6 +37,9 @@ type State struct {
 	McpServers      []McpServerRec      `json:"mcpServers,omitempty"`
 	GithubApps      []GithubAppRec      `json:"githubApps,omitempty"`
 	GithubUser      GithubUserRec       `json:"githubUser,omitempty"`
+	// Telegram is the gateway's Telegram front door: which bot the allow-list
+	// belongs to, the update cursor, and the accounts allowed to talk to it.
+	Telegram TelegramLink `json:"telegram,omitempty"`
 	// PiProvider is the legacy single shared pi models.json pointer. It is
 	// migrated into PiProviders on load and never written again.
 	PiProvider *PiProviderRec `json:"piProvider,omitempty"`
@@ -75,7 +78,7 @@ type PiProviderRec struct {
 
 // JSON-friendly records (this package owns persistence shape).
 type SecretRec struct {
-	GatewayOnly  bool      `json:"gatewayOnly,omitempty"` // gateway-local, never exported or substituted
+	GatewayOnly  bool      `json:"gatewayOnly,omitempty"` // never substituted into worker traffic; still replicated to every enrolled gateway
 	ID           string    `json:"id"`
 	Name         string    `json:"name"`
 	Placeholder  string    `json:"placeholder"`
@@ -85,6 +88,14 @@ type SecretRec struct {
 	AllowedHosts []string  `json:"allowedHosts,omitempty"`
 	Workers      []string  `json:"workers,omitempty"` // empty or "*" = all workers
 	CreatedAt    time.Time `json:"createdAt"`
+	// ContentVersion is the coordinator version this copy was synced at. 0
+	// means the secret has never been published, so it has no base to be
+	// stale against.
+	ContentVersion int `json:"contentVersion,omitempty"`
+	// Revoked marks a coordinator tombstone: the plaintext is gone and the row
+	// survives only to remember the version, so a stale peer republishing the
+	// old value loses the race instead of resurrecting it.
+	Revoked bool `json:"revoked,omitempty"`
 	// TechnocoreID is the coordinator Resource UUID after the first successful
 	// share (or inbound envelope). Empty means never published.
 	TechnocoreID string `json:"technocoreId,omitempty"`
@@ -362,10 +373,20 @@ func (s *Store) save() error {
 
 // ---- reads ----
 
+// Path is the state file this store loads and saves.
+func (s *Store) Path() string { return s.path }
+
 func (s *Store) Secrets() []SecretRec {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return copyRecs(s.state.Secrets)
+	live := make([]SecretRec, 0, len(s.state.Secrets))
+	for _, rec := range s.state.Secrets {
+		if rec.Revoked {
+			continue
+		}
+		live = append(live, rec)
+	}
+	return copyRecs(live)
 }
 func (s *Store) Rules() []RuleRec {
 	s.mu.RLock()
@@ -509,6 +530,35 @@ func (s *Store) DeleteSecret(id string) error {
 		}
 	}
 	s.state.GithubApps = apps
+	if err := s.save(); err != nil {
+		return err
+	}
+	return s.writePlaceholdersEnvLocked()
+}
+
+// RevokeSecret tombstones a local secret: the plaintext is dropped, its
+// substitution rules go away, and the coordinator version is recorded so a
+// stale peer republishing the old value loses instead of resurrecting it. The
+// row is kept (and hidden from Secrets) purely so that version is remembered.
+func (s *Store) RevokeSecret(id string, version int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	found := false
+	for i := range s.state.Secrets {
+		if s.state.Secrets[i].ID != id {
+			continue
+		}
+		rec := s.state.Secrets[i]
+		rec.Value = ""
+		rec.Revoked = true
+		rec.ContentVersion = version
+		s.state.Secrets[i] = rec
+		found = true
+	}
+	if !found {
+		return fmt.Errorf("secret %s not found", id)
+	}
+	s.state.Rules = filterRules(s.state.Rules, func(r RuleRec) bool { return r.SecretID != id })
 	if err := s.save(); err != nil {
 		return err
 	}
@@ -834,7 +884,7 @@ func (s *Store) SyncRulesForSecret(rec SecretRec) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	hosts := CanonicalRuleHosts(rec.AllowedHosts)
-	if rec.GatewayOnly {
+	if rec.GatewayOnly || rec.Revoked {
 		hosts = nil
 	}
 	s.state.Rules = filterRules(s.state.Rules, func(r RuleRec) bool { return r.Placeholder != rec.Placeholder })

@@ -14,6 +14,7 @@ const PlaceholderPrefix = "piso_"
 const (
 	SecretKindOpaque    = ""
 	SecretKindGithubApp = "github-app"
+	SecretKindTelegram  = "telegram"
 )
 
 // Secret is a real credential plus its placeholder. Real values live ONLY in

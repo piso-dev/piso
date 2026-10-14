@@ -18,6 +18,7 @@ type fakeCoord struct {
 	posts      int
 	puts       int
 	resourceID string
+	bodies     []map[string]any
 }
 
 func (f *fakeCoord) handler() http.HandlerFunc {
@@ -31,6 +32,7 @@ func (f *fakeCoord) handler() http.HandlerFunc {
 			f.mu.Lock()
 			defer f.mu.Unlock()
 			f.posts++
+			f.record(r)
 			w.WriteHeader(http.StatusCreated)
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"resource_id":     f.resourceID,
@@ -40,6 +42,7 @@ func (f *fakeCoord) handler() http.HandlerFunc {
 			f.mu.Lock()
 			defer f.mu.Unlock()
 			f.puts++
+			f.record(r)
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"resource_id":     f.resourceID,
 				"content_version": 2,
@@ -65,6 +68,24 @@ func (f *fakeCoord) setGateways(gws []remoteGateway) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.gateways = gws
+}
+
+// record keeps the latest publish body. Callers hold f.mu.
+func (f *fakeCoord) record(r *http.Request) {
+	var body map[string]any
+	if err := json.NewDecoder(r.Body).Decode(&body); err == nil {
+		f.bodies = append(f.bodies, body)
+	}
+}
+
+func (f *fakeCoord) lastBody(t *testing.T) map[string]any {
+	t.Helper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.bodies) == 0 {
+		t.Fatal("no publish body captured")
+	}
+	return f.bodies[len(f.bodies)-1]
 }
 
 func enrolledShareEnv(t *testing.T, srvURL string) (*store.Store, string, tc.Identity) {
@@ -229,6 +250,107 @@ func TestPublishAllSecretsRotatesStampedSecret(t *testing.T) {
 	got, _ = st.SecretByID("local1")
 	if got.PublishedHash != plaintextHash("ghp_rotated") {
 		t.Fatalf("hash not restamped: %+v", got)
+	}
+}
+
+// A gateway-only credential is not substituted into worker traffic, but it is
+// still replicated: gateways are replicas of one entity, so the flag travels
+// with the ciphertext instead of suppressing the publish.
+func TestPublishAllSecretsReplicatesGatewayOnly(t *testing.T) {
+	coord := &fakeCoord{resourceID: "rid-tg"}
+	srv := httptest.NewServer(coord.handler())
+	defer srv.Close()
+
+	st, dataDir, id := enrolledShareEnv(t, srv.URL)
+	coord.setGateways([]remoteGateway{{
+		PrincipalID:      id.PrincipalID,
+		Name:             "gw",
+		Status:           "active",
+		EncryptionPubKey: id.EncryptionPublicKey,
+		Fingerprint:      id.Fingerprint(),
+	}})
+
+	old := serverHTTP
+	serverHTTP = srv.Client()
+	defer func() { serverHTTP = old }()
+
+	// The Telegram bot token shape: gateway-only, and no placeholder at all.
+	if err := st.AddSecret(store.SecretRec{
+		ID:          "sec_tg",
+		Name:        "Telegram bot",
+		Kind:        "telegram",
+		GatewayOnly: true,
+		Value:       "123:abc",
+		CreatedAt:   time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := publishAllSecrets(st, dataDir); err != nil {
+		t.Fatal(err)
+	}
+	if coord.postCount() != 1 {
+		t.Fatalf("gateway-only secret was not published: posts=%d", coord.postCount())
+	}
+	body := coord.lastBody(t)
+	meta, _ := body["metadata"].(map[string]any)
+	if meta["gatewayOnly"] != true {
+		t.Fatalf("gatewayOnly did not travel: %+v", meta)
+	}
+	if meta["placeholder"] != "" {
+		t.Fatalf("gateway-only secret published a placeholder: %+v", meta)
+	}
+	if _, ok := body["base_version"]; ok {
+		t.Fatalf("never-published secret claimed a base version: %v", body["base_version"])
+	}
+	// A secret with no placeholder is still stamped by value so the next pass
+	// skips it instead of re-publishing forever.
+	got, ok := st.SecretByID("sec_tg")
+	if !ok || got.TechnocoreID != "rid-tg" || got.ContentVersion != 1 {
+		t.Fatalf("not stamped: %+v ok=%v", got, ok)
+	}
+}
+
+// An edit to an already-published secret carries the version it is based on so
+// the coordinator can reject a writer that is behind instead of overwriting a
+// newer value.
+func TestPublishAllSecretsSendsBaseVersion(t *testing.T) {
+	coord := &fakeCoord{resourceID: "rid-stable"}
+	srv := httptest.NewServer(coord.handler())
+	defer srv.Close()
+
+	st, dataDir, id := enrolledShareEnv(t, srv.URL)
+	coord.setGateways([]remoteGateway{{
+		PrincipalID:      id.PrincipalID,
+		Name:             "gw",
+		Status:           "active",
+		EncryptionPubKey: id.EncryptionPublicKey,
+		Fingerprint:      id.Fingerprint(),
+	}})
+
+	old := serverHTTP
+	serverHTTP = srv.Client()
+	defer func() { serverHTTP = old }()
+
+	if err := st.AddSecret(store.SecretRec{
+		ID:             "local1",
+		Name:           "GitHub PAT",
+		Placeholder:    "piso_github_pat_aaa",
+		Value:          "ghp_new",
+		TechnocoreID:   "rid-stable",
+		PublishedHash:  plaintextHash("ghp_old"),
+		ContentVersion: 7,
+		CreatedAt:      time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := publishAllSecrets(st, dataDir); err != nil {
+		t.Fatal(err)
+	}
+	body := coord.lastBody(t)
+	if body["base_version"] != float64(7) {
+		t.Fatalf("base_version not sent: %+v", body["base_version"])
 	}
 }
 

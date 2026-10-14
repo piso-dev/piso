@@ -6,6 +6,7 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"crypto/tls"
 	"encoding/hex"
@@ -71,18 +72,18 @@ func remoteIP(r *http.Request) string {
 
 func main() {
 	var (
-		statePath    = flag.String("state", envOr("PISO_STATE_FILE", ".piso/state.json"), "state file (secrets/rules/domains/exceptions/routes)")
-		patternsPath = flag.String("patterns", envOr("PISO_PATTERNS_FILE", ".piso/patterns.json"), "credential pattern library file")
-		logPath      = flag.String("log", envOr("PISO_LOG_FILE", ".piso/requests.jsonl"), "request log (JSONL)")
+		statePath      = flag.String("state", envOr("PISO_STATE_FILE", ".piso/state.json"), "state file (secrets/rules/domains/exceptions/routes)")
+		patternsPath   = flag.String("patterns", envOr("PISO_PATTERNS_FILE", ".piso/patterns.json"), "credential pattern library file")
+		logPath        = flag.String("log", envOr("PISO_LOG_FILE", ".piso/requests.jsonl"), "request log (JSONL)")
 		activitiesPath = flag.String("activities", envOr("PISO_ACTIVITIES_FILE", ".piso/activities.db"), "activity database (SQLite)")
-		caCertPath   = flag.String("ca-cert", envOr("PISO_CA_CERT", ".piso/ca.crt"), "CA certificate (generated if missing)")
-		caKeyPath    = flag.String("ca-key", envOr("PISO_CA_KEY", ".piso/ca.key"), "CA private key (generated if missing)")
-		proxyAddr    = flag.String("proxy-listen", envOr("PISO_PROXY_LISTEN", ":8080"), "egress proxy listen addr")
-		ctrlAddr     = flag.String("ctrl-listen", envOr("PISO_CTRL_LISTEN", ":8081"), "control plane (UI+API) listen addr")
-		workerAddr   = flag.String("worker-listen", envOr("PISO_WORKER_LISTEN", ":8083"), "worker API listen addr (vpc only)")
-		publicAddr   = flag.String("public-listen", envOr("PISO_PUBLIC_LISTEN", ":8443"), "TLS mux for remote workers (CONNECT + worker API)")
-		ingressAddr  = flag.String("ingress-listen", envOr("PISO_INGRESS_LISTEN", ":8082"), "ingress reverse proxy listen addr")
-		maxLog       = flag.Int("max-log", 5000, "max in-memory log records")
+		caCertPath     = flag.String("ca-cert", envOr("PISO_CA_CERT", ".piso/ca.crt"), "CA certificate (generated if missing)")
+		caKeyPath      = flag.String("ca-key", envOr("PISO_CA_KEY", ".piso/ca.key"), "CA private key (generated if missing)")
+		proxyAddr      = flag.String("proxy-listen", envOr("PISO_PROXY_LISTEN", ":8080"), "egress proxy listen addr")
+		ctrlAddr       = flag.String("ctrl-listen", envOr("PISO_CTRL_LISTEN", ":8081"), "control plane (UI+API) listen addr")
+		workerAddr     = flag.String("worker-listen", envOr("PISO_WORKER_LISTEN", ":8083"), "worker API listen addr (vpc only)")
+		publicAddr     = flag.String("public-listen", envOr("PISO_PUBLIC_LISTEN", ":8443"), "TLS mux for remote workers (CONNECT + worker API)")
+		ingressAddr    = flag.String("ingress-listen", envOr("PISO_INGRESS_LISTEN", ":8082"), "ingress reverse proxy listen addr")
+		maxLog         = flag.Int("max-log", 5000, "max in-memory log records")
 	)
 	flag.Parse()
 
@@ -113,6 +114,9 @@ func main() {
 	srv := server.New(st, pat, h, ca)
 	srv.DataDir = filepath.Dir(*statePath)
 	go technocore.Run(st, srv.DataDir)
+	// The Telegram front door polls only while a bot token is stored; with none
+	// it idles, so this is unconditional.
+	go srv.Telegram.Run(context.Background())
 
 	// WebHandler is the single host web entrypoint (dashboard + ingress on the
 	// same port, dispatched by Host). The old ControlHandler is kept for tests;

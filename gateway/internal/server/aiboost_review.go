@@ -34,7 +34,7 @@ func boostReviewError(w http.ResponseWriter, err error) {
 	http.Error(w, message, status)
 }
 func (s *Server) handleBoostDrafts(w http.ResponseWriter, r *http.Request) {
-	boostHeaders(w)
+	serviceHeaders(w)
 	c, err := s.boostClient()
 	if err != nil {
 		boostReviewError(w, err)
@@ -48,7 +48,7 @@ func (s *Server) handleBoostDrafts(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, page)
 }
 func (s *Server) handleBoostDraft(w http.ResponseWriter, r *http.Request) {
-	boostHeaders(w)
+	serviceHeaders(w)
 	c, err := s.boostClient()
 	if err != nil {
 		boostReviewError(w, err)
@@ -62,7 +62,7 @@ func (s *Server) handleBoostDraft(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, item)
 }
 func (s *Server) handleBoostDecision(w http.ResponseWriter, r *http.Request) {
-	boostHeaders(w)
+	serviceHeaders(w)
 	var in aiboost.Decision
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 65536))
 	dec.DisallowUnknownFields()

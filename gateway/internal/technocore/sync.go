@@ -19,6 +19,7 @@ type envelope struct {
 	ResourceID     string         `json:"resource_id"`
 	Name           string         `json:"name"`
 	Kind           string         `json:"kind"`
+	Status         string         `json:"status"`
 	Metadata       map[string]any `json:"metadata"`
 	Algorithm      string         `json:"algorithm"`
 	ContentVersion int            `json:"content_version"`
@@ -242,6 +243,11 @@ func syncSecrets(st *store.Store, dataDir string, id tc.Identity) error {
 	return nil
 }
 
+// statusRevoked is the coordinator's tombstone marker. A revoked resource is
+// still delivered with a bumped content_version so every gateway learns about
+// the deletion instead of inferring it from silence.
+const statusRevoked = "revoked"
+
 func applyEnvelope(st *store.Store, id tc.Identity, obj envelope) (string, error) {
 	if obj.Algorithm != "" && obj.Algorithm != tc.EnvelopeAlg {
 		return "", fmt.Errorf("unsupported algorithm %q", obj.Algorithm)
@@ -262,8 +268,12 @@ func applyEnvelope(st *store.Store, id tc.Identity, obj envelope) (string, error
 	if err != nil {
 		return "", err
 	}
+	gatewayOnly, _ := obj.Metadata["gatewayOnly"].(bool)
 	placeholder, _ := obj.Metadata["placeholder"].(string)
-	if placeholder == "" {
+	if placeholder == "" && !gatewayOnly {
+		// Gateway-only credentials are never substituted into worker traffic,
+		// so minting a placeholder for them would only invent a token that no
+		// rule should ever reference.
 		idhex := strings.ReplaceAll(obj.ResourceID, "-", "")
 		if len(idhex) > 16 {
 			idhex = idhex[:16]
@@ -278,17 +288,37 @@ func applyEnvelope(st *store.Store, id tc.Identity, obj envelope) (string, error
 
 	local, found := matchLocalSecret(st, obj.ResourceID, secretID, placeholder, plain)
 	if found {
-		if local.Value != plain {
-			return "", fmt.Errorf("conflict for placeholder %s; keeping local secret", local.Placeholder)
+		if obj.Status == statusRevoked {
+			// A tombstone is an ordinary version-ordered change: it wins unless
+			// the local copy is strictly ahead, which means this envelope is
+			// stale.
+			if obj.ContentVersion >= local.ContentVersion {
+				return local.ID, st.RevokeSecret(local.ID, obj.ContentVersion)
+			}
+			return local.ID, nil
 		}
+		if obj.ContentVersion < local.ContentVersion {
+			// Never roll a newer local copy back.
+			return local.ID, nil
+		}
+		if obj.ContentVersion == local.ContentVersion && (local.Value != plain || local.Revoked) {
+			// Same version, different bytes: the coordinator has not seen a
+			// write at this version, so the local copy is an edit that has not
+			// been published yet. Keep it; publishAllSecrets resolves the race.
+			return local.ID, nil
+		}
+		// The coordinator's version is authoritative, so the plaintext and the
+		// worker-facing flags come from the envelope either way.
+		local.Value = plain
+		local.AllowedHosts = hosts
+		local.GatewayOnly = gatewayOnly
 		if local.ID == secretID {
-			// Coordinator-owned row: refresh metadata from the envelope.
+			// Coordinator-owned row: refresh identity metadata too.
 			local.Name = obj.Name
 			local.Placeholder = placeholder
 			local.EnvKey = envKey
-			local.AllowedHosts = hosts
-			local.Value = plain
 		}
+		local.Revoked = false
 		// Local-origin rows keep their id and placeholder so workers and rules stay valid.
 		if local.TechnocoreID == "" {
 			local.TechnocoreID = obj.ResourceID
@@ -296,6 +326,7 @@ func applyEnvelope(st *store.Store, id tc.Identity, obj envelope) (string, error
 		if local.PublishedHash == "" {
 			local.PublishedHash = hash
 		}
+		local.ContentVersion = obj.ContentVersion
 		if err := st.ReplaceSecret(local); err != nil {
 			return "", err
 		}
@@ -303,15 +334,21 @@ func applyEnvelope(st *store.Store, id tc.Identity, obj envelope) (string, error
 	}
 
 	rec := store.SecretRec{
-		ID:            secretID,
-		Name:          obj.Name,
-		Placeholder:   placeholder,
-		Value:         plain,
-		EnvKey:        envKey,
-		AllowedHosts:  hosts,
-		CreatedAt:     time.Now().UTC(),
-		TechnocoreID:  obj.ResourceID,
-		PublishedHash: hash,
+		ID:             secretID,
+		Name:           obj.Name,
+		Placeholder:    placeholder,
+		Value:          plain,
+		EnvKey:         envKey,
+		AllowedHosts:   hosts,
+		GatewayOnly:    gatewayOnly,
+		CreatedAt:      time.Now().UTC(),
+		TechnocoreID:   obj.ResourceID,
+		PublishedHash:  hash,
+		ContentVersion: obj.ContentVersion,
+	}
+	if obj.Status == statusRevoked {
+		rec.Value = ""
+		rec.Revoked = true
 	}
 	if err := st.AddSecret(rec); err != nil {
 		return "", err
@@ -330,8 +367,10 @@ func matchLocalSecret(st *store.Store, resourceID, secretID, placeholder, plain 
 	if rec, ok := st.SecretByID(secretID); ok {
 		return rec, true
 	}
-	if rec, ok := st.SecretByPlaceholder(placeholder); ok {
-		return rec, true
+	if placeholder != "" {
+		if rec, ok := st.SecretByPlaceholder(placeholder); ok {
+			return rec, true
+		}
 	}
 	if plain == "" {
 		return store.SecretRec{}, false

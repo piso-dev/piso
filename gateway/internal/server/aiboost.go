@@ -61,13 +61,13 @@ func (s *Server) registerAIBoost(mux *http.ServeMux) {
 	mount("GET /api/v1/ai-boost/drafts/{id}", s.handleBoostDraft)
 	mount("POST /api/v1/ai-boost/drafts/{id}/{action}", s.handleBoostDecision)
 }
-func boostHeaders(w http.ResponseWriter) {
+func serviceHeaders(w http.ResponseWriter) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 }
 func (s *Server) handleBoostStatus(w http.ResponseWriter, r *http.Request) {
-	boostHeaders(w)
+	serviceHeaders(w)
 	c, err := s.boostClient()
 	if err != nil {
 		http.Error(w, err.Error(), 503)
@@ -76,7 +76,7 @@ func (s *Server) handleBoostStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, c.Summary())
 }
 func (s *Server) handleBoostRegister(w http.ResponseWriter, r *http.Request) {
-	boostHeaders(w)
+	serviceHeaders(w)
 	var in struct {
 		BaseURL     string `json:"baseUrl"`
 		RedirectURI string `json:"redirectUri"`
@@ -99,7 +99,7 @@ func (s *Server) handleBoostRegister(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, c.Summary())
 }
 func (s *Server) handleBoostAuthorize(w http.ResponseWriter, r *http.Request) {
-	boostHeaders(w)
+	serviceHeaders(w)
 	c, err := s.boostClient()
 	if err != nil {
 		http.Error(w, err.Error(), 503)
@@ -142,7 +142,7 @@ func (s *Server) handleBoostAuthorize(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]string{"url": u.String()})
 }
 func (s *Server) handleBoostOAuth(w http.ResponseWriter, r *http.Request) {
-	boostHeaders(w)
+	serviceHeaders(w)
 	if r.Method != "GET" {
 		w.WriteHeader(405)
 		return
@@ -202,7 +202,7 @@ func (s *Server) handleBoostOAuth(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("AI Boost connected. Close this tab and return to Connections in the Piso dashboard."))
 }
 func (s *Server) handleBoostDisconnect(w http.ResponseWriter, r *http.Request) {
-	boostHeaders(w)
+	serviceHeaders(w)
 	c, err := s.boostClient()
 	if err != nil {
 		http.Error(w, err.Error(), 503)

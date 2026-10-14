@@ -1679,6 +1679,7 @@
         githubUser: "github-user",
         connections: "connections",
         aiBoost: "ai-boost",
+        telegram: "telegram",
         secrets: "secrets",
         provider: "pi-provider",
         rules: "rules",
@@ -3065,9 +3066,7 @@
         aiBoost: ["AI Boost", "Review drafts for your connected library. Workers can submit drafts; only you can approve or reject."],
         telegram: [
           "Telegram",
-          "Connect a Telegram bot as this gateway's front door. The gateway holds the bot token and polls Telegram; workers only ever see a placeholder.",
-          "Connect to Telegram",
-          "telegram-connect",
+          "Connect a Telegram bot as this gateway's front door. The gateway holds the bot token and talks to Telegram directly; workers never see it.",
         ],
         provider: [
           "Model providers",
@@ -3181,32 +3180,181 @@
         replaceContent(intro + setup + signedIn + (visible.map(githubMapping).join("") || emptyState));
         bindGithubRows();
       }
-      // renderTelegram is the Access > Telegram tab. There is no Telegram
-      // module in the gateway yet, so the tab only explains the connect flow:
-      // no bot token is stored and nothing polls Telegram.
+      // renderTelegram is the Access > Telegram tab. The gateway holds the bot
+      // token and runs the poller; this console never sees the token, and
+      // workers never see it at all.
       function renderTelegram(intro) {
-        count(0);
+        const t = data.telegram || {};
+        const users = Array.isArray(t.users) ? t.users : [];
+        count(users.length);
+        if (!t.connected)
+          return replaceContent(
+            intro +
+              `<div class="intro-actions">${button("Connect to Telegram", "telegram-connect", "", "primary")}</div>` +
+              empty(
+                "No Telegram bot connected",
+                "Connect a bot to give this gateway a Telegram front door. The gateway holds the token and talks to Telegram directly; workers never see it.",
+              ),
+          );
+        const botURL = t.botUsername
+          ? safeURL("https://t.me/" + encodeURIComponent(t.botUsername))
+          : "";
+        const bot = t.botUsername ? "@" + t.botUsername : "this bot";
+        const openBot = botURL
+          ? `<div class="actions"><a href="${esc(botURL)}" target="_blank" rel="noopener noreferrer">Open in Telegram</a></div>`
+          : "";
+
+        const controls = `<div class="intro-actions">${button(
+          users.length ? "Add person" : "Get claim code",
+          "telegram-claim",
+          "",
+          "primary",
+        )}${button("Reconnect", "telegram-connect")}${button("Disconnect", "telegram-disconnect", "", "danger")}</div>`;
+
+        // The code is issued on demand and lives only in the running poller, so
+        // this panel exists only while one is outstanding.
+        const claim = t.claimCode
+          ? record(
+              "telegram-claim",
+              "Waiting for a claim",
+              "Send this from the Telegram account you want to connect.",
+              badge("Pending"),
+              `<p class="field full">In a private chat with ${esc(bot)}, send <code>/claim ${esc(
+                telegramCode(t.claimCode),
+              )}</code></p>` +
+                facts([
+                  ["Code", telegramCode(t.claimCode)],
+                  [
+                    "Expires",
+                    t.claimExpiresAt
+                      ? new Date(t.claimExpiresAt).toLocaleTimeString()
+                      : "",
+                  ],
+                ]) +
+                openBot,
+            )
+          : "";
+
+        const people = users.length
+          ? users
+              .map((u) =>
+                record(
+                  "telegram-user-" + u.userId,
+                  u.firstName || u.username || String(u.userId),
+                  u.username ? "@" + u.username : "",
+                  badge("Allowed"),
+                  facts([
+                    ["Telegram ID", u.userId],
+                    ["Username", u.username ? "@" + u.username : ""],
+                    [
+                      "Connected",
+                      u.claimedAt ? new Date(u.claimedAt).toLocaleString() : "",
+                    ],
+                  ]) +
+                    `<div class="actions">${button("Revoke", "telegram-revoke", u.userId, "danger")}</div>`,
+                ),
+              )
+              .join("")
+          : empty(
+              "Nobody can talk to this bot yet",
+              "Get a claim code and send it from Telegram. Until then the bot answers nobody: an empty list means deny, not allow.",
+            );
+
         return replaceContent(
           intro +
-            empty(
-              "No Telegram bot connected",
-              "Connect a bot to give this gateway a Telegram front door. The gateway holds the token and polls Telegram; workers only ever see a placeholder.",
-            ),
+            controls +
+            (t.warning
+              ? `<div class="notice error" role="alert">${esc(t.warning)}</div>`
+              : "") +
+            record(
+              "telegram-bot",
+              bot,
+              "The gateway holds this bot's token and talks to Telegram directly.",
+              badge(t.running ? "Connected" : "Not polling"),
+              facts([
+                ["Bot ID", t.botId],
+                ["Bot", t.botUsername ? "@" + t.botUsername : ""],
+                [
+                  "Last poll",
+                  t.lastPoll ? new Date(t.lastPoll).toLocaleTimeString() : "",
+                ],
+                [
+                  "Added",
+                  t.createdAt ? new Date(t.createdAt).toLocaleString() : "",
+                ],
+              ]) + openBot,
+            ) +
+            claim +
+            `<h3>Allowed accounts</h3>` +
+            people,
         );
       }
-      // telegramConnect walks through creating a bot with BotFather. Token
-      // entry is deliberately absent until the gateway can store it.
+      // telegramCode groups a claim code for reading aloud. The code itself has
+      // no separator; the gateway accepts it with or without.
+      function telegramCode(code) {
+        return code.length === 8 ? code.slice(0, 4) + "-" + code.slice(4) : code;
+      }
+      // telegramClaim issues a claim code. One is outstanding at a time, and it
+      // is never stored, so a restart simply means asking for a new one.
+      async function telegramClaim() {
+        try {
+          const claim = await api("telegram/claim", "POST", {});
+          await changed(["telegram"]);
+          notify(
+            claim.code
+              ? `Send /claim ${telegramCode(claim.code)} to the bot on Telegram.`
+              : "Claim code issued.",
+          );
+        } catch (err) {
+          errorDialog(err);
+        }
+      }
+      function telegramRevoke(id) {
+        confirmAction(
+          "Revoke access?",
+          "That Telegram account stops reaching this gateway immediately. The bot itself is untouched.",
+          "Revoke",
+          async () => {
+            await api("telegram/users/" + encodeURIComponent(id), "DELETE");
+            await changed(["telegram"]);
+          },
+        );
+      }
+      // telegramConnect collects the BotFather token. The gateway confirms it
+      // with Telegram before saving, so a wrong token leaves no state behind.
       function telegramConnect() {
-        mountDialog(
-          "Connect to Telegram",
-          `<p>Create a bot with BotFather, then give the gateway its token. The gateway stores the token and never exports it; workers use a placeholder instead.</p>
-           <ol>
-             <li>Open <a href="https://t.me/BotFather" target="_blank" rel="noopener noreferrer">@BotFather</a> in Telegram.</li>
-             <li>Send <code>/newbot</code> and follow the prompts to name the bot.</li>
-             <li>Copy the token BotFather returns, e.g. <code>123456789:AAH…</code>.</li>
-           </ol>
-           <p class="muted">Token entry is not wired up yet: the gateway has no Telegram module to store it.</p>
-           <div class="actions">${button("Close", "close")}</div>`,
+        const connected = !!data.telegram?.connected;
+        formDialog(
+          connected ? "Reconnect Telegram" : "Connect to Telegram",
+          "The gateway stores the bot token and calls Telegram with it. It is never exported to a worker.",
+          `<p class="field full">Create a bot with <a href="https://t.me/BotFather" target="_blank" rel="noopener noreferrer">@BotFather</a>: send <code>/newbot</code>, follow the prompts, then copy the token it returns.</p>` +
+            field("token", "Bot token", "", {
+              type: "password",
+              required: true,
+              full: true,
+              hint: "Looks like 123456789:AAH… Telegram is asked to confirm it before anything is saved.",
+            }),
+          connected ? "Replace token" : "Connect",
+          async (values) => {
+            const result = await api("telegram", "POST", {
+              token: values.token.trim(),
+            });
+            await changed(["telegram"]);
+            return result.botUsername
+              ? `Connected to @${result.botUsername}.`
+              : "Connected.";
+          },
+        );
+      }
+      function telegramDisconnect() {
+        confirmAction(
+          "Disconnect Telegram?",
+          "This deletes the bot token from Piso only. The bot stays on Telegram and the token stays valid until you revoke it with BotFather.",
+          "Disconnect",
+          async () => {
+            await api("telegram", "DELETE");
+            await changed(["telegram"]);
+          },
         );
       }
       function renderSettings() {
@@ -3515,7 +3663,7 @@
         );
       }
       async function changed(keys) {
-        await refresh([...new Set([...keys, ...(keys.some((key) => ["github", "secrets", "githubUser"].includes(key)) ? ["githubMappings", "secrets"] : [])])]);
+        await refresh([...new Set([...keys, ...(keys.some((key) => ["github", "secrets", "githubUser", "telegram"].includes(key)) ? ["githubMappings", "secrets"] : [])])]);
       }
       function secretForm(id) {
         const s = list("secrets").find((s) => s.id === id) || {};
@@ -4503,6 +4651,9 @@
           return;
         }
         if (name === "telegram-connect") return telegramConnect();
+        if (name === "telegram-claim") return telegramClaim();
+        if (name === "telegram-revoke") return telegramRevoke(id);
+        if (name === "telegram-disconnect") return telegramDisconnect();
         if (name === "retry") {
           await health();
           return refresh();

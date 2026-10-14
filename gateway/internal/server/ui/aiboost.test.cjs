@@ -9,8 +9,8 @@ function harness(t) {
  const dom = new JSDOM('<div id="content"></div><span id="resultCount"></span><div id="toast"></div><dialog id="dialog"><h2 id="dialogTitle"></h2><button id="closeDialog"></button><div id="dialogContent"></div></dialog>',{url:'http://piso.local'});
  t.after(()=>dom.window.close());
  const calls=[];
- const sandbox={document:dom.window.document,window:dom.window,location:dom.window.location,URL,count:()=>{},sub:'connections',query:'',loaded:new Set(['connections']),
-  data:{connections:{connections:[{id:'ai-boost',name:'AI Boost',status:'ok',detail:'Connected · worker drafts and dashboard review'}]},aiBoost:{configured:true}},
+ const sandbox={document:dom.window.document,window:dom.window,location:dom.window.location,URL,count:()=>{},sub:'aiBoost',query:'',loaded:new Set(['aiBoost']),
+  data:{aiBoost:{configured:true}},
   $:s=>dom.window.document.querySelector(s), matches:()=>true,list:()=>[],hideProject:false,ingressPort:80,
   api:async(path,method,body)=>{calls.push({path,method,body});return {url:'https://piso.example/oauth/ai-boost/start?ticket=one'}},
   changed:async()=>{},refresh:async()=>{},action:async()=>{},errorDialog:e=>{throw e},safeURL:s=>s,
@@ -28,18 +28,18 @@ function harness(t) {
  vm.runInContext(helpers,ctx);
  return {dom,sandbox,ctx,calls,run:s=>vm.runInContext(s,ctx)};
 }
-test('Connections renders one-click connect, reconnect and disconnect controls',t=>{
+test('AI Boost tab renders one-click connect, reconnect and disconnect controls',t=>{
  const h=harness(t);h.run('renderSettings()');
- assert.match(h.dom.window.document.body.textContent,/Connected · worker drafts and dashboard review/);
  assert.ok(h.dom.window.document.querySelector('[data-action="boost-authorize"]'));
  assert.ok(h.dom.window.document.querySelector('[data-action="boost-disconnect"]'));
+ assert.match(h.dom.window.document.body.textContent,/Connect AI Boost/);
  h.sandbox.data.aiBoost.configured=false;h.run('renderSettings()');
  assert.ok(h.dom.window.document.querySelector('[data-action="boost-authorize"]'));
  assert.equal(h.dom.window.document.querySelector('[data-action="boost-config"]'),null);
  assert.match(h.dom.window.document.body.textContent,/Connect AI Boost/);
  assert.doesNotMatch(h.dom.window.document.body.textContent,/Callback URL|API origin|Configure AI Boost/);
- h.sandbox.data.aiBoost.configured=true;h.sandbox.data.connections.connections[0].status='needs-auth';h.run('renderSettings()');
- assert.match(h.dom.window.document.body.textContent,/Reconnect AI Boost/);
+ h.sandbox.data.aiBoost.configured=true;h.sandbox.data.aiBoost.status='ok';h.run('renderSettings()');
+ assert.match(h.dom.window.document.body.textContent,/Reconnect/);
 });
 test('sign-in opens synchronously and obtains a host POST ticket before navigating',async t=>{
  const h=harness(t);h.sandbox.data.aiBoost.configured=false;
