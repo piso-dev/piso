@@ -44,6 +44,10 @@ type State struct {
 	// Telegram front door. It is a cache: the coordinator owns the lease, and
 	// an entry whose ExpiresAt has passed is not a supervisor.
 	Supervisor SupervisorLink `json:"supervisor,omitempty"`
+	// Mailbox holds authorized Telegram messages waiting for the supervisor. It
+	// is the durable queue between the poller and a worker that may be absent or
+	// busy; only an ack removes a message.
+	Mailbox []MailMessage `json:"mailbox,omitempty"`
 	// PiProvider is the legacy single shared pi models.json pointer. It is
 	// migrated into PiProviders on load and never written again.
 	PiProvider *PiProviderRec `json:"piProvider,omitempty"`
@@ -244,6 +248,9 @@ type Store struct {
 
 	onAsks chan struct{}
 
+	// onMailbox wakes a worker's long-poll when a Telegram message is enqueued.
+	onMailbox chan struct{}
+
 	// onTelegram wakes the Telegram poller when the coordinator says the front
 	// door moved (a claim, a revocation), so the holder refetches the allow-list
 	// now instead of at its next renewal.
@@ -320,6 +327,7 @@ func New(path, logPath, patternsPath, activitiesPath string, maxLog int) (*Store
 		onMcp:       make(chan McpServerRec, 64),
 		onGithub:    make(chan GithubAppRec, 64),
 		onAsks:      make(chan struct{}, 8),
+		onMailbox:   make(chan struct{}, 8),
 		onTelegram:  make(chan struct{}, 8),
 		unreachable: map[string][]UnreachablePort{},
 	}

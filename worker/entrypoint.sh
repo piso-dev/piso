@@ -269,9 +269,11 @@ fi
 
 # Standalone (cloud ship) workers compete for the one supervisor lease on the
 # gateway's Telegram front door. The coordinator refuses a local module, so this
-# only runs where PISO_TASK_LOOP marks a launched worker.
-if [ "${PISO_TASK_LOOP:-}" = "1" ] && [ -n "${GATEWAY_URL:-}" ] && [ -n "${PISO_WORKER_NAME:-}" ] && [ -n "${PISO_WORKER_SLUG:-}" ] && [ -x /usr/local/bin/piso-supervisor-watch ]; then
-  respawn /usr/local/bin/piso-supervisor-watch "$PISO_LOG_DIR/supervisor-watch.log"
+# only runs where PISO_TASK_LOOP marks a launched worker. The session renews the
+# lease, long-polls the gateway mailbox, and drives one persistent pi RPC
+# session, so a Telegram message joins the running conversation.
+if [ "${PISO_TASK_LOOP:-}" = "1" ] && [ -n "${GATEWAY_URL:-}" ] && [ -n "${PISO_WORKER_NAME:-}" ] && [ -n "${PISO_WORKER_SLUG:-}" ] && [ -x /usr/local/bin/piso-supervisor-session ]; then
+  respawn /usr/local/bin/piso-supervisor-session "$PISO_LOG_DIR/supervisor-session.log"
 fi
 
 # Signal that seeding is done so `piso up` / `piso attach` can wait. /run is

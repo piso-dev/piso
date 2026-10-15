@@ -57,6 +57,16 @@ const leaseRetry = 15 * time.Second
 // only make the two terminate each other's getUpdates.
 var errLeaseLost = errors.New("telegram poller lease lost")
 
+// ErrNoRecipient is what Handle returns when no live supervisor can receive the
+// message. The poller turns it into the no-worker acknowledgement rather than
+// the generic delivery failure, so the two are distinguishable.
+var ErrNoRecipient = errors.New("no supervisor is attached to this gateway")
+
+// noWorkerMessage is the acknowledgement when the front door works but no
+// supervisor is attached. It is deliberately the same whether Handle is nil or
+// returns ErrNoRecipient.
+const noWorkerMessage = "Received. No worker is attached to this gateway yet, so nothing was run."
+
 // ClaimTTL is how long an issued claim code stays usable.
 const ClaimTTL = 10 * time.Minute
 
@@ -453,10 +463,14 @@ func (m *Manager) deliver(ctx context.Context, c *Client, token string, u Update
 	}
 	m.refresh(ctx, userID, msg.From)
 	if m.Handle == nil {
-		m.reply(ctx, c, token, msg.Chat.ID, "Received. No worker is attached to this gateway yet, so nothing was run.")
+		m.reply(ctx, c, token, msg.Chat.ID, noWorkerMessage)
 		return
 	}
 	if err := m.Handle(ctx, *msg); err != nil {
+		if errors.Is(err, ErrNoRecipient) {
+			m.reply(ctx, c, token, msg.Chat.ID, noWorkerMessage)
+			return
+		}
 		log.Printf("telegram: handle: %v", err)
 		m.reply(ctx, c, token, msg.Chat.ID, "That message could not be delivered to the worker.")
 	}
@@ -507,6 +521,18 @@ func (m *Manager) reply(ctx context.Context, c *Client, token string, chatID int
 	if err := c.SendMessage(ctx, token, chatID, text); err != nil {
 		log.Printf("telegram: reply: %v", err)
 	}
+}
+
+// SendText posts a message to a chat. It is how a worker's reply reaches
+// Telegram: the worker never holds the token, so it hands the text to the
+// gateway and the gateway sends it. Callers restrict the chat to the
+// allow-list; this only enforces that a token exists.
+func (m *Manager) SendText(ctx context.Context, chatID int64, text string) error {
+	rec, ok := m.bot()
+	if !ok {
+		return errors.New("no telegram bot token is stored")
+	}
+	return NewClient(m.HTTP).SendMessage(ctx, rec.Value, chatID, text)
 }
 
 // IssueClaim mints a claim code. One code is outstanding at a time: issuing a

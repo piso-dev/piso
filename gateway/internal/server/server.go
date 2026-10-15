@@ -64,6 +64,7 @@ func New(st *store.Store, pat *patterns.Compiled, pr *proxy.Handler, ca *proxy.C
 	// The manager is created here but does not run until main starts it, so a
 	// Server in a test is inert: nothing reaches out to Telegram on its own.
 	s.Telegram = telegram.NewManager(st, nil)
+	s.attachTelegramMailbox()
 	return s
 }
 
