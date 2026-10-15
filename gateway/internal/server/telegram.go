@@ -52,6 +52,19 @@ type telegramStatus struct {
 	// Users is the allow-list. It carries no credential, so the store record is
 	// the payload.
 	Users []store.TelegramUser `json:"users,omitempty"`
+	// Supervisor is the worker the coordinator named to run this front door, if
+	// any. Absent means nobody may receive messages yet.
+	Supervisor *supervisorStatus `json:"supervisor,omitempty"`
+}
+
+// supervisorStatus is the dashboard view of the named supervisor. It is a cache
+// of the coordinator's lease and carries no credential.
+type supervisorStatus struct {
+	Worker    string     `json:"worker,omitempty"`
+	Slug      string     `json:"slug,omitempty"`
+	ExpiresAt *time.Time `json:"expiresAt,omitempty"`
+	// Reason is the last refusal for this worker, when it is not the supervisor.
+	Reason string `json:"reason,omitempty"`
 }
 
 // telegramManager returns the front door. A Server built without New has none,
@@ -123,6 +136,12 @@ func (s *Server) handleTelegramStatus(w http.ResponseWriter, r *http.Request) {
 		Running: snap.Running, BotID: snap.BotID, BotUsername: snap.BotUsername,
 		LastPoll: snap.LastPoll, Users: front.Users,
 		LeaseHeld: snap.LeaseHeld, Waiting: snap.Waiting,
+	}
+	if link, live := s.Store.Supervisor(time.Now()); live {
+		expires := link.ExpiresAt
+		out.Supervisor = &supervisorStatus{Worker: link.Worker, Slug: link.Slug, ExpiresAt: &expires}
+	} else if link := s.Store.SupervisorLink(); link.Reason != "" {
+		out.Supervisor = &supervisorStatus{Worker: link.Worker, Slug: link.Slug, Reason: link.Reason}
 	}
 	if front.Claim.Code != "" {
 		out.ClaimCode = front.Claim.Code

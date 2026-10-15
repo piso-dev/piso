@@ -40,6 +40,10 @@ type State struct {
 	// Telegram is the gateway's Telegram front door: which bot the allow-list
 	// belongs to, the update cursor, and the accounts allowed to talk to it.
 	Telegram TelegramLink `json:"telegram,omitempty"`
+	// Supervisor is the worker the coordinator named to run this gateway's
+	// Telegram front door. It is a cache: the coordinator owns the lease, and
+	// an entry whose ExpiresAt has passed is not a supervisor.
+	Supervisor SupervisorLink `json:"supervisor,omitempty"`
 	// PiProvider is the legacy single shared pi models.json pointer. It is
 	// migrated into PiProviders on load and never written again.
 	PiProvider *PiProviderRec `json:"piProvider,omitempty"`

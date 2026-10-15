@@ -267,6 +267,13 @@ if [ "${PISO_TASK_LOOP:-}" = "1" ] && [ "${PISO_ROLE:-}" != "monitor" ] && [ -x 
   respawn /usr/local/bin/piso-task-watch "$PISO_LOG_DIR/task-watch.log"
 fi
 
+# Standalone (cloud ship) workers compete for the one supervisor lease on the
+# gateway's Telegram front door. The coordinator refuses a local module, so this
+# only runs where PISO_TASK_LOOP marks a launched worker.
+if [ "${PISO_TASK_LOOP:-}" = "1" ] && [ -n "${GATEWAY_URL:-}" ] && [ -n "${PISO_WORKER_NAME:-}" ] && [ -n "${PISO_WORKER_SLUG:-}" ] && [ -x /usr/local/bin/piso-supervisor-watch ]; then
+  respawn /usr/local/bin/piso-supervisor-watch "$PISO_LOG_DIR/supervisor-watch.log"
+fi
+
 # Signal that seeding is done so `piso up` / `piso attach` can wait. /run is
 # tmpfs; gone on restart, rewritten every boot. Attach before this exists
 # races the ~650MB extension copy and first-start compile (exit 137).
