@@ -67,6 +67,21 @@ func New(st *store.Store, pat *patterns.Compiled, pr *proxy.Handler, ca *proxy.C
 	return s
 }
 
+// revokeOrDelete removes a local secret. A replicated secret is tombstoned
+// rather than forgotten: a peer still holding a copy would otherwise publish it
+// back. A local-only secret has no peer to convince, so it is deleted.
+func (s *Server) revokeOrDelete(rec store.SecretRec) error {
+	if rec.TechnocoreID != "" {
+		v, err := technocore.Revoke(s.dataDir(), rec.TechnocoreID, rec.ContentVersion)
+		if err != nil {
+			log.Printf("secrets: revoke %s: %v", rec.ID, err)
+		} else if err := s.Store.RevokeSecret(rec.ID, v); err == nil {
+			return nil
+		}
+	}
+	return s.Store.DeleteSecret(rec.ID)
+}
+
 // ControlHandler returns the host control-plane mux (UI + API). Worker
 // peers on the internal vpc are rejected; they use WorkerHandler. Kept for
 // API/tests; the production host web entrypoint is WebHandler.
@@ -327,18 +342,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 			writeJSON(w, 404, map[string]string{"error": "not found"})
 			return
 		}
-		// A replicated secret is deleted by tombstone, not by forgetting: a
-		// peer still holding a copy would otherwise publish it back.
-		if rec.TechnocoreID != "" {
-			v, err := technocore.Revoke(s.dataDir(), rec.TechnocoreID, rec.ContentVersion)
-			if err != nil {
-				log.Printf("secrets: revoke %s: %v", id, err)
-			} else if err := s.Store.RevokeSecret(id, v); err == nil {
-				w.WriteHeader(204)
-				return
-			}
-		}
-		if err := s.Store.DeleteSecret(id); err != nil {
+		if err := s.revokeOrDelete(rec); err != nil {
 			writeJSON(w, 500, map[string]string{"error": err.Error()})
 			return
 		}

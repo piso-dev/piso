@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"piso/gateway/internal/model"
 	"piso/gateway/internal/store"
 	tc "piso/internal/technocore"
 )
@@ -345,6 +346,37 @@ func TestApplyEnvelopeRevokedTombstones(t *testing.T) {
 	}
 	if got, _ := st.SecretByID("local1"); !got.Revoked {
 		t.Fatalf("stale envelope resurrected a tombstone: %+v", got)
+	}
+}
+
+func TestApplyEnvelopeCarriesTheSecretKind(t *testing.T) {
+	st := testStore(t)
+	id, err := tc.Generate("https://s", "gw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	obj := testEnvelope(t, id, "rid-9", "Telegram bot", "", "123:abc")
+	obj.ContentVersion = 1
+	obj.Metadata["gatewayOnly"] = true
+	obj.Metadata["kind"] = model.SecretKindTelegram
+	if _, err := applyEnvelope(st, id, obj); err != nil {
+		t.Fatal(err)
+	}
+	got, ok := st.SecretByID("tc_rid-9")
+	if !ok || got.Kind != model.SecretKindTelegram {
+		t.Fatalf("subtype did not travel with the envelope: %+v", got)
+	}
+	// An envelope published before the subtype travelled carries no kind. It
+	// must not erase one already learned, or the gateway would forget what the
+	// credential is for and stop polling.
+	again := testEnvelope(t, id, "rid-9", "Telegram bot", "", "123:abc")
+	again.ContentVersion = 2
+	again.Metadata["gatewayOnly"] = true
+	if _, err := applyEnvelope(st, id, again); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := st.SecretByID("tc_rid-9"); got.Kind != model.SecretKindTelegram {
+		t.Fatalf("an envelope without a subtype erased it: %+v", got)
 	}
 }
 

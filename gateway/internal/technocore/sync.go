@@ -59,8 +59,14 @@ func Run(st *store.Store, dataDir string) {
 		}
 		log.Printf("technocore: connecting %s", id.ServerURL)
 		ready, err := connectSession(id, dataDir, rec.Nudge, func(ev string) {
-			if ev == "asks_changed" {
+			switch ev {
+			case "asks_changed":
 				st.BroadcastAsks()
+			case "telegram_changed":
+				// The allow-list and claim code belong to the coordinator. Wake
+				// the poller so it refetches instead of enforcing a stale list
+				// until its next renewal.
+				st.BroadcastTelegram()
 			}
 		})
 		if err != nil {
@@ -269,6 +275,11 @@ func applyEnvelope(st *store.Store, id tc.Identity, obj envelope) (string, error
 		return "", err
 	}
 	gatewayOnly, _ := obj.Metadata["gatewayOnly"].(bool)
+	// The subtype ("telegram", ...) rides in metadata: the coordinator stores
+	// every envelope as a secret resource, so this is the only place it can
+	// travel. Empty means the envelope predates it, not that the secret has no
+	// subtype.
+	kind, _ := obj.Metadata["kind"].(string)
 	placeholder, _ := obj.Metadata["placeholder"].(string)
 	if placeholder == "" && !gatewayOnly {
 		// Gateway-only credentials are never substituted into worker traffic,
@@ -312,6 +323,11 @@ func applyEnvelope(st *store.Store, id tc.Identity, obj envelope) (string, error
 		local.Value = plain
 		local.AllowedHosts = hosts
 		local.GatewayOnly = gatewayOnly
+		if kind != "" {
+			// Follow the value: the subtype describes the plaintext. An envelope
+			// with no subtype must not erase one learned earlier.
+			local.Kind = kind
+		}
 		if local.ID == secretID {
 			// Coordinator-owned row: refresh identity metadata too.
 			local.Name = obj.Name
@@ -336,6 +352,7 @@ func applyEnvelope(st *store.Store, id tc.Identity, obj envelope) (string, error
 	rec := store.SecretRec{
 		ID:             secretID,
 		Name:           obj.Name,
+		Kind:           kind,
 		Placeholder:    placeholder,
 		Value:          plain,
 		EnvKey:         envKey,

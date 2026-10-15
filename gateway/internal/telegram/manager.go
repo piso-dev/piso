@@ -8,14 +8,20 @@
 // binary the way technocore.Run is. It watches the stored token rather than
 // being pushed a change, so connecting or disconnecting a bot is just a store
 // write plus a Kick to cut the current long poll short.
+//
+// The bot token is replicated to every enrolled gateway, but Telegram allows
+// only one getUpdates at a time. The Manager therefore holds a lease granted by
+// the coordinator (see the Lease field): every gateway asks, exactly one is
+// granted, and the holder must keep renewing or the lease lapses and another
+// gateway takes over.
 package telegram
 
 import (
 	"context"
 	"crypto/rand"
-	"crypto/subtle"
 	"errors"
 	"log"
+	mrand "math/rand"
 	"net/http"
 	"strings"
 	"sync"
@@ -33,6 +39,24 @@ const LongPoll = 30 * time.Second
 // response is not cut off, but a wedged connection still fails.
 const longPollWindow = LongPoll + 15*time.Second
 
+// LeaseTTL is the poller-lease window the gateway asks the coordinator for. It
+// is longer than one long poll so a request already in flight cannot outlive
+// the lease, and the holder renews well inside it.
+const LeaseTTL = 120 * time.Second
+
+// leaseRenew is how often the holder re-asks. A third of the TTL leaves room
+// for a lost round trip before the lease actually lapses.
+const leaseRenew = LeaseTTL / 3
+
+// leaseRetry is how long a gateway waits before asking again after a refusal,
+// jittered so a fleet that lost a holder does not stampede the coordinator.
+const leaseRetry = 15 * time.Second
+
+// errLeaseLost ends a polling session when the coordinator stops granting this
+// gateway the lease: another gateway holds it now, so continuing to poll would
+// only make the two terminate each other's getUpdates.
+var errLeaseLost = errors.New("telegram poller lease lost")
+
 // ClaimTTL is how long an issued claim code stays usable.
 const ClaimTTL = 10 * time.Minute
 
@@ -46,34 +70,34 @@ const claimAlphabet = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"
 
 const claimLength = 8
 
-// Status is the live view of the front door for the dashboard.
+// Status is the live view of the poller for the dashboard.
 type Status struct {
-	Running     bool                 `json:"running"`
-	BotID       int64                `json:"botId,omitempty"`
-	BotUsername string               `json:"botUsername,omitempty"`
-	LastPoll    *time.Time           `json:"lastPoll,omitempty"`
-	LastError   string               `json:"lastError,omitempty"`
-	Claim       Claim                `json:"claim,omitempty"`
-	Users       []store.TelegramUser `json:"users,omitempty"`
+	Running     bool       `json:"running"`
+	BotID       int64      `json:"botId,omitempty"`
+	BotUsername string     `json:"botUsername,omitempty"`
+	LastPoll    *time.Time `json:"lastPoll,omitempty"`
+	LastError   string     `json:"lastError,omitempty"`
+	// LeaseHeld is true while this gateway holds the poller lease; Waiting is
+	// true while it is asking and another gateway holds it. Both are false when
+	// no lease is in use (a standalone gateway with no coordinator to ask).
+	LeaseHeld bool `json:"leaseHeld,omitempty"`
+	Waiting   bool `json:"waiting,omitempty"`
 }
 
-// Claim is a pending claim code. It is never persisted: a code exists to prove
-// the sender controls the account right now, so anything on disk would be a
-// replayable artifact with a longer life than it deserves. A restart drops it
-// and the dashboard issues a new one.
-type Claim struct {
-	Code      string    `json:"code,omitempty"`
-	ExpiresAt time.Time `json:"expiresAt,omitempty"`
-}
-
-type claimState struct {
-	Code      string
+// LeaseGrant is the coordinator's answer to a poller-lease request: Granted is
+// false when another gateway holds a live lease, Offset is the coordinator's
+// last known update cursor, and ExpiresAt bounds how long this gateway may keep
+// polling without another successful renewal.
+type LeaseGrant struct {
+	Granted   bool
+	Offset    int64
 	ExpiresAt time.Time
-	Attempts  int
+	Holder    string
 }
 
-// Manager owns the bot connection: the long poll, the update cursor, the claim
-// handshake and the allow-list. One gateway runs one Manager.
+// Manager owns the bot connection: the long poll, the update cursor and the
+// lease. Who may talk to the bot belongs to the front door, which is the
+// coordinator once the token is published and the local store otherwise.
 type Manager struct {
 	Store *store.Store
 	// HTTP is the outbound client. Nil means http.DefaultClient, which is the
@@ -83,17 +107,32 @@ type Manager struct {
 	// yet, and the manager answers with an acknowledgement instead, so the
 	// front door can be verified end to end before delivery is wired in.
 	Handle func(ctx context.Context, m Message) error
+	// Lease asks the coordinator for the single-poller lease on a bot resource.
+	// Nil means this gateway polls without one: a standalone gateway has no
+	// coordinator to ask, and a test drives the poller directly. A bot that was
+	// never published (no coordinator resource id) is polled directly too,
+	// because there is nothing to arbitrate.
+	Lease func(ctx context.Context, resourceID string, offset int64) (LeaseGrant, error)
+	// Local is the store-backed front door: the authority for a gateway with no
+	// coordinator, and the no-network fallback for the dashboard.
+	Local FrontDoor
+	// Remote is the coordinator-backed front door. Nil means this gateway has
+	// no coordinator; the server sets it once the pairing is known.
+	Remote FrontDoor
 
 	mu            sync.Mutex
 	status        Status
-	claim         claimState
 	cancelSession context.CancelFunc
 	now           func() time.Time
 }
 
 // NewManager returns a manager over st. Nothing runs until Run is called.
 func NewManager(st *store.Store, h *http.Client) *Manager {
-	return &Manager{Store: st, HTTP: h, now: time.Now}
+	m := &Manager{Store: st, HTTP: h, now: time.Now}
+	// The local front door reads this manager's clock, so a test that swaps now
+	// still controls claim expiry.
+	m.Local = NewLocalFrontDoor(st, m.clock)
+	return m
 }
 
 func (m *Manager) clock() time.Time {
@@ -105,11 +144,18 @@ func (m *Manager) clock() time.Time {
 
 // token returns the stored bot token, or "" when no bot is connected.
 func (m *Manager) token() string {
-	rec, ok := Secret(m.Store.Secrets())
+	rec, ok := m.bot()
 	if !ok {
 		return ""
 	}
 	return rec.Value
+}
+
+// bot returns the stored bot-token secret, or ok=false when no bot is
+// connected. The whole record is returned, not just the value: the poller lease
+// is keyed by the coordinator resource id it carries.
+func (m *Manager) bot() (store.SecretRec, bool) {
+	return Secret(m.Store.Secrets())
 }
 
 // Kick cuts the current long poll short. Connecting or disconnecting a bot
@@ -130,23 +176,75 @@ func (m *Manager) setStatus(mut func(*Status)) {
 	mut(&m.status)
 }
 
+// setWaiting records that the front door is serving nobody because another
+// gateway holds the poller lease. That is a normal state, not an error.
+func (m *Manager) setWaiting() {
+	m.setStatus(func(s *Status) {
+		s.Running = false
+		s.LeaseHeld = false
+		s.Waiting = true
+		s.LastError = ""
+	})
+}
+
+// setFailed records a real failure: the bot cannot be served and no other
+// gateway is known to be serving it either.
+func (m *Manager) setFailed(err error) {
+	m.setStatus(func(s *Status) {
+		s.Running = false
+		s.LeaseHeld = false
+		s.Waiting = false
+		s.LastError = err.Error()
+	})
+}
+
 // Run is the process-lifetime loop. It re-reads the stored token every pass, so
-// a connect or disconnect is picked up without any plumbing into the loop.
+// a connect or disconnect is picked up without any plumbing into the loop, and
+// it re-asks the coordinator for the poller lease on every pass: a gateway that
+// is refused keeps asking, and a holder that lapses is replaced.
 func (m *Manager) Run(ctx context.Context) {
+	go m.watchFrontDoor(ctx)
 	backoff := time.Second
 	for {
 		if ctx.Err() != nil {
 			return
 		}
-		token := m.token()
-		if token == "" {
+		rec, ok := m.bot()
+		if !ok {
 			m.setStatus(func(s *Status) { *s = Status{} })
 			if !sleep(ctx, 5*time.Second) {
 				return
 			}
 			continue
 		}
-		err := m.session(ctx, token)
+		grant, held, err := m.acquire(ctx, rec)
+		if err != nil {
+			// The coordinator is the only arbiter, so without an answer this
+			// gateway must not poll: another gateway may be polling already.
+			log.Printf("telegram: lease: %v", err)
+			m.setFailed(err)
+			if !sleep(ctx, jitter(backoff)) {
+				return
+			}
+			if backoff < 30*time.Second {
+				backoff *= 2
+			}
+			continue
+		}
+		if !held {
+			m.setWaiting()
+			if !sleep(ctx, jitter(leaseRetry)) {
+				return
+			}
+			continue
+		}
+		// The allow-list is the coordinator's, so fetch it before serving: a
+		// gateway taking over the lease must not enforce the list it inherited.
+		if err := m.Refresh(); err != nil {
+			// Fall back to the cache. An empty list means deny, never allow.
+			log.Printf("telegram: front door: %v", err)
+		}
+		err = m.session(ctx, rec, grant)
 		if ctx.Err() != nil {
 			return
 		}
@@ -155,12 +253,18 @@ func (m *Manager) Run(ctx context.Context) {
 			backoff = time.Second
 			continue
 		}
+		if errors.Is(err, errLeaseLost) {
+			// Another gateway holds the lease now. Re-ask rather than report an
+			// error the dashboard cannot act on.
+			m.setWaiting()
+			if !sleep(ctx, jitter(leaseRetry)) {
+				return
+			}
+			continue
+		}
 		log.Printf("telegram: %v", err)
-		m.setStatus(func(s *Status) {
-			s.Running = false
-			s.LastError = err.Error()
-		})
-		if !sleep(ctx, backoff) {
+		m.setFailed(err)
+		if !sleep(ctx, jitter(backoff)) {
 			return
 		}
 		if backoff < 30*time.Second {
@@ -169,8 +273,42 @@ func (m *Manager) Run(ctx context.Context) {
 	}
 }
 
-// session polls until the token changes, the context ends, or Telegram fails.
-func (m *Manager) session(ctx context.Context, token string) error {
+// watchFrontDoor refetches the allow-list whenever the coordinator says the
+// front door moved. Without it a revocation would not take effect until the
+// next lease renewal, and the lease only renews every 40s.
+func (m *Manager) watchFrontDoor(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-m.Store.SubTelegram():
+			_ = m.Refresh()
+		}
+	}
+}
+
+// acquire asks the coordinator for the lease, or renews it when this gateway
+// already holds it. held is false when another gateway holds a live lease.
+//
+// With no lease client, or a bot that was never published to the coordinator,
+// there is nothing to arbitrate, so an empty grant is returned and polling
+// proceeds directly.
+func (m *Manager) acquire(ctx context.Context, rec store.SecretRec) (LeaseGrant, bool, error) {
+	if m.Lease == nil || rec.TechnocoreID == "" {
+		return LeaseGrant{}, true, nil
+	}
+	grant, err := m.Lease(ctx, rec.TechnocoreID, m.Store.TelegramLink().Offset)
+	if err != nil {
+		return LeaseGrant{}, false, err
+	}
+	return grant, grant.Granted, nil
+}
+
+// session polls until the token changes, the context ends, the lease lapses, or
+// Telegram fails.
+func (m *Manager) session(ctx context.Context, rec store.SecretRec, grant LeaseGrant) error {
+	token := rec.Value
+	managed := m.Lease != nil && rec.TechnocoreID != ""
 	sctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	m.mu.Lock()
@@ -189,6 +327,8 @@ func (m *Manager) session(ctx context.Context, token string) error {
 	}
 	m.setStatus(func(s *Status) {
 		s.Running = true
+		s.LeaseHeld = managed
+		s.Waiting = false
 		s.BotID = bot.ID
 		s.BotUsername = bot.Username
 		s.LastError = ""
@@ -200,13 +340,53 @@ func (m *Manager) session(ctx context.Context, token string) error {
 		log.Printf("telegram: deleteWebhook: %v", err)
 	}
 
+	// The coordinator's cursor travels with the lease, so a gateway taking over
+	// resumes where the previous holder stopped. Never move it backwards: the
+	// local copy may be ahead of the last reported one.
 	offset := m.Store.TelegramLink().Offset
+	if grant.Offset > offset {
+		offset = grant.Offset
+	}
+	expiresAt := grant.ExpiresAt
+	if expiresAt.IsZero() {
+		expiresAt = m.clock().Add(LeaseTTL)
+	}
+	renewAt := m.clock().Add(leaseRenew)
+
 	for {
 		if sctx.Err() != nil {
 			return nil
 		}
-		if m.token() != token {
+		cur, ok := m.bot()
+		if !ok || cur.Value != token {
 			return nil
+		}
+		if m.Lease != nil && !managed && cur.TechnocoreID != "" {
+			// The bot was published and this gateway now has a coordinator to
+			// lease from, so restart to acquire one: peers can receive the token,
+			// and one of them may already be about to poll.
+			return nil
+		}
+		if managed && !m.clock().Before(renewAt) {
+			next, err := m.Lease(sctx, rec.TechnocoreID, offset)
+			switch {
+			case err == nil && !next.Granted:
+				return errLeaseLost
+			case err == nil:
+				renewAt = m.clock().Add(leaseRenew)
+				if next.ExpiresAt.IsZero() {
+					expiresAt = m.clock().Add(LeaseTTL)
+				} else {
+					expiresAt = next.ExpiresAt
+				}
+			case m.clock().After(expiresAt):
+				// The round trip failed and the window it was renewing has
+				// closed: this gateway can no longer claim the bot.
+				return errLeaseLost
+			default:
+				// A lost round trip is not a lost lease. Retry before it lapses.
+				renewAt = m.clock().Add(leaseRenew)
+			}
 		}
 		uctx, ucancel := context.WithTimeout(sctx, longPollWindow)
 		updates, err := c.GetUpdates(uctx, token, offset, LongPoll)
@@ -282,41 +462,28 @@ func (m *Manager) deliver(ctx context.Context, c *Client, token string, u Update
 	}
 }
 
-// redeem consumes a claim code. The code is the only thing between a stranger
-// who found the bot and the agent, so the comparison is constant time and a
-// short run of wrong guesses burns the code.
+// redeem forwards a claim code to the front door. The code is the only thing
+// between a stranger who found the bot and the agent, so whoever owns it — the
+// coordinator once the bot is published, the local front door otherwise —
+// compares it in constant time and burns it after a few wrong guesses.
 func (m *Manager) redeem(ctx context.Context, c *Client, token string, msg *Message, code string) {
-	now := m.clock()
-	m.mu.Lock()
-	pending := m.claim
-	live := pending.Code != "" && now.Before(pending.ExpiresAt)
-	match := live && subtle.ConstantTimeCompare([]byte(code), []byte(pending.Code)) == 1
-	switch {
-	case match:
-		m.claim = claimState{}
-	case live:
-		pending.Attempts++
-		if pending.Attempts >= claimAttempts {
-			m.claim = claimState{}
-		} else {
-			m.claim = pending
-		}
-	}
-	m.mu.Unlock()
-	if !match {
-		m.reply(ctx, c, token, msg.Chat.ID, "That claim code is not valid. Open the Piso dashboard and copy the current one.")
-		return
-	}
+	// The front door owns the code and the attempt counter. Once the bot is
+	// published that is the coordinator, which is what lets a code issued from
+	// any dashboard be redeemed through whichever gateway holds the lease.
 	user := store.TelegramUser{
 		UserID:    msg.From.ID,
 		ChatID:    msg.Chat.ID,
 		Username:  msg.From.Username,
 		FirstName: msg.From.FirstName,
-		ClaimedAt: now,
 	}
-	if err := m.Store.UpsertTelegramUser(user); err != nil {
+	allowed, _, err := m.frontDoor().Redeem(code, user)
+	if err != nil {
 		log.Printf("telegram: claim: %v", err)
-		m.reply(ctx, c, token, msg.Chat.ID, "The claim could not be saved. Try again.")
+		m.reply(ctx, c, token, msg.Chat.ID, "The claim could not be checked. Try again.")
+		return
+	}
+	if !allowed {
+		m.reply(ctx, c, token, msg.Chat.ID, "That claim code is not valid. Open the Piso dashboard and copy the current one.")
 		return
 	}
 	log.Printf("telegram: chat %d claimed", msg.From.ID)
@@ -331,7 +498,7 @@ func (m *Manager) refresh(ctx context.Context, userID int64, from *User) {
 		return
 	}
 	known.Username, known.FirstName = from.Username, from.FirstName
-	if err := m.Store.UpsertTelegramUser(known); err != nil {
+	if err := m.frontDoor().Upsert(known); err != nil {
 		log.Printf("telegram: refresh: %v", err)
 	}
 }
@@ -343,49 +510,69 @@ func (m *Manager) reply(ctx context.Context, c *Client, token string, chatID int
 }
 
 // IssueClaim mints a claim code. One code is outstanding at a time: issuing a
-// new one invalidates the previous, so the dashboard only ever shows one.
+// new one invalidates the previous, so the dashboard only ever shows one. Once
+// the bot is published the coordinator owns the code, so any gateway's
+// dashboard can issue one the holder will accept.
 func (m *Manager) IssueClaim() (Claim, error) {
 	if m.token() == "" {
 		return Claim{}, errors.New("no bot token is stored")
 	}
-	code, err := randomCode()
-	if err != nil {
-		return Claim{}, err
-	}
-	out := Claim{Code: code, ExpiresAt: m.clock().Add(ClaimTTL)}
-	m.mu.Lock()
-	m.claim = claimState{Code: code, ExpiresAt: out.ExpiresAt}
-	m.mu.Unlock()
-	return out, nil
+	return m.frontDoor().Issue()
 }
 
-// Snapshot returns the live status plus the persisted link. The link is read
-// from the store rather than cached here, so the dashboard sees one source of
-// truth for the cursor and the allow-list.
+// Snapshot returns the live poller view. The front-door state (allow-list and
+// pending claim) is separate: it can be a network call, and a caller that only
+// needs liveness must not pay for one.
 func (m *Manager) Snapshot() Status {
-	now := m.clock()
 	m.mu.Lock()
 	out := m.status
-	// The pending code lives in the claim state, which is the only thing that
-	// knows whether it is still live. An expired code is not shown at all.
-	if m.claim.Code != "" && now.Before(m.claim.ExpiresAt) {
-		out.Claim = Claim{Code: m.claim.Code, ExpiresAt: m.claim.ExpiresAt}
-	} else {
-		out.Claim = Claim{}
-	}
 	m.mu.Unlock()
-	link := m.Store.TelegramLink()
-	out.Users = link.Users
 	if out.BotID == 0 {
 		// A restart has a stored bot id before the first poll completes.
-		out.BotID = link.BotID
+		out.BotID = m.Store.TelegramLink().BotID
 	}
 	return out
 }
 
+// FrontDoorState returns the allow-list and any pending claim. Once the bot is
+// published this asks the coordinator, so every gateway's dashboard shows the
+// same list; it is bounded by the coordinator client's timeout.
+func (m *Manager) FrontDoorState() (FrontDoorState, error) {
+	return m.frontDoor().State()
+}
+
+// LocalFrontDoorState is the no-network view, for when the coordinator cannot
+// be reached: the cached allow-list and whatever claim this gateway holds.
+func (m *Manager) LocalFrontDoorState() FrontDoorState {
+	state, _ := m.Local.State()
+	return state
+}
+
+// frontDoor is the authority for the bot's allow-list: the coordinator once the
+// token is published to one, and the local store otherwise.
+func (m *Manager) frontDoor() FrontDoor {
+	if m.Remote != nil {
+		if rec, ok := m.bot(); ok && rec.TechnocoreID != "" {
+			return m.Remote
+		}
+	}
+	return m.Local
+}
+
+// Refresh pulls the authoritative allow-list into the cache. The coordinator
+// pushes after every membership change, and the poller calls it on taking the
+// lease, so a holder never enforces a list the coordinator has moved past.
+func (m *Manager) Refresh() error {
+	if err := m.frontDoor().Refresh(); err != nil {
+		log.Printf("telegram: front door: %v", err)
+		return err
+	}
+	return nil
+}
+
 // Revoke removes an account from the allow-list.
 func (m *Manager) Revoke(userID int64) (bool, error) {
-	return m.Store.RemoveTelegramUser(userID)
+	return m.frontDoor().Revoke(userID)
 }
 
 // claimCode parses "/claim <code>" and returns the canonical code: uppercase,
@@ -424,6 +611,19 @@ func randomCode() (string, error) {
 		b.WriteByte(claimAlphabet[int(v)%len(claimAlphabet)])
 	}
 	return b.String(), nil
+}
+
+// jitter returns d ± 25%. Every gateway that is refused the lease waits, and
+// without jitter they would all ask again on the same tick.
+func jitter(d time.Duration) time.Duration {
+	if d <= 0 {
+		return d
+	}
+	span := int64(d) / 4
+	if span <= 0 {
+		return d
+	}
+	return d + time.Duration(mrand.Int63n(span*2+1)-span)
 }
 
 // sleep waits for d, reporting false if the context ended first.

@@ -122,6 +122,8 @@ func connectSession(id tc.Identity, dataDir string, nudge func(), onEvent func(s
 			nudge()
 		case "asks_changed":
 			onEvent("asks_changed")
+		case "telegram_changed":
+			onEvent("telegram_changed")
 		case "pong", "ack", "hello":
 		case "error":
 			return ready, fmt.Errorf("server error: %v", msg["error"])

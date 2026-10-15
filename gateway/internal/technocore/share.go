@@ -27,7 +27,12 @@ type remoteGateway struct {
 
 // ShareInput is a secret to wrap for enrolled gateways.
 type ShareInput struct {
-	Name         string
+	Name string
+	// Kind is the secret's subtype ("telegram", "github-app", ...). The
+	// coordinator stores every envelope as a secret resource, so the subtype
+	// travels in metadata: without it a peer receives the credential but cannot
+	// tell what it is for.
+	Kind         string
 	Placeholder  string
 	EnvKey       string
 	AllowedHosts []string
@@ -147,6 +152,14 @@ func fetchGateways(id tc.Identity) ([]remoteGateway, error) {
 	return out.Gateways, nil
 }
 
+// PublishNow republishes every local secret immediately instead of waiting for
+// the reconcile pass. Connecting a bot uses it so the new credential has a
+// coordinator resource id before anything tries to use it: the allow-list and
+// the claim code live on the coordinator, keyed by that id.
+func PublishNow(st *store.Store, dataDir string) error {
+	return publishAllSecrets(st, dataDir)
+}
+
 // publishAllSecrets reconciles every local secret that has a value with
 // Technocore. Synced tc_ rows are included so a newly enrolled gateway can
 // still get wraps. Unchanged secrets (same coordinator id, content hash, and
@@ -184,6 +197,7 @@ func publishAllSecrets(st *store.Store, dataDir string) error {
 		}
 		in := ShareInput{
 			Name:         rec.Name,
+			Kind:         rec.Kind,
 			Placeholder:  rec.Placeholder,
 			EnvKey:       rec.EnvKey,
 			AllowedHosts: rec.AllowedHosts,
@@ -216,6 +230,7 @@ func PublishPlaceholder(st *store.Store, dataDir, placeholder string, recipients
 	}
 	return Share(st, dataDir, ShareInput{
 		Name:         rec.Name,
+		Kind:         rec.Kind,
 		Placeholder:  rec.Placeholder,
 		EnvKey:       rec.EnvKey,
 		AllowedHosts: rec.AllowedHosts,
@@ -280,6 +295,10 @@ func baseShareBody(in ShareInput, hash, nonce, ct []byte, wraps []map[string]str
 			"placeholder":  in.Placeholder,
 			"envKey":       in.EnvKey,
 			"allowedHosts": in.AllowedHosts,
+			// kind travels with the ciphertext so a receiving gateway knows the
+			// secret's subtype. The coordinator only stores secret resources, so
+			// this is the only channel that can carry it.
+			"kind": in.Kind,
 			// gatewayOnly travels with the ciphertext so the receiving
 			// gateway also refuses to substitute it into worker traffic.
 			"gatewayOnly": in.GatewayOnly,

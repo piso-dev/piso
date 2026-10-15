@@ -113,9 +113,14 @@ func main() {
 	h := proxy.New(ca, st, pat, workerIdentityFn(st))
 	srv := server.New(st, pat, h, ca)
 	srv.DataDir = filepath.Dir(*statePath)
+	// The front door needs the coordinator to arbitrate the single Telegram
+	// long poll and to own the allow-list, and the coordinator client needs the
+	// data directory, so the clients are attached after DataDir is known.
+	srv.AttachCoordinator()
 	go technocore.Run(st, srv.DataDir)
-	// The Telegram front door polls only while a bot token is stored; with none
-	// it idles, so this is unconditional.
+	// The Telegram front door polls only while a bot token is stored and this
+	// gateway holds the poller lease; with neither it idles, so this is
+	// unconditional.
 	go srv.Telegram.Run(context.Background())
 
 	// WebHandler is the single host web entrypoint (dashboard + ingress on the

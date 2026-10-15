@@ -15,6 +15,7 @@ func (s *Server) registerTechnocore(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/technocore/share", func(w http.ResponseWriter, r *http.Request) {
 		var in struct {
 			Name         string   `json:"name"`
+			Kind         string   `json:"kind"`
 			Placeholder  string   `json:"placeholder"`
 			EnvKey       string   `json:"envKey"`
 			AllowedHosts []string `json:"allowedHosts"`
@@ -36,6 +37,7 @@ func (s *Server) registerTechnocore(mux *http.ServeMux) {
 		}
 		out, err := technocore.Share(s.Store, s.dataDir(), technocore.ShareInput{
 			Name:         in.Name,
+			Kind:         in.Kind,
 			Placeholder:  in.Placeholder,
 			EnvKey:       in.EnvKey,
 			AllowedHosts: in.AllowedHosts,

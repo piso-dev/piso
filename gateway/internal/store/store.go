@@ -240,6 +240,11 @@ type Store struct {
 
 	onAsks chan struct{}
 
+	// onTelegram wakes the Telegram poller when the coordinator says the front
+	// door moved (a claim, a revocation), so the holder refetches the allow-list
+	// now instead of at its next renewal.
+	onTelegram chan struct{}
+
 	// transient listener hints: worker → ports the watcher reported but the
 	// gateway cannot route to (loopback / specific-IP / v6-only binds)
 	unreachable map[string][]UnreachablePort
@@ -311,6 +316,7 @@ func New(path, logPath, patternsPath, activitiesPath string, maxLog int) (*Store
 		onMcp:       make(chan McpServerRec, 64),
 		onGithub:    make(chan GithubAppRec, 64),
 		onAsks:      make(chan struct{}, 8),
+		onTelegram:  make(chan struct{}, 8),
 		unreachable: map[string][]UnreachablePort{},
 	}
 	if err := s.load(); err != nil {
@@ -1467,6 +1473,18 @@ func (s *Store) BroadcastAsks() {
 }
 
 func (s *Store) SubAsks() <-chan struct{} { return s.onAsks }
+
+// BroadcastTelegram wakes the poller because the coordinator's front door
+// changed. Like asks, a pending signal is enough: several changes before the
+// poller wakes still mean one refetch.
+func (s *Store) BroadcastTelegram() {
+	select {
+	case s.onTelegram <- struct{}{}:
+	default:
+	}
+}
+
+func (s *Store) SubTelegram() <-chan struct{} { return s.onTelegram }
 
 // ReplayGet returns a captured record by id (for retry).
 func (s *Store) ReplayGet(id string) (Record, bool) {

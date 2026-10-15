@@ -56,6 +56,16 @@ func (s *Store) SetTelegramOffset(offset int64) error {
 	return s.save()
 }
 
+// SetTelegramUsers replaces the allow-list. BotID and Offset belong to the
+// link, not the list, so they are preserved. When the bot is published this is
+// a cache of the coordinator's copy; with no coordinator it is the truth.
+func (s *Store) SetTelegramUsers(users []TelegramUser) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.state.Telegram.Users = append([]TelegramUser(nil), users...)
+	return s.save()
+}
+
 // TelegramAllowed reports whether the account may talk to the bot.
 func (s *Store) TelegramAllowed(userID int64) (TelegramUser, bool) {
 	s.mu.RLock()

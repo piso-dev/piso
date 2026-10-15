@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -10,7 +11,9 @@ import (
 
 	"piso/gateway/internal/model"
 	"piso/gateway/internal/store"
+	"piso/gateway/internal/technocore"
 	"piso/gateway/internal/telegram"
+	tc "piso/internal/technocore"
 )
 
 // telegramSecretName is the display name of the bot-token secret. It is a
@@ -40,6 +43,12 @@ type telegramStatus struct {
 	Warning        string     `json:"warning,omitempty"`
 	ClaimCode      string     `json:"claimCode,omitempty"`
 	ClaimExpiresAt *time.Time `json:"claimExpiresAt,omitempty"`
+	// LeaseHeld is true while this gateway holds the poller lease; Waiting is
+	// true while another gateway holds it and this one is asking. Both are
+	// false when no lease is in use (no coordinator, or the bot was never
+	// published to one).
+	LeaseHeld bool `json:"leaseHeld,omitempty"`
+	Waiting   bool `json:"waiting,omitempty"`
 	// Users is the allow-list. It carries no credential, so the store record is
 	// the payload.
 	Users []store.TelegramUser `json:"users,omitempty"`
@@ -52,6 +61,31 @@ func (s *Server) telegramManager() *telegram.Manager {
 		return telegram.NewManager(s.Store, s.HTTP)
 	}
 	return s.Telegram
+}
+
+// AttachCoordinator wires the coordinator clients into the front door: the
+// poller lease and the shared allow-list. The server is constructed before main
+// knows the data directory, so this is called once from main after DataDir is
+// set. Without it the manager polls directly and keeps the allow-list locally,
+// which is only correct for a gateway with no coordinator to ask.
+func (s *Server) AttachCoordinator() {
+	if s.Telegram == nil {
+		return
+	}
+	dir := s.dataDir()
+	s.Telegram.Lease = func(ctx context.Context, resourceID string, offset int64) (telegram.LeaseGrant, error) {
+		g, err := technocore.TelegramLease(dir, resourceID, offset, telegram.LeaseTTL)
+		if err != nil {
+			return telegram.LeaseGrant{}, err
+		}
+		return telegram.LeaseGrant{
+			Granted:   g.Granted,
+			Offset:    g.Offset,
+			ExpiresAt: g.ExpiresAt,
+			Holder:    g.Holder,
+		}, nil
+	}
+	s.Telegram.Remote = telegram.NewCoordinatorFrontDoor(s.Store, dir)
 }
 
 func (s *Server) registerTelegram(mux *http.ServeMux) {
@@ -73,22 +107,45 @@ func (s *Server) handleTelegramStatus(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, telegramStatus{})
 		return
 	}
-	snap := s.telegramManager().Snapshot()
+	m := s.telegramManager()
+	snap := m.Snapshot()
+	// The allow-list and the pending claim belong to the bot, not to this
+	// gateway, so the coordinator is asked for them and a dashboard on any
+	// gateway shows the same people. If it cannot be reached the cached copy is
+	// shown instead, with a warning, rather than pretending there is nobody.
+	front, err := m.FrontDoorState()
+	frontStale := err != nil
+	if frontStale {
+		front = m.LocalFrontDoorState()
+	}
 	out := telegramStatus{
 		Connected: true, Name: rec.Name, CreatedAt: rec.CreatedAt,
 		Running: snap.Running, BotID: snap.BotID, BotUsername: snap.BotUsername,
-		LastPoll: snap.LastPoll, Users: snap.Users,
+		LastPoll: snap.LastPoll, Users: front.Users,
+		LeaseHeld: snap.LeaseHeld, Waiting: snap.Waiting,
 	}
-	if snap.Claim.Code != "" {
-		out.ClaimCode = snap.Claim.Code
-		expires := snap.Claim.ExpiresAt
+	if front.Claim.Code != "" {
+		out.ClaimCode = front.Claim.Code
+		expires := front.Claim.ExpiresAt
 		out.ClaimExpiresAt = &expires
 	}
 	if !snap.Running {
-		out.Warning = snap.LastError
-		if out.Warning == "" {
+		switch {
+		case snap.Waiting:
+			out.Warning = "Another gateway holds the Telegram poller lease; this one is waiting for it."
+		case snap.LastError != "":
+			out.Warning = snap.LastError
+		default:
 			out.Warning = "The Telegram poller has not started yet."
 		}
+	}
+	if frontStale {
+		// Liveness may be fine; what is stale is the shared state, and that is
+		// worth saying even alongside another warning.
+		if out.Warning != "" {
+			out.Warning += " "
+		}
+		out.Warning += "Showing the cached allow-list: the coordinator could not be reached."
 	}
 	writeJSON(w, 200, out)
 }
@@ -147,14 +204,22 @@ func (s *Server) handleTelegramConnect(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	// The cursor and the allow-list belong to a bot, not to the gateway. A
-	// different bot has its own update stream, so the old cursor could skip its
-	// updates, and its own people, so the old allow-list would grant strangers
-	// access. Same bot keeps both: a token rotation is not a new front door.
+	// A different bot is a different front door: it has its own update stream,
+	// so the old cursor could skip its updates, and its own people (the
+	// coordinator keys the allow-list by the bot's resource). Same bot keeps
+	// both: a token rotation is not a new front door.
 	if link := s.Store.TelegramLink(); link.BotID != bot.ID {
 		if err := s.Store.SetTelegramLink(store.TelegramLink{BotID: bot.ID}); err != nil {
 			writeJSON(w, 500, map[string]string{"error": err.Error()})
 			return
+		}
+	}
+	// Publish now so the bot has a coordinator resource id before anything uses
+	// the front door: the allow-list and claim code live on the coordinator, and
+	// a delayed publish would let a claim bind locally and then be dropped.
+	if id, err := tc.Load(tc.Path(s.dataDir())); err == nil && id.Status == tc.StatusActive {
+		if err := technocore.PublishNow(s.Store, s.dataDir()); err != nil {
+			log.Printf("telegram: publish: %v", err)
 		}
 	}
 	// Pick the new token up now rather than when the current long poll expires.
@@ -168,6 +233,10 @@ func (s *Server) handleTelegramConnect(w http.ResponseWriter, r *http.Request) {
 // handleTelegramDisconnect deletes the token only. The link is kept so a
 // reconnect to the same bot resumes where it left off; a different bot resets it
 // in handleTelegramConnect.
+//
+// A replicated token is tombstoned rather than forgotten: every enrolled
+// gateway holds a copy, and one that missed the deletion would otherwise keep
+// polling the bot, or publish the token back.
 func (s *Server) handleTelegramDisconnect(w http.ResponseWriter, r *http.Request) {
 	serviceHeaders(w)
 	rec, ok := telegram.Secret(s.Store.Secrets())
@@ -175,7 +244,7 @@ func (s *Server) handleTelegramDisconnect(w http.ResponseWriter, r *http.Request
 		w.WriteHeader(204)
 		return
 	}
-	if err := s.Store.DeleteSecret(rec.ID); err != nil {
+	if err := s.revokeOrDelete(rec); err != nil {
 		writeJSON(w, 500, map[string]string{"error": err.Error()})
 		return
 	}
@@ -183,8 +252,9 @@ func (s *Server) handleTelegramDisconnect(w http.ResponseWriter, r *http.Request
 	w.WriteHeader(204)
 }
 
-// handleTelegramClaim mints a claim code. The code is held in memory by the
-// poller, never written to disk, and replaced by the next call.
+// handleTelegramClaim mints a claim code. Once the bot is published the code
+// belongs to the coordinator, so it is the same code whichever gateway's
+// dashboard asked and whichever gateway ends up holding the lease.
 func (s *Server) handleTelegramClaim(w http.ResponseWriter, r *http.Request) {
 	serviceHeaders(w)
 	if _, ok := telegram.Secret(s.Store.Secrets()); !ok {

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -173,6 +174,17 @@ func run(t *testing.T, m *Manager) {
 	t.Cleanup(func() { cancel(); <-done })
 }
 
+// pendingClaim reads the live claim from the front door, which is where it
+// lives: in memory locally, on the coordinator once the bot is published.
+func pendingClaim(t *testing.T, m *Manager) Claim {
+	t.Helper()
+	state, err := m.FrontDoorState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return state.Claim
+}
+
 // ---- tests ------------------------------------------------------------------
 
 func TestManagerClaimsAnAccountAndAdvancesTheCursor(t *testing.T) {
@@ -207,8 +219,8 @@ func TestManagerClaimsAnAccountAndAdvancesTheCursor(t *testing.T) {
 		t.Fatalf("the first poll must ask from the start, got %q", fb.askedOffsets()[0])
 	}
 	// The code is single use.
-	if snap := m.Snapshot(); snap.Claim.Code != "" {
-		t.Fatalf("code survived redemption: %+v", snap.Claim)
+	if claim := pendingClaim(t, m); claim.Code != "" {
+		t.Fatalf("code survived redemption: %+v", claim)
 	}
 }
 
@@ -236,8 +248,8 @@ func TestManagerRefusesToBindWithoutAValidCode(t *testing.T) {
 	if _, ok := st.TelegramAllowed(500); ok {
 		t.Fatal("a wrong code must not bind an account")
 	}
-	if snap := m.Snapshot(); snap.Claim.Code != "" {
-		t.Fatalf("the code should be burnt after %d guesses: %+v", claimAttempts, snap.Claim)
+	if claim := pendingClaim(t, m); claim.Code != "" {
+		t.Fatalf("the code should be burnt after %d guesses: %+v", claimAttempts, claim)
 	}
 }
 
@@ -421,12 +433,12 @@ func TestManagerHidesAnExpiredClaimCode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if snap := m.Snapshot(); snap.Claim.Code != claim.Code {
-		t.Fatalf("the pending code must be visible: %+v", snap.Claim)
+	if got := pendingClaim(t, m); got.Code != claim.Code {
+		t.Fatalf("the pending code must be visible: %+v", got)
 	}
 	now = now.Add(ClaimTTL + time.Second)
-	if snap := m.Snapshot(); snap.Claim.Code != "" {
-		t.Fatalf("an expired code must not be offered: %+v", snap.Claim)
+	if got := pendingClaim(t, m); got.Code != "" {
+		t.Fatalf("an expired code must not be offered: %+v", got)
 	}
 }
 
@@ -446,8 +458,8 @@ func TestManagerIssuesOneCodeAtATime(t *testing.T) {
 	if first.Code == second.Code {
 		t.Fatalf("want a fresh code, got %q twice", first.Code)
 	}
-	if snap := m.Snapshot(); snap.Claim.Code != second.Code {
-		t.Fatalf("only the newest code may be live: %+v", snap.Claim)
+	if claim := pendingClaim(t, m); claim.Code != second.Code {
+		t.Fatalf("only the newest code may be live: %+v", claim)
 	}
 }
 
@@ -482,4 +494,209 @@ func TestClaimCodeParsing(t *testing.T) {
 			t.Fatalf("claimCode(%q) accepted %q", in, got)
 		}
 	}
+}
+
+// ---- poller lease -----------------------------------------------------------
+
+// addPublishedToken stores a bot token that has a coordinator resource id, so
+// the manager must ask for the poller lease before it polls.
+func addPublishedToken(t *testing.T, st *store.Store, token string) {
+	t.Helper()
+	if err := st.AddSecret(store.SecretRec{
+		ID: "sec_test", Name: "Telegram bot", Kind: model.SecretKindTelegram,
+		GatewayOnly: true, Value: token,
+		TechnocoreID: "11111111-1111-1111-1111-111111111111",
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// fakeClock returns a controllable clock plus an advance function. The lease
+// renewal cadence is measured with it, so a test does not have to wait a
+// minute for the next renewal.
+func fakeClock(m *Manager) (advance func(time.Duration)) {
+	var mu sync.Mutex
+	now := time.Now()
+	m.now = func() time.Time {
+		mu.Lock()
+		defer mu.Unlock()
+		return now
+	}
+	return func(d time.Duration) {
+		mu.Lock()
+		now = now.Add(d)
+		mu.Unlock()
+	}
+}
+
+func TestManagerRefusedTheLeaseNeverPolls(t *testing.T) {
+	st := newStore(t)
+	addPublishedToken(t, st, goodToken)
+	fb := newFakeBot(42, "piso_bot")
+	m := NewManager(st, fb.client())
+	var asks int32
+	m.Lease = func(_ context.Context, resourceID string, _ int64) (LeaseGrant, error) {
+		atomic.AddInt32(&asks, 1)
+		if resourceID != "11111111-1111-1111-1111-111111111111" {
+			t.Errorf("lease asked for resource %q", resourceID)
+		}
+		return LeaseGrant{Granted: false, Holder: "other"}, nil
+	}
+	run(t, m)
+
+	waitFor(t, "the lease to be asked for", func() bool { return atomic.LoadInt32(&asks) > 0 })
+	time.Sleep(30 * time.Millisecond)
+	fb.mu.Lock()
+	me, hook := fb.meCalls, fb.hookCall
+	fb.mu.Unlock()
+	if me != 0 || hook != 0 {
+		t.Fatalf("a gateway without the lease must not talk to Telegram: getMe=%d deleteWebhook=%d", me, hook)
+	}
+	snap := m.Snapshot()
+	if snap.Running || !snap.Waiting || snap.LeaseHeld || snap.LastError != "" {
+		t.Fatalf("a refusal is a wait, not an error: %+v", snap)
+	}
+}
+
+func TestManagerPollsAnUnpublishedBotWithoutALease(t *testing.T) {
+	st := newStore(t)
+	addToken(t, st, goodToken) // no coordinator resource id
+	fb := newFakeBot(42, "piso_bot")
+	m := NewManager(st, fb.client())
+	var asks int32
+	m.Lease = func(_ context.Context, _ string, _ int64) (LeaseGrant, error) {
+		atomic.AddInt32(&asks, 1)
+		return LeaseGrant{Granted: false}, nil
+	}
+	run(t, m)
+
+	waitFor(t, "the poll to start", func() bool { return m.Snapshot().Running })
+	if n := atomic.LoadInt32(&asks); n != 0 {
+		t.Fatalf("asked for a lease on a bot that was never published: %d asks", n)
+	}
+}
+
+func TestManagerResumesFromTheLeasedCursor(t *testing.T) {
+	st := newStore(t)
+	addPublishedToken(t, st, goodToken)
+	fb := newFakeBot(42, "piso_bot")
+	m := NewManager(st, fb.client())
+	m.Lease = func(_ context.Context, _ string, offset int64) (LeaseGrant, error) {
+		if offset != 0 {
+			t.Errorf("first ask reported offset %d, want the empty local cursor", offset)
+		}
+		return LeaseGrant{Granted: true, Offset: 100, ExpiresAt: time.Now().Add(time.Minute)}, nil
+	}
+	run(t, m)
+
+	waitFor(t, "the poll to start", func() bool { return m.Snapshot().Running })
+	if snap := m.Snapshot(); !snap.LeaseHeld || snap.Waiting {
+		t.Fatalf("status %+v", snap)
+	}
+	waitFor(t, "the first getUpdates", func() bool { return len(fb.askedOffsets()) > 0 })
+	if got := fb.askedOffsets()[0]; got != "100" {
+		t.Fatalf("first getUpdates offset %q, want the coordinator's 100", got)
+	}
+}
+
+func TestManagerRenewsWithTheAdvancedCursor(t *testing.T) {
+	st := newStore(t)
+	addPublishedToken(t, st, goodToken)
+	fb := newFakeBot(42, "piso_bot")
+	m := NewManager(st, fb.client())
+	advance := fakeClock(m)
+	var mu sync.Mutex
+	var asks []int64
+	m.Lease = func(_ context.Context, _ string, offset int64) (LeaseGrant, error) {
+		mu.Lock()
+		asks = append(asks, offset)
+		mu.Unlock()
+		return LeaseGrant{Granted: true, ExpiresAt: time.Now().Add(time.Minute)}, nil
+	}
+	run(t, m)
+
+	waitFor(t, "the poll to start", func() bool { return m.Snapshot().Running })
+	fb.push(privateMessage(9, 500, "/start"))
+	waitFor(t, "the cursor to advance", func() bool { return st.TelegramLink().Offset == 10 })
+
+	// Unblock the in-flight poll once the renewal is due: the loop re-checks
+	// the lease between getUpdates calls.
+	advance(leaseRenew)
+	fb.push()
+	waitFor(t, "a renewal", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(asks) >= 2
+	})
+	mu.Lock()
+	defer mu.Unlock()
+	if got := asks[len(asks)-1]; got != 10 {
+		t.Fatalf("renewal reported offset %d, want the advanced cursor 10", got)
+	}
+}
+
+func TestManagerStopsPollingWhenAnotherGatewayTakesTheLease(t *testing.T) {
+	st := newStore(t)
+	addPublishedToken(t, st, goodToken)
+	fb := newFakeBot(42, "piso_bot")
+	m := NewManager(st, fb.client())
+	advance := fakeClock(m)
+	var mu sync.Mutex
+	calls := 0
+	m.Lease = func(_ context.Context, _ string, _ int64) (LeaseGrant, error) {
+		mu.Lock()
+		calls++
+		n := calls
+		mu.Unlock()
+		if n == 1 {
+			return LeaseGrant{Granted: true, ExpiresAt: time.Now().Add(time.Minute)}, nil
+		}
+		return LeaseGrant{Granted: false, Holder: "other"}, nil
+	}
+	run(t, m)
+
+	waitFor(t, "the poll to start", func() bool { return m.Snapshot().Running })
+	advance(leaseRenew)
+	fb.push()
+	waitFor(t, "the loss to be noticed", func() bool {
+		snap := m.Snapshot()
+		return !snap.Running && snap.Waiting
+	})
+	if snap := m.Snapshot(); snap.LastError != "" || snap.LeaseHeld {
+		t.Fatalf("a lease taken by another gateway is a wait, not an error: %+v", snap)
+	}
+}
+
+// A bot that is published mid-session becomes visible to peers, so the session
+// polling without a lease must stop and re-acquire under one.
+func TestManagerAsksForTheLeaseOnceTheBotIsPublished(t *testing.T) {
+	st := newStore(t)
+	addToken(t, st, goodToken) // no coordinator resource id yet
+	fb := newFakeBot(42, "piso_bot")
+	m := NewManager(st, fb.client())
+	var asks int32
+	m.Lease = func(_ context.Context, _ string, _ int64) (LeaseGrant, error) {
+		atomic.AddInt32(&asks, 1)
+		return LeaseGrant{Granted: true, ExpiresAt: time.Now().Add(time.Minute)}, nil
+	}
+	run(t, m)
+
+	waitFor(t, "the poll to start", func() bool { return m.Snapshot().Running })
+	if n := atomic.LoadInt32(&asks); n != 0 {
+		t.Fatalf("asked for a lease before the bot was published: %d asks", n)
+	}
+	rec, ok := Secret(st.Secrets())
+	if !ok {
+		t.Fatal("no telegram secret stored")
+	}
+	rec.TechnocoreID = "11111111-1111-1111-1111-111111111111"
+	if err := st.ReplaceSecret(rec); err != nil {
+		t.Fatal(err)
+	}
+	fb.push() // unblock the poll so the session re-checks the stored secret
+	waitFor(t, "the lease to be asked for", func() bool { return atomic.LoadInt32(&asks) > 0 })
+	waitFor(t, "the leased poll to run", func() bool {
+		snap := m.Snapshot()
+		return snap.Running && snap.LeaseHeld
+	})
 }

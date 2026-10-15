@@ -300,6 +300,11 @@ func TestPublishAllSecretsReplicatesGatewayOnly(t *testing.T) {
 	if meta["placeholder"] != "" {
 		t.Fatalf("gateway-only secret published a placeholder: %+v", meta)
 	}
+	// The subtype rides in metadata: the coordinator only stores secret
+	// resources, so a peer has no other way to learn what the credential is.
+	if meta["kind"] != "telegram" {
+		t.Fatalf("secret subtype did not travel: %+v", meta)
+	}
 	if _, ok := body["base_version"]; ok {
 		t.Fatalf("never-published secret claimed a base version: %v", body["base_version"])
 	}

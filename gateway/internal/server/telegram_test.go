@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -300,5 +301,92 @@ func TestTelegramRevoke(t *testing.T) {
 	}
 	if w := doJSON(t, ch, "DELETE", "/api/v1/telegram/users/nope", nil); w.Code != 400 {
 		t.Fatalf("want 400 for a bad id, got %d %s", w.Code, w.Body.String())
+	}
+}
+
+// A gateway with the bot token but not the poller lease is connected without
+// serving. The dashboard must say which, not show a generic "not started".
+func TestTelegramStatusReportsAnotherGatewaysLease(t *testing.T) {
+	s := stubBotAPI(t, botAPI(t, 42, botToken, "piso_bot"))
+	ch := s.ControlHandler()
+	doJSON(t, ch, "POST", "/api/v1/telegram", map[string]any{"token": botToken})
+
+	// The lease is only asked for once the bot has been published, because
+	// until then there is no coordinator resource to arbitrate.
+	rec, ok := telegramSecretOf(t, s)
+	if !ok {
+		t.Fatal("no telegram secret stored")
+	}
+	rec.TechnocoreID = "11111111-1111-1111-1111-111111111111"
+	if err := s.Store.ReplaceSecret(rec); err != nil {
+		t.Fatal(err)
+	}
+	s.Telegram.Lease = func(context.Context, string, int64) (telegram.LeaseGrant, error) {
+		return telegram.LeaseGrant{Granted: false, Holder: "other"}, nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { defer close(done); s.Telegram.Run(ctx) }()
+	defer func() { cancel(); <-done }()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		body := doJSON(t, ch, "GET", "/api/v1/telegram", nil).Body.String()
+		if strings.Contains(body, `"waiting":true`) {
+			if !strings.Contains(body, "Another gateway holds the Telegram poller lease") {
+				t.Fatalf("a waiting status must explain itself: %s", body)
+			}
+			if strings.Contains(body, `"leaseHeld":true`) {
+				t.Fatalf("a waiting gateway must not claim the lease: %s", body)
+			}
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("timed out waiting for the lease wait to appear in the status")
+}
+
+func TestAttachCoordinatorInstallsTheClients(t *testing.T) {
+	s := testServer(t)
+	s.DataDir = t.TempDir()
+	if s.Telegram.Lease != nil || s.Telegram.Remote != nil {
+		t.Fatal("a server must start with no coordinator clients")
+	}
+	s.AttachCoordinator()
+	if s.Telegram.Lease == nil || s.Telegram.Remote == nil {
+		t.Fatal("AttachCoordinator did not install the clients")
+	}
+	// With no identity on disk the coordinator is unreachable, and the client
+	// must report that rather than silently granting a lease.
+	if _, err := s.Telegram.Lease(context.Background(), "rid", 0); err == nil {
+		t.Fatal("want an error when the gateway is not enrolled")
+	}
+}
+
+// The dashboard reads the allow-list through the front door, so a gateway whose
+// coordinator is unreachable falls back to its cache with a warning instead of
+// reporting that nobody is allowed.
+func TestTelegramStatusFallsBackToTheCachedAllowList(t *testing.T) {
+	s := stubBotAPI(t, botAPI(t, 42, botToken, "piso_bot"))
+	ch := s.ControlHandler()
+	doJSON(t, ch, "POST", "/api/v1/telegram", map[string]any{"token": botToken})
+
+	rec, _ := telegramSecretOf(t, s)
+	rec.TechnocoreID = "11111111-1111-1111-1111-111111111111"
+	if err := s.Store.ReplaceSecret(rec); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Store.SetTelegramUsers([]store.TelegramUser{{UserID: 7, ChatID: 7, Username: "ada"}}); err != nil {
+		t.Fatal(err)
+	}
+	// A remote front door with no identity on disk: every call fails.
+	s.AttachCoordinator()
+
+	body := doJSON(t, ch, "GET", "/api/v1/telegram", nil).Body.String()
+	if !strings.Contains(body, `"userId":7`) {
+		t.Fatalf("the cached allow-list must still be shown: %s", body)
+	}
+	if !strings.Contains(body, "cached allow-list") {
+		t.Fatalf("a stale view must say so: %s", body)
 	}
 }

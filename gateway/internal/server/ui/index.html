@@ -3275,6 +3275,14 @@
                 ["Bot ID", t.botId],
                 ["Bot", t.botUsername ? "@" + t.botUsername : ""],
                 [
+                  "Poller",
+                  t.leaseHeld
+                    ? "Held by this gateway"
+                    : t.waiting
+                      ? "Held by another gateway"
+                      : "",
+                ],
+                [
                   "Last poll",
                   t.lastPoll ? new Date(t.lastPoll).toLocaleTimeString() : "",
                 ],
@@ -3286,6 +3294,7 @@
             ) +
             claim +
             `<h3>Allowed accounts</h3>` +
+            `<p class="muted">Shared across this account's gateways: a claim or a revoke applies to whichever gateway is polling.</p>` +
             people,
         );
       }
