@@ -68,5 +68,55 @@ func applyMigrations(st *State) bool {
 		st.Version = 5
 		changed = true
 	}
+	// v5→v6: GitHub App rows (PEM + installations).
+	if st.Version < 6 {
+		if st.GithubApps == nil {
+			st.GithubApps = []GithubAppRec{}
+		}
+		st.Version = 6
+		changed = true
+	}
+	// v6→v7: shared pi provider pointer. Older files omit the field (nil).
+	if st.Version < 7 {
+		st.Version = 7
+		changed = true
+	}
+	// v7→v8: MCP channel key binding on WorkerRec. Older files omit the
+	// fields; the zero value means unbound.
+	if st.Version < 8 {
+		st.Version = 8
+		changed = true
+	}
+	// v8→v9: provider stack. The single pi provider pointer becomes the first
+	// profile of the stack, with ID "piso". Later settings land on the stack
+	// fields; the legacy pointer is cleared after conversion.
+	if st.Version < 9 {
+		if st.PiProvider != nil {
+			rec := *st.PiProvider
+			if rec.ID == "" {
+				rec.ID = "piso"
+			}
+			if rec.Name == "" {
+				rec.Name = "Piso"
+			}
+			replaced := false
+			for i := range st.PiProviders {
+				if st.PiProviders[i].ID == rec.ID {
+					st.PiProviders[i] = rec
+					replaced = true
+					break
+				}
+			}
+			if !replaced {
+				st.PiProviders = append(st.PiProviders, rec)
+			}
+			if st.ActivePiProviderID == "" {
+				st.ActivePiProviderID = rec.ID
+			}
+			st.PiProvider = nil
+		}
+		st.Version = 9
+		changed = true
+	}
 	return changed
 }

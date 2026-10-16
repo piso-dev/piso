@@ -31,15 +31,18 @@ services:
       # bind-mount is created, which then cannot overlay files in the agent volume.
       - "CA_DIR/pi-profile:/opt/piso/pi-profile:ro"
     environment:
-      # Explicit proxy (enforcement is piso_vpc internal: true). Lowercase and
-      # ALL_PROXY cover clients that ignore HTTPS_PROXY. CA vars point at the
-      # mounted MITM CA: the rootfs is read-only, so there is no system store.
-      HTTPS_PROXY: http://gateway:8080
-      HTTP_PROXY: http://gateway:8080
-      ALL_PROXY: http://gateway:8080
-      https_proxy: http://gateway:8080
-      http_proxy: http://gateway:8080
-      all_proxy: http://gateway:8080
+      # Explicit proxy (enforcement is piso_vpc internal: true). The local
+      # forwarder retries dials to gateway:8080 across a gateway recreate.
+      # Lowercase and ALL_PROXY cover clients that ignore HTTPS_PROXY. CA vars
+      # point at the mounted MITM CA: the rootfs is read-only, so there is no
+      # system store.
+      HTTPS_PROXY: http://127.0.0.1:18080
+      HTTP_PROXY: http://127.0.0.1:18080
+      ALL_PROXY: http://127.0.0.1:18080
+      https_proxy: http://127.0.0.1:18080
+      http_proxy: http://127.0.0.1:18080
+      all_proxy: http://127.0.0.1:18080
+      PISO_EGRESS_UPSTREAM: gateway:8080
       NO_PROXY: gateway,localhost,127.0.0.1,*.piso.local
       no_proxy: gateway,localhost,127.0.0.1,*.piso.local
       SSL_CERT_FILE: /piso-ca.pem

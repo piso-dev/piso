@@ -1,15 +1,22 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
 
+	"piso/gateway/internal/aiboost"
+	"piso/gateway/internal/githubapp"
+	"piso/gateway/internal/mcp"
 	"piso/gateway/internal/store"
+	gtwc "piso/gateway/internal/technocore"
+	tc "piso/internal/technocore"
 )
 
 // WorkerHandler is the namespaced worker API. It is served on a separate
@@ -31,7 +38,92 @@ func (s *Server) WorkerHandler() http.Handler {
 	mux.HandleFunc("GET /api/v1/worker/activities", s.handleWorkerGetActivities)
 	mux.HandleFunc("POST /api/v1/worker/activity/revoke", s.handleWorkerRevokeActivity)
 	mux.HandleFunc("POST /api/v1/worker/mcp", s.handleWorkerPostMCP)
+	mux.HandleFunc("POST /api/v1/worker/supervisor", s.handleWorkerSupervisor)
+	mux.HandleFunc("GET /api/v1/worker/messages", s.handleWorkerGetMessages)
+	mux.HandleFunc("POST /api/v1/worker/messages/ack", s.handleWorkerAckMessages)
+	mux.HandleFunc("POST /api/v1/worker/reply", s.handleWorkerReply)
+	s.mountMCP(mux)
 	return mux
+}
+
+// mountMCP serves the encrypted channel on the worker listener. GET /mcp/key
+// is plaintext diagnostics; POST /mcp never echoes a pre-dispatch error body.
+func (s *Server) mountMCP(mux *http.ServeMux) {
+	h := s.mcpHandler()
+	mux.Handle("POST /mcp", h)
+	mux.Handle("GET /mcp/key", h)
+}
+
+func (s *Server) mcpHandler() *mcp.Handler {
+	h := mcp.New(s.Store, s.Patterns, s.DataDir)
+	githubClient := s.githubClient()
+	if s.Proxy != nil {
+		if minter, ok := s.Proxy.Minter.(*githubapp.PlaceholderMinter); ok && minter != nil && minter.Client != nil {
+			// Keep minted tokens in the proxy's real-secret scanner cache.
+			githubClient = minter.Client
+		}
+	}
+	h.GithubRepos = githubClient.ListReposContext
+	h.BoostList = func(ctx context.Context, query, cursor string) (aiboost.Page, error) {
+		client, err := s.boostClient()
+		if err != nil {
+			return aiboost.Page{}, err
+		}
+		return client.List(ctx, query, cursor)
+	}
+	h.BoostDraft = func(ctx context.Context, draft aiboost.DraftPayload, key string) (aiboost.Draft, error) {
+		client, err := s.boostClient()
+		if err != nil {
+			return aiboost.Draft{}, err
+		}
+		return client.Draft(ctx, draft, key)
+	}
+	h.BoostEditDraft = func(ctx context.Context, id string, edit aiboost.DraftEdit) (aiboost.Draft, error) {
+		client, err := s.boostClient()
+		if err != nil {
+			return aiboost.Draft{}, err
+		}
+		return client.EditDraft(ctx, id, edit)
+	}
+	h.BoostListDrafts = func(ctx context.Context, status, cursor string) (aiboost.DraftPage, error) {
+		client, err := s.boostClient()
+		if err != nil {
+			return aiboost.DraftPage{}, err
+		}
+		return client.Drafts(ctx, status, cursor)
+	}
+	h.BoostGetDraft = func(ctx context.Context, id string) (aiboost.Draft, error) {
+		client, err := s.boostClient()
+		if err != nil {
+			return aiboost.Draft{}, err
+		}
+		return client.GetDraft(ctx, id)
+	}
+	h.BoostDraftVersion = func(ctx context.Context, draft aiboost.VersionDraft, key string) (aiboost.Draft, error) {
+		client, err := s.boostClient()
+		if err != nil {
+			return aiboost.Draft{}, err
+		}
+		return client.DraftVersion(ctx, draft, key)
+	}
+	h.BoostGet = func(ctx context.Context, id string) (aiboost.Booster, error) {
+		client, err := s.boostClient()
+		if err != nil {
+			return aiboost.Booster{}, err
+		}
+		return client.Get(ctx, id)
+	}
+	h.Upsert = func(worker, slug, name, rawURL string) (store.McpServerRec, bool, error) {
+		return s.upsertMCP(worker, slug, name, rawURL, "", "")
+	}
+	h.CoordinatorDo = func(method, path string, query url.Values, body []byte) (int, []byte, error) {
+		id, err := tc.Load(tc.Path(s.dataDir()))
+		if err != nil {
+			return 0, nil, gtwc.ErrUnpaired
+		}
+		return gtwc.Call(id, method, path, query, body)
+	}
+	return h
 }
 
 // portIn is one listener reported by the ports watcher.
@@ -112,7 +204,7 @@ func requestIP(r *http.Request) string {
 
 // identityMismatch writes a 403 naming the registry's owner of the caller's
 // source IP vs the claimed identity, so operator logs show exactly what to
-// fix (re-run `piso up`, or redeploy the conflicting worker). piso-informant
+// fix (re-run `piso up`, or redeploy the conflicting worker). activity_post
 // prints this body, so the agent line reads as an actionable message.
 func identityMismatch(w http.ResponseWriter, r *http.Request, reg store.WorkerRec, name, slug string) {
 	detail := fmt.Sprintf("registered %s@%s; request claims worker=%s",
@@ -132,12 +224,11 @@ type checkinIn struct {
 // handleWorkerCheckin claims the caller's source IP for its own worker
 // record, so a container recreate (new vpc IP) does not strand the registry
 // with a stale mapping that 403s every activity/ports/context POST. The vpc
-// bridge prevents source-IP spoofing and the claim is first-come (same trust
-// model as the host CLI's `piso up` registration), so this cannot be used to
-// squat another worker's identity:
+// bridge prevents source-IP spoofing, so the packet source is the occupant:
 //   - IP already claimed by THIS worker (name+slug) → no-op, 200.
-//   - IP claimed by a DIFFERENT worker → 403 with detail (strict; the host
-//     must redeploy the conflicting worker or re-run `piso up`).
+//   - IP claimed by THIS worker under a different slug → 403 with detail.
+//   - IP claimed by a DIFFERENT worker → steal (Docker reused the address);
+//     UpsertWorker strips it from the previous owner.
 //   - IP unclaimed → append the IP to this worker's record (merge, never
 //     clobber the registered IP set) and return the authoritative record.
 func (s *Server) handleWorkerCheckin(w http.ResponseWriter, r *http.Request) {
@@ -159,13 +250,26 @@ func (s *Server) handleWorkerCheckin(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, map[string]string{"error": "slug required"})
 		return
 	}
+	if tok := workerBearerToken(r); tok != "" {
+		if rec, ok := s.Store.WorkerByTokenHash(hashWorkerToken(tok)); ok {
+			s.noteDirectCheckin(r, rec.Name)
+			s.writeCheckinOK(w, rec)
+			return
+		}
+		writeJSON(w, 401, map[string]string{"error": "unauthorized"})
+		return
+	}
 	ip := requestIP(r)
 	reg, regOK := s.Store.WorkerByIP(ip)
 	if regOK && reg.Name == in.Worker && reg.Slug == in.Slug {
-		writeCheckinOK(w, reg) // already registered correctly; nothing to heal
+		s.writeCheckinOK(w, reg) // already registered correctly; nothing to heal
 		return
 	}
-	if regOK {
+	// Same container name with a different slug is a real spoof — reject.
+	// A *different* name at this IP is Docker reusing the address after the
+	// previous occupant left; the source IP is the occupant (vpc cannot
+	// spoof). Fall through and steal via UpsertWorker so activity POSTs stop 403ing.
+	if regOK && reg.Name == in.Worker {
 		identityMismatch(w, r, reg, in.Worker, in.Slug)
 		return
 	}
@@ -187,20 +291,83 @@ func (s *Server) handleWorkerCheckin(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 500, map[string]string{"error": err.Error()})
 		return
 	}
-	writeCheckinOK(w, out)
+	s.writeCheckinOK(w, out)
 }
 
 // checkinOut is the worker-visible identity after a successful checkin.
 // Host-only fields (Dir, InternetDisabled, UpdatedAt) stay off this
 // response — Dir is the host project path and must not enter the worker.
 type checkinOut struct {
-	Name string   `json:"name"`
-	Slug string   `json:"slug"`
-	IPs  []string `json:"ips,omitempty"`
+	Name      string   `json:"name"`
+	Slug      string   `json:"slug"`
+	IPs       []string `json:"ips,omitempty"`
+	PublicURL string   `json:"publicUrl,omitempty"`
 }
 
-func writeCheckinOK(w http.ResponseWriter, rec store.WorkerRec) {
-	writeJSON(w, 200, checkinOut{Name: rec.Name, Slug: rec.Slug, IPs: rec.IPs})
+func (s *Server) writeCheckinOK(w http.ResponseWriter, rec store.WorkerRec) {
+	writeJSON(w, 200, checkinOut{
+		Name:      rec.Name,
+		Slug:      rec.Slug,
+		IPs:       rec.IPs,
+		PublicURL: s.gatewayPublicURL(),
+	})
+}
+
+// gatewayPublicURL is this gateway's worker-facing URL, or empty when
+// remote workers must keep using the coordinator relay.
+func (s *Server) gatewayPublicURL() string {
+	if s == nil || strings.TrimSpace(s.DataDir) == "" {
+		return ""
+	}
+	id, err := tc.Load(tc.Path(s.DataDir))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimRight(strings.TrimSpace(id.PublicURL), "/")
+}
+
+// noteDirectCheckin records that this remote worker reached the public
+// listener. Relay splices do not carry viaDirectKey.
+func (s *Server) noteDirectCheckin(r *http.Request, name string) {
+	if s == nil || strings.TrimSpace(name) == "" {
+		return
+	}
+	if r.Context().Value(viaDirectKey{}) != true {
+		return
+	}
+	if s.gatewayPublicURL() == "" {
+		return
+	}
+	s.directMu.Lock()
+	defer s.directMu.Unlock()
+	if s.directSwitch == nil {
+		s.directSwitch = map[string]bool{}
+	}
+	s.directSwitch[name] = true
+}
+
+// RelayStillNeeded is true while any assigned remote worker has not checked
+// in on the public URL since this process started. An empty public URL
+// always needs the relay.
+func (s *Server) RelayStillNeeded() bool {
+	if s == nil || s.Store == nil {
+		return true
+	}
+	if s.gatewayPublicURL() == "" {
+		return true
+	}
+	s.directMu.Lock()
+	switched := s.directSwitch
+	s.directMu.Unlock()
+	for _, rec := range s.Store.Workers() {
+		if !rec.Remote {
+			continue
+		}
+		if switched == nil || !switched[rec.Name] {
+			return true
+		}
+	}
+	return false
 }
 
 const (
@@ -214,7 +381,7 @@ func isMonitorWorker(name, slug string) bool {
 	return slug == monitorSlug || name == monitorWorkerName
 }
 
-// activityIn is one informant report (or monitor poke) posted by a worker.
+// activityIn is one board event posted by a worker (watcher or MCP tool).
 type activityIn struct {
 	Worker     string `json:"worker"`
 	Slug       string `json:"slug,omitempty"`
@@ -223,8 +390,8 @@ type activityIn struct {
 	Text       string `json:"text"`
 }
 
-// handleWorkerPostActivity stores an activity reported by a worker's
-// informant (or the monitor). The origin worker is identity-checked against
+// handleWorkerPostActivity stores a Tier A watcher event. MCP board tools
+// write the same store in-process. The origin worker is identity-checked against
 // the slug↔IP registry exactly like the ports handler; text is sanitized
 // (labels render in the host dashboard). No headers/bodies ever enter the
 // activity store — only the sanitized text.
@@ -670,15 +837,5 @@ func (s *Server) handleWorkerGetPlanning(w http.ResponseWriter, r *http.Request)
 // whitespace runs, and caps length so labels can be embedded safely in the
 // dashboard HTML and request-log JSONL. Values are advisory.
 func sanitizeLabel(s string, max int) string {
-	s = strings.Map(func(r rune) rune {
-		if r < 0x20 || r == 0x7f {
-			return ' '
-		}
-		return r
-	}, s)
-	s = strings.Join(strings.Fields(s), " ")
-	if max > 0 && len(s) > max {
-		s = s[:max]
-	}
-	return s
+	return store.SanitizeLabel(s, max)
 }

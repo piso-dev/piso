@@ -23,7 +23,7 @@ const (
 	// Stale sweep: an auto or plan route disappears after 10 min with no
 	// heartbeat for its port (dev servers restart constantly — never delete
 	// on a blip). Expose routes are sticky and never swept.
-	AutoRouteGraceMs = 600000
+	AutoRouteGraceMs       = 600000
 	MaxAutoRoutesPerWorker = 20
 )
 
@@ -35,6 +35,18 @@ func AutoRouteName(slug string, port int) string {
 		label = "worker"
 	}
 	name := label + "-" + fmt.Sprintf("%d", port)
+	if len(name) > 63 {
+		name = strings.TrimRight(name[:63], "-")
+	}
+	return name
+}
+
+func PlanningRouteName(slug string) string {
+	label := dnsLabel(slug)
+	if label == "" {
+		label = "worker"
+	}
+	name := "plan-" + label
 	if len(name) > 63 {
 		name = strings.TrimRight(name[:63], "-")
 	}
@@ -70,7 +82,7 @@ func dnsLabel(raw string) string {
 func (s *Store) SyncWorkerPorts(worker, slug string, ports []int) ([]RouteRec, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	now := time.Now().UnixNano()/1000000
+	now := time.Now().UnixNano() / 1000000
 	// Sort so the per-worker rate cap applies to the lowest ports first.
 	sort.Slice(ports, func(i, j int) bool { return ports[i] < ports[j] })
 	alive := map[int]RouteRec{}

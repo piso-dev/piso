@@ -14,15 +14,19 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
+	"piso/gateway/internal/aiboost"
 	"piso/gateway/internal/model"
 	"piso/gateway/internal/patterns"
 	"piso/gateway/internal/proxy"
 	"piso/gateway/internal/store"
+	"piso/gateway/internal/technocore"
+	"piso/gateway/internal/telegram"
 )
 
-//go:embed ui/index.html
+//go:embed ui/index.html ui/favicon.svg
 var uiFS embed.FS
 
 // Server bundles the control plane + ingress into http.Handlers.
@@ -31,15 +35,52 @@ type Server struct {
 	Patterns *patterns.Compiled
 	Proxy    *proxy.Handler
 	CA       *proxy.CA
+	// DataDir is the host-mounted gateway data directory (identity.json).
+	DataDir string
 	// HTTP is used for MCP OAuth discovery/DCR/token (tests inject).
 	HTTP *http.Client
 	// DenyPeer overrides worker-vpc detection on the control plane (tests).
-	DenyPeer denyPeerFunc
+	DenyPeer          denyPeerFunc
+	githubOAuthMu     sync.Mutex
+	githubOAuthStates map[string]githubOAuthAttempt
+	boostMu           sync.Mutex
+	// Telegram is the Telegram front door: the poller, the update cursor and
+	// the allow-list. It owns the only connection to Telegram; nothing else in
+	// the gateway talks to that API.
+	Telegram     *telegram.Manager
+	boost        *aiboost.Client
+	boostTickets map[string]time.Time
+
+	// directMu guards workers that have checked in on the public URL.
+	// Not persisted: a gateway restart must see a fresh direct check-in
+	// before it drops the relay pool.
+	directMu     sync.Mutex
+	directSwitch map[string]bool // worker name → reached publicUrl
 }
 
 // New assembles the server.
 func New(st *store.Store, pat *patterns.Compiled, pr *proxy.Handler, ca *proxy.CA) *Server {
-	return &Server{Store: st, Patterns: pat, Proxy: pr, CA: ca}
+	s := &Server{Store: st, Patterns: pat, Proxy: pr, CA: ca}
+	// The manager is created here but does not run until main starts it, so a
+	// Server in a test is inert: nothing reaches out to Telegram on its own.
+	s.Telegram = telegram.NewManager(st, nil)
+	s.attachTelegramMailbox()
+	return s
+}
+
+// revokeOrDelete removes a local secret. A replicated secret is tombstoned
+// rather than forgotten: a peer still holding a copy would otherwise publish it
+// back. A local-only secret has no peer to convince, so it is deleted.
+func (s *Server) revokeOrDelete(rec store.SecretRec) error {
+	if rec.TechnocoreID != "" {
+		v, err := technocore.Revoke(s.dataDir(), rec.TechnocoreID, rec.ContentVersion)
+		if err != nil {
+			log.Printf("secrets: revoke %s: %v", rec.ID, err)
+		} else if err := s.Store.RevokeSecret(rec.ID, v); err == nil {
+			return nil
+		}
+	}
+	return s.Store.DeleteSecret(rec.ID)
 }
 
 // ControlHandler returns the host control-plane mux (UI + API). Worker
@@ -54,6 +95,10 @@ func (s *Server) ControlHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if s.denyControlPeer(r.RemoteAddr) {
 			writeJSON(w, 403, map[string]string{"error": "control plane is host-only"})
+			return
+		}
+		if strings.HasPrefix(r.URL.Path, "/oauth/ai-boost/") {
+			s.handleBoostOAuth(w, r)
 			return
 		}
 		mux.ServeHTTP(w, r)
@@ -81,6 +126,14 @@ func (s *Server) WebHandler() http.Handler {
 			s.handleMcpOAuthHTTP(w, r)
 			return
 		}
+		if githubAppHost(r) || strings.HasPrefix(r.URL.Path, "/github-app/") {
+			s.handleGithubAppHTTP(w, r)
+			return
+		}
+		if strings.HasPrefix(r.URL.Path, "/oauth/ai-boost/") {
+			s.handleBoostOAuth(w, r)
+			return
+		}
 		if isWebRouteRequest(r) {
 			s.ingress(w, r)
 			return
@@ -98,18 +151,39 @@ func (s *Server) IngressHandler() http.Handler {
 			s.handleMcpOAuthHTTP(w, r)
 			return
 		}
+		if githubAppHost(r) || strings.HasPrefix(r.URL.Path, "/github-app/") {
+			s.handleGithubAppHTTP(w, r)
+			return
+		}
 		s.ingress(w, r)
 	})
 }
 
-// ui serves the embedded dashboard.
+// ui serves the embedded dashboard and its favicon. Everything else 404s, so
+// an unknown path on the apex can never fall through to the worker proxy.
 func (s *Server) ui(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/" {
+	switch r.URL.Path {
+	case "/":
+		data, _ := uiFS.ReadFile("ui/index.html")
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Write(data)
+	case "/favicon.svg", "/favicon.ico":
+		// Legacy browsers probe /favicon.ico; serve the same mark either way.
+		s.favicon(w, r)
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+func (s *Server) favicon(w http.ResponseWriter, r *http.Request) {
+	data, err := uiFS.ReadFile("ui/favicon.svg")
+	if err != nil {
 		http.NotFound(w, r)
 		return
 	}
-	data, _ := uiFS.ReadFile("ui/index.html")
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Content-Type", "image/svg+xml")
+	w.Header().Set("Cache-Control", "public, max-age=86400")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Write(data)
 }
 
@@ -121,6 +195,12 @@ func (s *Server) routes(mux *http.ServeMux) {
 			"ingressPort": ingressHostPort(),
 		})
 	})
+	s.registerTechnocore(mux)
+	s.registerGithubApp(mux)
+	s.registerGithubUser(mux)
+	s.registerAIBoost(mux)
+	s.registerTelegram(mux)
+	mux.HandleFunc("GET /api/v1/connections", s.handleConnections)
 
 	// CA cert for distribution
 	mux.HandleFunc("GET /api/v1/ca.pem", func(w http.ResponseWriter, r *http.Request) {
@@ -130,6 +210,12 @@ func (s *Server) routes(mux *http.ServeMux) {
 	})
 
 	// secrets (summaries only — real values never leave via GET)
+	mux.HandleFunc("GET /api/v1/pi-provider", s.handleGetPiProvider)
+	mux.HandleFunc("PUT /api/v1/pi-provider", s.handlePutPiProvider)
+	mux.HandleFunc("POST /api/v1/pi-provider/activate", s.handleActivatePiProvider)
+	mux.HandleFunc("POST /api/v1/pi-provider/delete", s.handleDeletePiProvider)
+	mux.HandleFunc("GET /api/v1/pi-provider/models", s.handleGetPiProviderModels)
+
 	mux.HandleFunc("GET /api/v1/secrets", func(w http.ResponseWriter, r *http.Request) {
 		recs := s.Store.Secrets()
 		out := make([]model.SecretSummary, 0, len(recs))
@@ -146,6 +232,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 			EnvKey       string   `json:"envKey"`
 			AllowedHosts []string `json:"allowedHosts"`
 			Workers      []string `json:"workers"`
+			GatewayOnly  bool     `json:"gatewayOnly"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 			writeJSON(w, 400, map[string]string{"error": "bad json"})
@@ -172,38 +259,32 @@ func (s *Server) routes(mux *http.ServeMux) {
 		rec := store.SecretRec{
 			ID: "sec_" + randID(), Name: in.Name, Placeholder: in.Placeholder,
 			Value: in.Value, EnvKey: in.EnvKey, AllowedHosts: in.AllowedHosts,
-			Workers: in.Workers, CreatedAt: time.Now().UTC(),
+			Workers: in.Workers, GatewayOnly: in.GatewayOnly, CreatedAt: time.Now().UTC(),
 		}
-		if err := s.Store.AddSecret(rec); err != nil {
+		// AllowedHosts is authoritative: seed the placeholder's substitution
+		// rules and auto-replay any captures that were blocked on it, so adding
+		// a secret unblocks them.
+		retried, err := s.saveSecret(r.Context(), rec)
+		if err != nil {
 			writeJSON(w, 500, map[string]string{"error": err.Error()})
 			return
-		}
-		// AllowedHosts is authoritative: seed (or replace) the placeholder's
-		// substitution rules now, then auto-replay any captures that were
-		// blocked on this placeholder so adding a secret unblocks them.
-		if err := s.Store.SyncRulesForSecret(rec); err != nil {
-			writeJSON(w, 500, map[string]string{"error": err.Error()})
-			return
-		}
-		seenRetry := map[string]bool{}
-		retried := []RetryResult{}
-		for _, h := range store.CanonicalRuleHosts(rec.AllowedHosts) {
-			retried = append(retried, s.replayMatches(r.Context(), seenRetry, rec.Placeholder, h)...)
 		}
 		writeJSON(w, 201, map[string]any{"secret": storeRecToSummary(rec), "retried": retried})
 	})
 
 	// PUT /api/v1/secrets/{id} — edit an existing secret (dashboard modal).
 	// The real value is never returned over GET, so an empty value means
-	// "keep the existing value". Placeholder and worker scoping are
-	// intentionally not editable here (substitution rules reference the
-	// placeholder; scoping is set at creation via add-monitor / the API).
+	// "keep the existing value". Placeholder is intentionally not editable
+	// here because substitution rules reference it. Omitted worker-scope
+	// fields preserve existing access restrictions.
 	mux.HandleFunc("PUT /api/v1/secrets/{id}", func(w http.ResponseWriter, r *http.Request) {
 		var in struct {
-			Name         string   `json:"name"`
-			Value        string   `json:"value"` // empty = keep existing
-			EnvKey       string   `json:"envKey"`
-			AllowedHosts []string `json:"allowedHosts"`
+			Name         string    `json:"name"`
+			Value        string    `json:"value"` // empty = keep existing
+			EnvKey       string    `json:"envKey"`
+			AllowedHosts []string  `json:"allowedHosts"`
+			Workers      *[]string `json:"workers"`
+			GatewayOnly  *bool     `json:"gatewayOnly"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 			writeJSON(w, 400, map[string]string{"error": "bad json"})
@@ -236,23 +317,33 @@ func (s *Server) routes(mux *http.ServeMux) {
 		// captures are replayed so an edit that newly allows a host also
 		// unblocks requests that were stuck on it.
 		rec.AllowedHosts = in.AllowedHosts
+		// Explicit scope updates replace the previous values. Omission must
+		// not broaden access for older clients editing unrelated fields.
+		if in.GatewayOnly != nil {
+			rec.GatewayOnly = *in.GatewayOnly
+		}
+		if in.Workers != nil {
+			rec.Workers = *in.Workers
+		}
 		if err := s.Store.ReplaceSecret(rec); err != nil {
 			writeJSON(w, 500, map[string]string{"error": err.Error()})
 			return
 		}
-		if err := s.Store.SyncRulesForSecret(rec); err != nil {
+		retried, err := s.seedSecretRules(r.Context(), rec)
+		if err != nil {
 			writeJSON(w, 500, map[string]string{"error": err.Error()})
 			return
-		}
-		seenRetry := map[string]bool{}
-		retried := []RetryResult{}
-		for _, h := range store.CanonicalRuleHosts(rec.AllowedHosts) {
-			retried = append(retried, s.replayMatches(r.Context(), seenRetry, rec.Placeholder, h)...)
 		}
 		writeJSON(w, 200, map[string]any{"secret": storeRecToSummary(rec), "retried": retried})
 	})
 	mux.HandleFunc("DELETE /api/v1/secrets/{id}", func(w http.ResponseWriter, r *http.Request) {
-		if err := s.Store.DeleteSecret(r.PathValue("id")); err != nil {
+		id := r.PathValue("id")
+		rec, ok := s.Store.SecretByID(id)
+		if !ok {
+			writeJSON(w, 404, map[string]string{"error": "not found"})
+			return
+		}
+		if err := s.revokeOrDelete(rec); err != nil {
 			writeJSON(w, 500, map[string]string{"error": err.Error()})
 			return
 		}
@@ -517,6 +608,12 @@ func (s *Server) routes(mux *http.ServeMux) {
 			TargetSlug: strings.TrimSpace(r.URL.Query().Get("target")),
 			Limit:      atoiDefault(r.URL.Query().Get("limit"), 500),
 		}
+		// The live timeline needs a complete, time-bounded window rather than
+		// a row limit that can silently discard older projects on busy boards.
+		if r.URL.Query().Get("window") == "3h" {
+			f.SinceMs = time.Now().Add(-3 * time.Hour).UnixMilli()
+			f.Limit = 0
+		}
 		acts, err := s.Store.QueryActivities(f)
 		if err != nil {
 			writeJSON(w, 500, map[string]string{"error": err.Error()})
@@ -531,6 +628,8 @@ func (s *Server) routes(mux *http.ServeMux) {
 	// worker registry (slug↔IP), populated by the host CLI at `piso up`
 	mux.HandleFunc("GET /api/v1/workers", s.handleGetWorkers)
 	mux.HandleFunc("POST /api/v1/workers", s.handlePostWorkers)
+	mux.HandleFunc("DELETE /api/v1/workers/{name}", s.handleDeleteWorker)
+	mux.HandleFunc("POST /api/v1/projects/{slug}/visibility", s.handleProjectVisibility)
 	mux.HandleFunc("POST /api/v1/workers/{name}/internet", s.handleSetWorkerInternet)
 
 	// Host inbox: list / approve / dismiss. Create and cancel are worker-only
@@ -538,6 +637,11 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/ingress/requests", s.handleListIngress)
 	mux.HandleFunc("POST /api/v1/ingress/requests/{id}/approve", s.handleApproveIngress)
 	mux.HandleFunc("POST /api/v1/ingress/requests/{id}/dismiss", s.handleDismissIngress)
+	s.registerTasks(mux)
+	mux.HandleFunc("GET /api/v1/asks", s.handleAsksList)
+	mux.HandleFunc("POST /api/v1/asks/approvals/{id}/decide", s.handleAskApprove)
+	mux.HandleFunc("POST /api/v1/asks/human-actions/{id}/resolve", s.handleAskResolve)
+	mux.HandleFunc("POST /api/v1/tasks/{id}/respond", s.handleTaskRespond)
 }
 
 // reloadPatterns swaps the live compiled library in both the server and the
@@ -574,6 +678,8 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 	subRoutes := s.Store.SubRoutes()
 	subActs := s.Store.SubActivities()
 	subMcp := s.Store.SubMcp()
+	subGithub := s.Store.SubGithub()
+	subAsks := s.Store.SubAsks()
 	ctx := r.Context()
 	tick := time.NewTicker(20 * time.Second)
 	defer tick.Stop()
@@ -604,6 +710,14 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 				fmt.Fprintf(w, "event: mcp\ndata: %s\n\n", b)
 				fl.Flush()
 			}
+		case gha := <-subGithub:
+			if b, err := json.Marshal(gha.ToSummary()); err == nil {
+				fmt.Fprintf(w, "event: github\ndata: %s\n\n", b)
+				fl.Flush()
+			}
+		case <-subAsks:
+			fmt.Fprintf(w, "event: asks\ndata: {}\n\n")
+			fl.Flush()
 		case <-tick.C:
 			fmt.Fprint(w, ": keepalive\n\n")
 			fl.Flush()
@@ -683,8 +797,9 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func storeRecToSummary(rc store.SecretRec) model.SecretSummary {
 	return model.SecretSummary{
-		ID: rc.ID, Name: rc.Name, Placeholder: rc.Placeholder, EnvKey: rc.EnvKey,
-		AllowedHosts: rc.AllowedHosts, Workers: rc.Workers, CreatedAt: rc.CreatedAt,
+		ID: rc.ID, Name: rc.Name, Placeholder: rc.Placeholder, Kind: rc.Kind, EnvKey: rc.EnvKey,
+		AllowedHosts: rc.AllowedHosts, Workers: rc.Workers, GatewayOnly: rc.GatewayOnly, CreatedAt: rc.CreatedAt,
+		TechnocoreID: rc.TechnocoreID,
 	}
 }
 

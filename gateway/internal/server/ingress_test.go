@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"piso/gateway/internal/store"
+	"piso/gateway/internal/telegram"
 )
 
 func testServer(t *testing.T) *Server {
@@ -22,7 +23,7 @@ func testServer(t *testing.T) *Server {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &Server{Store: st}
+	return &Server{Store: st, Telegram: telegram.NewManager(st, nil)}
 }
 
 func doJSON(t *testing.T, h http.Handler, method, path string, body any) *httptest.ResponseRecorder {

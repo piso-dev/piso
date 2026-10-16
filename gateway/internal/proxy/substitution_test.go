@@ -33,11 +33,74 @@ func TestApplySubstitutionRewritesBasicAuth(t *testing.T) {
 		t.Fatal(err)
 	}
 	req.Header.Set("Authorization", "Basic "+b64)
-	applySubstitution(req, []byte{}, model.Decision{Substituted: []string{ph}}, st, scanner.Result{})
+	applySubstitution(req, []byte{}, model.Decision{Substituted: []string{ph}}, st, scanner.Result{}, nil)
 	got := req.Header.Get("Authorization")
 	want := "Basic " + base64.StdEncoding.EncodeToString([]byte("ExampleUser:"+real))
 	if got != want {
 		t.Fatalf("basic header: want %q got %q", want, got)
+	}
+}
+
+func TestApplySubstitutionRewritesURLPath(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.New(dir+"/state.json", dir+"/log.jsonl", dir+"/patterns.json", dir+"/activities.db", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const ph = "piso_telegram_5ef1739b3cf1"
+	const real = "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"
+	if err := st.AddSecret(store.SecretRec{
+		ID: "s1", Name: "telegram", Placeholder: ph, Value: real,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	req, err := http.NewRequest("GET", "https://api.telegram.org/bot"+ph+"/getMe", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	applySubstitution(req, nil, model.Decision{Substituted: []string{ph}}, st, scanner.Result{}, nil)
+	want := "/bot" + real + "/getMe"
+	if req.URL.Path != want {
+		t.Fatalf("path: want %q got %q", want, req.URL.Path)
+	}
+	// The real Telegram token contains ':' — it must stay literal on the wire.
+	if got := req.URL.EscapedPath(); got != want {
+		t.Fatalf("escaped path: want %q got %q", want, got)
+	}
+	if got := req.URL.RequestURI(); got != want {
+		t.Fatalf("request uri: want %q got %q", want, got)
+	}
+	if strings.Contains(req.URL.String(), ph) {
+		t.Fatalf("placeholder left in URL: %q", req.URL.String())
+	}
+}
+
+func TestApplySubstitutionRewritesURLQuery(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.New(dir+"/state.json", dir+"/log.jsonl", dir+"/patterns.json", dir+"/activities.db", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const ph = "piso_telegram_5ef1739b3cf1"
+	const real = "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"
+	if err := st.AddSecret(store.SecretRec{
+		ID: "s1", Name: "telegram", Placeholder: ph, Value: real,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	req, err := http.NewRequest("GET", "https://api.telegram.org/getMe?token="+ph+"&x=1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	applySubstitution(req, nil, model.Decision{Substituted: []string{ph}}, st, scanner.Result{}, nil)
+	if strings.Contains(req.URL.RawQuery, ph) {
+		t.Fatalf("placeholder left in query: %q", req.URL.RawQuery)
+	}
+	if got := req.URL.Query().Get("token"); got != real {
+		t.Fatalf("query token: want %q got %q", real, got)
+	}
+	if got := req.URL.Query().Get("x"); got != "1" {
+		t.Fatalf("unrelated query param lost/reordered: %q", req.URL.RawQuery)
 	}
 }
 
@@ -90,21 +153,21 @@ func TestApplySubstitutionRewritesHeaderNotMessages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const ph = "piso_routstr_abc"
+	const ph = "piso_model_abc"
 	const real = "sk-real-provider-key-value"
 	if err := st.AddSecret(store.SecretRec{
-		ID: "s1", Name: "routstr", Placeholder: ph, Value: real,
+		ID: "s1", Name: "piso", Placeholder: ph, Value: real,
 	}); err != nil {
 		t.Fatal(err)
 	}
 	body := []byte(`{"messages":[{"role":"user","content":"token ` + ph + `"}]}`)
-	req, err := http.NewRequest("POST", "https://routstr.ft.hn/v1/chat/completions", nil)
+	req, err := http.NewRequest("POST", "https://api.example.test/v1/chat/completions", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	req.Header.Set("Authorization", "Bearer "+ph)
 	req.Header.Set("Content-Type", "application/json")
-	applySubstitution(req, body, model.Decision{Substituted: []string{ph}}, st, scanner.Result{})
+	applySubstitution(req, body, model.Decision{Substituted: []string{ph}}, st, scanner.Result{}, nil)
 	if got := req.Header.Get("Authorization"); got != "Bearer "+real {
 		t.Fatalf("header: %q", got)
 	}
@@ -169,12 +232,42 @@ func TestApplySubstitutionPreservesPktBody(t *testing.T) {
 		t.Fatal(err)
 	}
 	req.Body = io.NopCloser(bytes.NewReader(body))
-	applySubstitution(req, body, model.Decision{Substituted: []string{ph}}, st, scanner.Result{})
+	applySubstitution(req, body, model.Decision{Substituted: []string{ph}}, st, scanner.Result{}, nil)
 	got, err := io.ReadAll(req.Body)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !bytes.Equal(got, body) {
 		t.Fatalf("pkt body mangled: want %d bytes got %d bytes", len(body), len(got))
+	}
+}
+
+type fakeMinter struct{ token string }
+
+func (f fakeMinter) Mint(placeholder, host, path, body string) (string, error) {
+	return f.token, nil
+}
+func (f fakeMinter) LiveTokens() []string { return []string{f.token} }
+
+func TestApplySubstitutionMintsGithubApp(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.New(dir+"/state.json", dir+"/log.jsonl", dir+"/patterns.json", dir+"/activities.db", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const ph = "piso_github_app_testxx"
+	if err := st.AddSecret(store.SecretRec{
+		ID: "s1", Name: "gha", Placeholder: ph, Kind: model.SecretKindGithubApp,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	req, err := http.NewRequest("GET", "https://api.github.com/repos/complex-gh/piso", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+ph)
+	applySubstitution(req, nil, model.Decision{Substituted: []string{ph}}, st, scanner.Result{}, fakeMinter{token: "ghs_minted"})
+	if got := req.Header.Get("Authorization"); got != "Bearer ghs_minted" {
+		t.Fatalf("got %q", got)
 	}
 }

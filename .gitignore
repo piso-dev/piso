@@ -1,0 +1,26 @@
+# runtime state
+.pi/
+.piso/
+*.log
+
+# build artifacts
+bin/
+dist/
+
+# local env
+.env
+
+# Go
+*.test
+
+# local toolchain (downloaded inside the worker container)
+.tools/
+
+# worker-local build/cache dirs (not part of the repo)
+.gobuild/
+.home/
+worker/node_modules/
+
+# Python
+**/__pycache__/
+*.sqlite3

@@ -114,7 +114,7 @@ func TestWorkerCtxUpsertAndLogEnrichment(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	ctx := WorkerCtx{Worker: "piso-worker-demo", Slug: "demo", Folder: "/workspace",
-		Project: "demo", Branch: "main", Commit: "abc1234", Model: "routstr/deepseek-v4-flash-0731"}
+		Project: "demo", Branch: "main", Commit: "abc1234", Model: "piso/deepseek-v4-flash-0731"}
 	got, err := st.UpsertWorkerCtx(ctx)
 	if err != nil {
 		t.Fatalf("Upsert: %v", err)
@@ -126,7 +126,7 @@ func TestWorkerCtxUpsertAndLogEnrichment(t *testing.T) {
 	// AppendLog snapshots context onto a matching-slug row
 	st.AppendLog(Record{ID: "r1", Slug: "demo", Action: "allow", Status: 200})
 	r1 := st.Records(1)[0]
-	if r1.Project != "demo" || r1.Branch != "main" || r1.Commit != "abc1234" || r1.Model != "routstr/deepseek-v4-flash-0731" {
+	if r1.Project != "demo" || r1.Branch != "main" || r1.Commit != "abc1234" || r1.Model != "piso/deepseek-v4-flash-0731" {
 		t.Fatalf("enrichment failed: %+v", r1)
 	}
 	// A row that already sets a label keeps it (call site wins)

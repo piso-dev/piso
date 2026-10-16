@@ -179,6 +179,31 @@ func dockerOutput(args ...string) (string, error) {
 	return strings.TrimSpace(string(out)), err
 }
 
+// ListNames returns `docker ps -a` names matching a docker name filter
+// (substring match, same as docker --filter name=).
+func ListNames(nameFilter string) []string {
+	out, err := dockerOutput("ps", "-a", "--format", "{{.Names}}", "--filter", "name="+nameFilter)
+	if err != nil || out == "" {
+		return nil
+	}
+	return strings.Fields(out)
+}
+
+// ContainerWorkspace is the host path bind-mounted at /workspace, if any.
+func ContainerWorkspace(name string) (string, bool) {
+	out, err := dockerOutput("inspect", "-f",
+		`{{range .Mounts}}{{if eq .Destination "/workspace"}}{{.Source}}{{end}}{{end}}`,
+		name)
+	if err != nil {
+		return "", false
+	}
+	out = strings.TrimSpace(out)
+	if out == "" {
+		return "", false
+	}
+	return out, true
+}
+
 // ContainerIPs returns the IPv4/v6 addresses the container is attached to,
 // parsed from `docker inspect`. Used to populate the worker registry (slug↔IP)
 // so the gateway can tag request logs.

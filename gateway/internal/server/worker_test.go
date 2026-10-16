@@ -87,9 +87,9 @@ func TestWorkerCheckinAppendsExistingIPs(t *testing.T) {
 	}
 }
 
-// An IP already owned by ANOTHER worker cannot be re-claimed — strict
-// anti-squatting; the checkin response carries a diagnostic detail.
-func TestWorkerCheckinCrossNameRejected(t *testing.T) {
+// Docker reuses vpc IPs. A checkin from an IP still registered to another
+// worker steals it so activity POSTs stop 403ing. Source IP is occupancy.
+func TestWorkerCheckinStealsReusedIP(t *testing.T) {
 	s := testServer(t)
 	if w := doJSON(t, s.ControlHandler(), "POST", "/api/v1/workers", map[string]any{
 		"name": "piso-worker-demo", "slug": "demo", "ips": []string{"192.168.107.50"},
@@ -98,19 +98,18 @@ func TestWorkerCheckinCrossNameRejected(t *testing.T) {
 	}
 	wh := s.WorkerHandler()
 	w := postCheckin(t, wh, "192.168.107.50", "piso-worker-other", "other")
-	if w.Code != 403 {
-		t.Fatalf("cross-name claim accepted: %d %s", w.Code, w.Body.String())
+	if w.Code != 200 {
+		t.Fatalf("reused-IP checkin %d %s", w.Code, w.Body.String())
 	}
-	body := w.Body.String()
-	if !strings.Contains(body, "identity mismatch") || !strings.Contains(body, "request claims") {
-		t.Fatalf("403 missing diagnostic detail: %s", body)
+	rec, ok := s.Store.WorkerByIP("192.168.107.50")
+	if !ok || rec.Name != "piso-worker-other" || rec.Slug != "other" {
+		t.Fatalf("expected steal, got %+v ok=%v", rec, ok)
 	}
-	// the conflicting claim must not have touched the registry
-	if _, ok := s.Store.WorkerByIP("192.168.107.50"); !ok {
-		t.Fatal("registry lost the original owner")
-	}
-	if reg, ok := s.Store.WorkerByName("piso-worker-other"); ok && len(reg.IPs) > 0 {
-		t.Fatalf("claim leaked an IP: %+v", reg)
+	old, _ := s.Store.WorkerByName("piso-worker-demo")
+	for _, ip := range old.IPs {
+		if ip == "192.168.107.50" {
+			t.Fatalf("previous owner still has IP: %+v", old)
+		}
 	}
 }
 

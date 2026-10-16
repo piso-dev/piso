@@ -96,6 +96,40 @@ func TestMCPListOmitsSecrets(t *testing.T) {
 	}
 }
 
+func TestMCPRevokeLeavesPending(t *testing.T) {
+	s := testServer(t)
+	ann := doJSON(t, s.WorkerHandler(), "POST", "/api/v1/worker/mcp", map[string]any{
+		"worker": "piso-worker-demo", "slug": "demo", "name": "ai-boost",
+		"url": "https://mcp.example.com/mcp",
+	})
+	if ann.Code != 201 {
+		t.Fatalf("announce %d %s", ann.Code, ann.Body.String())
+	}
+	var created struct {
+		MCP struct {
+			ID string `json:"id"`
+		} `json:"mcp"`
+	}
+	if err := json.Unmarshal(ann.Body.Bytes(), &created); err != nil || created.MCP.ID == "" {
+		t.Fatalf("id: %v %s", err, ann.Body.String())
+	}
+	rev := doJSON(t, s.ControlHandler(), "POST", "/api/v1/mcp/"+created.MCP.ID+"/revoke", map[string]any{})
+	if rev.Code != 200 || !strings.Contains(rev.Body.String(), "revoked") {
+		t.Fatalf("revoke %d %s", rev.Code, rev.Body.String())
+	}
+	pend := doJSON(t, s.ControlHandler(), "GET", "/api/v1/mcp/pending", nil)
+	if pend.Code != 200 {
+		t.Fatalf("pending %d %s", pend.Code, pend.Body.String())
+	}
+	if strings.Contains(pend.Body.String(), created.MCP.ID) || strings.Contains(pend.Body.String(), "revoked") {
+		t.Fatalf("revoked still pending: %s", pend.Body.String())
+	}
+	list := doJSON(t, s.ControlHandler(), "GET", "/api/v1/mcp", nil)
+	if !strings.Contains(list.Body.String(), "revoked") {
+		t.Fatalf("revoked missing from tab list: %s", list.Body.String())
+	}
+}
+
 func TestMCPOAuthCallbackStoresToken(t *testing.T) {
 	as := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {

@@ -1,0 +1,9 @@
+# NEVER ship runtime state into images — .piso holds real secrets, the CA key,
+# and the request log.
+.piso/
+bin/
+.claude/
+.git/
+*.md
+scripts/
+cli/

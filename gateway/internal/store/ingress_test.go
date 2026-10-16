@@ -284,7 +284,7 @@ func TestSyncWorkerPortsRateCap(t *testing.T) {
 
 func TestRoutesSweepsStaleAuto(t *testing.T) {
 	st := testStore(t)
-	now := time.Now().UnixNano()/1000000
+	now := time.Now().UnixNano() / 1000000
 	if err := st.AddRoute(RouteRec{ID: "r_stale", Name: "demo-8080", Worker: "piso-worker-demo", Port: 8080, Origin: AutoRouteOriginAuto, LastSeenMs: now - AutoRouteGraceMs - 1000}); err != nil {
 		t.Fatal(err)
 	}
@@ -329,7 +329,7 @@ func TestSetWorkerUnreachableHints(t *testing.T) {
 
 func TestSetRouteDisabledKeepsRowAndFlips(t *testing.T) {
 	st := testStore(t)
-	if err := st.AddRoute(RouteRec{ID: "r1", Name: "demo-8080", Worker: "piso-worker-demo", Port: 8080, Origin: AutoRouteOriginAuto, LastSeenMs: time.Now().UnixNano()/1000000}); err != nil {
+	if err := st.AddRoute(RouteRec{ID: "r1", Name: "demo-8080", Worker: "piso-worker-demo", Port: 8080, Origin: AutoRouteOriginAuto, LastSeenMs: time.Now().UnixNano() / 1000000}); err != nil {
 		t.Fatal(err)
 	}
 	// flip off

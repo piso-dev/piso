@@ -16,7 +16,7 @@ func TestWorkerPostContext(t *testing.T) {
 		"worker": "piso-worker-demo", "slug": "demo",
 		"folder": "/workspace", "project": "demo",
 		"branch": "feat/x", "commit": "abc1234",
-		"model": "routstr/deepseek-v4-flash-0731",
+		"model": "piso/deepseek-v4-flash-0731",
 	})
 	if res.Code != 200 {
 		t.Fatalf("post context %d %s", res.Code, res.Body.String())
@@ -25,7 +25,7 @@ func TestWorkerPostContext(t *testing.T) {
 	if !ok {
 		t.Fatal("context not stored")
 	}
-	if ctx.Project != "demo" || ctx.Branch != "feat/x" || ctx.Commit != "abc1234" || ctx.Model != "routstr/deepseek-v4-flash-0731" {
+	if ctx.Project != "demo" || ctx.Branch != "feat/x" || ctx.Commit != "abc1234" || ctx.Model != "piso/deepseek-v4-flash-0731" {
 		t.Fatalf("stored ctx %+v", ctx)
 	}
 
@@ -33,7 +33,7 @@ func TestWorkerPostContext(t *testing.T) {
 	res = doJSON(t, wh, "POST", "/api/v1/worker/context", map[string]any{
 		"worker": "piso-worker-demo", "slug": "demo",
 		"project": "demo\n<script>", "branch": "a\tb  c", "commit": "xxx",
-		"model": "routstr/deepseek-v4-flash-0731",
+		"model": "piso/deepseek-v4-flash-0731",
 	})
 	if res.Code != 200 {
 		t.Fatalf("post dirty %d %s", res.Code, res.Body.String())
@@ -50,7 +50,7 @@ func TestWorkerPostContext(t *testing.T) {
 	// report: project sanitized to "demo <script>", branch "a b c")
 	s.Store.AppendLog(store.Record{ID: "r1", Slug: "demo", Action: "allow", Status: 200})
 	rec := s.Store.Records(1)[0]
-	if rec.Project != "demo <script>" || rec.Branch != "a b c" || rec.Commit != "xxx" || rec.Model != "routstr/deepseek-v4-flash-0731" {
+	if rec.Project != "demo <script>" || rec.Branch != "a b c" || rec.Commit != "xxx" || rec.Model != "piso/deepseek-v4-flash-0731" {
 		t.Fatalf("log row not enriched: %+v", rec)
 	}
 

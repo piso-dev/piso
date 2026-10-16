@@ -16,11 +16,12 @@ import (
 	"time"
 
 	"piso/gateway/internal/patterns"
+	"piso/internal/ownfile"
 )
 
 // CurrentStateVersion is written into state.json. Bump when adding a
 // migration in applyMigrations.
-const CurrentStateVersion = 5
+const CurrentStateVersion = 9
 
 // State is the persisted configuration.
 type State struct {
@@ -34,18 +35,83 @@ type State struct {
 	Workers         []WorkerRec         `json:"workers,omitempty"`
 	Contexts        []WorkerCtx         `json:"contexts,omitempty"`
 	McpServers      []McpServerRec      `json:"mcpServers,omitempty"`
+	GithubApps      []GithubAppRec      `json:"githubApps,omitempty"`
+	GithubUser      GithubUserRec       `json:"githubUser,omitempty"`
+	// Telegram is the gateway's Telegram front door: which bot the allow-list
+	// belongs to, the update cursor, and the accounts allowed to talk to it.
+	Telegram TelegramLink `json:"telegram,omitempty"`
+	// Supervisor is the worker the coordinator named to run this gateway's
+	// Telegram front door. It is a cache: the coordinator owns the lease, and
+	// an entry whose ExpiresAt has passed is not a supervisor.
+	Supervisor SupervisorLink `json:"supervisor,omitempty"`
+	// Mailbox holds authorized Telegram messages waiting for the supervisor. It
+	// is the durable queue between the poller and a worker that may be absent or
+	// busy; only an ack removes a message.
+	Mailbox []MailMessage `json:"mailbox,omitempty"`
+	// PiProvider is the legacy single shared pi models.json pointer. It is
+	// migrated into PiProviders on load and never written again.
+	PiProvider *PiProviderRec `json:"piProvider,omitempty"`
+	// PiProviders is the dashboard-managed stack of model provider profiles.
+	// Every entry is written into the shared pi models.json; ActivePiProviderID
+	// names the one new sessions start on.
+	PiProviders        []PiProviderRec `json:"piProviders,omitempty"`
+	ActivePiProviderID string          `json:"activePiProviderId,omitempty"`
+}
+
+// PiProviderRec is not a secret. SecretID is a technocore resource UUID so
+// every gateway can resolve its own piso_ placeholder. BaseURL is written
+// into models.json as-is. ID is the stable profile id and also the provider
+// key inside models.json.
+type PiProviderRec struct {
+	ID       string `json:"id,omitempty"`
+	Name     string `json:"name,omitempty"`
+	SecretID string `json:"secretId,omitempty"`
+	BaseURL  string `json:"baseUrl,omitempty"`
+	// DefaultModel is the model id new pi sessions start on. Empty means
+	// pi picks the first model the provider's catalog returns. It is never a
+	// precondition for saving or activating the provider: a failed catalog
+	// fetch leaves the profile intact and the model unresolved.
+	DefaultModel string `json:"defaultModel,omitempty"`
+	// APIType is the pi models.json api adapter. Empty means
+	// openai-completions.
+	APIType string `json:"api,omitempty"`
+	// Models is the last successfully fetched catalog. It is advisory: it
+	// feeds the dashboard autocomplete and lazy default resolution, never the
+	// save path. CatalogError holds the last failure for display.
+	Models           []string  `json:"models,omitempty"`
+	CatalogCheckedAt time.Time `json:"catalogCheckedAt,omitempty"`
+	CatalogError     string    `json:"catalogError,omitempty"`
+	UpdatedAt        time.Time `json:"updatedAt,omitempty"`
 }
 
 // JSON-friendly records (this package owns persistence shape).
 type SecretRec struct {
+	GatewayOnly  bool      `json:"gatewayOnly,omitempty"` // never substituted into worker traffic; still replicated to every enrolled gateway
 	ID           string    `json:"id"`
 	Name         string    `json:"name"`
 	Placeholder  string    `json:"placeholder"`
 	Value        string    `json:"value"`
+	Kind         string    `json:"kind,omitempty"` // "" opaque | "github-app"
 	EnvKey       string    `json:"envKey,omitempty"`
 	AllowedHosts []string  `json:"allowedHosts,omitempty"`
 	Workers      []string  `json:"workers,omitempty"` // empty or "*" = all workers
 	CreatedAt    time.Time `json:"createdAt"`
+	// ContentVersion is the coordinator version this copy was synced at. 0
+	// means the secret has never been published, so it has no base to be
+	// stale against.
+	ContentVersion int `json:"contentVersion,omitempty"`
+	// Revoked marks a coordinator tombstone: the plaintext is gone and the row
+	// survives only to remember the version, so a stale peer republishing the
+	// old value loses the race instead of resurrecting it.
+	Revoked bool `json:"revoked,omitempty"`
+	// TechnocoreID is the coordinator Resource UUID after the first successful
+	// share (or inbound envelope). Empty means never published.
+	TechnocoreID string `json:"technocoreId,omitempty"`
+	// PublishedHash is hex SHA-256 of the plaintext last accepted by the
+	// coordinator. Combined with PublishedRecipients to skip republish.
+	PublishedHash string `json:"publishedHash,omitempty"`
+	// PublishedRecipients are principal IDs wrapped on the last share.
+	PublishedRecipients []string `json:"publishedRecipients,omitempty"`
 }
 
 type RuleRec struct {
@@ -101,6 +167,13 @@ type WorkerRec struct {
 	Slug             string    `json:"slug"`                       // project slug, e.g. "demo"
 	Dir              string    `json:"dir,omitempty"`              // host project dir mounted at /workspace
 	IPs              []string  `json:"ips,omitempty"`              // vpc IP addresses of the container
+	TokenHash        string    `json:"tokenHash,omitempty"`        // SHA-256 hex of remote worker bearer token
+	Pubkey           string    `json:"pubkey,omitempty"`           // worker signing pubkey (technocore)
+	PrincipalID      string    `json:"principalId,omitempty"`      // coordinator worker principal UUID
+	ChannelPubkey    string    `json:"channelPubkey,omitempty"`    // Ed25519 hex bound to the MCP channel
+	ChannelBoundAt   time.Time `json:"channelBoundAt,omitempty"`   // when ChannelPubkey was bound
+	Remote           bool      `json:"remote,omitempty"`           // enrolled remote worker (not vpc IP identity)
+	ProjectHidden    bool      `json:"projectHidden,omitempty"`    // hidden from the default project stack
 	InternetDisabled bool      `json:"internetDisabled,omitempty"` // true = gateway refuses egress
 	UpdatedAt        time.Time `json:"updatedAt"`
 }
@@ -122,6 +195,7 @@ type WorkerCtx struct {
 // Ingress request statuses. Only pending rows appear in the dashboard inbox.
 const (
 	IngressKindPlanning  = "planning"
+	IngressKindRebind    = "channel-rebind"
 	IngressStatusPending = "pending"
 	DefaultPlanningPort  = 19432
 )
@@ -169,6 +243,19 @@ type Store struct {
 	// MCP OAuth rows (dashboard chip + tab)
 	onMcp chan McpServerRec // broadcast for SSE
 
+	// GitHub App rows (dashboard chip + tab)
+	onGithub chan GithubAppRec
+
+	onAsks chan struct{}
+
+	// onMailbox wakes a worker's long-poll when a Telegram message is enqueued.
+	onMailbox chan struct{}
+
+	// onTelegram wakes the Telegram poller when the coordinator says the front
+	// door moved (a claim, a revocation), so the holder refetches the allow-list
+	// now instead of at its next renewal.
+	onTelegram chan struct{}
+
 	// transient listener hints: worker → ports the watcher reported but the
 	// gateway cannot route to (loopback / specific-IP / v6-only binds)
 	unreachable map[string][]UnreachablePort
@@ -212,6 +299,11 @@ type Finding struct {
 	Token     string `json:"token,omitempty"`
 	Location  string `json:"location"`
 	Field     string `json:"field,omitempty"`
+	// Count is how many times this finding occurred in the request. The same
+	// placeholder can appear dozens of times (e.g. re-sent in an LLM
+	// messages[] transcript); findings are collapsed per (kind, pattern,
+	// secret, token, location) at record time and counted here. 0 means 1.
+	Count int `json:"count,omitempty"`
 }
 
 type Capture struct {
@@ -233,6 +325,10 @@ func New(path, logPath, patternsPath, activitiesPath string, maxLog int) (*Store
 		onRoute:     make(chan RouteRec, 64),
 		onActivity:  make(chan Activity, 64),
 		onMcp:       make(chan McpServerRec, 64),
+		onGithub:    make(chan GithubAppRec, 64),
+		onAsks:      make(chan struct{}, 8),
+		onMailbox:   make(chan struct{}, 8),
+		onTelegram:  make(chan struct{}, 8),
 		unreachable: map[string][]UnreachablePort{},
 	}
 	if err := s.load(); err != nil {
@@ -287,15 +383,28 @@ func (s *Store) save() error {
 	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return err
 	}
-	return os.Rename(tmp, s.path)
+	if err := os.Rename(tmp, s.path); err != nil {
+		return err
+	}
+	return ownfile.MatchDir(s.path)
 }
 
 // ---- reads ----
 
+// Path is the state file this store loads and saves.
+func (s *Store) Path() string { return s.path }
+
 func (s *Store) Secrets() []SecretRec {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return copyRecs(s.state.Secrets)
+	live := make([]SecretRec, 0, len(s.state.Secrets))
+	for _, rec := range s.state.Secrets {
+		if rec.Revoked {
+			continue
+		}
+		live = append(live, rec)
+	}
+	return copyRecs(live)
 }
 func (s *Store) Rules() []RuleRec {
 	s.mu.RLock()
@@ -432,6 +541,42 @@ func (s *Store) DeleteSecret(id string) error {
 	s.state.Secrets = out
 	// drop rules referencing it
 	s.state.Rules = filterRules(s.state.Rules, func(r RuleRec) bool { return r.SecretID != id })
+	apps := s.state.GithubApps[:0]
+	for _, a := range s.state.GithubApps {
+		if a.SecretID != id {
+			apps = append(apps, a)
+		}
+	}
+	s.state.GithubApps = apps
+	if err := s.save(); err != nil {
+		return err
+	}
+	return s.writePlaceholdersEnvLocked()
+}
+
+// RevokeSecret tombstones a local secret: the plaintext is dropped, its
+// substitution rules go away, and the coordinator version is recorded so a
+// stale peer republishing the old value loses instead of resurrecting it. The
+// row is kept (and hidden from Secrets) purely so that version is remembered.
+func (s *Store) RevokeSecret(id string, version int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	found := false
+	for i := range s.state.Secrets {
+		if s.state.Secrets[i].ID != id {
+			continue
+		}
+		rec := s.state.Secrets[i]
+		rec.Value = ""
+		rec.Revoked = true
+		rec.ContentVersion = version
+		s.state.Secrets[i] = rec
+		found = true
+	}
+	if !found {
+		return fmt.Errorf("secret %s not found", id)
+	}
+	s.state.Rules = filterRules(s.state.Rules, func(r RuleRec) bool { return r.SecretID != id })
 	if err := s.save(); err != nil {
 		return err
 	}
@@ -474,6 +619,22 @@ func (s *Store) SecretByPlaceholder(placeholder string) (SecretRec, bool) {
 	return SecretRec{}, false
 }
 
+// SecretByTechnocoreID returns the first secret stamped with this coordinator
+// resource UUID. Empty id never matches.
+func (s *Store) SecretByTechnocoreID(id string) (SecretRec, bool) {
+	if id == "" {
+		return SecretRec{}, false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, rec := range s.state.Secrets {
+		if rec.TechnocoreID == id {
+			return rec, true
+		}
+	}
+	return SecretRec{}, false
+}
+
 // SetEnvKey updates the worker env name for a secret and rewrites placeholders.env.
 func (s *Store) SetEnvKey(id, envKey string) error {
 	s.mu.Lock()
@@ -489,6 +650,192 @@ func (s *Store) SetEnvKey(id, envKey string) error {
 		return s.writePlaceholdersEnvLocked()
 	}
 	return fmt.Errorf("secret %s not found", id)
+}
+
+// defaultPiProviderID is the provider key used for the pre-stack single
+// provider and for coordinator-synced pointers that carry no id. It matches
+// piprofile.ProviderName.
+const defaultPiProviderID = "piso"
+
+// PiProviderStack returns a copy of every provider profile in insertion order.
+func (s *Store) PiProviderStack() []PiProviderRec {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return copyPiProviderRecs(s.state.PiProviders)
+}
+
+// ActivePiProviderID returns the profile id new sessions start on, or "".
+func (s *Store) ActivePiProviderID() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if rec := s.activePiProviderLocked(); rec != nil {
+		return rec.ID
+	}
+	return ""
+}
+
+// PiProvider returns the active provider profile, or nil if none is set.
+func (s *Store) PiProvider() *PiProviderRec {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return copyPiProviderRec(s.activePiProviderLocked())
+}
+
+// PiProviderByID returns one profile by id, or nil.
+func (s *Store) PiProviderByID(id string) *PiProviderRec {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for i := range s.state.PiProviders {
+		if s.state.PiProviders[i].ID == id {
+			return copyPiProviderRec(&s.state.PiProviders[i])
+		}
+	}
+	if s.state.PiProvider != nil && s.state.PiProvider.ID == id {
+		return copyPiProviderRec(s.state.PiProvider)
+	}
+	return nil
+}
+
+func (s *Store) activePiProviderLocked() *PiProviderRec {
+	for i := range s.state.PiProviders {
+		if s.state.PiProviders[i].ID == s.state.ActivePiProviderID {
+			return &s.state.PiProviders[i]
+		}
+	}
+	return s.state.PiProvider
+}
+
+func copyPiProviderRec(rec *PiProviderRec) *PiProviderRec {
+	if rec == nil {
+		return nil
+	}
+	cp := *rec
+	cp.Models = append([]string(nil), rec.Models...)
+	return &cp
+}
+
+func copyPiProviderRecs(recs []PiProviderRec) []PiProviderRec {
+	out := make([]PiProviderRec, 0, len(recs))
+	for i := range recs {
+		out = append(out, *copyPiProviderRec(&recs[i]))
+	}
+	return out
+}
+
+// SetPiProvider upserts a profile as the active selection. A nil or empty
+// record clears the active selection but keeps the saved profiles. It is kept
+// for the coordinator sync path, which predates the stack and sends a single
+// pointer without an id.
+func (s *Store) SetPiProvider(rec *PiProviderRec) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if rec == nil || (rec.SecretID == "" && rec.BaseURL == "") {
+		s.state.PiProvider = nil
+		s.state.ActivePiProviderID = ""
+		return s.save()
+	}
+	cp := *rec
+	s.state.PiProvider = nil
+	return s.upsertPiProviderLocked(&cp, true)
+}
+
+// UpsertPiProvider adds or replaces a profile by id, leaving the active
+// selection alone unless nothing is active yet.
+func (s *Store) UpsertPiProvider(rec PiProviderRec) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.upsertPiProviderLocked(&rec, false)
+}
+
+// UpsertPiProviderActive adds or replaces a profile and makes it active.
+func (s *Store) UpsertPiProviderActive(rec PiProviderRec) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.upsertPiProviderLocked(&rec, true)
+}
+
+func (s *Store) upsertPiProviderLocked(rec *PiProviderRec, activate bool) error {
+	cp := *rec
+	cp.Models = append([]string(nil), rec.Models...)
+	if cp.ID == "" {
+		cp.ID = defaultPiProviderID
+	}
+	if cp.UpdatedAt.IsZero() {
+		cp.UpdatedAt = time.Now().UTC()
+	}
+	replaced := false
+	for i := range s.state.PiProviders {
+		if s.state.PiProviders[i].ID == cp.ID {
+			s.state.PiProviders[i] = cp
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		s.state.PiProviders = append(s.state.PiProviders, cp)
+	}
+	if activate || s.state.ActivePiProviderID == "" {
+		s.state.ActivePiProviderID = cp.ID
+	}
+	return s.save()
+}
+
+// DeletePiProvider removes a profile. Deleting the active one falls back to
+// the first remaining profile so the stack never points at a missing id.
+func (s *Store) DeletePiProvider(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	id = strings.TrimSpace(id)
+	kept := s.state.PiProviders[:0]
+	for _, rec := range s.state.PiProviders {
+		if rec.ID != id {
+			kept = append(kept, rec)
+		}
+	}
+	s.state.PiProviders = kept
+	if s.state.PiProvider != nil && s.state.PiProvider.ID == id {
+		s.state.PiProvider = nil
+	}
+	if s.state.ActivePiProviderID == id {
+		s.state.ActivePiProviderID = ""
+		if len(s.state.PiProviders) > 0 {
+			s.state.ActivePiProviderID = s.state.PiProviders[0].ID
+		}
+	}
+	return s.save()
+}
+
+// ActivatePiProvider selects one profile as the startup default.
+func (s *Store) ActivatePiProvider(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	id = strings.TrimSpace(id)
+	for i := range s.state.PiProviders {
+		if s.state.PiProviders[i].ID == id {
+			s.state.ActivePiProviderID = id
+			return s.save()
+		}
+	}
+	return fmt.Errorf("pi provider %s not found", id)
+}
+
+// SetPiProviderCatalog records the last catalog fetch for one profile. A
+// fingerprint of the base URL is not stored; callers pass the profile id.
+func (s *Store) SetPiProviderCatalog(id string, models []string, fetchErr string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.state.PiProviders {
+		if s.state.PiProviders[i].ID != id {
+			continue
+		}
+		s.state.PiProviders[i].CatalogCheckedAt = time.Now().UTC()
+		s.state.PiProviders[i].CatalogError = fetchErr
+		if fetchErr == "" {
+			s.state.PiProviders[i].Models = append([]string(nil), models...)
+		}
+		return s.save()
+	}
+	return nil
 }
 
 // ReplaceSecret overwrites a secret by ID and rewrites worker env files.
@@ -555,6 +902,9 @@ func (s *Store) SyncRulesForSecret(rec SecretRec) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	hosts := CanonicalRuleHosts(rec.AllowedHosts)
+	if rec.GatewayOnly || rec.Revoked {
+		hosts = nil
+	}
 	s.state.Rules = filterRules(s.state.Rules, func(r RuleRec) bool { return r.Placeholder != rec.Placeholder })
 	seq := 0
 	for _, h := range hosts {
@@ -685,7 +1035,10 @@ func (s *Store) writePatterns(entries []patterns.Entry) error {
 	if err := os.MkdirAll(filepath.Dir(s.patternsPath), 0o700); err != nil {
 		return err
 	}
-	return os.WriteFile(s.patternsPath, data, 0o600)
+	if err := os.WriteFile(s.patternsPath, data, 0o600); err != nil {
+		return err
+	}
+	return ownfile.MatchDir(s.patternsPath)
 }
 
 func (s *Store) DeleteException(id string) error {
@@ -789,16 +1142,52 @@ func (s *Store) Workers() []WorkerRec {
 }
 
 // UpsertWorker records or refreshes a worker's slug + vpc IPs, keyed by name.
+// Each IP is exclusive: Docker reuses vpc addresses, so a live registration
+// steals those IPs from any other worker. WorkerByIP is first-match, and a
+// stale owner would 403 every activity POST from the new occupant.
 func (s *Store) UpsertWorker(rec WorkerRec) (WorkerRec, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	rec.UpdatedAt = time.Now().UTC()
+	want := make(map[string]bool, len(rec.IPs))
+	for _, ip := range rec.IPs {
+		want[ip] = true
+	}
+	for i, r := range s.state.Workers {
+		if r.Name == rec.Name {
+			continue
+		}
+		if len(want) == 0 || len(r.IPs) == 0 {
+			continue
+		}
+		kept := make([]string, 0, len(r.IPs))
+		changed := false
+		for _, ip := range r.IPs {
+			if want[ip] {
+				changed = true
+				continue
+			}
+			kept = append(kept, ip)
+		}
+		if changed {
+			r.IPs = kept
+			s.state.Workers[i] = r
+		}
+	}
 	for i, r := range s.state.Workers {
 		if r.Name == rec.Name {
 			// preserve the prior slug if the new one is empty; keep IPs updated
 			if rec.Slug == "" {
 				rec.Slug = r.Slug
 			}
+			if rec.PrincipalID == "" {
+				rec.PrincipalID = r.PrincipalID
+			}
+			if !r.Remote && !rec.Remote {
+				rec.ChannelPubkey = r.ChannelPubkey
+				rec.ChannelBoundAt = r.ChannelBoundAt
+			}
+			rec.ProjectHidden = r.ProjectHidden
 			s.state.Workers[i] = rec
 			if err := s.save(); err != nil {
 				return WorkerRec{}, err
@@ -849,6 +1238,89 @@ func (s *Store) WorkerBySlug(slug string) (WorkerRec, bool) {
 		}
 	}
 	return WorkerRec{}, false
+}
+
+// WorkerByTokenHash returns the remote worker whose bearer token hashes to h.
+func (s *Store) WorkerByTokenHash(h string) (WorkerRec, bool) {
+	h = strings.ToLower(strings.TrimSpace(h))
+	if h == "" {
+		return WorkerRec{}, false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, r := range s.state.Workers {
+		if r.TokenHash != "" && strings.ToLower(r.TokenHash) == h {
+			return r, true
+		}
+	}
+	return WorkerRec{}, false
+}
+
+// ReplaceRemoteWorkers upserts coordinator-assigned remote workers (token/pubkey)
+// without dropping local vpc registrations.
+func (s *Store) ReplaceRemoteWorkers(rows []WorkerRec) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	keep := make([]WorkerRec, 0, len(s.state.Workers)+len(rows))
+	for _, r := range s.state.Workers {
+		if !r.Remote {
+			keep = append(keep, r)
+		}
+	}
+	now := time.Now().UTC()
+	prev := map[string]WorkerRec{}
+	for _, r := range s.state.Workers {
+		if r.Remote {
+			prev[r.Name] = r
+		}
+	}
+	for _, r := range rows {
+		r.Remote = true
+		r.UpdatedAt = now
+		if old, ok := prev[r.Name]; ok {
+			r.ProjectHidden = old.ProjectHidden
+			if r.ChannelPubkey == "" {
+				r.ChannelPubkey = old.ChannelPubkey
+				r.ChannelBoundAt = old.ChannelBoundAt
+			}
+			if r.PrincipalID == "" {
+				r.PrincipalID = old.PrincipalID
+			}
+		}
+		keep = append(keep, r)
+	}
+	s.state.Workers = keep
+	return s.save()
+}
+
+// BindChannelKey records the Ed25519 public key (hex) presented on the MCP
+// channel. An empty pubkey clears the binding (piso up --reset-worker-key).
+func (s *Store) BindChannelKey(name, pubkey string) (WorkerRec, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	name = strings.TrimSpace(name)
+	pubkey = strings.ToLower(strings.TrimSpace(pubkey))
+	for i, r := range s.state.Workers {
+		if r.Name != name {
+			continue
+		}
+		r.ChannelPubkey = pubkey
+		if pubkey == "" {
+			r.ChannelBoundAt = time.Time{}
+		} else {
+			r.ChannelBoundAt = time.Now().UTC()
+		}
+		r.UpdatedAt = r.ChannelBoundAt
+		if r.UpdatedAt.IsZero() {
+			r.UpdatedAt = time.Now().UTC()
+		}
+		s.state.Workers[i] = r
+		if err := s.save(); err != nil {
+			return WorkerRec{}, err
+		}
+		return r, nil
+	}
+	return WorkerRec{}, ErrWorkerNotFound
 }
 
 // SetWorkerInternet flips the internet kill-switch for a worker, preserving
@@ -1004,6 +1476,27 @@ func (s *Store) broadcastRoute(rec RouteRec) {
 
 // SubRoutes returns a channel of route changes (SSE). Callers must drain.
 func (s *Store) SubRoutes() <-chan RouteRec { return s.onRoute }
+
+func (s *Store) BroadcastAsks() {
+	select {
+	case s.onAsks <- struct{}{}:
+	default:
+	}
+}
+
+func (s *Store) SubAsks() <-chan struct{} { return s.onAsks }
+
+// BroadcastTelegram wakes the poller because the coordinator's front door
+// changed. Like asks, a pending signal is enough: several changes before the
+// poller wakes still mean one refetch.
+func (s *Store) BroadcastTelegram() {
+	select {
+	case s.onTelegram <- struct{}{}:
+	default:
+	}
+}
+
+func (s *Store) SubTelegram() <-chan struct{} { return s.onTelegram }
 
 // ReplayGet returns a captured record by id (for retry).
 func (s *Store) ReplayGet(id string) (Record, bool) {

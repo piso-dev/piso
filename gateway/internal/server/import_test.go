@@ -11,10 +11,10 @@ import (
 )
 
 func TestProviderEnvKeyAndHost(t *testing.T) {
-	if got := providerEnvKey("routstr"); got != "ROUTSTR_API_KEY" {
+	if got := providerEnvKey("piso"); got != "PISO_API_KEY" {
 		t.Fatalf("got %q", got)
 	}
-	if got := importHost("https://routstr.example.test/v1"); got != "routstr.example.test" {
+	if got := importHost("https://piso.example.test/v1"); got != "piso.example.test" {
 		t.Fatalf("got %q", got)
 	}
 }
@@ -30,11 +30,11 @@ func TestImportPiKeysUpsertNoValueInResult(t *testing.T) {
 	}
 	s := &Server{Store: st}
 	const fake = "sk-test-FAKE-KEY-not-a-real-secret"
-	first, err := s.importPiKeys([]PiKeyProvider{{Name: "routstr", APIKey: fake, Host: "https://api.example.test/v1"}})
+	first, err := s.importPiKeys([]PiKeyProvider{{Name: "piso", APIKey: fake, Host: "https://api.example.test/v1"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(first) != 1 || first[0].Placeholder == "" || first[0].EnvKey != "ROUTSTR_API_KEY" {
+	if len(first) != 1 || first[0].Placeholder == "" || first[0].EnvKey != "PISO_API_KEY" {
 		t.Fatalf("first: %+v", first)
 	}
 	raw, err := json.Marshal(first)
@@ -44,21 +44,21 @@ func TestImportPiKeysUpsertNoValueInResult(t *testing.T) {
 	if strings.Contains(string(raw), fake) || strings.Contains(string(raw), "apiKey") {
 		t.Fatalf("result leaked key: %s", raw)
 	}
-	second, err := s.importPiKeys([]PiKeyProvider{{Name: "routstr", APIKey: fake, Host: "https://api.example.test/v1"}})
+	second, err := s.importPiKeys([]PiKeyProvider{{Name: "piso", APIKey: fake, Host: "https://api.example.test/v1"}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if second[0].Placeholder != first[0].Placeholder {
 		t.Fatalf("placeholder changed: %s vs %s", first[0].Placeholder, second[0].Placeholder)
 	}
-	third, err := s.importPiKeys([]PiKeyProvider{{Name: "routstr", APIKey: fake + "-rotated", Host: "https://api.example.test/v1"}})
+	third, err := s.importPiKeys([]PiKeyProvider{{Name: "piso", APIKey: fake + "-rotated", Host: "https://api.example.test/v1"}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if third[0].Placeholder != first[0].Placeholder {
 		t.Fatal("rotation must keep placeholder")
 	}
-	got, ok := st.SecretByEnvKey("ROUTSTR_API_KEY")
+	got, ok := st.SecretByEnvKey("PISO_API_KEY")
 	if !ok || got.Value != fake+"-rotated" {
 		t.Fatalf("value not updated: %+v", got)
 	}
@@ -69,7 +69,7 @@ func TestImportPiKeysUpsertNoValueInResult(t *testing.T) {
 	if strings.Contains(string(env), fake) {
 		t.Fatal("env file leaked value")
 	}
-	if !strings.Contains(string(env), "ROUTSTR_API_KEY="+first[0].Placeholder) {
+	if !strings.Contains(string(env), "PISO_API_KEY="+first[0].Placeholder) {
 		t.Fatalf("env: %s", env)
 	}
 }

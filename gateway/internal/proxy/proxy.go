@@ -22,6 +22,7 @@ import (
 	"strings"
 	"time"
 
+	"piso/gateway/internal/githubapp"
 	"piso/gateway/internal/model"
 	"piso/gateway/internal/patterns"
 	"piso/gateway/internal/policy"
@@ -43,12 +44,19 @@ const streamTimeout = 10 * time.Minute
 // would hold SSE tokens in the gateway until the buffer filled.
 const streamCopyBuf = 1024
 
+// TokenMinter resolves a github-app placeholder to an installation token.
+type TokenMinter interface {
+	Mint(placeholder, host, path, body string) (string, error)
+	LiveTokens() []string
+}
+
 // Handler is the egress MITM proxy.
 type Handler struct {
 	CA       *CA
 	Patterns *patterns.Compiled
 	Store    *store.Store
 	Worker   func(*http.Request) string // request -> worker identity
+	Minter   TokenMinter
 
 	client *http.Client
 }
@@ -71,6 +79,7 @@ func New(ca *CA, st *store.Store, pat *patterns.Compiled, workerFn func(*http.Re
 		Store:    st,
 		Patterns: pat,
 		Worker:   workerFn,
+		Minter:   githubapp.NewPlaceholderMinter(st, githubapp.NewClient(nil)),
 		client: &http.Client{
 			Transport: tr,
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
@@ -277,9 +286,11 @@ func (h *Handler) Replay(ctx context.Context, rec store.Record) (*http.Response,
 		return nil, dec, fmt.Errorf("still blocked: %v", dec.Reasons)
 	}
 	if dec.Action == model.ActionSubstitute {
-		applySubstitution(req, body, dec, h.Store, scanner.ScanRequest(req, scanner.Options{
-			Worker: h.workerID(req), Secrets: knownSecrets(h.Store), Patterns: h.Patterns,
-		}))
+		if err := applySubstitution(req, body, dec, h.Store, scanner.ScanRequest(req, scanner.Options{
+			Worker: h.workerID(req), Secrets: h.scanSecrets(), Patterns: h.Patterns,
+		}), h.Minter); err != nil {
+			return nil, model.Decision{Action: model.ActionBlock}, err
+		}
 	}
 	out, err := h.forward(ctx, req, rec.Scheme)
 	return out, dec, err
@@ -288,16 +299,17 @@ func (h *Handler) Replay(ctx context.Context, rec store.Record) (*http.Response,
 // decide is the scan + policy step shared by process and Replay.
 func (h *Handler) decide(req *http.Request, scheme string, body []byte) model.Decision {
 	scan := scanner.ScanRequest(req, scanner.Options{
-		Worker: h.workerID(req), Secrets: knownSecrets(h.Store), Patterns: h.Patterns,
+		Worker: h.workerID(req), Secrets: h.scanSecrets(), Patterns: h.Patterns,
 	})
 	return policy.Decide(policy.Input{
 		Method: req.Method, Schema: scheme, Host: req.URL.Hostname(), Path: req.URL.Path,
 		Body: string(body), Scan: scan,
-		SecretByPlaceholder: placeholderMap(h.Store),
-		Rules:               recRules(h.Store),
-		Domains:             recDomains(h.Store),
-		Exceptions:          recExceptions(h.Store),
-		Worker:              h.workerID(req),
+		SecretByPlaceholder:    placeholderMap(h.Store),
+		Rules:                  recRules(h.Store),
+		Domains:                recDomains(h.Store),
+		Exceptions:             recExceptions(h.Store),
+		Worker:                 h.workerID(req),
+		GithubAppByPlaceholder: h.Store.GithubAppViews(),
 	})
 }
 
@@ -329,7 +341,7 @@ func (h *Handler) process(ctx context.Context, req *http.Request, scheme string)
 
 	dec := h.decide(req, scheme, body)
 	scan := scanner.ScanRequest(req, scanner.Options{
-		Worker: h.workerID(req), Secrets: knownSecrets(h.Store), Patterns: h.Patterns,
+		Worker: h.workerID(req), Secrets: h.scanSecrets(), Patterns: h.Patterns,
 	})
 
 	reqID := newID()
@@ -373,7 +385,12 @@ func (h *Handler) process(ctx context.Context, req *http.Request, scheme string)
 		return resp, false
 
 	case model.ActionSubstitute:
-		applySubstitution(req, body, dec, h.Store, scan)
+		if err := applySubstitution(req, body, dec, h.Store, scan, h.Minter); err != nil {
+			rec.Action, rec.Status = string(model.ActionBlock), http.StatusBadGateway
+			rec.Reasons = []string{"credential-resolution-failed"}
+			h.Store.AppendLog(rec)
+			return &http.Response{StatusCode: http.StatusBadGateway, Status: "502 Bad Gateway", Proto: "HTTP/1.1", ProtoMajor: 1, ProtoMinor: 1, Header: http.Header{"X-Piso-Reason": {"credential-resolution-failed"}}, Body: io.NopCloser(bytes.NewReader(nil)), Request: req, Close: true}, false
+		}
 		rec.Action = string(model.ActionSubstitute)
 		rec.Status = http.StatusOK
 		rec.Reasons = toStrings(dec.Reasons)
@@ -623,19 +640,41 @@ func isRetryableUpstream(err error) bool {
 // rewritten: a whole-body ReplaceAll would leak the real secret to the model
 // whenever chat text mentioned the same piso_ token (including the provider
 // key sitting in Authorization). Pass the original body bytes from process.
-func applySubstitution(req *http.Request, origBody []byte, dec model.Decision, st *store.Store, scan scanner.Result) {
+func applySubstitution(req *http.Request, origBody []byte, dec model.Decision, st *store.Store, scan scanner.Result, mint TokenMinter) error {
 	pm := placeholderMap(st)
 	if len(dec.Substituted) == 0 {
-		return
+		return nil
 	}
+	host := ""
+	path := ""
+	if req.URL != nil {
+		host = req.URL.Hostname()
+		path = req.URL.Path
+	}
+	body := string(origBody)
 	sub := map[string]string{}
 	for _, tok := range dec.Substituted {
-		if s, ok := pm[tok]; ok {
+		s, ok := pm[tok]
+		if !ok {
+			return fmt.Errorf("secret unavailable")
+		}
+		if s.Kind == model.SecretKindGithubApp {
+			if mint == nil {
+				return fmt.Errorf("github token minter unavailable")
+			}
+			real, err := mint.Mint(tok, host, path, body)
+			if err != nil || real == "" {
+				return fmt.Errorf("github token mint failed")
+			}
+			sub[tok] = real
+			continue
+		}
+		if s.Value != "" {
 			sub[tok] = s.Value
 		}
 	}
 	if len(sub) == 0 {
-		return
+		return nil
 	}
 	for name, vals := range req.Header {
 		auth := http.CanonicalHeaderKey(name) == "Authorization"
@@ -662,8 +701,33 @@ func applySubstitution(req *http.Request, origBody []byte, dec model.Decision, s
 			vals[i] = nv
 		}
 	}
+	// URL path and query. Telegram-style APIs put the credential in the path
+	// (https://api.telegram.org/bot<token>/getMe). Rewrite the decoded path and
+	// clear RawPath so EscapedPath re-encodes it — the real token may contain
+	// ':' which stays literal in a path segment. Query is rewritten on RawQuery
+	// with the real value escaped, so the original query order/encoding is kept
+	// (re-encoding via url.Values would reorder and can break signed queries).
+	if req.URL != nil {
+		if p := req.URL.Path; p != "" {
+			np := p
+			for tok, real := range sub {
+				np = strings.ReplaceAll(np, tok, real)
+			}
+			if np != p {
+				req.URL.Path = np
+				req.URL.RawPath = ""
+			}
+		}
+		if q := req.URL.RawQuery; q != "" {
+			nq := q
+			for tok, real := range sub {
+				nq = strings.ReplaceAll(nq, tok, url.QueryEscape(real))
+			}
+			req.URL.RawQuery = nq
+		}
+	}
 	if len(origBody) == 0 {
-		return
+		return nil
 	}
 	nb := origBody
 	if rewritten, ok := substituteJSONSkippingChat(origBody, sub); ok {
@@ -676,6 +740,7 @@ func applySubstitution(req *http.Request, origBody []byte, dec model.Decision, s
 	req.Body = io.NopCloser(bytes.NewReader(nb))
 	req.ContentLength = int64(len(nb))
 	req.Header.Set("Content-Length", fmt.Sprint(len(nb)))
+	return nil
 }
 
 // substituteJSONSkippingChat rewrites string values in a JSON body except
@@ -757,13 +822,29 @@ func knownSecrets(st *store.Store) []scanner.KnownSecret {
 	return out
 }
 
+func (h *Handler) scanSecrets() []scanner.KnownSecret {
+	out := knownSecrets(h.Store)
+	for _, app := range h.Store.GithubApps() {
+		if app.PrivateKey != "" {
+			out = append(out, scanner.KnownSecret{ID: "gha-pem-" + app.ID, Value: app.PrivateKey})
+		}
+	}
+	if h.Minter != nil {
+		for i, tok := range h.Minter.LiveTokens() {
+			out = append(out, scanner.KnownSecret{ID: fmt.Sprintf("ghs-%d", i), Value: tok})
+		}
+	}
+	return out
+}
+
 func placeholderMap(st *store.Store) map[string]model.Secret {
 	recs := st.Secrets()
 	out := make(map[string]model.Secret, len(recs))
 	for _, r := range recs {
 		if r.Placeholder != "" {
 			out[r.Placeholder] = model.Secret{
-				ID: r.ID, Name: r.Name, Placeholder: r.Placeholder, Value: r.Value,
+				ID: r.ID, Name: r.Name, Placeholder: r.Placeholder, Value: r.Value, Kind: r.Kind,
+				Workers: r.Workers, AllowedHosts: r.AllowedHosts, GatewayOnly: r.GatewayOnly,
 			}
 		}
 	}
@@ -801,14 +882,30 @@ func recExceptions(st *store.Store) []model.Exception {
 	return out
 }
 
+// toStoreFindings normalizes scanner findings for the request log.
+// Transcript-only noise is dropped (see findingIsChatNoise); what remains is
+// collapsed per (kind, pattern, secret, token, location). The first occurrence
+// keeps its field and a Count of 1; later ones bump Count. The dedupe key uses
+// the FULL token, so two distinct secrets sharing a name prefix never merge.
 func toStoreFindings(scan scanner.Result) []store.Finding {
 	var out []store.Finding
+	index := make(map[string]int, len(scan.Placeholders)+len(scan.PatternHits)+len(scan.RealSecrets))
 	add := func(f model.Finding) {
-		sf := store.Finding{Kind: string(f.Kind), PatternID: f.PatternID, SecretID: f.SecretID, Token: f.Token, Location: f.Location, Field: f.Field}
-		if sf.Token != "" && len(sf.Token) > 24 {
-			sf.Token = sf.Token[:12] + "…"
+		if findingIsChatNoise(f) {
+			return
 		}
-		out = append(out, sf)
+		key := strings.Join([]string{
+			string(f.Kind), f.PatternID, f.SecretID, f.Token, f.Location,
+		}, "\x00")
+		if i, ok := index[key]; ok {
+			out[i].Count++
+			return
+		}
+		index[key] = len(out)
+		out = append(out, store.Finding{
+			Kind: string(f.Kind), PatternID: f.PatternID, SecretID: f.SecretID,
+			Token: displayToken(f.Kind, f.Token), Location: f.Location, Field: f.Field, Count: 1,
+		})
 	}
 	for _, f := range scan.RealSecrets {
 		add(f)
@@ -820,6 +917,46 @@ func toStoreFindings(scan scanner.Result) []store.Finding {
 		add(f)
 	}
 	return out
+}
+
+// findingIsChatNoise reports whether a finding exists only in the LLM
+// transcript (messages[]). The gateway never substitutes placeholders there
+// and never blocks on pattern hits there (policy.egressPatternHits), so
+// logging them just floods Traffic with conversation — often strings that
+// merely look like placeholders (shell function names such as
+// piso_gateway_post, docs, smoke-test literals). A real-secret finding is
+// kept: it blocks even when it appears in the transcript.
+func findingIsChatNoise(f model.Finding) bool {
+	if !scanner.IsChatContent(f.Location, f.Field) {
+		return false
+	}
+	return f.Kind == model.FindingPlaceholder || f.Kind == model.FindingPatternSecret
+}
+
+// displayToken renders a finding token for the log. A placeholder is not a
+// secret — the worker holds it, the gateway substitutes it, and the captured
+// request already stores it whole — and its trailing random id is the only
+// thing that tells two similarly-named secrets apart. Truncating it to a name
+// prefix made distinct findings render identically, so placeholders are kept
+// intact (middle-truncated only if absurdly long). Real-secret and pattern
+// tokens are already redacted by the scanner and stay bounded here.
+func displayToken(kind model.FindingKind, tok string) string {
+	if tok == "" {
+		return ""
+	}
+	if kind == model.FindingPlaceholder {
+		if len(tok) <= 48 {
+			return tok
+		}
+		if i := strings.LastIndex(tok, "_"); i > 5 && i < len(tok)-1 {
+			return tok[:i+1] + "…" + tok[len(tok)-4:]
+		}
+		return tok[:24] + "…" + tok[len(tok)-4:]
+	}
+	if len(tok) > 24 {
+		return tok[:12] + "…"
+	}
+	return tok
 }
 
 func capture(req *http.Request, body []byte) *store.Capture {

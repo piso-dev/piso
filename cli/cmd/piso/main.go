@@ -25,6 +25,8 @@ import (
 	"piso/cli/internal/pisoconfig"
 	"piso/cli/internal/pkgstamp"
 	"piso/cli/internal/workerhash"
+	sharedprofile "piso/internal/piprofile"
+	"piso/internal/technocore"
 )
 
 var version = "dev"
@@ -56,6 +58,10 @@ func main() {
 		err = cmdLogs(args)
 	case "dashboard":
 		err = cmdDashboard(args)
+	case "gateway":
+		err = cmdGateway(args)
+	case "worker":
+		err = cmdWorker(args)
 	case "setup":
 		err = cmdSetup(args)
 	case "update":
@@ -78,15 +84,22 @@ func usage() {
 	fmt.Print(`piso — isolate an AI agent in a Docker worker behind a MITM gateway
 
 Usage:
-  piso up [dir] [--proxy-port N] [--ctrl-port N] [--ingress-port N]
-                         ensure gateway + worker for [dir] (default: cwd)
+  piso up [dir] [--name n] [--proxy-port N] [--ctrl-port N] [--ingress-port N]
+                         [--reset-worker-key]
+                         ensure gateway + worker for [dir] (default: cwd).
+                         Name defaults to the git origin repo, else the folder.
+                         Confirms the name when that worker does not exist (--name skips).
+                         --reset-worker-key deletes the channel key on the agent
+                         volume before recreate; the next boot generates a new one.
   piso down              stop this project's worker (gateway stays up)
   piso attach [--shell] [--new] [--session <id|path>]
                          enter the worker and run pi (new session if none exist;
                          --new forces a fresh one, --session opens a specific
                          one, --shell drops into bash)
   piso status            show gateway + worker state
-  piso secrets list|add|rm   manage gateway secrets (real values never leave it)
+  piso secrets list|add|rm|share|publish
+                         manage gateway secrets (real values never leave it;
+                         share/publish wrap ciphertext for other gateways)
   piso expose <port> [--name n]  reverse-proxy a worker port as https://n.piso.local
   piso sync [--watch]     reconcile /etc/hosts with gateway routes; --watch keeps
                            syncing live as auto routes appear/expire
@@ -95,6 +108,19 @@ Usage:
                            piso up; run restart manually after a sudo make install)
   piso logs [--follow]   tail the gateway request log (SSE when --follow)
   piso dashboard         open the gateway web UI (http://piso.local)
+  piso gateway launch [--name n] [--server url] [--no-qr] [--standalone] [--url https://host:8443]
+                         pair this machine (QR + fingerprint; phone approves).
+                         --standalone marks an always-on host that can run
+                         launched workers; --url is a public worker-facing HTTPS
+                         endpoint (implies --standalone). Without --url, remote
+                         workers reverse-tunnel through the coordinator.
+  piso gateway status    show technocore enrollment
+  piso worker launch [dir] [--name n] [--server url] [--no-qr]
+                         enroll a cloud-ship worker on THIS machine and attach it
+                         to an available standalone gateway (never this host).
+                         Refuses if this machine is already a standalone gateway.
+  piso worker status [dir] [--name n]
+                         show this project's worker enrollment
   piso setup [--rebuild] import leftover data and (with --rebuild) recreate the gateway
   piso update [version] [--dry-run] [--force]  refresh host extensions, pin a pi version,
                          rebuild the shared worker image once, and recreate every worker
@@ -116,11 +142,11 @@ image, and state.json schema).
 // ---- up / down ----
 
 func cmdUp(args []string) error {
-	dir, cliPorts, err := parseUpArgs(args)
+	opts, err := parseUpArgs(args)
 	if err != nil {
 		return err
 	}
-	abs, err := filepath.Abs(dir)
+	abs, err := filepath.Abs(opts.Dir)
 	if err != nil {
 		return err
 	}
@@ -128,6 +154,11 @@ func cmdUp(args []string) error {
 	if err != nil {
 		return err
 	}
+	slug, err := chooseWorkerSlug(proj.Dir, opts.Name)
+	if err != nil {
+		return err
+	}
+	proj.Slug = slug
 	if home, err := pisoconfig.Home(); err == nil {
 		fmt.Printf("piso: using %s\n", home)
 	}
@@ -136,7 +167,7 @@ func cmdUp(args []string) error {
 	if err := dockernet.AssertLinuxEngine(); err != nil {
 		return err
 	}
-	ports, err := pisoconfig.ResolveHostPorts(cliPorts)
+	ports, err := pisoconfig.ResolveHostPorts(opts.Ports)
 	if err != nil {
 		return err
 	}
@@ -219,7 +250,9 @@ func cmdUp(args []string) error {
 	}
 	// Register the worker's slug↔IP identity with the gateway so request logs
 	// can be tagged with the project slug. Refreshed on every `piso up`.
-	_ = registerWorkerWithGateway(proj)
+	if err := registerWorkerWithGateway(proj); err != nil {
+		fmt.Fprintf(os.Stderr, "piso: warning: worker registration: %v\n", err)
+	}
 	// Compose up returns when the container is created, NOT when the
 	// entrypoint has copied ~650MB of extensions into a fresh agent volume.
 	// Attach before that finishes is the first-start exit 137.
@@ -230,23 +263,32 @@ func cmdUp(args []string) error {
 	return nil
 }
 
-// parseUpArgs reads `piso up [dir] [--proxy-port N] [--ctrl-port N] [--ingress-port N]`.
+type upOpts struct {
+	Dir            string
+	Name           string
+	Ports          pisoconfig.HostPorts
+	ResetWorkerKey bool
+}
+
+// parseUpArgs reads `piso up [dir] [--name n] [--proxy-port N] [--ctrl-port N] [--ingress-port N]`.
 // Port flags of 0 mean "keep saved / default".
-func parseUpArgs(args []string) (string, pisoconfig.HostPorts, error) {
+func parseUpArgs(args []string) (upOpts, error) {
 	fs := flag.NewFlagSet("up", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	var ports pisoconfig.HostPorts
-	fs.IntVar(&ports.Proxy, "proxy-port", 0, "host port for the egress proxy")
-	fs.IntVar(&ports.Control, "ctrl-port", 0, "host port for the dashboard / control API")
-	fs.IntVar(&ports.Ingress, "ingress-port", 0, "host port for name.piso.local ingress")
+	var opts upOpts
+	fs.StringVar(&opts.Name, "name", "", "worker slug (first piso up only)")
+	fs.IntVar(&opts.Ports.Proxy, "proxy-port", 0, "host port for the egress proxy")
+	fs.IntVar(&opts.Ports.Control, "ctrl-port", 0, "host port for the dashboard / control API")
+	fs.IntVar(&opts.Ports.Ingress, "ingress-port", 0, "host port for name.piso.local ingress")
+	fs.BoolVar(&opts.ResetWorkerKey, "reset-worker-key", false, "delete the worker channel key before recreate")
 	if err := fs.Parse(args); err != nil {
-		return "", pisoconfig.HostPorts{}, err
+		return upOpts{}, err
 	}
-	dir := "."
+	opts.Dir = "."
 	if rest := fs.Args(); len(rest) > 0 {
-		dir = rest[0]
+		opts.Dir = rest[0]
 	}
-	return dir, ports, nil
+	return opts, nil
 }
 
 // registerWorkerWithGateway tells the gateway this worker's name/slug and its
@@ -269,6 +311,17 @@ func registerWorkerWithGateway(proj pisoconfig.Project) error {
 	if resp.StatusCode != 200 {
 		b, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("gateway %d %s", resp.StatusCode, strings.TrimSpace(string(b)))
+	}
+	var registered struct {
+		PrincipalID string `json:"principalId"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&registered); err != nil {
+		return fmt.Errorf("worker registration response: %w", err)
+	}
+	if registered.PrincipalID == "" {
+		fmt.Fprintln(os.Stderr, "piso: coordinator worker enrollment pending; local startup continues and gateway retries automatically")
+	} else {
+		fmt.Printf("piso: coordinator worker enrolled (%s)\n", registered.PrincipalID)
 	}
 	return nil
 }
@@ -346,8 +399,30 @@ func syncPiProfile() error {
 	// convention automatically (emit progress/milestone/etc.). Preserves the
 	// user's other settings; dedupes.
 	settings = piprofile.EnsureInformantPrompts(settings)
+	// The dashboard's default model is authoritative for new workers. The host
+	// agent's settings.json has none, so re-apply it after the copy above or the
+	// next `piso up` would drop it. If the gateway is down or too old to
+	// report the field, preserve the destination default, not the host copy.
+	if modelID, ok := dashboardDefaultModel(); ok {
+		settings = sharedprofile.WithDefaultModel(settings, modelID)
+	} else {
+		var saved struct {
+			Provider string `json:"defaultProvider"`
+			Model    string `json:"defaultModel"`
+		}
+		if json.Unmarshal(destSettings, &saved) == nil && (saved.Provider == sharedprofile.ProviderName || saved.Provider == sharedprofile.LegacyProviderName) && saved.Model != "" {
+			settings = sharedprofile.WithDefaultModel(settings, saved.Model)
+		}
+	}
 	rawModels, modelsErr := os.ReadFile(piprofile.ModelsPath(agent))
 	destModels, _ := os.ReadFile(filepath.Join(dest, "models.json"))
+	// A dashboard-written profile already has the shared provider. Do not
+	// replace it with the host agent's models.json on a later piso up, and do
+	// not run it through the host import: that import skips piso_ keys and
+	// SanitizeModelsJSON would then write apiKey as empty.
+	if sharedprofile.KeepDashboardModels(destModels) {
+		rawModels, modelsErr = nil, os.ErrNotExist
+	}
 	srcModels, fromHost := piprofile.HostOrDest(rawModels, modelsErr, destModels)
 	placeholders := map[string]string{}
 	var models []byte
@@ -378,7 +453,7 @@ func syncPiProfile() error {
 		// No host ~/.pi/agent/models.json: keep a hand-written dest profile.
 		models = srcModels
 	}
-	return piprofile.WriteProfile(dest, settings, models)
+	return piprofile.WriteProfile(dest, settings, sharedprofile.MigrateProviderModels(models))
 }
 
 type piKeyImportResult struct {
@@ -386,6 +461,28 @@ type piKeyImportResult struct {
 	Placeholder string `json:"placeholder"`
 	EnvKey      string `json:"envKey"`
 	Host        string `json:"host"`
+}
+
+// dashboardDefaultModel reads the model the dashboard chose for new
+// workers. ok is false when the control plane can't be reached, so a sync
+// never clears a previously applied default just because the gateway is down.
+func dashboardDefaultModel() (string, bool) {
+	gw := pisoconfig.ControlAPIURL()
+	resp, err := (&http.Client{Timeout: 5 * time.Second}).Get(gw + "/api/v1/pi-provider")
+	if err != nil {
+		return "", false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return "", false
+	}
+	var view struct {
+		DefaultModel *string `json:"defaultModel"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&view); err != nil || view.DefaultModel == nil {
+		return "", false
+	}
+	return strings.TrimSpace(*view.DefaultModel), true
 }
 
 func importPiKeys(keys []piprofile.ProviderKey) ([]piKeyImportResult, error) {
@@ -465,7 +562,10 @@ func cmdDown(args []string) error {
 	if err := runEnv("docker", []string{"compose", "-f", workerFile, "-p", "piso-" + proj.Slug, "down"}, composeEnv); err != nil {
 		return err
 	}
-	fmt.Println("piso: worker stopped (gateway left running)")
+	if err := unregisterWorkerWithGateway(pisoconfig.GatewayURL(), proj.WorkerName()); err != nil {
+		return fmt.Errorf("worker stopped, but project removal failed (retry piso down): %w", err)
+	}
+	fmt.Println("piso: worker stopped and project removed (gateway left running)")
 	return nil
 }
 
@@ -605,6 +705,10 @@ func cmdSecrets(args []string) error {
 		return nil
 	}
 	switch args[0] {
+	case "share":
+		return cmdSecretsShare(args[1:])
+	case "publish":
+		return cmdSecretsPublish(args[1:])
 	case "add-monitor":
 		// One-command provisioning of the monitor's scoped model key:
 		//   piso secrets add-monitor api.anthropic.com sk-ant-...
@@ -759,7 +863,7 @@ func syncIngressHosts() error {
 	if err := getJSON(pisoconfig.GatewayURL()+"/api/v1/routes", &routes); err != nil {
 		return err
 	}
-	names := []string{"mcp-oauth"}
+	names := []string{"mcp-oauth", "github-app"}
 	for _, r := range routes {
 		if r.Name != "" {
 			names = append(names, r.Name)
@@ -1368,6 +1472,29 @@ func containerRunning(name string) bool {
 }
 
 // recreateWorker recreates a worker's compose service (image change → recreate).
+// resetWorkerKey deletes the channel identity on the agent volume. The
+// next entrypoint generates a new key; the gateway then sees a mismatch
+// and raises a rebind row. No-op when the container is not running.
+func resetWorkerKey(container string) error {
+	bin, err := dockernet.LookPath()
+	if err != nil {
+		return err
+	}
+	out, err := exec.Command(bin, "inspect", "-f", "{{.State.Running}}", container).Output()
+	if err != nil {
+		return nil
+	}
+	if strings.TrimSpace(string(out)) != "true" {
+		return nil
+	}
+	cmd := exec.Command(bin, "exec", container, "rm", "-f", "/root/.pi/agent/piso/identity.json")
+	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("reset worker key: %w", err)
+	}
+	return nil
+}
+
 func recreateWorker(w pisoconfig.WorkerRec) error {
 	composeEnv, err := dockerComposeEnv()
 	if err != nil {
@@ -1502,12 +1629,20 @@ func dockerComposeEnv() (map[string]string, error) {
 		return nil, err
 	}
 	p := pisoconfig.LoadHostPorts()
+	publicBind := "127.0.0.1"
+	if path, err := identityPath(); err == nil {
+		if id, err := technocore.Load(path); err == nil && strings.TrimSpace(id.PublicURL) != "" {
+			publicBind = "0.0.0.0"
+		}
+	}
 	return map[string]string{
 		"DOCKER_BUILDKIT":   "1",
 		"PISO_DATA":         pisoconfig.ComposeHostPath(data),
 		"PISO_PROXY_PORT":   fmt.Sprintf("%d", p.Proxy),
 		"PISO_CTRL_PORT":    fmt.Sprintf("%d", p.Control),
 		"PISO_INGRESS_PORT": fmt.Sprintf("%d", p.Ingress),
+		"PISO_PUBLIC_BIND":  publicBind,
+		"PISO_PUBLIC_PORT":  "8443",
 	}, nil
 }
 

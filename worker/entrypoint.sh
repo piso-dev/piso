@@ -15,6 +15,26 @@ NODE_COMPILE_CACHE="${NODE_COMPILE_CACHE:-/root/.pi/agent/.node-compile-cache}"
 export TMPDIR NODE_COMPILE_CACHE
 mkdir -p "$PISO_LOG_DIR" "$TMPDIR" "$NODE_COMPILE_CACHE" 2>/dev/null || true
 
+# Configure Git on the persistent volume, not the read-only /root/.gitconfig.
+# gh reads GH_TOKEN; Git subprocesses need this helper to send the placeholder
+# to the gateway. setup-git is local-only and safe to repeat on every boot.
+export GIT_CONFIG_GLOBAL="${GIT_CONFIG_GLOBAL:-/root/.pi/agent/gitconfig}"
+if ! (mkdir -p "$(dirname "$GIT_CONFIG_GLOBAL")" && gh auth setup-git --hostname github.com); then
+  echo "piso: GitHub credential-helper setup failed; Git authentication may be unavailable" >&2
+fi
+
+# Remote workers need the piso MITM CA *and* public CAs (coordinator Let's Encrypt).
+if [ -f /piso-ca.pem ]; then
+  bundle="$TMPDIR/piso-ca-bundle.pem"
+  {
+    cat /piso-ca.pem
+    cat /etc/ssl/certs/ca-certificates.crt 2>/dev/null || true
+  } >"$bundle" 2>/dev/null || true
+  if [ -s "$bundle" ]; then
+    export SSL_CERT_FILE="$bundle" CURL_CA_BUNDLE="$bundle" GIT_SSL_CAINFO="$bundle" REQUESTS_CA_BUNDLE="$bundle" NODE_EXTRA_CA_CERTS="$bundle"
+  fi
+fi
+
 # Host pi-profile is a directory mount at /opt/piso/pi-profile. Do not bind-mount
 # settings.json / models.json as files: if they are missing, Docker creates host
 # directories, then later "mount a directory onto a file" fails against the
@@ -61,7 +81,47 @@ if [ ! -e /root/.pi/agent/bin/fd ]; then
   fi
 fi
 
-# Seed baked extensions into the agent volume. The volume hides anything
+# Agent bin is ahead of /usr/local/bin on PATH. A pre-image bridge copy of
+# piso-mcp-add there would shadow the baked helper forever; drop it once the
+# image ships the command.
+if [ -x /usr/local/bin/piso-mcp-add ] && [ -e /root/.pi/agent/bin/piso-mcp-add ]; then
+  rm -f /root/.pi/agent/bin/piso-mcp-add
+fi
+
+# Worker channel key. A mounted remote identity is copied onto the agent
+# volume; otherwise ensure generates one. A corrupt file is left untouched
+# (ensure exits non-zero) so a bad key is never overwritten at boot.
+if [ -x /usr/local/bin/piso-mcp ]; then
+  mkdir -p /root/.pi/agent/piso 2>/dev/null || true
+  if ! piso-mcp identity ensure >/dev/null; then
+    echo "piso-mcp: worker identity ensure failed; channel will not start" >&2
+  fi
+  if [ -f /usr/local/lib/piso-mcp-merge.py ]; then
+    python3 /usr/local/lib/piso-mcp-merge.py || echo "piso-mcp: mcp.json merge failed" >&2
+  fi
+fi
+
+# Seed piso-owned global extensions. Keep these separate from the host npm
+# extension tree: they ship with the worker image and are always available,
+# while the symlink leaves the source on the read-only image filesystem.
+if [ -d /opt/piso/extensions ]; then
+  mkdir -p /root/.pi/agent/extensions
+  # Remove only obsolete image-owned links (e.g. renamed bundled extensions).
+  # Never delete user extensions or links to their own extension packages.
+  for ext in /root/.pi/agent/extensions/*; do
+    [ -L "$ext" ] || continue
+    target=$(readlink "$ext")
+    case "$target" in
+      /opt/piso/extensions/*) [ -e "$target" ] || rm -f "$ext" ;;
+    esac
+  done
+  for ext in /opt/piso/extensions/*.ts /opt/piso/extensions/*.js; do
+    [ -e "$ext" ] || continue
+    ln -sfn "$ext" "/root/.pi/agent/extensions/$(basename "$ext")"
+  done
+fi
+
+# Seed baked host extensions into the agent volume. The volume hides anything
 # the image left under /root/.pi/agent, so the install lives in /opt/piso/npm.
 if [ -f /opt/piso/npm/.piso-pkg-hash ]; then
   want=$(cat /opt/piso/npm/.piso-pkg-hash)
@@ -111,25 +171,37 @@ if [ -x "$NP/build/Release/pty.node" ]; then
   fi
 fi
 
-# Fold the Tier B informant convention AND the sandbox boundary contract into
-# EVERY pi run via the global context file: pi reads ~/.pi/agent/AGENTS.md as
-# a context file on every start (fresh, -r, --session, -p), so the model
-# knows when to emit activity and where the sandbox ends — without any
-# launcher passing flags or conversation-history stuffing.
-# The image's /opt/piso/INFORMANT.md + /opt/piso/CAPABILITIES.md are the
-# sources of truth; the volume persists AGENTS.md, so re-sync whenever the
-# content changes. The monitor gets CAPABILITIES only: its pi is the PM
-# (MONITOR.md governs), and INFORMANT milestones would only pollute its feed.
+# Fold the opening-moves work loop, the Tier B informant convention, AND the
+# sandbox boundary contract into EVERY pi run via the global context file: pi
+# reads ~/.pi/agent/AGENTS.md as a context file on every start (fresh, -r,
+# --session, -p), so the model knows the reflex at task start, when to emit
+# activity, and where the sandbox ends — without any launcher passing flags or
+# conversation-history stuffing.
+# The image's /opt/piso/WORKLOOP.md + /opt/piso/INFORMANT.md +
+# /opt/piso/CAPABILITIES.md are the sources of truth; the volume persists
+# AGENTS.md, so re-sync whenever the content changes. WORKLOOP leads the file:
+# a decision procedure is most likely to fire when it is read first, before the
+# tool catalog. The monitor gets CAPABILITIES only: its pi is the PM
+# (MONITOR.md governs), and neither discovery moves nor INFORMANT milestones
+# belong on its feed.
 # settings.json "prompts" is NOT the contract — it only provides the
 # interactive /INFORMANT cheat-sheet.
 ctx=/tmp/piso-AGENTS.md
 : >"$ctx"
+if [ "${PISO_ROLE:-}" != "monitor" ] && [ -f /opt/piso/WORKLOOP.md ]; then
+  cat /opt/piso/WORKLOOP.md >>"$ctx"
+  printf '\n' >>"$ctx"
+fi
 if [ "${PISO_ROLE:-}" != "monitor" ] && [ -f /opt/piso/INFORMANT.md ]; then
   cat /opt/piso/INFORMANT.md >>"$ctx"
   printf '\n' >>"$ctx"
 fi
 if [ -f /opt/piso/CAPABILITIES.md ]; then
   cat /opt/piso/CAPABILITIES.md >>"$ctx"
+fi
+if [ "${PISO_TASK_LOOP:-}" = "1" ] && [ "${PISO_ROLE:-}" != "monitor" ] && [ -f /opt/piso/TASKLOOP.md ]; then
+  printf '\n' >>"$ctx"
+  cat /opt/piso/TASKLOOP.md >>"$ctx"
 fi
 if [ -s "$ctx" ]; then
   if [ ! -f /root/.pi/agent/AGENTS.md ] || ! cmp -s "$ctx" /root/.pi/agent/AGENTS.md; then
@@ -139,23 +211,29 @@ if [ -s "$ctx" ]; then
 fi
 rm -f "$ctx"
 
-# Self-heal the slug↔IP registry: claim this worker's identity on the
-# gateway so a recreated container (new vpc IP) is not hit with 403 "identity
-# mismatch" on every watcher/informant POST. Idempotent and non-fatal;
-# retries briefly to cover a cold compose start while the gateway warms up.
-if [ -n "${GATEWAY_URL:-}" ] && [ -n "${PISO_WORKER_NAME:-}" ] && [ -n "${PISO_WORKER_SLUG:-}" ]; then
-  for i in 1 2 3 4 5; do
-    code=$(curl -sS --max-time 2 -o /dev/null -w '%{http_code}' \
-      -X POST "${GATEWAY_URL}/api/v1/worker/checkin" \
-      -H 'Content-Type: application/json' \
-      -d "{\"worker\":\"${PISO_WORKER_NAME}\",\"slug\":\"${PISO_WORKER_SLUG}\"}" 2>/dev/null) || code=000
-    if [ "$code" = "200" ]; then
-      echo "piso: identity checkin ok"
-      break
-    fi
-    echo "piso: identity checkin http $code (retry $i/5)"
-    sleep 2
+# Local egress proxy: retries the dial to gateway:8080 for ~45s so a
+# gateway recreate does not fail in-flight model calls. Must be up before
+# exec. HTTP(S)_PROXY points at 127.0.0.1:18080; this process dials the
+# real gateway and does not replay a request the gateway has already accepted.
+if [ -x /usr/local/bin/piso-egress-forward ]; then
+  respawn /usr/local/bin/piso-egress-forward "$PISO_LOG_DIR/egress-forward.log"
+  # HTTP_PROXY already points here; wait briefly so the first pi call is not
+  # a connection-refused race against the just-spawned listener.
+  for _i in 1 2 3 4 5 6 7 8 9 10; do
+    (echo >/dev/tcp/127.0.0.1/18080) >/dev/null 2>&1 && break
+    sleep 0.2
   done
+fi
+
+# Self-heal the slug↔IP registry for the life of the container, not just
+# five tries at boot. A worker that starts while the gateway is rebuilding
+# would otherwise 403 every later post until it was recreated.
+if [ -n "${PISO_PUBLIC_URL_FILE:-}" ]; then
+  mkdir -p "$(dirname "$PISO_PUBLIC_URL_FILE")" 2>/dev/null || true
+  export PISO_PUBLIC_URL_FILE
+fi
+if [ -n "${GATEWAY_URL:-}" ] && [ -n "${PISO_WORKER_NAME:-}" ] && [ -n "${PISO_WORKER_SLUG:-}" ] && [ -x /usr/local/bin/piso-checkin-watch ]; then
+  respawn /usr/local/bin/piso-checkin-watch "$PISO_LOG_DIR/checkin-watch.log"
 fi
 
 # When /plan starts Plannotator, ask the host to approve an ingress URL.
@@ -181,6 +259,21 @@ fi
 # model) so the dashboard request log can label each row. Advisory only.
 if [ -n "${GATEWAY_URL:-}" ] && [ -n "${PISO_WORKER_NAME:-}" ] && [ -n "${PISO_WORKER_SLUG:-}" ] && [ -x /usr/local/bin/piso-context-watch ]; then
   respawn /usr/local/bin/piso-context-watch "$PISO_LOG_DIR/context-watch.log"
+fi
+
+# Unattended inbox loop: peek every ≤5 min when pi is down, one session per
+# task, never preempt. Off unless PISO_TASK_LOOP=1 (cloud ships).
+if [ "${PISO_TASK_LOOP:-}" = "1" ] && [ "${PISO_ROLE:-}" != "monitor" ] && [ -x /usr/local/bin/piso-task-watch ]; then
+  respawn /usr/local/bin/piso-task-watch "$PISO_LOG_DIR/task-watch.log"
+fi
+
+# Standalone (cloud ship) workers compete for the one supervisor lease on the
+# gateway's Telegram front door. The coordinator refuses a local module, so this
+# only runs where PISO_TASK_LOOP marks a launched worker. The session renews the
+# lease, long-polls the gateway mailbox, and drives one persistent pi RPC
+# session, so a Telegram message joins the running conversation.
+if [ "${PISO_TASK_LOOP:-}" = "1" ] && [ -n "${GATEWAY_URL:-}" ] && [ -n "${PISO_WORKER_NAME:-}" ] && [ -n "${PISO_WORKER_SLUG:-}" ] && [ -x /usr/local/bin/piso-supervisor-session ]; then
+  respawn /usr/local/bin/piso-supervisor-session "$PISO_LOG_DIR/supervisor-session.log"
 fi
 
 # Signal that seeding is done so `piso up` / `piso attach` can wait. /run is

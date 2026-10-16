@@ -26,6 +26,7 @@ var DefaultLibrary = []Entry{
 	{ID: "github-pat", Name: "github-pat", Regex: `\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{36,}\b`, Description: "GitHub personal/user/app/refresh token", Severity: "high", Enabled: true},
 	{ID: "github-fine-grained", Name: "github-fine-grained", Regex: `\bgithub_pat_[A-Za-z0-9_]{70,}\b`, Description: "GitHub fine-grained PAT", Severity: "high", Enabled: true},
 	{ID: "slack-token", Name: "slack-token", Regex: `\bxox[baprs]-[0-9A-Za-z-]{10,}\b`, Description: "Slack bot/user/app token", Severity: "high", Enabled: true},
+	{ID: "telegram-bot", Name: "telegram-bot", Regex: `[0-9]{6,12}:[A-Za-z0-9_-]{30,40}\b`, Description: "Telegram bot token (id:secret)", Severity: "high", Enabled: true},
 	{ID: "stripe-live", Name: "stripe-live", Regex: `\b(?:sk|rk)_live_[0-9a-zA-Z]{16,}\b`, Description: "Stripe live secret/restricted key", Severity: "high", Enabled: true},
 	{ID: "stripe-test", Name: "stripe-test", Regex: `\b(?:sk|rk)_test_[0-9a-zA-Z]{16,}\b`, Description: "Stripe test key", Severity: "medium", Enabled: true},
 	{ID: "google-api", Name: "google-api", Regex: `\bAIza[0-9A-Za-z\-_]{35}\b`, Description: "Google API key", Severity: "high", Enabled: true},
@@ -167,8 +168,8 @@ type Match struct {
 	Name      string `json:"name"`
 	Severity  string `json:"severity"`
 	Sample    string `json:"sample"` // truncated — never full credential
-	Start     int    `json:"-"`     // byte offset in the scanned buffer
-	End       int    `json:"-"`     // exclusive byte offset
+	Start     int    `json:"-"`      // byte offset in the scanned buffer
+	End       int    `json:"-"`      // exclusive byte offset
 }
 
 // capSample truncates a matched sample so it can't be a full credential leak

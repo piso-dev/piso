@@ -1,0 +1,18 @@
+# gitleaks configuration for the piso public mirror.
+#
+# The piso test suite intentionally contains credential-shaped values: the
+# gateway's entire purpose is to detect and block real credentials, so the
+# smoke tests and proxy unit tests must use realistic-looking tokens to prove
+# the blocking rules actually fire. These are fixtures, not live secrets.
+#
+# Everything else is still scanned with the full default ruleset.
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Intentional credential-shaped test fixtures (block-detection tests)"
+paths = [
+  '''scripts/smoke\.sh''',
+  '''gateway/internal/proxy/findings_test\.go''',
+]

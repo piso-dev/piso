@@ -9,8 +9,14 @@ GW=${GW:-bin/gateway}
 WORK=$(mktemp -d)
 # kill any stale local gateways from previous runs (pattern matches the binary
 # invocation, not just a name)
-TARGETS=$(pgrep -f "gateway -state" || true)
-[ -n "$TARGETS" ] && kill $TARGETS 2>/dev/null || true
+if command -v pgrep >/dev/null 2>&1; then
+  TARGETS=$(pgrep -f "gateway -state" || true)
+  [ -n "$TARGETS" ] && kill $TARGETS 2>/dev/null || true
+fi
+if command -v ss >/dev/null 2>&1 && ss -ltn | grep -q ':18080 '; then
+  echo "smoke: 127.0.0.1:18080 is already in use; stop that listener first" >&2
+  exit 1
+fi
 trap 'kill $GW_PID 2>/dev/null || true; rm -rf "$WORK"' EXIT
 
 echo "== starting gateway =="
@@ -40,6 +46,9 @@ curl -s -X POST "$API/rules" -H 'Content-Type: application/json' \
   -d '{"placeholder":"piso_httpbin_abc123","host":"httpbin.org","secretId":"x"}' >/dev/null
 AUTH=$(curl -s $P -H "Authorization: Bearer piso_httpbin_abc123" https://httpbin.org/headers | python3 -c "import json,sys; print(json.load(sys.stdin)['headers']['Authorization'])")
 check "placeholder substituted on egress" "[ \"$AUTH\" = 'Bearer sk-REAL-KEY-123456789' ]"
+# Telegram-style: the token is a path segment (/bot<token>/getMe), glued to
+# "bot" with no word boundary before piso_.
+check "placeholder substituted in URL path" "curl -s $P https://httpbin.org/anything/botpiso_httpbin_abc123/getMe | grep -q 'botsk-REAL-KEY-123456789/getMe'"
 
 echo "== 2. real-secret block =="
 curl -s $P -D /tmp/h -H "Authorization: Bearer sk-REAL-KEY-123456789 extra" -o /dev/null https://httpbin.org/anything || true
@@ -96,6 +105,13 @@ curl -s -X POST "$API/ingress/requests/$ING_ID/approve" >/dev/null
 PLAN_BODY=$(curl -s -H "Host: plan-smoke.piso.local" http://127.0.0.1:18082/ | head -1)
 check "approve opens plan-smoke.piso.local" "echo '$PLAN_BODY' | grep -qi '<!DOCTYPE'"
 kill $PLAN 2>/dev/null || true
+
+echo "== 8. worker mcp channel whoami =="
+if go run ./gateway/cmd/mcp-whoami "$WORK" http://127.0.0.1:18083; then
+  check "sealed whoami returns the bound slug" "true"
+else
+  check "sealed whoami returns the bound slug" "false"
+fi
 
 echo
 echo "passed: $pass  failed: $fail"

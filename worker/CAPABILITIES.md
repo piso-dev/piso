@@ -15,13 +15,20 @@ everything below is simple:
   there is visible to the host.
 - HTTP(S) egress is proxied through the gateway. Real credentials are never
   available; the proxy substitutes `piso_…` placeholders or blocks/ flags the
-  request. Public fetches (package registries, docs, public git over https)
-  generally work.
+  request. Public fetches (package registries, docs) generally work.
+- Git over HTTPS to GitHub works. Boot configures a global
+  `credential.https://github.com.helper` that shells out to
+  `gh auth git-credential`, so `clone`/`fetch`/`pull`/`push` send the
+  gateway's `piso_github_…` placeholder instead of a real token. Nothing to
+  set up per run; `gist.github.com` is covered too. Use HTTPS remote URLs
+  (`https://github.com/owner/repo.git`), never `git@github.com:owner/repo.git`.
 - Any dev-server port you bind is automatically published as
   `http://<slug>-<port>.piso.local` (or `?route=` on the apex) — no host
   ceremony needed.
 - The worker API at `$GATEWAY_URL` (:8083) is reachable: health, checkin,
-  capabilities, activity, context, ports.
+  capabilities, activity, context, ports, mcp.
+- Gateway tools are the `piso` MCP server (`piso-mcp` on stdio). That relay
+  seals every call; do not POST plaintext JSON-RPC to `$GATEWAY_URL/mcp`.
 - `/root/.pi/agent` (and `/var` equivalents) persist: sessions, skills,
   extensions, logs.
 
@@ -29,14 +36,42 @@ everything below is simple:
 
 - **ssh/scp** of any kind — no keys, no route, and an unproxied ssh/git will
   **hang**, not fail fast. This is the biggest time-waster in this sandbox.
-- **git clone/push/pull over ssh**, or any git operation requiring
-  credentials the substitution layer cannot satisfy.
+- **`pi mcp login` / in-worker MCP OAuth.** The callback is
+  `http://127.0.0.1:<port>/callback` inside this container; the host browser
+  cannot finish it. A real Bearer is 407'd. Use `piso-mcp-add` (below).
+- **git clone/push/pull over ssh** (`git@host:owner/repo.git`) — no keys, no
+  route, and it hangs rather than failing. HTTPS with the gh credential helper
+  is the supported path; only a host whose credentials the substitution layer
+  cannot satisfy is out of bounds.
 - **docker / podman / any container control**.
 - **Real credentials**: you only ever hold `piso_…` placeholders; you cannot
   mint, fetch, or use real values.
 - **Privileged operations**: writes outside `/workspace` + `/root/.pi/agent`,
   system service management, binds below port 1024 that need privilege.
 - Anything requiring the **host filesystem** beyond the `/workspace` mount.
+
+## GitHub clone fallback
+
+When a GitHub clone fails, always prepare a fallback using `gh repo clone`
+with the parsed `OWNER/REPO`, not the full URL. Strip any trailing slash
+and `.git` suffix. Preserve the requested destination when it is permitted.
+For example, `https://github.com/lunar9-dev/v1-mono.git` becomes:
+
+```bash
+gh repo clone lunar9-dev/v1-mono /workspace/v1-mono
+```
+
+Attempt the parsed-name fallback once when sandbox capabilities permit it,
+including when the original attempt used `gh` with a full URL. Do not repeat
+it if the same parsed-name command already failed, and never delete a partial
+clone or an existing destination automatically.
+
+This fallback does not override sandbox boundaries. Proxy or auth denials,
+hosts whose credentials the substitution layer cannot satisfy, forbidden
+destinations, and pending host requests require the Host Action Request
+protocol rather than an in-worker retry. In those cases, use the parsed-name
+`gh repo clone` command in the host request with a `/workspace/...` result
+path. Never bypass the proxy or retry in a loop.
 
 ## Host Action Request protocol
 
@@ -45,12 +80,14 @@ For any out-of-bounds step, do all of the following:
 1. **In your reply**, emit a request the human can act on, with the exact
    command and a rendezvous path for the result (always under `/workspace`):
    ```
-   HOST ACTION REQUEST: clone the private repo
+   HOST ACTION REQUEST: clone over ssh
      COMMAND: cd /abs/path && git clone git@github.com:org/repo.git
      RESULT:  /workspace/repo   (then I can continue with the vendoring)
    ```
-2. **Surface it on the board** so it survives this session:
-   `piso-informant host "git clone git@github.com:org/repo.git → /workspace/repo"`
+2. **Surface it on the board** so it survives this session — call the piso
+   MCP tool `host_request` with `command` set to the host command and
+   `resultPath` set to the `/workspace/...` rendezvous (or `activity_post`
+   with `kind=host` and the same one-line text).
 3. **Rendezvous**: later, check the RESULT path. If it exists, continue from
    there. If it does not, the host has not done it yet — re-ask (a new
    `host` event or a `poke` to the project), never block, never retry the
@@ -60,26 +97,60 @@ For any out-of-bounds step, do all of the following:
 
 ## Live boundaries (fetch once per session)
 
-Two things change at runtime and only the gateway knows them:
+Call the piso MCP tool `capabilities`. It returns `internetEnabled` and
+`scopedPlaceholders`. If the call fails or a field is unclear, treat the
+capability as **BLOCKED**, not open. A step that needs an unscoped secret is
+out of bounds.
+
+## MCP servers
+
+When the user asks to add, connect, or sign in to a remote MCP server, run:
 
 ```bash
-curl -s "$GATEWAY_URL/api/v1/worker/capabilities?worker=$PISO_WORKER_NAME"
+piso-mcp-add https://example.com/mcp [name]
 ```
 
-- `internetEnabled` — the operator can flip the kill-switch per worker.
-- `scopedPlaceholders` — which `piso_…` placeholders your model may actually
-  see (secret scoping). A step that needs an unscoped secret is out of
-  bounds, period.
+That is the whole install. It POSTs the URL to `$GATEWAY_URL/api/v1/worker/mcp`
+and writes `~/.pi/agent/mcp.json` with
+`headers.Authorization: Bearer piso_mcp_…`. The gateway keeps the real OAuth
+token. You only ever hold the placeholder.
 
-If the fetch fails or a field is unclear, treat the capability as **BLOCKED**,
-not open.
+**Never** `pi mcp add`, `pi mcp login`, or `/mcp login`. A `url`-only
+`mcp.json` entry starts the same in-worker OAuth. Do not write one. Do not
+use `auth` / `bearerToken` — current pi ignores those and still starts OAuth
+unless an `Authorization` header is set. Do not paste tokens or open the
+OAuth URL yourself.
+
+If the command prints `needs-auth`, `expired`, or `revoked`, tell the human
+to Authorize that server on the dashboard MCP tab (the Authorize chip is
+already up), then:
+
+Call `activity_post` with `kind=waiting` and
+`text="Authorize <name> on the dashboard MCP tab"`.
+
+
+A connect before they sign in is held (`407 mcp-auth-required`) and replays
+after. This session will not see the new server until `/reload` or the next
+session. Re-running `piso-mcp-add` with the same URL refreshes status; it
+does not mint a second secret.
+
+If `piso-mcp-add` is not on PATH, do those two steps by hand — still never
+`pi mcp login`:
+
+1. `POST $GATEWAY_URL/api/v1/worker/mcp` with
+   `{"worker":"$PISO_WORKER_NAME","slug":"$PISO_WORKER_SLUG","url":"<https url>","name":"<optional>"}`.
+2. Write the returned `name` under `mcpServers` in `~/.pi/agent/mcp.json`,
+   with `url` and `headers.Authorization` set to `Bearer <placeholder>`.
+   Refuse anything that is not a `piso_mcp_…` placeholder.
 
 ## Probing cautiously
 
 If you must verify a boundary yourself, wrap the probe in `timeout 3` — an
-unproxied ssh/git connection will hang indefinitely in this network:
+unproxied ssh connection will hang indefinitely in this network, while HTTPS
+goes through the proxy and answers:
 
 ```bash
 timeout 3 git ls-remote git@github.com:org/repo.git   # will hang→timeout; don't bother
+timeout 3 git ls-remote https://github.com/org/repo.git   # proxied; fast 404/auth error
 timeout 3 curl -sI https://example.com                # fine through the proxy
 ```

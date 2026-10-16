@@ -3,11 +3,13 @@ package server
 import (
 	"encoding/json"
 	"errors"
+	"log"
 	"net"
 	"net/http"
 	"strings"
 
 	"piso/gateway/internal/store"
+	"piso/gateway/internal/technocore"
 )
 
 // workerIn is the host-CLI registration payload at `piso up`.
@@ -63,6 +65,11 @@ func (s *Server) handlePostWorkers(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeJSON(w, 500, map[string]string{"error": err.Error()})
 		return
+	}
+	if err := technocore.EnrollLocalWorker(s.Store, s.dataDir(), rec); err != nil {
+		log.Printf("technocore: local worker %s enrollment pending: %v", rec.Name, err)
+	} else if current, ok := s.Store.WorkerByName(rec.Name); ok {
+		rec = current
 	}
 	writeJSON(w, 200, rec)
 }

@@ -8,44 +8,18 @@ import (
 
 func TestContextHashStableAndChanges(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte("FROM scratch\n"), 0o600); err != nil {
-		t.Fatal(err)
+	for _, name := range Files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(name+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if err := os.WriteFile(filepath.Join(dir, "entrypoint.sh"), []byte("#!/bin/sh\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "planning-watch.sh"), []byte("#!/bin/sh\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "loopback-forward.py"), []byte("#!/usr/bin/env python3\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "context-watch.sh"), []byte("#!/bin/sh\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "ports-watch.sh"), []byte("#!/bin/sh\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "activity-watch.sh"), []byte("#!/bin/sh\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "informant-help.sh"), []byte("#!/bin/sh\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "INFORMANT.md"), []byte("# informant\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "CAPABILITIES.md"), []byte("# capabilities\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "MONITOR.md"), []byte("# monitor\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "monitor-loop.sh"), []byte("#!/bin/sh\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "package.json"), []byte("{}\n"), 0o600); err != nil {
-		t.Fatal(err)
+	for _, tree := range ExtraTrees {
+		if err := os.MkdirAll(filepath.Join(dir, tree, "cmd"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, tree, "cmd", "main.go"), []byte("package main\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
 	a, err := ContextHash(dir)
 	if err != nil {
@@ -77,5 +51,25 @@ func TestContextHashStableAndChanges(t *testing.T) {
 	}
 	if d == c {
 		t.Fatal("hash should change when package.json changes")
+	}
+	if err := os.WriteFile(filepath.Join(dir, "relay-src", "cmd", "main.go"), []byte("package main\nfunc main() {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	e, err := ContextHash(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e == d {
+		t.Fatal("hash should change when relay source changes")
+	}
+	if err := os.WriteFile(filepath.Join(dir, "project-footer.ts"), []byte("// updated footer\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f, err := ContextHash(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f == e {
+		t.Fatal("hash should change when project-footer.ts changes")
 	}
 }

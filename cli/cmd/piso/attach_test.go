@@ -32,6 +32,11 @@ func TestWorkerSeedFiles(t *testing.T) {
 	if !strings.Contains(string(ep), "/run/piso-ready") {
 		t.Fatal("entrypoint must write /run/piso-ready before exec")
 	}
+	for _, want := range []string{"piso-checkin-watch", "piso-egress-forward"} {
+		if !strings.Contains(string(ep), want) {
+			t.Fatalf("entrypoint must respawn %s", want)
+		}
+	}
 	tmpl, err := os.ReadFile(filepath.Join(root, "compose", "worker.yaml.tmpl"))
 	if err != nil {
 		t.Fatal(err)
@@ -39,6 +44,8 @@ func TestWorkerSeedFiles(t *testing.T) {
 	for _, want := range []string{
 		"TMPDIR: /root/.pi/agent/tmp",
 		"NODE_COMPILE_CACHE: /root/.pi/agent/.node-compile-cache",
+		"HTTP_PROXY: http://127.0.0.1:18080",
+		"PISO_EGRESS_UPSTREAM: gateway:8080",
 	} {
 		if !strings.Contains(string(tmpl), want) {
 			t.Fatalf("worker compose missing %q", want)

@@ -10,6 +10,7 @@ COPY go.sum ./
 # Fetch the module graph in its own layer so source edits don't re-download
 # the (large, pure-Go) sqlite dependency every build.
 RUN go mod download
+COPY internal/ ./internal/
 COPY gateway/ ./gateway/
 RUN cd gateway && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/gateway ./cmd/gateway
 

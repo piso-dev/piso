@@ -29,7 +29,7 @@ func TestNewUsesHeaderTimeout(t *testing.T) {
 		t.Fatalf("ResponseHeaderTimeout %v, want %v", tr.ResponseHeaderTimeout, headerTimeout)
 	}
 	if headerTimeout < 90*time.Second {
-		t.Fatalf("headerTimeout %v is still in the range that 502'd routstr", headerTimeout)
+		t.Fatalf("headerTimeout %v is still in the range that 502'd piso", headerTimeout)
 	}
 	if streamTimeout < 5*time.Minute {
 		t.Fatalf("streamTimeout %v is too short for streamed completions", streamTimeout)
@@ -91,7 +91,7 @@ func TestForwardRetriesDeadHTTP2Conn(t *testing.T) {
 			}),
 		},
 	}
-	req, err := http.NewRequest(http.MethodPost, "https://routstr.ft.hn/v1/chat/completions", strings.NewReader(`{"m":1}`))
+	req, err := http.NewRequest(http.MethodPost, "https://api.example.test/v1/chat/completions", strings.NewReader(`{"m":1}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +122,7 @@ func TestForwardDoesNotRetryHeaderTimeout(t *testing.T) {
 			}),
 		},
 	}
-	req, err := http.NewRequest(http.MethodPost, "https://routstr.ft.hn/v1/chat/completions", strings.NewReader(`{}`))
+	req, err := http.NewRequest(http.MethodPost, "https://api.example.test/v1/chat/completions", strings.NewReader(`{}`))
 	if err != nil {
 		t.Fatal(err)
 	}

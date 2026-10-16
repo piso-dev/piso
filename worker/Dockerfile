@@ -10,15 +10,35 @@
 #
 # Hardening: read-only rootfs, dropped caps, no-new-privileges, init — applied
 # in compose, not here.
+#
+# The relay is built here so hosts do not need a Go toolchain. The CLI
+# stages relay-src (a trimmed go.mod plus internal/mcpchannel,
+# internal/technocore, internal/ownfile, and cmd/piso-mcp). GOPROXY is left
+# at the image default: this stage runs during `docker build`, which has
+# real network. The runtime stage does not.
+FROM golang:1.25-bookworm AS relay
+WORKDIR /src
+COPY relay-src/go.mod relay-src/go.sum ./
+RUN go mod download
+COPY relay-src/internal ./internal
+COPY relay-src/cmd ./cmd
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/piso-mcp ./cmd/piso-mcp
+
 FROM node:24-bookworm-slim
 
 # fd-find is baked in: pi's runtime download uses tar --same-owner, which
 # fails under cap_drop ALL. PISO_WORKER_HASH is applied after the install
 # layers so a hash-only change does not bust the apt/bun/npm cache.
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends bash ca-certificates git ripgrep curl unzip fd-find python3 make g++ openssh-client \
+  && apt-get install -y --no-install-recommends bash ca-certificates git ripgrep curl unzip fd-find python3 make g++ openssh-client gh \
   && ln -sf /usr/bin/fdfind /usr/local/bin/fd \
   && rm -rf /var/lib/apt/lists/*
+
+# Bake credential helpers into system config, outside the runtime agent volume.
+# gh 2.23 requires a token for setup-git even though setup is local-only. This
+# dummy is command-scoped, never stored; gh reads the real placeholder at runtime.
+# Redirect gh's --global writes to /etc/gitconfig for image-wide defaults.
+RUN GIT_CONFIG_GLOBAL=/etc/gitconfig GH_TOKEN=build-only-not-a-credential gh auth setup-git --hostname github.com
 
 # Bun (pi's networking runtime)
 RUN curl -fsSL https://bun.sh/install | bash -s "bun-v1.2.11" \
@@ -37,6 +57,14 @@ RUN npm install -g --ignore-scripts @earendil-works/pi-coding-agent@${PISO_PI_VE
 # Must run BEFORE HTTPS_PROXY=gateway or `docker build` npm would target
 # a proxy that does not exist yet.
 COPY package.json /opt/piso/npm/package.json
+
+# Piso-owned extensions are kept separate from host-installed npm packages.
+# The entrypoint symlinks these into the persistent global extensions dir so
+# pi auto-discovers them and /reload can reload them.
+COPY piso-models.ts /opt/piso/extensions/piso-models.ts
+COPY activity-state.ts /opt/piso/extensions/activity-state.ts
+COPY project-footer.ts /opt/piso/extensions/project-footer.ts
+
 # --ignore-scripts skips postinstall downloads (pi-browser Chromium, etc.)
 # that hang `docker build`. node-pty still needs a compile.
 # legacy-peer-deps: host extensions independently pin @earendil-works/pi-ai
@@ -99,7 +127,7 @@ RUN set -eu; \
              BAT_SHA=422eb73e11c854fddd99f5ca8461c2f1d6e6dce0a2a8c3d5daade5ffcb6564aa; \
              DELTA_SHA=0bfce159a5cddd5feb3d6db4a616d883ff51253ce08ac7ec11cb1d208cfaab9e; \
              GLOW_SHA=810c39f4691feb75e675a5f5f54b9fa091354e7599d9cf9c9fc9b97e47a99759 ;; \
-    x86_64)  RUST_ARCH=x86_64-unknown-linux-gnu; GLOW_ARCH=amd64; \
+    x86_64)  RUST_ARCH=x86_64-unknown-linux-gnu; GLOW_ARCH=x86_64; \
              BAT_SHA=726f04c8f576a7fd18b7634f1bbf2f915c43494c1c0f013baa3287edb0d5a2a3; \
              DELTA_SHA=8e695c5f586a8c53d6c3b01be0b4a422ed218bfed2a56191caebe373a1c18ab2; \
              GLOW_SHA=13e05e4b2acc18d2aee44291aefe6325b077ec321b631a0cfa780e8e3bc33f78 ;; \
@@ -117,17 +145,20 @@ RUN set -eu; \
   tar xzf glow.tgz --no-same-owner;  install -m 0755 "glow_3.0.0_Linux_${GLOW_ARCH}/glow" /usr/local/bin/glow; \
   rm -rf "$D"
 
-# Egress: only via the gateway. NO_PROXY keeps vpc services (worker API) direct.
-# Lowercase + ALL_PROXY cover clients that ignore the uppercase pair.
-# CA vars must be image/compose ENV (not entrypoint export): docker exec does
-# not inherit the entrypoint's shell. Set after all RUN curls so build still
-# uses the public trust store.
-ENV HTTPS_PROXY=http://gateway:8080 \
-    HTTP_PROXY=http://gateway:8080 \
-    ALL_PROXY=http://gateway:8080 \
-    https_proxy=http://gateway:8080 \
-    http_proxy=http://gateway:8080 \
-    all_proxy=http://gateway:8080 \
+# Egress: HTTP(S)_PROXY is the local retry forwarder (entrypoint). It dials
+# PISO_EGRESS_UPSTREAM (gateway:8080) and does not replay after the gateway
+# accepts. NO_PROXY keeps vpc services (worker API) direct. Lowercase +
+# ALL_PROXY cover clients that ignore the uppercase pair. CA vars must be
+# image/compose ENV (not entrypoint export): docker exec does not inherit the
+# entrypoint's shell. Set after all RUN curls so build still uses the public
+# trust store.
+ENV HTTPS_PROXY=http://127.0.0.1:18080 \
+    HTTP_PROXY=http://127.0.0.1:18080 \
+    ALL_PROXY=http://127.0.0.1:18080 \
+    https_proxy=http://127.0.0.1:18080 \
+    http_proxy=http://127.0.0.1:18080 \
+    all_proxy=http://127.0.0.1:18080 \
+    PISO_EGRESS_UPSTREAM=gateway:8080 \
     NO_PROXY=gateway,localhost,127.0.0.1,*.piso.local \
     no_proxy=gateway,localhost,127.0.0.1,*.piso.local \
     SSL_CERT_FILE=/piso-ca.pem \
@@ -138,6 +169,10 @@ ENV HTTPS_PROXY=http://gateway:8080 \
     TMPDIR=/root/.pi/agent/tmp \
     NODE_COMPILE_CACHE=/root/.pi/agent/.node-compile-cache
 
+# Git/gh need a writable global config; keep it on the persistent agent
+# volume. Image ENV also reaches docker exec sessions, unlike shell exports.
+ENV GIT_CONFIG_GLOBAL=/root/.pi/agent/gitconfig
+
 WORKDIR /workspace
 
 COPY entrypoint.sh /usr/local/bin/piso-entrypoint
@@ -146,17 +181,26 @@ COPY loopback-forward.py /usr/local/bin/piso-loopback-forward
 COPY context-watch.sh /usr/local/bin/piso-context-watch
 COPY ports-watch.sh /usr/local/bin/piso-ports-watch
 COPY activity-watch.sh /usr/local/bin/piso-activity-watch
-COPY informant-help.sh /usr/local/bin/piso-informant
+COPY activity-state.py /usr/local/lib/piso-activity-state.py
+COPY mcp-add.sh /usr/local/bin/piso-mcp-add
+COPY mcp-merge.py /usr/local/lib/piso-mcp-merge.py
+COPY --from=relay /out/piso-mcp /usr/local/bin/piso-mcp
+COPY checkin-watch.sh /usr/local/bin/piso-checkin-watch
+COPY egress-forward.py /usr/local/bin/piso-egress-forward
+COPY gateway-post.sh /usr/local/lib/piso-gateway-post.sh
+COPY WORKLOOP.md /opt/piso/WORKLOOP.md
 COPY INFORMANT.md /opt/piso/INFORMANT.md
 COPY CAPABILITIES.md /opt/piso/CAPABILITIES.md
 COPY MONITOR.md /opt/piso/MONITOR.md
+COPY TASKLOOP.md /opt/piso/TASKLOOP.md
+COPY task-pick.py /usr/local/lib/piso-task-pick.py
+COPY task-watch.sh /usr/local/bin/piso-task-watch
+COPY supervisor-session.py /usr/local/bin/piso-supervisor-session
 COPY monitor-loop.sh /usr/local/bin/piso-monitor-loop
 RUN chmod +x /usr/local/bin/piso-monitor-loop
 # make the monitor loop invocable as a plain name (and pi can call it too)
 RUN ln -sf /usr/local/bin/piso-monitor-loop /usr/local/bin/piso-monitor
-RUN chmod +x /usr/local/bin/piso-entrypoint /usr/local/bin/piso-planning-watch /usr/local/bin/piso-loopback-forward /usr/local/bin/piso-context-watch /usr/local/bin/piso-ports-watch /usr/local/bin/piso-activity-watch /usr/local/bin/piso-informant
-# piso-informant is CALLED by the agent (not a background watcher); ensure it
-# is on PATH (entrypoint runs at /usr/local/bin which is on the default PATH).
+RUN chmod +x /usr/local/bin/piso-entrypoint /usr/local/bin/piso-planning-watch /usr/local/bin/piso-loopback-forward /usr/local/bin/piso-context-watch /usr/local/bin/piso-ports-watch /usr/local/bin/piso-activity-watch /usr/local/bin/piso-mcp-add /usr/local/bin/piso-mcp /usr/local/bin/piso-checkin-watch /usr/local/bin/piso-egress-forward /usr/local/bin/piso-task-watch /usr/local/bin/piso-supervisor-session /usr/local/lib/piso-gateway-post.sh /usr/local/lib/piso-activity-state.py /usr/local/lib/piso-task-pick.py
 ENV PATH=/usr/local/bin:$PATH
 
 # Declared last so changing the hash only rewrites this label layer.

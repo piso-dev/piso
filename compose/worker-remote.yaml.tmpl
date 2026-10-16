@@ -1,0 +1,63 @@
+# Cloud-ship worker: its own machine, never the standalone gateway host.
+# The agent may be root here. HTTP_PROXY is convenience; the worker machine's
+# network must be forced through the assigned gateway (VPC route / no other
+# default route). Do not put this compose on piso_vpc.
+name: piso-PROJ-SLUG
+
+services:
+  worker:
+    image: piso-worker
+    build:
+      context: "WORKER_BUILD_CONTEXT"
+      network: host
+      args:
+        PISO_WORKER_HASH: __WORKER_HASH__
+    labels:
+      piso.worker.hash: __WORKER_HASH__
+      piso.hull: cloud_ship
+    container_name: piso-worker-PROJ-SLUG
+    restart: unless-stopped
+    stdin_open: true
+    tty: true
+    privileged: true
+    volumes:
+      - "PROJECT_DIR:/workspace"
+      - piso-agent-PROJ-SLUG:/root/.pi/agent
+      - "CA_DIR/workers/PROJ-SLUG/ca.crt:/piso-ca.pem:ro"
+      - "CA_DIR/workers/PROJ-SLUG:/etc/piso"
+      - "CA_DIR/pi-profile:/opt/piso/pi-profile:ro"
+    environment:
+      HTTPS_PROXY: http://127.0.0.1:18080
+      HTTP_PROXY: http://127.0.0.1:18080
+      ALL_PROXY: http://127.0.0.1:18080
+      https_proxy: http://127.0.0.1:18080
+      http_proxy: http://127.0.0.1:18080
+      all_proxy: http://127.0.0.1:18080
+      PISO_EGRESS_UPSTREAM: "EGRESS_UPSTREAM"
+      NO_PROXY: localhost,127.0.0.1
+      no_proxy: localhost,127.0.0.1
+      SSL_CERT_FILE: /piso-ca.pem
+      CURL_CA_BUNDLE: /piso-ca.pem
+      GIT_SSL_CAINFO: /piso-ca.pem
+      REQUESTS_CA_BUNDLE: /piso-ca.pem
+      NODE_EXTRA_CA_CERTS: /piso-ca.pem
+      GATEWAY_URL: "GATEWAY_API"
+      PISO_WORKER_TOKEN: "WORKER_TOKEN"
+      PISO_WORKER_NAME: piso-worker-PROJ-SLUG
+      PISO_WORKER_SLUG: PROJ-SLUG
+      PISO_HULL: cloud_ship
+      # Task-first standalone workers pull runnable work from their shared queue.
+      PISO_TASK_LOOP: "1"
+      PISO_PUBLIC_URL_FILE: /etc/piso/public-url
+      PISO_EGRESS_LISTEN_PORT: "18080"
+      PLANNOTATOR_REMOTE: "1"
+      PLANNOTATOR_PORT: "19432"
+      PLANNOTATOR_DATA_DIR: /tmp/plannotator
+      NPM_CONFIG_CACHE: /root/.pi/agent/.npm-cache
+      TMPDIR: /root/.pi/agent/tmp
+      NODE_COMPILE_CACHE: /root/.pi/agent/.node-compile-cache
+    init: true
+
+volumes:
+  piso-agent-PROJ-SLUG:
+    name: piso-agent-PROJ-SLUG

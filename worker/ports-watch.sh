@@ -20,6 +20,8 @@
 #   never deleted here on a first blip (dev servers restart constantly).
 set -u
 
+. /usr/local/lib/piso-gateway-post.sh
+
 gw="${GATEWAY_URL:-}"
 worker="${PISO_WORKER_NAME:-}"
 slug="${PISO_WORKER_SLUG:-}"
@@ -123,10 +125,7 @@ EOF
 # notify POSTs the set; success iff the gateway answered 200.
 notify() {
   local payload="$1" code
-  code=$(curl -sS --max-time 3 -o /tmp/piso-ports-notify.json -w '%{http_code}' \
-    -X POST "${gw}/api/v1/worker/ports" \
-    -H 'Content-Type: application/json' \
-    -d "$payload" || true)
+  code=$(piso_gateway_post "${gw}/api/v1/worker/ports" "$payload" /tmp/piso-ports-notify.json)
   echo "notify ${code} $(tr -d '\n' < /tmp/piso-ports-notify.json 2>/dev/null)"
   [ "${code}" = "200" ]
 }

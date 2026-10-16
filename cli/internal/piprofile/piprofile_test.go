@@ -10,7 +10,7 @@ import (
 
 const fixtureModels = `{
   "providers": {
-    "routstr": {
+    "piso": {
       "baseUrl": "https://example.test/v1",
       "api": "openai-completions",
       "apiKey": "sk-test-FAKE-KEY-do-not-use",
@@ -24,18 +24,38 @@ func TestExtractAndSanitize(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(keys) != 1 || keys[0].Name != "routstr" || keys[0].APIKey != "sk-test-FAKE-KEY-do-not-use" {
+	if len(keys) != 1 || keys[0].Name != "piso" || keys[0].APIKey != "sk-test-FAKE-KEY-do-not-use" {
 		t.Fatalf("extract: %+v", keys)
 	}
-	out, err := SanitizeModelsJSON([]byte(fixtureModels), map[string]string{"routstr": "piso_routstr_abc"})
+	out, err := SanitizeModelsJSON([]byte(fixtureModels), map[string]string{"piso": "piso_model_abc"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(string(out), "sk-test-FAKE-KEY-do-not-use") {
 		t.Fatalf("real key remained:\n%s", out)
 	}
-	if !strings.Contains(string(out), "piso_routstr_abc") {
+	if !strings.Contains(string(out), "piso_model_abc") {
 		t.Fatalf("placeholder missing:\n%s", out)
+	}
+}
+
+func TestSanitizeKeepsExistingPlaceholder(t *testing.T) {
+	raw := []byte(`{
+  "providers": {
+    "piso": {
+      "api": "openai-completions",
+      "apiKey": "piso_aimlapi",
+      "baseUrl": "https://api.example.test/v1",
+      "models": []
+    }
+  }
+}`)
+	out, err := SanitizeModelsJSON(raw, map[string]string{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), `"apiKey": "piso_aimlapi"`) {
+		t.Fatalf("placeholder was wiped:\n%s", out)
 	}
 }
 
@@ -124,7 +144,7 @@ func TestHostOrDestKeepsDestWhenHostMissing(t *testing.T) {
 
 func TestWriteProfileDoesNotClobberExistingModels(t *testing.T) {
 	dir := t.TempDir()
-	want := []byte("{\n  \"providers\": {\"routstr\": {\"apiKey\": \"piso_x\"}}\n}\n")
+	want := []byte("{\n  \"providers\": {\"piso\": {\"apiKey\": \"piso_x\"}}\n}\n")
 	if err := os.WriteFile(filepath.Join(dir, "models.json"), want, 0o600); err != nil {
 		t.Fatal(err)
 	}

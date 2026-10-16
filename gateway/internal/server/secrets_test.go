@@ -69,7 +69,7 @@ func TestPutSecretResyncsRules(t *testing.T) {
 		t.Fatalf("no secret id: %s", created.Body.String())
 	}
 	// Re-scope the secret to another host via PUT: the old rule must go away.
-	u := doJSON(t, ch, "PUT", "/api/v1/secrets/" + parsed.Secret.ID, map[string]any{
+	u := doJSON(t, ch, "PUT", "/api/v1/secrets/"+parsed.Secret.ID, map[string]any{
 		"name": "k3", "allowedHosts": []string{"b.test"},
 	})
 	if u.Code != 200 {

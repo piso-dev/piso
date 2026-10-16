@@ -57,6 +57,62 @@ func TestUpsertWorkerRefreshesByName(t *testing.T) {
 	}
 }
 
+func TestUpsertWorkerStealsIPsFromOthers(t *testing.T) {
+	st := workerTestStore(t)
+	if _, err := st.UpsertWorker(WorkerRec{Name: "piso-worker-old", Slug: "old", IPs: []string{"192.168.107.50", "10.0.0.7"}}); err != nil {
+		t.Fatal(err)
+	}
+	rec, err := st.UpsertWorker(WorkerRec{Name: "piso-worker-new", Slug: "new", IPs: []string{"192.168.107.50"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.Slug != "new" {
+		t.Fatalf("slug %q", rec.Slug)
+	}
+	byIP, ok := st.WorkerByIP("192.168.107.50")
+	if !ok || byIP.Name != "piso-worker-new" {
+		t.Fatalf("WorkerByIP after steal: %+v ok=%v", byIP, ok)
+	}
+	old, ok := st.WorkerByName("piso-worker-old")
+	if !ok || len(old.IPs) != 1 || old.IPs[0] != "10.0.0.7" {
+		t.Fatalf("previous owner IPs %+v", old.IPs)
+	}
+}
+
+func TestUpsertWorkerKeepsPrincipalID(t *testing.T) {
+	st := workerTestStore(t)
+	if _, err := st.UpsertWorker(WorkerRec{
+		Name: "piso-worker-demo", Slug: "demo", PrincipalID: "prin-1", IPs: []string{"192.168.107.50"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rec, err := st.UpsertWorker(WorkerRec{Name: "piso-worker-demo", Slug: "demo", IPs: []string{"192.168.107.51"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.PrincipalID != "prin-1" {
+		t.Fatalf("principal %q", rec.PrincipalID)
+	}
+}
+
+func TestReplaceRemoteWorkersKeepsPrincipalID(t *testing.T) {
+	st := workerTestStore(t)
+	if err := st.ReplaceRemoteWorkers([]WorkerRec{{
+		Name: "piso-worker-demo", Slug: "demo", PrincipalID: "prin-1", TokenHash: "aa",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.ReplaceRemoteWorkers([]WorkerRec{{
+		Name: "piso-worker-demo", Slug: "demo", TokenHash: "bb",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	rec, ok := st.WorkerByName("piso-worker-demo")
+	if !ok || rec.PrincipalID != "prin-1" || rec.TokenHash != "bb" {
+		t.Fatalf("%+v ok=%v", rec, ok)
+	}
+}
+
 func TestWorkerByName(t *testing.T) {
 	st := workerTestStore(t)
 	if _, err := st.UpsertWorker(WorkerRec{Name: "piso-worker-demo", Slug: "demo"}); err != nil {

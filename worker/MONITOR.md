@@ -45,12 +45,11 @@ on what this feed tells you.
 
 ## Your tools
 
-Emit board items exactly like a worker would, using the informant helper
-(scoped to you — you may substitute only your own model key):
+Emit board items through the piso MCP tools (same board, no shell helper):
 
-- `piso-informant poke "<why the human should look>" <target-slug>`
-- `piso-informant reminder "<a time-boxed nudge>" <target-slug>`
-- `piso-informant note "<board curation, e.g. project state summary>" <target-slug>`
+- `activity_post` `kind=poke` `text="<why the human should look>"` `targetSlug=<slug>`
+- `activity_post` `kind=reminder` `text="<a time-boxed nudge>"` `targetSlug=<slug>`
+- `activity_post` `kind=note` `text="<board curation>"` `targetSlug=<slug>`
 
 ## When to poke (be conservative — noise destroys trust)
 
@@ -120,10 +119,9 @@ Rules for the report:
   outcome.
 - **emission=record** always, even when `emission=note|poke|reminder` is absent; a
   silent pass is recorded as `emission=record` plus `emission=reason …`.
-- Every real emission line mirrors the `piso-informant` call you make
-  (kind, target, short text). The loop separately greps for the actual
-  `informant 201/…` POST lines — matching rows mean the decision became a
-  stored activity; a missing row means the POST failed or spooled.
+- Every real emission line mirrors the `activity_post` call you make
+  (kind, target, short text). The tool result (`id`, `ts`) means the row
+  is stored; a tool error is non-fatal — the board is advisory.
 - Do NOT paste feed rows into the report — the loop already dumped them.
 
 ## Wake cadence

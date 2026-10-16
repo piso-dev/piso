@@ -44,6 +44,37 @@ func TestDetectsPlaceholderInAuthAndBody(t *testing.T) {
 	}
 }
 
+func TestDetectsPlaceholderInURLPath(t *testing.T) {
+	// Telegram embeds its bot token in the path segment: /bot<token>/getMe.
+	// The token is glued to "bot", so detection must not require a leading
+	// word boundary before piso_.
+	const ph = "piso_telegram_5ef1739b3cf1"
+	req := newReq(t, "GET", "https://api.telegram.org/bot"+ph+"/getMe", "", nil)
+	res := ScanRequest(req, Options{Patterns: testPatterns(t)})
+	if len(res.Placeholders) != 1 || res.Placeholders[0].Token != ph {
+		t.Fatalf("want the path placeholder, got %+v", res.Placeholders)
+	}
+	if res.Placeholders[0].Location != "path" {
+		t.Fatalf("want location path, got %q", res.Placeholders[0].Location)
+	}
+	if res.LooksCredential() {
+		t.Fatalf("path placeholder must not look credential: %+v", res)
+	}
+}
+
+func TestDetectsRealSecretInURLPath(t *testing.T) {
+	// A leaked real token pasted into a path must still flag as a credential.
+	const real = "sk-ant-api03-ABCDEFGHIJKLMNOPQRSTUVWX"
+	req := newReq(t, "GET", "https://evil.example.com/bot"+real+"/getMe", "", nil)
+	res := ScanRequest(req, Options{Secrets: []KnownSecret{{ID: "s1", Value: real}}})
+	if len(res.RealSecrets) != 1 {
+		t.Fatalf("want a real-secret hit in the path, got %+v", res.RealSecrets)
+	}
+	if !res.LooksCredential() {
+		t.Fatal("real secret in path must look credential")
+	}
+}
+
 func TestBasicAuthPlaceholderDecoded(t *testing.T) {
 	// git over HTTPS: the piso_ marker is inside base64, invisible to the
 	// plain header scan — the decoded scan must surface it as a placeholder.
@@ -65,6 +96,20 @@ func TestBasicAuthPlaceholderDecoded(t *testing.T) {
 	// while real basic creds keep it (block).
 	if len(res.PatternHits) != 1 || res.PatternHits[0].PatternID != "basic-auth" {
 		t.Fatalf("want exactly the raw basic-auth hit, got %+v", res.PatternHits)
+	}
+}
+
+func TestDetectsRealTelegramTokenInURLPath(t *testing.T) {
+	// The bot token is glued to "bot"; the telegram-bot pattern must still
+	// catch a leaked real token so policy can block it.
+	const real = "123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw"
+	req := newReq(t, "GET", "https://api.telegram.org/bot"+real+"/getMe", "", nil)
+	res := ScanRequest(req, Options{Patterns: testPatterns(t)})
+	if len(res.PatternHits) == 0 {
+		t.Fatalf("want a pattern hit for a real telegram token in the path")
+	}
+	if !res.LooksCredential() {
+		t.Fatal("real telegram token in the path must look credential")
 	}
 }
 
@@ -99,12 +144,12 @@ func TestBasicAuthMalformedIgnored(t *testing.T) {
 func TestLongBearerPlaceholderIsNotGenericBearer(t *testing.T) {
 	// Imported keys are piso_<provider>_<12 hex> (≥24 chars) so generic-bearer
 	// matches "Bearer " + the placeholder unless the scanner drops it.
-	req := newReq(t, "POST", "https://routstr.ft.hn/v1/chat/completions", `{}`, map[string]string{
-		"Authorization": "Bearer piso_routstr_5ef1739b3cf1",
+	req := newReq(t, "POST", "https://api.example.test/v1/chat/completions", `{}`, map[string]string{
+		"Authorization": "Bearer piso_model_5ef1739b3cf1",
 	})
 	res := ScanRequest(req, Options{Patterns: testPatterns(t)})
-	if len(res.Placeholders) != 1 || res.Placeholders[0].Token != "piso_routstr_5ef1739b3cf1" {
-		t.Fatalf("want the routstr placeholder, got %+v", res.Placeholders)
+	if len(res.Placeholders) != 1 || res.Placeholders[0].Token != "piso_model_5ef1739b3cf1" {
+		t.Fatalf("want the piso placeholder, got %+v", res.Placeholders)
 	}
 	if res.LooksCredential() {
 		t.Fatalf("Bearer piso_… must not be generic-bearer: %+v", res.PatternHits)
