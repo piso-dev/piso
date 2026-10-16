@@ -1,4 +1,4 @@
-.PHONY: build test test-locutus gw-run smoke isolation install setup-install uninstall windows
+.PHONY: build gw-run smoke isolation install setup-install uninstall windows
 
 BIN ?= bin
 # Default matches /usr/local/bin on PATH. Use PREFIX=$$HOME/.local to avoid sudo,
@@ -73,13 +73,6 @@ setup-install:
 		$(if $(wildcard .piso/state.json),PISO_MIGRATE_FROM="$(abspath .piso)") \
 		$(PREFIX)/bin/piso setup --rebuild
 
-test:
-	go test ./...
-	$(MAKE) test-locutus
-
-test-locutus:
-	python3 -m unittest discover -s locutus/tests -t locutus
-
 vet:
 	go vet ./...
 
@@ -96,3 +89,7 @@ isolation:
 
 clean:
 	rm -rf $(BIN) .piso
+
+# Test targets live in a separate fragment so the public mirror can ship its
+# own suite (public/Makefile.tests) without carrying private dependencies.
+include Makefile.tests

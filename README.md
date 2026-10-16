@@ -1,5 +1,9 @@
 # piso
 
+> **Public mirror.** This repository is a read-only mirror published from an
+> upstream private repository; pull requests cannot be merged here. See
+> [CONTRIBUTING.md](CONTRIBUTING.md).
+
 Isolate an AI coding agent (pi) inside a Docker worker, with all egress gated
 through a MITM gateway that substitutes fake credentials for real ones and
 blocks anything that looks like a real credential.
@@ -42,7 +46,7 @@ compose/ docker-compose (worker + gateway, piso_vpc internal)
 ## Quick start
 
 ```bash
-git clone <this-repo> && cd piso
+git clone https://github.com/piso-dev/piso.git && cd piso
 make install                 # sudo if PREFIX=/usr/local is not writable
 # or: make install PREFIX=$HOME/.local   # then ensure ~/.local/bin is on PATH
 cd /path/to/your/project
@@ -53,11 +57,6 @@ piso attach --new  # start a fresh session instead of restoring
 piso attach --session <id>  # open a specific session
 piso dashboard   # open http://piso.local
 piso expose 5173 --name preview   # reverse-proxy a worker dev server
-# Optional: pair this machine with a technocore server (phone approves):
-# piso gateway launch --server https://your-domain
-# Always-on host that should run launched workers:
-# piso gateway launch --server https://your-domain --standalone
-# piso worker launch
 ```
 
 `make install` (including `sudo make install` over an existing copy) replaces `$(PREFIX)/bin/piso` and `$(PREFIX)/share/piso`, then runs `piso setup --rebuild` as the login user. That imports any leftover repo `.piso` files that `~/.piso` does not already have, rebuilds the gateway image, recreates the container, and migrates `state.json` on startup. Live secrets in `~/.piso` are kept. Gateway secrets/CA/logs live in `~/.piso` (`PISO_DATA` overrides). Override the share tree with `PISO_HOME`. Secrets filled in the dashboard **Blocked secrets** modal are stored in the gateway; the next `piso attach` exports placeholders only (`ANTHROPIC_API_KEY=piso_…`) from `~/.piso/placeholders.env`. Existing workers need one `piso up` to mount that file.
@@ -96,7 +95,7 @@ The worker and gateway are still Linux containers. Native `piso.exe` talks to Do
 Prereqs: Git for Windows, Go (see `go.mod`), Docker Desktop **Linux containers**, Windows Terminal.
 
 ```powershell
-git clone <this-repo>
+git clone https://github.com/piso-dev/piso.git
 cd piso
 .\scripts\install.ps1
 cd \path\to\your\project
@@ -146,5 +145,3 @@ On macOS it is a launchd service (`com.piso.sync`, survives reboots); elsewhere
 a nohup+pidfile fallback is used. The daemon only needs `/etc/hosts` write
 access and the gateway's control-plane port — workers do not need to run for it
 to stay alive.
-
-See `docs/design.md` for the threat model and the decision pipeline.

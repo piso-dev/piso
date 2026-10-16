@@ -1,0 +1,10 @@
+# Public test suite for the published mirror.
+#
+# The private upstream tree has additional tests that depend on components not
+# published here. This file is the public equivalent and is mapped to
+# Makefile.tests in the public repository by the publish workflow; the private
+# Makefile.tests is never published.
+.PHONY: test
+
+test:
+	go test ./...
