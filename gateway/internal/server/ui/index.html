@@ -1785,12 +1785,52 @@
           : "—";
       }
       function age(ts) {
-        const n = Date.now() - new Date(ts).getTime();
-        if (!Number.isFinite(n)) return "unknown";
+        const at = new Date(ts).getTime();
+        // A missing or zero timestamp is not "a very long time ago".
+        if (!Number.isFinite(at) || at < Date.UTC(2000, 0, 1)) return "unknown";
+        const n = Date.now() - at;
         if (n < 60000) return "just now";
         if (n < 3600000) return Math.floor(n / 60000) + "m ago";
         if (n < 86400000) return Math.floor(n / 3600000) + "h ago";
         return Math.floor(n / 86400000) + "d ago";
+      }
+      // pairingLine turns the raw enrollment snapshot into one rail line. Sync
+      // age is only meaningful once paired, so an unpaired gateway says what it
+      // is instead of "unpaired / synced 739905d ago".
+      function pairingLine(tc) {
+        const status = tc.status || "unpaired";
+        if (status === "active")
+          return {
+            text:
+              "Technocore: paired" +
+              (tc.lastSync
+                ? " · synced " + age(tc.lastSync)
+                : " · awaiting first sync"),
+            title: [tc.name, tc.placement, tc.fingerprint, tc.lastError]
+              .filter(Boolean)
+              .join("\n"),
+            href: "",
+          };
+        if (status === "pending")
+          return {
+            text: "Technocore: awaiting approval",
+            title: tc.pairUrl
+              ? "Approve this gateway at " + tc.pairUrl
+              : "Approve this gateway on the Technocore server.",
+            href: tc.pairUrl || "",
+          };
+        if (status === "error")
+          return {
+            text: "Technocore: error",
+            title: tc.lastError || "The Technocore identity could not be read.",
+            href: "",
+          };
+        return {
+          text: "Technocore: not connected",
+          title:
+            "No Technocore server is paired. Projects, tasks, and workers run locally without one.",
+          href: "",
+        };
       }
       function badge(text, tone = "") {
         return `<span class="status ${esc(tone)}">${esc(text)}</span>`;
@@ -2029,14 +2069,19 @@
             ? "Live connection"
             : "Polling · stream reconnecting";
         const tc = data.technocore || {};
-        $("#pairing").textContent = loaded.has("technocore")
-          ? "Technocore: " +
-            (tc.status || "unpaired") +
-            (tc.lastSync ? " / synced " + age(tc.lastSync) : "")
-          : "Pairing status unavailable";
-        $("#pairing").title = [tc.placement, tc.fingerprint, tc.lastError]
-          .filter(Boolean)
-          .join("\n");
+        if (!loaded.has("technocore")) {
+          $("#pairing").textContent = "Pairing status unavailable";
+          $("#pairing").title = "";
+        } else {
+          const pair = pairingLine(tc);
+          const href = pair.href ? safeURL(pair.href) : "";
+          $("#pairing").innerHTML =
+            esc(pair.text) +
+            (href
+              ? `<br><a href="${esc(href)}" target="_blank" rel="noreferrer">Open pairing page</a>`
+              : "");
+          $("#pairing").title = pair.title;
+        }
         $("#updated").textContent = lastRefresh
           ? "Updated " + time(lastRefresh)
           : "Waiting for data";

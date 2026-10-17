@@ -238,8 +238,9 @@ func syncSecrets(st *store.Store, dataDir string, id tc.Identity) error {
 		}
 		removed++
 	}
+	now := time.Now().UTC()
 	setLive(func(s *Status) {
-		s.LastSync = time.Now().UTC()
+		s.LastSync = &now
 		s.LastError = ""
 		s.EnvelopeSkip = skipped
 	})
