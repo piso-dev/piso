@@ -10,17 +10,17 @@ import (
 
 // Status is a snapshot for the local dashboard.
 type Status struct {
-	Enrolled     bool      `json:"enrolled"`
-	Status       string    `json:"status"`
-	Name         string    `json:"name"`
-	ServerURL    string    `json:"serverUrl"`
-	Fingerprint  string    `json:"fingerprint"`
-	PrincipalID  string    `json:"principalId,omitempty"`
-	Placement    string    `json:"placement,omitempty"`
-	PairURL      string    `json:"pairUrl,omitempty"`
-	LastSync     time.Time `json:"lastSync,omitempty"`
-	LastError    string    `json:"lastError,omitempty"`
-	EnvelopeSkip int       `json:"envelopeSkip"`
+	Enrolled     bool       `json:"enrolled"`
+	Status       string     `json:"status"`
+	Name         string     `json:"name"`
+	ServerURL    string     `json:"serverUrl"`
+	Fingerprint  string     `json:"fingerprint"`
+	PrincipalID  string     `json:"principalId,omitempty"`
+	Placement    string     `json:"placement,omitempty"`
+	PairURL      string     `json:"pairUrl,omitempty"`
+	LastSync     *time.Time `json:"lastSync,omitempty"`
+	LastError    string     `json:"lastError,omitempty"`
+	EnvelopeSkip int        `json:"envelopeSkip"`
 }
 
 var (
@@ -43,6 +43,7 @@ func Snapshot(dataDir string) Status {
 	if err != nil {
 		if os.IsNotExist(err) {
 			out.Status = "unpaired"
+			out.LastSync = nil
 			return out
 		}
 		out.LastError = err.Error()
@@ -58,6 +59,11 @@ func Snapshot(dataDir string) Status {
 	out.Placement = id.PlacementOrLocal()
 	if id.Status == tc.StatusPending && id.PairingID != "" {
 		out.PairURL = id.ServerURL + "/pair/" + id.PairingID + "/"
+	}
+	if !out.Enrolled {
+		// A sync only happens once this gateway is enrolled. Reporting a time
+		// here otherwise renders as "synced 739905d ago" in the dashboard.
+		out.LastSync = nil
 	}
 	return out
 }
