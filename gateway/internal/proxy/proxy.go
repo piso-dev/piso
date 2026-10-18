@@ -9,7 +9,6 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -18,7 +17,6 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
-	"strconv"
 	"strings"
 	"time"
 
@@ -293,6 +291,12 @@ func (h *Handler) Replay(ctx context.Context, rec store.Record) (*http.Response,
 		}
 	}
 	out, err := h.forward(ctx, req, rec.Scheme)
+	if err == nil && out != nil {
+		// Same response backstop as process(). The replay body is discarded by
+		// the control plane, but headers and any future reader must not see a
+		// reflected real value.
+		h.protectResponse(out, nil)
+	}
 	return out, dec, err
 }
 
@@ -386,10 +390,20 @@ func (h *Handler) process(ctx context.Context, req *http.Request, scheme string)
 
 	case model.ActionSubstitute:
 		if err := applySubstitution(req, body, dec, h.Store, scan, h.Minter); err != nil {
-			rec.Action, rec.Status = string(model.ActionBlock), http.StatusBadGateway
-			rec.Reasons = []string{"credential-resolution-failed"}
+			reason := "credential-resolution-failed"
+			if errors.Is(err, errUnsupportedSite) {
+				// A rule exists, but the placeholder sits in a body shape the
+				// gateway refuses to blind-replace. Retrying cannot help until
+				// the caller moves it to a header/credential field, so this is
+				// not a retryable 407.
+				reason = string(model.ReasonUnsupportedSite)
+			}
+			status := http.StatusBadGateway
+			rec.Action, rec.Status = string(model.ActionBlock), status
+			rec.Reasons = []string{reason}
+			rec.Retryable = false
 			h.Store.AppendLog(rec)
-			return &http.Response{StatusCode: http.StatusBadGateway, Status: "502 Bad Gateway", Proto: "HTTP/1.1", ProtoMajor: 1, ProtoMinor: 1, Header: http.Header{"X-Piso-Reason": {"credential-resolution-failed"}}, Body: io.NopCloser(bytes.NewReader(nil)), Request: req, Close: true}, false
+			return &http.Response{StatusCode: status, Status: http.StatusText(status), Proto: "HTTP/1.1", ProtoMajor: 1, ProtoMinor: 1, Header: http.Header{"X-Piso-Reason": {reason}}, Body: io.NopCloser(bytes.NewReader(nil)), Request: req, Close: true}, false
 		}
 		rec.Action = string(model.ActionSubstitute)
 		rec.Status = http.StatusOK
@@ -422,6 +436,23 @@ func (h *Handler) process(ctx context.Context, req *http.Request, scheme string)
 	out.Request = req
 	rec.Retryable = false
 	h.Store.AppendLog(rec)
+
+	// Response backstop: replace known real secrets that an origin reflects
+	// back (model echo, issue body, error page) with their placeholders. This
+	// is detection/mitigation for anything the request-site allowlist missed.
+	h.protectResponse(out, func(location, secretID string) {
+		h.Store.AppendLog(store.Record{
+			ID: recID(), Worker: wid, Slug: wid, Ts: time.Now().UTC(),
+			Method: req.Method, Scheme: scheme, Host: req.URL.Hostname(),
+			Path: req.URL.RequestURI(), Action: string(model.ActionSubstitute),
+			Status: out.StatusCode, RequestID: reqID,
+			Reasons: []string{string(model.ReasonResponseSecretLeak)},
+			Findings: []store.Finding{{
+				Kind: string(model.FindingRealSecret), SecretID: secretID,
+				Token: "[redacted]", Location: location, Count: 1,
+			}},
+		})
+	})
 	return out, true
 }
 
@@ -552,6 +583,10 @@ func (h *Handler) forward(ctx context.Context, req *http.Request, scheme string)
 	outReq := req.Clone(ctx)
 	outReq.URL = &target
 	outReq.RequestURI = ""
+	// The response redactor scans for known secrets as plain text. A gzip/br
+	// body would hide every match, so ask origins for identity encoding. The
+	// tunnel already replaces Content-Length with chunked framing.
+	outReq.Header.Set("Accept-Encoding", "identity")
 	if err := ensureGetBody(outReq); err != nil {
 		return nil, err
 	}
@@ -677,6 +712,9 @@ func applySubstitution(req *http.Request, origBody []byte, dec model.Decision, s
 		return nil
 	}
 	for name, vals := range req.Header {
+		if !scanner.HeaderIsCredentialSite(name) {
+			continue // User-Agent, Referer, X-Title, Accept… are payload, not credentials
+		}
 		auth := http.CanonicalHeaderKey(name) == "Authorization"
 		for i, v := range vals {
 			nv := v
@@ -707,6 +745,8 @@ func applySubstitution(req *http.Request, origBody []byte, dec model.Decision, s
 	// ':' which stays literal in a path segment. Query is rewritten on RawQuery
 	// with the real value escaped, so the original query order/encoding is kept
 	// (re-encoding via url.Values would reorder and can break signed queries).
+	// Only credential-named query parameters are touched: a placeholder in
+	// ?q= or a tracking parameter is payload, not a credential.
 	if req.URL != nil {
 		if p := req.URL.Path; p != "" {
 			np := p
@@ -719,23 +759,31 @@ func applySubstitution(req *http.Request, origBody []byte, dec model.Decision, s
 			}
 		}
 		if q := req.URL.RawQuery; q != "" {
-			nq := q
-			for tok, real := range sub {
-				nq = strings.ReplaceAll(nq, tok, url.QueryEscape(real))
-			}
-			req.URL.RawQuery = nq
+			req.URL.RawQuery = rewriteEncodedPairs(q, url.QueryEscape, sub)
 		}
 	}
 	if len(origBody) == 0 {
 		return nil
 	}
-	nb := origBody
-	if rewritten, ok := substituteJSONSkippingChat(origBody, sub); ok {
-		nb = rewritten
-	} else {
-		for tok, real := range sub {
-			nb = bytes.ReplaceAll(nb, []byte(tok), []byte(real))
+	if !containsAnyToken(origBody, sub) {
+		return nil // headers/query/path only: leave the body untouched
+	}
+	var nb []byte
+	switch {
+	case looksJSON(origBody):
+		rewritten, ok := substituteJSONSkippingChat(origBody, sub)
+		if !ok {
+			return errUnsupportedSite
 		}
+		nb = rewritten
+	case isFormBody(req):
+		nb = substituteForm(origBody, sub)
+	default:
+		// Never blind-replace an opaque body. A placeholder here could be a
+		// model prompt, an issue body, or a gist: substituting publishes the
+		// real credential. Block instead (the caller maps this to
+		// unsupported-substitution-site).
+		return errUnsupportedSite
 	}
 	req.Body = io.NopCloser(bytes.NewReader(nb))
 	req.ContentLength = int64(len(nb))
@@ -743,70 +791,19 @@ func applySubstitution(req *http.Request, origBody []byte, dec model.Decision, s
 	return nil
 }
 
-// substituteJSONSkippingChat rewrites string values in a JSON body except
-// those under messages[]. Non-JSON input returns ok=false.
-func substituteJSONSkippingChat(body []byte, sub map[string]string) ([]byte, bool) {
-	// Only attempt the JSON rewrite when the body actually is JSON. The JSON
-	// decoder decodes a single leading value and ignores trailing input, so
-	// running it on arbitrary binary (e.g. a git pkt-line body whose 4-hex
-	// length prefix "0014…" is accepted as the number 0) would silently
-	// truncate the payload to that one decoded token. Gate on the first
-	// non-space byte being '{' or '[' and require the body to be exactly one
-	// JSON value before touching it — anything else falls through to the
-	// non-JSON caller path and is forwarded byte for byte.
+// looksJSON reports whether the body starts like one JSON object/array.
+func looksJSON(body []byte) bool {
 	t := bytes.TrimSpace(body)
-	if len(t) == 0 || (t[0] != '{' && t[0] != '[') {
-		return nil, false
-	}
-	dec := json.NewDecoder(bytes.NewReader(body))
-	dec.UseNumber()
-	var raw any
-	if err := dec.Decode(&raw); err != nil {
-		return nil, false
-	}
-	// Guarantee the body was exactly one JSON value (reject trailing data).
-	var extra any
-	if err := dec.Decode(&extra); err != io.EOF {
-		return nil, false
-	}
-	rewritten := rewriteJSONSkippingChat(raw, "", sub)
-	var buf bytes.Buffer
-	enc := json.NewEncoder(&buf)
-	enc.SetEscapeHTML(false)
-	if err := enc.Encode(rewritten); err != nil {
-		return nil, false
-	}
-	out := bytes.TrimSuffix(buf.Bytes(), []byte("\n"))
-	return out, true
+	return len(t) > 0 && (t[0] == '{' || t[0] == '[')
 }
 
-func rewriteJSONSkippingChat(v any, path string, sub map[string]string) any {
-	switch t := v.(type) {
-	case map[string]any:
-		for k, cv := range t {
-			p := k
-			if path != "" {
-				p = path + "." + k
-			}
-			t[k] = rewriteJSONSkippingChat(cv, p, sub)
-		}
-		return t
-	case []any:
-		for i, cv := range t {
-			t[i] = rewriteJSONSkippingChat(cv, path+"["+strconv.Itoa(i)+"]", sub)
-		}
-		return t
-	case string:
-		if scanner.IsChatContent("json-body", path) {
-			return t
-		}
-		for tok, real := range sub {
-			t = strings.ReplaceAll(t, tok, real)
-		}
-		return t
-	default:
-		return t
+// isFormBody reports whether the request declares an urlencoded form body.
+func isFormBody(req *http.Request) bool {
+	ct := req.Header.Get("Content-Type")
+	if i := strings.IndexByte(ct, ';'); i >= 0 {
+		ct = ct[:i]
 	}
+	return strings.EqualFold(strings.TrimSpace(ct), "application/x-www-form-urlencoded")
 }
 
 // ---- helpers ----
@@ -919,15 +916,15 @@ func toStoreFindings(scan scanner.Result) []store.Finding {
 	return out
 }
 
-// findingIsChatNoise reports whether a finding exists only in the LLM
-// transcript (messages[]). The gateway never substitutes placeholders there
-// and never blocks on pattern hits there (policy.egressPatternHits), so
-// logging them just floods Traffic with conversation — often strings that
-// merely look like placeholders (shell function names such as
-// piso_gateway_post, docs, smoke-test literals). A real-secret finding is
-// kept: it blocks even when it appears in the transcript.
+// findingIsChatNoise reports whether a finding sits in model payload content
+// (messages[], system, instructions, input, tool descriptions, …). The gateway
+// never substitutes placeholders there and never blocks on pattern hits there
+// (policy.egressPatternHits), so logging them just floods Traffic with
+// conversation — often strings that merely look like placeholders (shell
+// function names such as piso_gateway_post, docs, smoke-test literals). A
+// real-secret finding is kept: it blocks even when it appears in the payload.
 func findingIsChatNoise(f model.Finding) bool {
-	if !scanner.IsChatContent(f.Location, f.Field) {
+	if !scanner.IsPayloadField(f.Location, f.Field) {
 		return false
 	}
 	return f.Kind == model.FindingPlaceholder || f.Kind == model.FindingPatternSecret

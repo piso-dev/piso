@@ -180,6 +180,7 @@ func TestSecretsDeriveEnvKeyAndEdit(t *testing.T) {
 	// blank envKey → derived from name
 	created := doJSON(t, ch, "POST", "/api/v1/secrets", map[string]any{
 		"name": "CLD2 SSH", "placeholder": "piso_cld2_ssh_1", "value": "super-secret",
+		"allowedHosts": []string{"api.cld.test"},
 	})
 	if created.Code != 201 {
 		t.Fatalf("create %d %s", created.Code, created.Body.String())
@@ -197,7 +198,7 @@ func TestSecretsDeriveEnvKeyAndEdit(t *testing.T) {
 		t.Fatal("placeholder required")
 	}
 	// a name that derives nothing must 400 rather than store an empty envKey
-	if doJSON(t, ch, "POST", "/api/v1/secrets", map[string]any{"name": "***", "placeholder": "piso_x", "value": "v"}).Code != 400 {
+	if doJSON(t, ch, "POST", "/api/v1/secrets", map[string]any{"name": "***", "placeholder": "piso_x", "value": "v", "allowedHosts": []string{"api.test"}}).Code != 400 {
 		t.Fatal("all-symbols name should 400")
 	}
 	// edit: rename + new value + explicit envKey; placeholder carries over
@@ -223,6 +224,7 @@ func TestSecretsDeriveEnvKeyAndEdit(t *testing.T) {
 	// worker scoping is creation-time: an edit must not wipe it
 	scoped := doJSON(t, ch, "POST", "/api/v1/secrets", map[string]any{
 		"name": "mon", "placeholder": "piso_mon_1", "value": "v", "workers": []string{"monitor"},
+		"allowedHosts": []string{"api.mon.test"},
 	})
 	if scoped.Code != 201 {
 		t.Fatalf("scoped create %d %s", scoped.Code, scoped.Body.String())

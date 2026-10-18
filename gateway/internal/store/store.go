@@ -868,19 +868,22 @@ func (s *Store) HasRule(placeholder, host string) bool {
 }
 
 // CanonicalRuleHosts normalizes a secret's AllowedHosts into rule host
-// values: empty/absent or a literal "*" means all hosts → one "*" rule;
-// otherwise unique trimmed hosts (case-insensitive dedupe, first-seen casing
-// preserved). "*" dominates any specific hosts because lookupRule matches
-// host == "*" anyway.
+// values. Empty/absent means NO hosts: the secret is inert until it is bound
+// to at least one destination. A literal "*" is still accepted (existing
+// secrets, explicit opt-in) and yields one wildcard rule, but it is no longer
+// the default — an unbound secret is the common case that made every vault key
+// usable against every host. Unique trimmed hosts keep first-seen casing.
 func CanonicalRuleHosts(hosts []string) []string {
 	var out []string
 	seen := map[string]bool{}
-	any := false
 	for _, h := range hosts {
 		h = strings.TrimSpace(h)
-		if h == "" || h == "*" {
-			any = true
+		if h == "" {
 			continue
+		}
+		if h == "*" {
+			// Wildcard disables destination binding: keep it explicit only.
+			return []string{"*"}
 		}
 		if seen[strings.ToLower(h)] {
 			continue
@@ -888,16 +891,24 @@ func CanonicalRuleHosts(hosts []string) []string {
 		seen[strings.ToLower(h)] = true
 		out = append(out, h)
 	}
-	if any || len(out) == 0 {
-		return []string{"*"}
-	}
 	return out
 }
 
+// HasWildcardHost reports whether the host list opts into any-host
+// substitution. Used to warn loudly at creation/edit time.
+func HasWildcardHost(hosts []string) bool {
+	for _, h := range hosts {
+		if strings.TrimSpace(h) == "*" {
+			return true
+		}
+	}
+	return false
+}
+
 // SyncRulesForSecret makes the placeholder resolve on exactly the hosts in
-// rec.AllowedHosts (a single "*" rule when absent/empty = all hosts). Prior
-// rules for this placeholder are replaced; rules for other placeholders stay
-// untouched, so this is safe to call on every create/edit of a secret.
+// rec.AllowedHosts (none when absent/empty). Prior rules for this placeholder
+// are replaced; rules for other placeholders stay untouched, so this is safe
+// to call on every create/edit of a secret.
 func (s *Store) SyncRulesForSecret(rec SecretRec) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

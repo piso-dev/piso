@@ -16,11 +16,15 @@ func newRuleStore(t *testing.T) *Store {
 }
 
 func TestCanonicalRuleHosts(t *testing.T) {
-	if got := CanonicalRuleHosts(nil); len(got) != 1 || got[0] != "*" {
+	// Empty/absent hosts mean "no destination", never "any destination".
+	if got := CanonicalRuleHosts(nil); len(got) != 0 {
 		t.Fatalf("nil: %+v", got)
 	}
-	if got := CanonicalRuleHosts([]string{}); len(got) != 1 || got[0] != "*" {
+	if got := CanonicalRuleHosts([]string{}); len(got) != 0 {
 		t.Fatalf("empty: %+v", got)
+	}
+	if got := CanonicalRuleHosts([]string{" ", ""}); len(got) != 0 {
+		t.Fatalf("blank: %+v", got)
 	}
 	if got := CanonicalRuleHosts([]string{"*"}); len(got) != 1 || got[0] != "*" {
 		t.Fatalf("star: %+v", got)
@@ -34,7 +38,7 @@ func TestCanonicalRuleHosts(t *testing.T) {
 	}
 }
 
-func TestSyncRulesForSecretNoHostsGetsStarRule(t *testing.T) {
+func TestSyncRulesForSecretNoHostsSeedsNothing(t *testing.T) {
 	st := newRuleStore(t)
 	sec := SecretRec{ID: "sec_1", Name: "k1", Placeholder: "piso_x_aaa", Value: "v", EnvKey: "K1"}
 	if err := st.AddSecret(sec); err != nil {
@@ -43,9 +47,8 @@ func TestSyncRulesForSecretNoHostsGetsStarRule(t *testing.T) {
 	if err := st.SyncRulesForSecret(sec); err != nil {
 		t.Fatal(err)
 	}
-	rs := st.Rules()
-	if len(rs) != 1 || rs[0].Placeholder != "piso_x_aaa" || rs[0].Host != "*" || rs[0].SecretID != "sec_1" {
-		t.Fatalf("rules: %+v", rs)
+	if rs := st.Rules(); len(rs) != 0 {
+		t.Fatalf("unbound secret must seed no rules: %+v", rs)
 	}
 }
 

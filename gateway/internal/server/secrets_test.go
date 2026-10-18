@@ -33,16 +33,36 @@ func TestPostSecretSeedsRulesAndRetried(t *testing.T) {
 	}
 }
 
-func TestPostSecretWithoutHostsGetsStarRule(t *testing.T) {
+// An unbound secret is inert: destination binding is mandatory so a vault key
+// cannot silently become a universal credential.
+func TestPostSecretWithoutHostsIsRejected(t *testing.T) {
 	s := testServer(t)
 	ch := s.ControlHandler()
 	w := postSecret(t, ch, map[string]any{"name": "k2", "placeholder": "piso_k2_bbb", "value": "v"})
+	if w.Code != 400 || !strings.Contains(w.Body.String(), "allowedHosts required") {
+		t.Fatalf("want 400 allowedHosts required, got %d %s", w.Code, w.Body.String())
+	}
+	if len(s.Store.Rules()) != 0 {
+		t.Fatal("no rules should be seeded for a rejected secret")
+	}
+}
+
+// "*" still works, but only as an explicit opt-in, and it is reported loudly.
+func TestPostSecretWildcardIsExplicitAndWarned(t *testing.T) {
+	s := testServer(t)
+	ch := s.ControlHandler()
+	w := postSecret(t, ch, map[string]any{
+		"name": "k2w", "placeholder": "piso_k2w_bbb", "value": "v",
+		"allowedHosts": []string{"*"},
+	})
 	if w.Code != 201 {
 		t.Fatalf("create %d %s", w.Code, w.Body.String())
 	}
+	if !strings.Contains(w.Body.String(), "WILDCARD") {
+		t.Fatalf("missing wildcard warning: %s", w.Body.String())
+	}
 	rw := doJSON(t, ch, "GET", "/api/v1/rules", nil)
-	body := rw.Body.String()
-	if rw.Code != 200 || !strings.Contains(body, `"placeholder":"piso_k2_bbb"`) || !strings.Contains(body, `"host":"*"`) {
+	if body := rw.Body.String(); rw.Code != 200 || !strings.Contains(body, `"host":"*"`) {
 		t.Fatalf("rules: %d %s", rw.Code, body)
 	}
 }

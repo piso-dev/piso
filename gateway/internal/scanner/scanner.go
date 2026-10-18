@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -91,9 +92,18 @@ func ScanRequest(req *http.Request, opts Options) Result {
 		}
 	}
 
-	// Query string.
+	// Query string. Scan each value with its parameter name so policy can
+	// tell a credential parameter (?api_key=) from payload (?q=).
 	if q := req.URL.RawQuery; q != "" {
-		scanTextInto(&res, q, opts, "query", "")
+		if vals, err := url.ParseQuery(q); err == nil && len(vals) > 0 {
+			for k, vv := range vals {
+				for _, v := range vv {
+					scanTextInto(&res, v, opts, "query", k)
+				}
+			}
+		} else {
+			scanTextInto(&res, q, opts, "query", "")
+		}
 	}
 
 	// Body: read fully (the MITM layer needs the bytes anyway), then restore.
@@ -104,8 +114,21 @@ func ScanRequest(req *http.Request, opts Options) Result {
 	}
 	if len(body) > 0 {
 		ct := req.Header.Get("Content-Type")
-		if strings.HasPrefix(ct, "application/json") {
+		// Trust the bytes when they clearly are JSON: a missing or text/plain
+		// Content-Type must not demote a JSON body to "body", or policy would
+		// treat a messages[] token as a credential site and block it.
+		if strings.HasPrefix(ct, "application/json") || bodyLooksJSON(body) {
 			if scanJSON(body, opts, &res) {
+				return res
+			}
+		}
+		if isFormContentType(ct) {
+			if vals, err := url.ParseQuery(string(body)); err == nil && len(vals) > 0 {
+				for k, vv := range vals {
+					for _, v := range vv {
+						scanTextInto(&res, v, opts, "form", k)
+					}
+				}
 				return res
 			}
 		}
@@ -187,6 +210,14 @@ func scanJSON(body []byte, opts Options, res *Result) bool {
 	return true
 }
 
+// bodyLooksJSON reports whether the first non-space byte opens a JSON
+// object/array. Cheap, and it keeps a mislabeled JSON body on the field-aware
+// scan path.
+func bodyLooksJSON(body []byte) bool {
+	t := bytes.TrimSpace(body)
+	return len(t) > 0 && (t[0] == '{' || t[0] == '[')
+}
+
 func walkJSON(path string, v any, visit func(path, val string)) {
 	switch t := v.(type) {
 	case map[string]any:
@@ -216,9 +247,10 @@ func redact(v string) string {
 }
 
 // IsChatContent reports whether a finding sits in the LLM transcript
-// (messages[].content, tool_calls, function.arguments, …) rather than a
-// credential field. Substituting vault tokens here leaks real secrets to
-// the model; pattern hits here are conversation, not an Authorization header.
+// (messages[].content, tool_calls, function.arguments, …). It is used for LOG
+// noise classification only. Substitution decisions use IsPayloadField, which
+// covers every payload field (system, input, instructions, contents, tools…),
+// not just messages[].
 func IsChatContent(location, field string) bool {
 	if location != "json-body" && location != "body" {
 		return false
