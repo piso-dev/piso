@@ -41,6 +41,18 @@ test('AI Boost tab renders one-click connect, reconnect and disconnect controls'
  h.sandbox.data.aiBoost.configured=true;h.sandbox.data.aiBoost.status='ok';h.run('renderSettings()');
  assert.match(h.dom.window.document.body.textContent,/Reconnect/);
 });
+// Like Telegram, the AI Boost actions are a standalone row between the section
+// intro and the panel/toolbar it introduces, so they need the same gap.
+test('AI Boost action row sits between the intro and the content below',t=>{
+ for (const status of [undefined,'ok']) {
+  const h=harness(t);h.sandbox.data.aiBoost.status=status;h.run('renderSettings()');
+  const content=h.dom.window.document.querySelector('#content');
+  const actions=content.querySelector('.section-intro').nextElementSibling;
+  assert.ok(actions.classList.contains('intro-actions'));
+  assert.ok(actions.querySelector('[data-action="boost-authorize"]'));
+  assert.ok(actions.nextElementSibling, 'content follows the action row');
+ }
+});
 test('sign-in opens synchronously and obtains a host POST ticket before navigating',async t=>{
  const h=harness(t);h.sandbox.data.aiBoost.configured=false;
  const tab={opener:{},location:{},close(){}};h.sandbox.window.open=()=>tab;

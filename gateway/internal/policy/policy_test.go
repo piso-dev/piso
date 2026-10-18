@@ -561,3 +561,56 @@ func TestGithubAppSubstitutesWhenInstalled(t *testing.T) {
 		t.Fatalf("got %q %+v", d.Action, d.Reasons)
 	}
 }
+
+// The allowlist must cover every provider's model-input field, not just
+// OpenAI messages[]. A placeholder there is payload: allow, no rule needed.
+func TestPayloadOnlyVaultPlaceholderAllows(t *testing.T) {
+	ph := "piso_gh_abcdef"
+	for _, field := range []string{
+		"system",
+		"input[0].content",
+		"instructions",
+		"contents[0].parts[0].text",
+		"tools[0].function.description",
+		"messages[0].api_key",
+	} {
+		t.Run(field, func(t *testing.T) {
+			in := Input{
+				Method: "POST", Host: "api.example.test", Path: "/v1/messages",
+				Scan: scanner.Result{Placeholders: []model.Finding{{
+					Kind: model.FindingPlaceholder, Token: ph,
+					Location: "json-body", Field: field,
+				}}},
+				SecretByPlaceholder: map[string]model.Secret{ph: {ID: "s1", Placeholder: ph, Value: "real"}},
+				Rules:               []model.Rule{{ID: "r1", SecretID: "s1", Host: "api.example.test", Placeholder: ph}},
+			}
+			d := Decide(in)
+			if d.Action != model.ActionAllow || len(d.Substituted) != 0 {
+				t.Fatalf("payload field %q: want allow/no-substitute, got %q sub=%v %+v", field, d.Action, d.Substituted, d.Reasons)
+			}
+			for _, r := range d.Reasons {
+				if r == model.ReasonNoSecretRule {
+					t.Fatalf("payload-only placeholder must not require a rule: %+v", d.Reasons)
+				}
+			}
+		})
+	}
+}
+
+// A credential-named leaf outside payload ancestry still substitutes.
+func TestCredentialNamedLeafSubstitutes(t *testing.T) {
+	ph := "piso_gh_abcdef"
+	in := Input{
+		Method: "POST", Host: "api.example.test", Path: "/v1",
+		Scan: scanner.Result{Placeholders: []model.Finding{{
+			Kind: model.FindingPlaceholder, Token: ph,
+			Location: "json-body", Field: "config.api_key",
+		}}},
+		SecretByPlaceholder: map[string]model.Secret{ph: {ID: "s1", Placeholder: ph, Value: "real"}},
+		Rules:               []model.Rule{{ID: "r1", SecretID: "s1", Host: "api.example.test", Placeholder: ph}},
+	}
+	d := Decide(in)
+	if d.Action != model.ActionSubstitute || len(d.Substituted) != 1 {
+		t.Fatalf("want substitute, got %q sub=%v %+v", d.Action, d.Substituted, d.Reasons)
+	}
+}

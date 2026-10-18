@@ -37,6 +37,18 @@ test('Telegram tab explains the connect flow before a bot is connected',t=>{
  assert.ok(h.dom.window.document.querySelector('[data-action="telegram-connect"]'));
  assert.equal(h.dom.window.document.querySelector('[data-action="telegram-disconnect"]'),null);
 });
+// The connect controls sit outside the section intro, so the stylesheet has
+// to supply the gap before the empty state or bot panel underneath.
+test('Telegram action rows sit between the intro and the panel below',t=>{
+ for (const telegram of [{connected:false},{connected:true,botUsername:'piso_bot',running:true,users:[]}]) {
+  const h=harness(t,telegram);h.run('renderSettings()');
+  const content=h.dom.window.document.querySelector('#content');
+  const actions=content.querySelector('.section-intro').nextElementSibling;
+  assert.ok(actions.classList.contains('intro-actions'));
+  assert.ok(actions.querySelector('[data-action="telegram-connect"]'));
+  assert.ok(actions.nextElementSibling, 'a panel follows the action row');
+ }
+});
 test('Telegram tab shows the connected bot and its public link',t=>{
  const h=harness(t,{connected:true,botId:42,botUsername:'piso_bot',createdAt:'2024-05-01T10:00:00Z'});h.run('renderSettings()');
  assert.match(h.dom.window.document.body.textContent,/@piso_bot/);

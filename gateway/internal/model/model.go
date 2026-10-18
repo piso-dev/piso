@@ -141,6 +141,8 @@ const (
 	ReasonInternalTarget            Reason = "internal-target"              // internal/link-local target blocked
 	ReasonAllowedException          Reason = "allowed-exception"            // user exception; informational, not a block
 	ReasonAllowedDomain             Reason = "allowed-domain"               // informational
+	ReasonUnsupportedSite           Reason = "unsupported-substitution-site" // placeholder in a body the gateway cannot rewrite field-safely
+	ReasonResponseSecretLeak        Reason = "response-secret-leak"        // upstream response contained a real secret; it was redacted
 )
 
 // MCP server status values (gateway-brokered OAuth).

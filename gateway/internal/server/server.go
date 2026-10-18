@@ -256,6 +256,14 @@ func (s *Server) routes(mux *http.ServeMux) {
 			writeJSON(w, 400, map[string]string{"error": "invalid envKey (set one explicitly or use a name that derives a key)"})
 			return
 		}
+		// Destination binding is required: an empty host list used to mean
+		// "every host", which silently turned every vault key into a universal
+		// credential. A secret with no hosts is inert, so reject it up front
+		// instead of storing something that can never substitute.
+		if !in.GatewayOnly && len(store.CanonicalRuleHosts(in.AllowedHosts)) == 0 {
+			writeJSON(w, 400, map[string]string{"error": "allowedHosts required: list the hosts this secret may be substituted on (use [\"*\"] only if you really want any host)"})
+			return
+		}
 		rec := store.SecretRec{
 			ID: "sec_" + randID(), Name: in.Name, Placeholder: in.Placeholder,
 			Value: in.Value, EnvKey: in.EnvKey, AllowedHosts: in.AllowedHosts,
@@ -269,7 +277,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 			writeJSON(w, 500, map[string]string{"error": err.Error()})
 			return
 		}
-		writeJSON(w, 201, map[string]any{"secret": storeRecToSummary(rec), "retried": retried})
+		writeJSON(w, 201, map[string]any{"secret": storeRecToSummary(rec), "retried": retried, "warnings": secretHostWarnings(in.AllowedHosts)})
 	})
 
 	// PUT /api/v1/secrets/{id} — edit an existing secret (dashboard modal).
@@ -311,19 +319,24 @@ func (s *Server) routes(mux *http.ServeMux) {
 			return
 		}
 		rec.EnvKey = in.EnvKey
-		// AllowedHosts is always sent by the modal ([] means "all hosts");
-		// it replaces the previous set wholesale, and the placeholder's
-		// substitution rules are re-seeded to match. Matching retryable
-		// captures are replayed so an edit that newly allows a host also
-		// unblocks requests that were stuck on it.
-		rec.AllowedHosts = in.AllowedHosts
 		// Explicit scope updates replace the previous values. Omission must
 		// not broaden access for older clients editing unrelated fields.
+		// Scope is applied before the host check so that a single PUT that
+		// also leaves gateway-only mode is validated against the new scope.
 		if in.GatewayOnly != nil {
 			rec.GatewayOnly = *in.GatewayOnly
 		}
 		if in.Workers != nil {
 			rec.Workers = *in.Workers
+		}
+		// AllowedHosts is always sent by the modal and replaces the previous
+		// set wholesale; the placeholder's substitution rules are re-seeded to
+		// match. Matching retryable captures are replayed so an edit that newly
+		// allows a host also unblocks requests that were stuck on it.
+		rec.AllowedHosts = in.AllowedHosts
+		if !rec.GatewayOnly && len(store.CanonicalRuleHosts(rec.AllowedHosts)) == 0 {
+			writeJSON(w, 400, map[string]string{"error": "allowedHosts required: list the hosts this secret may be substituted on (use [\"*\"] only if you really want any host)"})
+			return
 		}
 		if err := s.Store.ReplaceSecret(rec); err != nil {
 			writeJSON(w, 500, map[string]string{"error": err.Error()})
@@ -334,7 +347,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 			writeJSON(w, 500, map[string]string{"error": err.Error()})
 			return
 		}
-		writeJSON(w, 200, map[string]any{"secret": storeRecToSummary(rec), "retried": retried})
+		writeJSON(w, 200, map[string]any{"secret": storeRecToSummary(rec), "retried": retried, "warnings": secretHostWarnings(rec.AllowedHosts)})
 	})
 	mux.HandleFunc("DELETE /api/v1/secrets/{id}", func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")

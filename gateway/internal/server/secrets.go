@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"log"
 
 	"piso/gateway/internal/store"
 )
@@ -45,4 +46,15 @@ func (s *Server) saveSecret(ctx context.Context, rec store.SecretRec) ([]RetryRe
 		return nil, err
 	}
 	return s.seedSecretRules(ctx, rec)
+}
+
+// secretHostWarnings surfaces a wildcard destination binding. "*" disables
+// destination binding for that secret: any host the worker can reach may
+// receive the real credential. Keep it explicit and loud.
+func secretHostWarnings(hosts []string) []string {
+	if !store.HasWildcardHost(hosts) {
+		return nil
+	}
+	log.Printf("secrets: WILDCARD host rule registered — this secret substitutes on ANY destination")
+	return []string{"WILDCARD host: this secret can be substituted on ANY destination. Prefer an explicit host list."}
 }

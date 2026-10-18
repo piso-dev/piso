@@ -278,6 +278,13 @@ test("GitHub row expands repositories and actions together without action clicks
   assert.match(rows[1].querySelector('.github-repositories').textContent, /No repositories listed/);
 });
 
+test("standalone action rows keep a gap before the panel they introduce", () => {
+  // Telegram and AI Boost render their actions outside .section-intro, directly
+  // above the panel the actions introduce. The intro's margin does not apply
+  // there, so the row carries the same gap itself.
+  assert.match(html, /\.section-intro \+ \.intro-actions\s*\{[^}]*margin-bottom:\s*20px/);
+});
+
 test("single-action sections keep the same right-aligned wrapper", (t) => {
   const document = settingsHarness(t, "secrets");
   const intro = document.querySelector(".section-intro");

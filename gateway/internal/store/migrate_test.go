@@ -100,3 +100,41 @@ func TestApplyMigrationsV8ToV9PromotesProviderToStack(t *testing.T) {
 		t.Fatal("already-current should be a no-op")
 	}
 }
+
+// A secret whose empty host list used to mean "any host" must keep working
+// after the mandatory-binding change: the migration materializes the "*" that
+// was previously implicit, and only for secrets that actually had a "*" rule.
+func TestMigrationMaterializesLegacyWildcardHosts(t *testing.T) {
+	st := &State{
+		Version: 9,
+		Secrets: []SecretRec{
+			{ID: "s1", Placeholder: "piso_legacy_1", Value: "v1"},                                  // had "*" rule
+			{ID: "s2", Placeholder: "piso_never_2", Value: "v2"},                                   // no rule at all
+			{ID: "s3", Placeholder: "piso_bound_3", Value: "v3", AllowedHosts: []string{"a.test"}}, // already bound
+			{ID: "s4", Placeholder: "piso_gw_4", Value: "v4", GatewayOnly: true},                  // gateway-only
+			{ID: "s5", Placeholder: "piso_revoked_5", Revoked: true},                              // tombstone
+		},
+		Rules: []RuleRec{
+			{ID: "r1", SecretID: "s1", Placeholder: "piso_legacy_1", Host: "*"},
+			{ID: "r3", SecretID: "s3", Placeholder: "piso_bound_3", Host: "a.test"},
+			{ID: "r4", SecretID: "s4", Placeholder: "piso_gw_4", Host: "*"},
+		},
+	}
+	if !applyMigrations(st) {
+		t.Fatal("migration reported no change")
+	}
+	if st.Version != CurrentStateVersion {
+		t.Fatalf("version = %d, want %d", st.Version, CurrentStateVersion)
+	}
+	if got := st.Secrets[0].AllowedHosts; len(got) != 1 || got[0] != "*" {
+		t.Fatalf("legacy wildcard secret hosts = %v, want [*]", got)
+	}
+	for i, want := range map[int]int{1: 0, 2: 1, 3: 0, 4: 0} {
+		if got := len(st.Secrets[i].AllowedHosts); got != want {
+			t.Fatalf("secret %d hosts = %v, want %d entries", i, st.Secrets[i].AllowedHosts, want)
+		}
+	}
+	if st.Secrets[2].AllowedHosts[0] != "a.test" {
+		t.Fatalf("bound hosts rewritten: %v", st.Secrets[2].AllowedHosts)
+	}
+}

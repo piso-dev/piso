@@ -417,6 +417,12 @@
         flex-wrap: wrap;
         max-width: 100%;
       }
+      /* Action rows that sit outside .section-intro (Telegram, AI Boost)
+         introduce a panel directly below, so they carry the same gap the
+         intro uses instead of letting the buttons touch the panel. */
+      .section-intro + .intro-actions {
+        margin-bottom: 20px;
+      }
       .timeline-controls,
       .timeline-controls > div {
         display: flex;
@@ -3746,7 +3752,7 @@
               "Allowed hosts",
               (s.allowedHosts || []).join(", "),
               {
-                hint: "Comma-separated hostnames. Use * only for intentional global access.",
+                hint: "Required. Comma-separated hostnames this secret may be substituted on. Use * only for intentional global access.",
                 full: true,
               },
             ) +
@@ -3774,6 +3780,10 @@
             if (scope === "some" && body.workers.length === 0)
               throw new Error(
                 "Select at least one worker, or choose No workers.",
+              );
+            if (!body.gatewayOnly && body.allowedHosts.length === 0)
+              throw new Error(
+                "List at least one allowed host. An unbound secret can never be substituted; use * only for intentional global access.",
               );
             await api(
               "secrets" + (id ? "/" + enc(id) : ""),
@@ -4326,7 +4336,7 @@
             }) +
             field("host", "Host", "", {
               required: true,
-              hint: "Exact hostname, or * for all hosts.",
+              hint: "Exact hostname. Avoid *: it disables destination binding for this secret.",
             }) +
             field("placeholder", "Placeholder", "", {
               required: true,

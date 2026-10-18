@@ -736,13 +736,14 @@ func cmdSecrets(args []string) error {
 		return nil
 	case "add":
 		if len(args) < 4 {
-			return fmt.Errorf("usage: piso secrets add <name> <placeholder> <value> [host,...] [--workers a,b]")
+			return fmt.Errorf("usage: piso secrets add <name> <placeholder> <value> <host[,host...]> [--any-host] [--workers a,b]")
 		}
 		name := args[1]
 		ph := args[2]
 		val := args[3]
 		var hosts []string
 		var workers []string
+		anyHost := false
 		i := 4
 		for i < len(args) {
 			switch args[i] {
@@ -751,10 +752,18 @@ func cmdSecrets(args []string) error {
 					workers = splitCSV(args[i+1 : i+2])
 					i++
 				}
+			case "--any-host":
+				anyHost = true
 			default:
-				hosts = append(hosts, args[i])
+				hosts = append(hosts, splitCSV(args[i:i+1])...)
 			}
 			i++
+		}
+		if len(hosts) == 0 && !anyHost {
+			return fmt.Errorf("hosts required: list the destinations this secret may be substituted on, or pass --any-host to disable destination binding")
+		}
+		if anyHost {
+			hosts = []string{"*"}
 		}
 		body, _ := json.Marshal(pisoconfig.SecretIn{
 			Name: name, Placeholder: ph, Value: val,
@@ -774,11 +783,10 @@ func cmdSecrets(args []string) error {
 		if len(workers) > 0 {
 			scope = " (workers: " + strings.Join(workers, ",") + ")"
 		}
-		rule := "*"
-		if len(hosts) > 0 {
-			rule = strings.Join(hosts, ",")
+		fmt.Println("secret added:", ph, scope, "(rule:", strings.Join(hosts, ",")+")")
+		if anyHost {
+			fmt.Println("WARNING: --any-host disables destination binding: this secret can be substituted on ANY host.")
 		}
-		fmt.Println("secret added:", ph, scope, "(rule:", rule+")")
 		return nil
 	case "rm":
 		if len(args) < 2 {

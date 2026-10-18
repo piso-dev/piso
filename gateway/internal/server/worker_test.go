@@ -151,13 +151,13 @@ func TestWorkerCapabilitiesBasics(t *testing.T) {
 	// one secret scoped to demo, another to a different slug
 	if w := doJSON(t, s.ControlHandler(), "POST", "/api/v1/secrets", map[string]any{
 		"name": "demo-key", "placeholder": "piso_demo_key", "value": "sk-test", "envKey": "DEMO_KEY",
-		"workers": []string{"demo"},
+		"workers": []string{"demo"}, "allowedHosts": []string{"api.example.test"},
 	}); w.Code != 201 {
 		t.Fatalf("add secret %d %s", w.Code, w.Body.String())
 	}
 	if w := doJSON(t, s.ControlHandler(), "POST", "/api/v1/secrets", map[string]any{
 		"name": "other-key", "placeholder": "piso_other_key", "value": "sk-test2", "envKey": "OTHER_KEY",
-		"workers": []string{"other"},
+		"workers": []string{"other"}, "allowedHosts": []string{"api.example.test"},
 	}); w.Code != 201 {
 		t.Fatalf("add secret %d %s", w.Code, w.Body.String())
 	}

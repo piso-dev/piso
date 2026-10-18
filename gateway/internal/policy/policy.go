@@ -130,16 +130,18 @@ func Decide(in Input) model.Decision {
 }
 
 // substituteAll applies rules to every vault placeholder in a credential
-// location (headers, query, non-messages JSON). Tokens that are not in the
-// secret store (piso_vpc, piso_egress) are not credentials and do not fail
-// the request. Vault placeholders that appear *only* in the LLM transcript
-// (messages[]) are left as text — substituting them leaks the real secret
-// to the model. They do not require a host rule and do not no-secret-rule.
+// site (headers, credential query/form params, path, credential-named JSON
+// fields). Tokens that are not in the secret store (piso_vpc, piso_egress) are
+// not credentials and do not fail the request. Vault placeholders that appear
+// *only* in payload (messages[], system, instructions, input, contents,
+// tools[] description, arbitrary fields) are left as text — substituting them
+// would put the real secret in front of the model. They do not require a host
+// rule and do not no-secret-rule.
 // It returns the substituted list and whether every credential-site vault
 // placeholder resolved.
 func substituteAll(in Input) ([]string, bool) {
 	seen := map[string]bool{}
-	nonChat := map[string]bool{}
+	credentialSite := map[string]bool{}
 	var tokens []string
 	for _, f := range in.Scan.Placeholders {
 		if !isVaultPlaceholder(in, f.Token) {
@@ -149,14 +151,14 @@ func substituteAll(in Input) ([]string, bool) {
 			seen[f.Token] = true
 			tokens = append(tokens, f.Token)
 		}
-		if !scanner.IsChatContent(f.Location, f.Field) {
-			nonChat[f.Token] = true
+		if !scanner.IsPayloadField(f.Location, f.Field) {
+			credentialSite[f.Token] = true
 		}
 	}
 	var out []string
 	for _, tok := range tokens {
-		if !nonChat[tok] {
-			continue // transcript-only: do not substitute, do not block
+		if !credentialSite[tok] {
+			continue // payload-only: do not substitute, do not block
 		}
 		if _, ok := lookupRule(in, tok); ok && in.secretAllowedForWorker(tok) {
 			sec, has := in.SecretByPlaceholder[tok]
@@ -211,7 +213,7 @@ func isVaultPlaceholder(in Input, token string) bool {
 // still empty (MCP dashboard login has not completed).
 func placeholderNeedsMcpAuth(in Input) bool {
 	for _, f := range in.Scan.Placeholders {
-		if scanner.IsChatContent(f.Location, f.Field) {
+		if scanner.IsPayloadField(f.Location, f.Field) {
 			continue
 		}
 		sec, ok := in.SecretByPlaceholder[f.Token]
@@ -227,7 +229,7 @@ func placeholderNeedsMcpAuth(in Input) bool {
 
 func githubAppBlockReason(in Input) (model.Reason, bool) {
 	for _, f := range in.Scan.Placeholders {
-		if scanner.IsChatContent(f.Location, f.Field) {
+		if scanner.IsPayloadField(f.Location, f.Field) {
 			continue
 		}
 		sec, ok := in.SecretByPlaceholder[f.Token]
@@ -294,7 +296,7 @@ func egressPatternHits(s scanner.Result) []model.Finding {
 		if patternHitIsPlaceholder(hit, s.Placeholders) {
 			continue
 		}
-		if patternHitIsChatContent(hit) {
+		if patternHitIsPayload(hit) {
 			continue
 		}
 		out = append(out, hit)
@@ -302,10 +304,13 @@ func egressPatternHits(s scanner.Result) []model.Finding {
 	return out
 }
 
-// patternHitIsChatContent reports whether the hit is inside the LLM
-// messages[] transcript, not a request-level credential field.
-func patternHitIsChatContent(hit model.Finding) bool {
-	return scanner.IsChatContent(hit.Location, hit.Field)
+// patternHitIsPayload reports whether a credential-pattern hit sits in model
+// content (messages, system, instructions, tool descriptions, …) rather than a
+// request-level credential field. Prose in a prompt is not a credential use;
+// the same text in Authorization still blocks. This mirrors the substitution
+// allowlist so blocking and substituting agree on what a credential site is.
+func patternHitIsPayload(hit model.Finding) bool {
+	return scanner.IsPayloadField(hit.Location, hit.Field)
 }
 
 // patternHitIsPlaceholder reports whether a pattern finding is just a

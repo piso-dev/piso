@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -63,7 +64,11 @@ func (s *Server) resolveFailures(ctx context.Context, entries []ResolveEntry) ([
 			return nil, nil, fmt.Errorf("invalid envKey %q", e.EnvKey)
 		}
 		if e.Host == "" {
+			// Legacy import callers omit the host. Keep accepting them, but
+			// say out loud that this binds the secret to every destination;
+			// new secrets created through the dashboard/API must name hosts.
 			e.Host = "*"
+			log.Printf("resolve: %q imported without a host; binding to ANY destination (wildcard rule)", e.EnvKey)
 		}
 		if e.Name == "" {
 			e.Name = e.EnvKey
@@ -112,8 +117,13 @@ func (s *Server) resolveFailures(ctx context.Context, entries []ResolveEntry) ([
 }
 
 func hostsFor(host string) []string {
-	if host == "" || host == "*" {
+	if host == "" {
 		return nil
+	}
+	if host == "*" {
+		// Make the wildcard visible on the secret, matching the rule that is
+		// created below, instead of storing "no hosts" next to a "*" rule.
+		return []string{"*"}
 	}
 	return []string{host}
 }
