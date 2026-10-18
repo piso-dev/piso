@@ -322,7 +322,13 @@ func applyEnvelope(st *store.Store, id tc.Identity, obj envelope) (string, error
 		// The coordinator's version is authoritative, so the plaintext and the
 		// worker-facing flags come from the envelope either way.
 		local.Value = plain
-		local.AllowedHosts = hosts
+		if len(hosts) > 0 || len(local.AllowedHosts) == 0 {
+			// An envelope with no host list must not erase a binding this
+			// gateway already knows: destination binding is now mandatory, and
+			// an older coordinator (or a peer that predates it) sends no hosts,
+			// so blanking them would silently unbind a working secret.
+			local.AllowedHosts = hosts
+		}
 		local.GatewayOnly = gatewayOnly
 		if kind != "" {
 			// Follow the value: the subtype describes the plaintext. An envelope

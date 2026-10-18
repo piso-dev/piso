@@ -118,5 +118,32 @@ func applyMigrations(st *State) bool {
 		st.Version = 9
 		changed = true
 	}
+	// v9→v10: destination binding became mandatory. Before this, an empty
+	// AllowedHosts meant "any host", so every such secret got a "*" rule at
+	// creation. Materialize that as an explicit "*" host list instead of
+	// letting the new rule (empty = inert) silently unbind secrets that are
+	// substituting right now. Only secrets that actually had a "*" rule are
+	// converted: a secret with no rule was never substitutable and stays
+	// unbound, which is the state the new UI asks the operator to fix.
+	if st.Version < 10 {
+		wildcard := map[string]bool{}
+		for _, r := range st.Rules {
+			if r.Host == "*" && r.Placeholder != "" {
+				wildcard[r.Placeholder] = true
+			}
+		}
+		for i, sec := range st.Secrets {
+			if sec.GatewayOnly || sec.Revoked || len(CanonicalRuleHosts(sec.AllowedHosts)) > 0 {
+				continue
+			}
+			if !wildcard[sec.Placeholder] {
+				continue
+			}
+			st.Secrets[i].AllowedHosts = []string{"*"}
+			changed = true
+		}
+		st.Version = 10
+		changed = true
+	}
 	return changed
 }

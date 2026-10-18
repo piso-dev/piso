@@ -21,7 +21,7 @@ import (
 
 // CurrentStateVersion is written into state.json. Bump when adding a
 // migration in applyMigrations.
-const CurrentStateVersion = 9
+const CurrentStateVersion = 10
 
 // State is the persisted configuration.
 type State struct {
