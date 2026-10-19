@@ -85,6 +85,56 @@ func TestAdoptHostSettingsInheritsWhenNoDashboardSelection(t *testing.T) {
 	}
 }
 
+// pi persists lastChangelogVersion after rendering "What's New". The worker
+// profile is a read-only mount, so advancing the marker is lost and a stale
+// host value replays the changelog every session. Every AdoptHostSettings
+// branch must drop it.
+func TestAdoptHostSettingsDropsChangelogVersion(t *testing.T) {
+	host := []byte(`{"theme":"dark","lastChangelogVersion":"0.85.1"}`)
+
+	// merged branch: dest names a dashboard provider
+	merged := decode(t, AdoptHostSettings(host, []byte(`{"defaultProvider":"piso-two","defaultModel":"m2"}`)))
+	if _, ok := merged["lastChangelogVersion"]; ok {
+		t.Fatalf("merged leaked lastChangelogVersion: %v", merged)
+	}
+	if merged["theme"] != "dark" {
+		t.Fatalf("merged lost host settings: %v", merged)
+	}
+
+	// inherited branch: no dashboard provider
+	inherited := decode(t, AdoptHostSettings(host, []byte(`{"prompts":["x"]}`)))
+	if _, ok := inherited["lastChangelogVersion"]; ok {
+		t.Fatalf("inherited leaked lastChangelogVersion: %v", inherited)
+	}
+
+	// no-host branch: dest already carries a stale marker
+	dest := []byte(`{"theme":"light","lastChangelogVersion":"0.85.1"}`)
+	verbatim := decode(t, AdoptHostSettings(nil, dest))
+	if _, ok := verbatim["lastChangelogVersion"]; ok {
+		t.Fatalf("dest leaked lastChangelogVersion: %v", verbatim)
+	}
+	if verbatim["theme"] != "light" {
+		t.Fatalf("dest lost other keys: %v", verbatim)
+	}
+}
+
+func TestDropChangelogVersion(t *testing.T) {
+	got := string(DropChangelogVersion([]byte(`{"theme":"dark","lastChangelogVersion":"1.0.0"}`)))
+	if want := "{\n  \"theme\": \"dark\"\n}\n"; got != want {
+		t.Fatalf("DropChangelogVersion = %q, want %q", got, want)
+	}
+	// No key present: byte-for-byte unchanged (callers can compare).
+	clean := []byte(`{"theme":"dark"}`)
+	if string(DropChangelogVersion(clean)) != string(clean) {
+		t.Fatal("clean settings must pass through unchanged")
+	}
+	// Unparseable: pass through unchanged rather than dropping the profile.
+	bad := []byte("{not json")
+	if string(DropChangelogVersion(bad)) != string(bad) {
+		t.Fatal("unparseable settings must pass through unchanged")
+	}
+}
+
 // No host agent directory: the shared profile is used verbatim.
 func TestAdoptHostSettingsWithoutHostProfile(t *testing.T) {
 	dest := []byte(`{"theme":"light","defaultProvider":"piso-two","defaultModel":"m2"}`)

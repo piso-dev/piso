@@ -1274,6 +1274,14 @@ func cmdUpdate(args []string) error {
 		// the updateDecision guard below stays Nothing for packages.
 		pkgsBefore = ""
 	}
+	// 0a. drop pi's host-local lastChangelogVersion from the staged profile.
+	// `piso update` does not re-run syncPiProfile, so a profile staged by an
+	// older CLI would otherwise replay "What's New" in every new worker
+	// session: the profile is a read-only mount, so pi cannot advance the
+	// marker itself. Best-effort; the rollout matters more than the marker.
+	if !*dryRun {
+		refreshProfileChangelog()
+	}
 	// 0. refresh extensions on the host first: updates ~/.pi/agent/npm/
 	// package.json (+ settings packages), which piso re-stages into the worker
 	// build context — so the rebuilt image bakes the newer extension versions
@@ -1344,13 +1352,19 @@ func cmdUpdate(args []string) error {
 	if mons := monitorSessions(sessions); len(mons) > 0 {
 		fmt.Println("piso: monitor pi will be restarted with the new image:")
 		for _, s := range mons {
-			fmt.Printf("  %s (%s): pi PIDs %s, up %s\n", s.Worker, s.Slug, strings.Join(s.PIDs, ","), s.Uptime)
+			printSession(s)
+		}
+	}
+	if infra := infraSessions(sessions); len(infra) > 0 {
+		fmt.Println("piso: supervisor pi will be restarted with the new image:")
+		for _, s := range infra {
+			printSession(s)
 		}
 	}
 	if len(busy) > 0 {
 		fmt.Println("piso: active pi session(s) detected:")
 		for _, s := range busy {
-			fmt.Printf("  %s (%s): pi PIDs %s, up %s\n", s.Worker, s.Slug, strings.Join(s.PIDs, ","), s.Uptime)
+			printSession(s)
 		}
 		if *dryRun {
 			fmt.Printf("piso: --dry-run: would NOT proceed (%d worker(s) busy)\n", len(busy))
@@ -1413,6 +1427,37 @@ func updateHostExtensions() error {
 		return fmt.Errorf("pi not on PATH: %w", err)
 	}
 	return exec.Command(piBin, "update", "--extensions").Run()
+}
+
+// refreshProfileChangelog re-applies the worker-local marker drop to the
+// already-staged shared profile. `piso up` does this while staging; `piso
+// update` does not touch the profile, so this also repairs a profile written
+// by an older CLI. Best-effort: a failure is a warning, not a rollout abort.
+// The write is atomic (temp + rename) so a worker's 15s profile poll never
+// reads a half-written file.
+func refreshProfileChangelog() {
+	dataDir, err := pisoconfig.DataDir()
+	if err != nil {
+		return
+	}
+	path := filepath.Join(piprofile.ProfileDir(dataDir), "settings.json")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	stripped := sharedprofile.DropChangelogVersion(raw)
+	if bytes.Equal(stripped, raw) {
+		return
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, stripped, 0o600); err != nil {
+		fmt.Fprintf(os.Stderr, "piso: warning: drop lastChangelogVersion: %v\n", err)
+		return
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		fmt.Fprintf(os.Stderr, "piso: warning: drop lastChangelogVersion: %v\n", err)
+	}
 }
 
 // stagedPackagesHash returns the hash of the extension package set that WOULD

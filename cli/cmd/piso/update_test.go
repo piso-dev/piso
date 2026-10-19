@@ -104,8 +104,8 @@ func TestIsMonitorWorker(t *testing.T) {
 
 func TestBlockingSessionsExcludesMonitor(t *testing.T) {
 	sessions := []activePiSession{
-		{Worker: "piso-worker-monitor", Slug: "monitor", PIDs: []string{"1"}},
-		{Worker: "piso-worker-piso", Slug: "piso", PIDs: []string{"2"}},
+		{Worker: "piso-worker-monitor", Slug: "monitor", PIDs: []string{"1"}, Roles: []string{roleUser}},
+		{Worker: "piso-worker-piso", Slug: "piso", PIDs: []string{"2"}, Roles: []string{roleUser}},
 	}
 	busy := blockingSessions(sessions)
 	if len(busy) != 1 || busy[0].Slug != "piso" {
@@ -117,6 +117,38 @@ func TestBlockingSessionsExcludesMonitor(t *testing.T) {
 	}
 	if len(blockingSessions(mons)) != 0 {
 		t.Fatal("monitor-only must not block update")
+	}
+}
+
+// The supervisor's long-lived rpc session exists even when no user is
+// attached; it is respawned by the entrypoint, so it must not block update.
+func TestSupervisorPiDoesNotBlock(t *testing.T) {
+	sessions := []activePiSession{
+		{Worker: "piso-worker-piso", Slug: "piso", PIDs: []string{"11"}, Roles: []string{roleSupervisor}},
+	}
+	if busy := blockingSessions(sessions); len(busy) != 0 {
+		t.Fatalf("supervisor-only blocked update: %+v", busy)
+	}
+	infra := infraSessions(sessions)
+	if len(infra) != 1 || infra[0].Worker != "piso-worker-piso" {
+		t.Fatalf("infra = %+v", infra)
+	}
+}
+
+// A user attach still blocks, and an unattended task run is treated as work
+// in progress (a recreate would drop the claimed attempt).
+func TestUserAndTaskSessionsBlock(t *testing.T) {
+	sessions := []activePiSession{
+		{Worker: "piso-worker-a", Slug: "a", PIDs: []string{"1"}, Roles: []string{roleUser}},
+		{Worker: "piso-worker-b", Slug: "b", PIDs: []string{"2"}, Roles: []string{roleTask}},
+		{Worker: "piso-worker-c", Slug: "c", PIDs: []string{"3"}, Roles: []string{roleSupervisor, roleUser}},
+	}
+	busy := blockingSessions(sessions)
+	if len(busy) != 3 {
+		t.Fatalf("expected 3 blocking, got %+v", busy)
+	}
+	if infra := infraSessions(sessions); len(infra) != 0 {
+		t.Fatalf("infra must be empty, got %+v", infra)
 	}
 }
 

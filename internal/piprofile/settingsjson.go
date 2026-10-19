@@ -39,6 +39,41 @@ func CanonicalProviderID(id string) string {
 // pi's startup resolution, so it silently wins over the dashboard choice.
 var dashboardOwnedKeys = []string{"defaultProvider", "defaultModel", "enabledModels"}
 
+// workerLocalKeys are settings pi writes back on the host that a worker must
+// not inherit through the read-only shared profile. lastChangelogVersion is
+// the important one: pi advances it after rendering "What's New", but a
+// worker's ~/.pi/agent/settings.json is a symlink into the read-only profile
+// mount, so the advance is lost. A stale host value (e.g. the host's pi is on
+// an older release than the worker image's pinned pi) then replays the
+// changelog in every new worker session.
+var workerLocalKeys = []string{"lastChangelogVersion"}
+
+// DropChangelogVersion removes the worker-local markers (currently
+// lastChangelogVersion) from settings JSON, preserving every other key. It
+// returns the input untouched when the JSON is unparseable or no key is
+// present, so it is safe to call on an already-clean profile.
+func DropChangelogVersion(settings []byte) []byte {
+	var m map[string]any
+	if json.Unmarshal(settings, &m) != nil || m == nil {
+		return settings
+	}
+	changed := false
+	for _, key := range workerLocalKeys {
+		if _, ok := m[key]; ok {
+			delete(m, key)
+			changed = true
+		}
+	}
+	if !changed {
+		return settings
+	}
+	out, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		return settings
+	}
+	return append(out, '\n')
+}
+
 // AdoptHostSettings merges the host settings a worker may inherit (theme,
 // tools, prompts, packages, ...) with the dashboard-owned selection already in
 // dest. Once dest names a dashboard provider, every selection key comes from
@@ -46,16 +81,20 @@ var dashboardOwnedKeys = []string{"defaultProvider", "defaultModel", "enabledMod
 // outranks defaultModel in pi's startup resolution. While dest names no
 // dashboard provider, the host settings are used as before: there is no
 // dashboard choice for them to override.
+//
+// Whatever branch wins, pi's host-local changelog marker is dropped: the
+// worker profile is read-only and must never carry the host's last-seen
+// version.
 func AdoptHostSettings(host, dest []byte) []byte {
 	var base map[string]any
 	if len(bytes.TrimSpace(host)) == 0 || json.Unmarshal(host, &base) != nil || base == nil {
 		// No usable host profile: the shared profile is already authoritative.
-		return dest
+		return DropChangelogVersion(dest)
 	}
 	var saved map[string]any
 	_ = json.Unmarshal(dest, &saved)
 	if !dashboardManagedProvider(saved) {
-		return host
+		return DropChangelogVersion(host)
 	}
 	for _, key := range dashboardOwnedKeys {
 		if v, ok := saved[key]; ok {
@@ -63,6 +102,9 @@ func AdoptHostSettings(host, dest []byte) []byte {
 		} else {
 			delete(base, key)
 		}
+	}
+	for _, key := range workerLocalKeys {
+		delete(base, key)
 	}
 	out, err := json.MarshalIndent(base, "", "  ")
 	if err != nil {
