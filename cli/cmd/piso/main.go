@@ -392,26 +392,32 @@ func syncPiProfile() error {
 		return err
 	}
 	dest := piprofile.ProfileDir(dataDir)
-	hostSettings, settingsErr := os.ReadFile(piprofile.SettingsPath(agent))
+	hostSettings, _ := os.ReadFile(piprofile.SettingsPath(agent))
 	destSettings, _ := os.ReadFile(filepath.Join(dest, "settings.json"))
-	settings, _ := piprofile.HostOrDest(hostSettings, settingsErr, destSettings)
+	// Adopt the host's settings (theme, tools, prompts, packages, ...) without
+	// importing its model selection. The dashboard owns that, and a host
+	// defaultModel or enabledModels would otherwise outrank the dashboard
+	// choice in pi's startup resolution. No host profile keeps dest verbatim.
+	settings := sharedprofile.AdoptHostSettings(hostSettings, destSettings)
 	// Inject the informant prompt template so the worker's pi loads the Tier B
 	// convention automatically (emit progress/milestone/etc.). Preserves the
 	// user's other settings; dedupes.
 	settings = piprofile.EnsureInformantPrompts(settings)
-	// The dashboard's default model is authoritative for new workers. The host
-	// agent's settings.json has none, so re-apply it after the copy above or the
-	// next `piso up` would drop it. If the gateway is down or too old to
-	// report the field, preserve the destination default, not the host copy.
-	if modelID, ok := dashboardDefaultModel(); ok {
-		settings = sharedprofile.WithDefaultModel(settings, modelID)
+	// The dashboard's default model is authoritative for new workers. Re-apply
+	// it after adopting the host settings or the next `piso up` would drop it.
+	// If the gateway is down or too old to report the field, preserve the
+	// destination default, not the host copy.
+	if providerID, modelID, known := dashboardDefault(); known {
+		settings = sharedprofile.WithProviderDefault(settings, sharedprofile.CanonicalProviderID(providerID), modelID)
 	} else {
 		var saved struct {
 			Provider string `json:"defaultProvider"`
 			Model    string `json:"defaultModel"`
 		}
-		if json.Unmarshal(destSettings, &saved) == nil && (saved.Provider == sharedprofile.ProviderName || saved.Provider == sharedprofile.LegacyProviderName) && saved.Model != "" {
-			settings = sharedprofile.WithDefaultModel(settings, saved.Model)
+		// A multi-provider stack uses "piso-<id>" keys, so accept anything in
+		// the dashboard namespace rather than only the legacy names.
+		if json.Unmarshal(destSettings, &saved) == nil && sharedprofile.ManagedProviderKey(saved.Provider) && strings.TrimSpace(saved.Model) != "" {
+			settings = sharedprofile.WithProviderDefault(settings, sharedprofile.CanonicalProviderID(saved.Provider), saved.Model)
 		}
 	}
 	rawModels, modelsErr := os.ReadFile(piprofile.ModelsPath(agent))
@@ -463,26 +469,67 @@ type piKeyImportResult struct {
 	Host        string `json:"host"`
 }
 
-// dashboardDefaultModel reads the model the dashboard chose for new
-// workers. ok is false when the control plane can't be reached, so a sync
-// never clears a previously applied default just because the gateway is down.
-func dashboardDefaultModel() (string, bool) {
+// dashboardDefault reads the model the dashboard activated for new workers.
+// known is false when the control plane can't be reached or can't express the
+// field, so a sync never clears a previously applied default just because the
+// gateway is down. Current gateways return the activated profile in the stack
+// view; older ones return the flat legacy fields.
+func dashboardDefault() (provider, model string, known bool) {
 	gw := pisoconfig.ControlAPIURL()
 	resp, err := (&http.Client{Timeout: 5 * time.Second}).Get(gw + "/api/v1/pi-provider")
 	if err != nil {
-		return "", false
+		return "", "", false
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
-		return "", false
+		return "", "", false
 	}
 	var view struct {
-		DefaultModel *string `json:"defaultModel"`
+		DefaultProvider string  `json:"defaultProvider"`
+		DefaultModel    *string `json:"defaultModel"`
+		ActiveID        string  `json:"activeId"`
+		Providers       []struct {
+			ID             string `json:"id"`
+			DefaultModel   string `json:"defaultModel"`
+			EffectiveModel string `json:"effectiveModel"`
+			Active         bool   `json:"active"`
+		} `json:"providers"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&view); err != nil || view.DefaultModel == nil {
-		return "", false
+	if err := json.NewDecoder(resp.Body).Decode(&view); err != nil {
+		return "", "", false
 	}
-	return strings.TrimSpace(*view.DefaultModel), true
+	if len(view.Providers) > 0 {
+		// The stack view: effectiveModel already applies the catalog fallback
+		// the worker will need, so prefer it over a bare defaultModel.
+		activeID := strings.TrimSpace(view.ActiveID)
+		for _, p := range view.Providers {
+			if activeID != "" {
+				if p.ID != activeID {
+					continue
+				}
+			} else if !p.Active {
+				continue
+			}
+			if m := strings.TrimSpace(p.EffectiveModel); m != "" {
+				return p.ID, m, true
+			}
+			return p.ID, strings.TrimSpace(p.DefaultModel), true
+		}
+		return "", "", false
+	}
+	if view.DefaultModel == nil {
+		// A gateway that predates defaultModel omits it. Absence is not an
+		// explicit clear and must not erase a saved choice.
+		return "", "", false
+	}
+	model = strings.TrimSpace(*view.DefaultModel)
+	provider = strings.TrimSpace(view.DefaultProvider)
+	if model != "" && provider == "" {
+		// A pre-stack gateway only knew the legacy provider namespace; with no
+		// provider in the payload, that is the one it meant.
+		provider = sharedprofile.ProviderName
+	}
+	return provider, model, true
 }
 
 func importPiKeys(keys []piprofile.ProviderKey) ([]piKeyImportResult, error) {
@@ -614,6 +661,11 @@ func cmdAttach(args []string) error {
 		// picker for the new project).
 		inner += `sd=/root/.pi/agent/sessions/--workspace--; if [ -d "$sd" ] && find "$sd" -name '*.jsonl' -print -quit 2>/dev/null | grep -q .; then exec pi -r; else exec pi; fi`
 	}
+	// Surface profile drift before the session starts: a random model is
+	// usually a stale worker profile, not a start-up race. Attach still runs.
+	if err := profileDrift(); err != nil {
+		fmt.Fprintf(os.Stderr, "piso: warning: %v\n", err)
+	}
 	if err := waitWorkerReady(proj.WorkerName()); err != nil {
 		return err
 	}
@@ -625,6 +677,37 @@ func cmdAttach(args []string) error {
 	c := exec.Command(bin, cmdArgs...)
 	c.Stdin, c.Stdout, c.Stderr = os.Stdin, os.Stdout, os.Stderr
 	return attachExecErr(c.Run())
+}
+
+// profileDrift reports a worker profile whose default disagrees with the
+// provider the dashboard activated. It is advisory: attach must still work
+// when the gateway is down or no provider is configured yet.
+func profileDrift() error {
+	provider, model, known := dashboardDefault()
+	if !known || provider == "" || model == "" {
+		return nil
+	}
+	dataDir, err := pisoconfig.DataDir()
+	if err != nil {
+		return nil
+	}
+	raw, err := os.ReadFile(filepath.Join(piprofile.ProfileDir(dataDir), "settings.json"))
+	if err != nil {
+		return nil
+	}
+	var saved struct {
+		Provider string `json:"defaultProvider"`
+		Model    string `json:"defaultModel"`
+	}
+	if json.Unmarshal(raw, &saved) != nil {
+		return nil
+	}
+	if sharedprofile.CanonicalProviderID(saved.Provider) == sharedprofile.CanonicalProviderID(provider) &&
+		strings.TrimSpace(saved.Model) == model {
+		return nil
+	}
+	return fmt.Errorf("worker profile default is %q/%q but the dashboard expects %q/%q; run `piso up` to re-sync",
+		saved.Provider, saved.Model, provider, model)
 }
 
 // attachExecErr rewrites docker-exec deaths that are otherwise just

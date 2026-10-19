@@ -57,8 +57,13 @@ type piProviderView struct {
 type piProviderListView struct {
 	Providers []piProviderView `json:"providers"`
 	ActiveID  string           `json:"activeId"`
-	Applied   bool             `json:"applied"`
-	Warning   string           `json:"warning,omitempty"`
+	// DefaultProvider/DefaultModel mirror the activated profile at the top
+	// level so a CLI that predates the provider stack (or an older
+	// coordinator) still reads the startup default from this response.
+	DefaultProvider string `json:"defaultProvider,omitempty"`
+	DefaultModel    string `json:"defaultModel"`
+	Applied         bool   `json:"applied"`
+	Warning         string `json:"warning,omitempty"`
 }
 
 func (s *Server) handleGetPiProvider(w http.ResponseWriter, r *http.Request) {
@@ -230,6 +235,12 @@ func (s *Server) piProviderListView() piProviderListView {
 		// No active selection: the profile clears the default and pi falls
 		// back to first-available. That is applied by definition.
 		out.Applied = true
+	}
+	// effectivePiModel applies the same catalog fallback the worker resolves
+	// against, so the flat fields never name a model the profile cannot use.
+	if active != nil {
+		out.DefaultProvider = active.ID
+		out.DefaultModel = effectivePiModel(active)
 	}
 	return out
 }

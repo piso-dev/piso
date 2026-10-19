@@ -217,11 +217,32 @@ export async function loadProfiles(dir = agentDir()): Promise<ProviderProfile[]>
 async function loadActiveDefault(dir = agentDir()): Promise<ActiveDefault> {
 	const payload = await readJson(join(dir, "settings.json"));
 	if (!isObject(payload)) return { provider: "", model: "" };
+	const provider = typeof payload.defaultProvider === "string" ? payload.defaultProvider.trim() : "";
 	return {
-		provider: typeof payload.defaultProvider === "string" ? payload.defaultProvider : "",
+		// The dashboard may still write the legacy namespace (or an older
+		// write may not have migrated yet). loadProfiles normalizes it, so an
+		// unnormalized id here would find neither the provider nor its catalog.
+		provider: provider ? normalizeProviderId(provider) : "",
 		model: typeof payload.defaultModel === "string" ? payload.defaultModel.trim() : "",
 	};
 }
+
+// warned keeps one line per distinct problem. The shared profile is polled
+// every 15s, so an unresolved default must not repeat on every tick.
+const warned = new Set<string>();
+
+function warnOnce(key: string, message: string): void {
+	if (warned.has(key)) return;
+	warned.add(key);
+	console.warn(message);
+}
+
+// unresolvedStreak counts consecutive polls in which the dashboard default
+// resolved to no model. An empty catalog is normal while providers register at
+// start-up; a catalog that lists models without the configured one, or a long
+// empty streak, means the saved default is stale.
+const unresolvedStreak = new Map<string, number>();
+const UNRESOLVED_POLLS = 8; // ~2 minutes at PROFILE_POLL_MS
 
 // Read Pi's catalog snapshot without modifying the shared, read-only profile.
 // Ignore catalogs from an old dashboard endpoint.
@@ -403,14 +424,34 @@ export function wireLiveApply(
 			return;
 		}
 		const modelId = active.model || firstModelId(ctx, active.provider);
+		// A dashboard-chosen model that this session's catalog does not have
+		// must not degrade into "whichever model the catalog listed first":
+		// that is the arbitrary-model symptom. The first-model fallback stays
+		// only for the documented case where the dashboard saved no model
+		// (its catalog fetch failed).
+		const catalog = ctx.modelRegistry.getModelsOfType("chat", active.provider);
 		const model = modelId
-			? ctx.modelRegistry.find(active.provider, modelId) ?? ctx.modelRegistry.getModelsOfType("chat", active.provider)[0]
+			? ctx.modelRegistry.find(active.provider, modelId) ?? (active.model ? undefined : catalog[0])
 			: undefined;
 		if (!model) {
-			// The catalog is not ready. Retry on the next poll instead of
-			// recording the change as applied.
+			if (active.model) {
+				const key = `unresolved:${active.provider}/${active.model}`;
+				const streak = (unresolvedStreak.get(key) ?? 0) + 1;
+				unresolvedStreak.set(key, streak);
+				if (catalog.length > 0 || streak >= UNRESOLVED_POLLS) {
+					warnOnce(
+						key,
+						`Piso: default model ${active.provider}/${active.model} is not in this session's catalog ` +
+							`(${catalog.length} chat models registered for ${active.provider}); keeping the current model. ` +
+							"Re-save the provider in the dashboard, or clear its default model to accept the first catalog entry.",
+					);
+				}
+			}
+			// The catalog may still be filling in. Retry on the next poll
+			// instead of recording the change as applied.
 			return;
 		}
+		if (active.model) unresolvedStreak.delete(`unresolved:${active.provider}/${active.model}`);
 		const applied = `${active.provider}\u0000${model.id}`;
 		if (applied !== state.applied) {
 			const ok = await pi.setModel(model);

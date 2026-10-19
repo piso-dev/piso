@@ -1,6 +1,7 @@
 package piprofile
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -12,8 +13,74 @@ import (
 // An empty modelID removes both keys so pi falls back to first-available
 // selection. Unreadable settings are treated as empty rather than failing the
 // caller.
+//
+// Prefer WithProviderDefault: a multi-provider dashboard stack uses
+// "piso-<id>" keys, and pinning the default to ProviderName names a provider
+// that may not exist in models.json.
 func WithDefaultModel(settings []byte, modelID string) []byte {
 	return WithProviderDefault(settings, ProviderName, modelID)
+}
+
+// CanonicalProviderID maps the legacy provider namespace onto the current one.
+// It matches what the worker extension does when it registers a provider, so a
+// settings.json default keeps resolving after a dashboard migration.
+func CanonicalProviderID(id string) string {
+	id = strings.TrimSpace(id)
+	if id == LegacyProviderName {
+		return ProviderName
+	}
+	return id
+}
+
+// dashboardOwnedKeys are the settings keys that pick a startup model. They
+// belong to the shared profile, not to the agent directory of whatever
+// machine happened to run `piso up`: inheriting them makes a worker start on
+// the operator's personal model, and enabledModels outranks defaultModel in
+// pi's startup resolution, so it silently wins over the dashboard choice.
+var dashboardOwnedKeys = []string{"defaultProvider", "defaultModel", "enabledModels"}
+
+// AdoptHostSettings merges the host settings a worker may inherit (theme,
+// tools, prompts, packages, ...) with the dashboard-owned selection already in
+// dest. Once dest names a dashboard provider, every selection key comes from
+// dest and the host's equivalents are dropped, including enabledModels, which
+// outranks defaultModel in pi's startup resolution. While dest names no
+// dashboard provider, the host settings are used as before: there is no
+// dashboard choice for them to override.
+func AdoptHostSettings(host, dest []byte) []byte {
+	var base map[string]any
+	if len(bytes.TrimSpace(host)) == 0 || json.Unmarshal(host, &base) != nil || base == nil {
+		// No usable host profile: the shared profile is already authoritative.
+		return dest
+	}
+	var saved map[string]any
+	_ = json.Unmarshal(dest, &saved)
+	if !dashboardManagedProvider(saved) {
+		return host
+	}
+	for _, key := range dashboardOwnedKeys {
+		if v, ok := saved[key]; ok {
+			base[key] = v
+		} else {
+			delete(base, key)
+		}
+	}
+	out, err := json.MarshalIndent(base, "", "  ")
+	if err != nil {
+		return dest
+	}
+	return append(out, '\n')
+}
+
+// dashboardManagedProvider reports whether settings name a provider in the
+// dashboard namespace. The model may legitimately be empty: the dashboard
+// saves a provider before its catalog resolves, and the worker then starts on
+// the catalog's first entry.
+func dashboardManagedProvider(m map[string]any) bool {
+	if m == nil {
+		return false
+	}
+	provider, _ := m["defaultProvider"].(string)
+	return ManagedProviderKey(provider)
 }
 
 // WithProviderDefault returns settings JSON with defaultProvider/defaultModel
