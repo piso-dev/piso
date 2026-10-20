@@ -651,6 +651,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/ingress/requests/{id}/approve", s.handleApproveIngress)
 	mux.HandleFunc("POST /api/v1/ingress/requests/{id}/dismiss", s.handleDismissIngress)
 	s.registerTasks(mux)
+	s.registerDirectives(mux)
 	mux.HandleFunc("GET /api/v1/asks", s.handleAsksList)
 	mux.HandleFunc("POST /api/v1/asks/approvals/{id}/decide", s.handleAskApprove)
 	mux.HandleFunc("POST /api/v1/asks/human-actions/{id}/resolve", s.handleAskResolve)

@@ -44,7 +44,7 @@ func (h *Handler) registerInbox() {
 	})
 	h.Register(Tool{
 		Name:        "directives_list",
-		Description: "Active directives for this worker's account. Read them at session start, the way you read repositories and boosters: they are development preferences, not tasks, and a session with no task still gets the account-wide ones. Label-scoped directives arrive with their task in inbox_get.",
+		Description: "Active directives for this worker's account, each with a short code (D1, D2, …). Read them at session start, the way you read repositories and boosters: they are development preferences, not tasks, and a session with no task still gets the account-wide ones. Label-scoped directives arrive with their task in inbox_get. Name a directive by its code when you follow it.",
 		InputSchema: map[string]any{"type": "object", "properties": map[string]any{}, "additionalProperties": false},
 		Call:        h.toolDirectivesList,
 	})
@@ -86,7 +86,7 @@ func (h *Handler) registerInbox() {
 	}
 	h.Register(Tool{
 		Name:        "directive_propose",
-		Description: "Suggest a goal. It is not active until a human approves.",
+		Description: "Suggest a goal. It gets a D-code like any directive but is not active until a human approves.",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{

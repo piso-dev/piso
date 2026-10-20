@@ -20,6 +20,10 @@ apply.
    directives. They are development preferences, not work: they shape how you
    plan and edit, and they are already yours to follow. A label-scoped
    directive is not in this list; it arrives with its task in `inbox_get`.
+   Each has a short code (`D1`, `D2`, …). Cite it by code when it changed what
+   you did — "following D4" in a checkpoint, an update, or a handoff — so a
+   human can read the board without the full text in front of them. Cite only
+   the ones that actually shaped the work; do not list the rest.
 4. `boost_search` with the task's key nouns. On a hit, `boost_get` it and
    follow the guidance. On `needs-auth` / `unpaired`, skip and continue;
    never raise it as a task blocker. Check a booster because it plausibly
@@ -28,8 +32,8 @@ apply.
    directives, checkpoint, and feedback override anything the local
    conversation remembers.
 
-Before your first edit, state in **one line** which repos, directives, and
-boosters you checked (or why none applied). Include that line in your
+Before your first edit, state in **one line** which repos, directives (by
+code), and boosters you checked (or why none applied). Include that line in your
 `task_update` handoff. Self-reporting keeps the reflex honest and lets the
 board see the discovery, not just the edit.
 
