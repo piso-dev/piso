@@ -42,6 +42,12 @@ func (h *Handler) registerInbox() {
 		InputSchema: idSchema,
 		Call:        h.toolInboxGet,
 	})
+	h.Register(Tool{
+		Name:        "directives_list",
+		Description: "Active directives for this worker's account. Read them at session start, the way you read repositories and boosters: they are development preferences, not tasks, and a session with no task still gets the account-wide ones. Label-scoped directives arrive with their task in inbox_get.",
+		InputSchema: map[string]any{"type": "object", "properties": map[string]any{}, "additionalProperties": false},
+		Call:        h.toolDirectivesList,
+	})
 	// All writes carry an idempotency key; attemptId fences every execution write.
 	for _, spec := range []struct {
 		name        string
@@ -197,7 +203,7 @@ func (h *Handler) toolInboxList(caller store.WorkerRec, args json.RawMessage) (a
 		return doc, nil
 	}
 	if status == http.StatusNotFound {
-		return map[string]any{"status": "ok", "tasks": []any{}, "directives": []any{}}, nil
+		return map[string]any{"status": "ok", "tasks": []any{}}, nil
 	}
 	if status >= 400 {
 		return nil, coordErr(status, doc)
@@ -231,6 +237,35 @@ func (h *Handler) toolInboxGet(caller store.WorkerRec, args json.RawMessage) (an
 	}
 	if status >= 400 {
 		return nil, coordErr(status, doc)
+	}
+	return doc, nil
+}
+
+func (h *Handler) toolDirectivesList(caller store.WorkerRec, args json.RawMessage) (any, *rpcError) {
+	if err := rejectWorkerArg(args); err != nil {
+		return nil, err
+	}
+	if len(args) != 0 {
+		var in map[string]json.RawMessage
+		if err := json.Unmarshal(args, &in); err != nil || len(in) != 0 {
+			return nil, &rpcError{Code: codeInvalidParams, Message: "directives_list takes no arguments"}
+		}
+	}
+	status, doc, rpcErr := h.coord(caller, http.MethodGet, "/api/v1/directives", nil, nil)
+	if rpcErr != nil {
+		return nil, rpcErr
+	}
+	if status == 0 {
+		return doc, nil
+	}
+	if status == http.StatusNotFound {
+		return map[string]any{"status": "ok", "directives": []any{}}, nil
+	}
+	if status >= 400 {
+		return nil, coordErr(status, doc)
+	}
+	if _, ok := doc["status"]; !ok {
+		doc["status"] = "ok"
 	}
 	return doc, nil
 }

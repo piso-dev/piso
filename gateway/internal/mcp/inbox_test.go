@@ -165,6 +165,59 @@ func TestDirectivePropose(t *testing.T) {
 	}
 }
 
+func TestDirectivesListPassesEnvelopePrincipal(t *testing.T) {
+	h := New(nil, nil, t.TempDir())
+	var gotMethod, gotPath, gotWorker string
+	h.CoordinatorDo = func(method, path string, query url.Values, body []byte) (int, []byte, error) {
+		gotMethod, gotPath, gotWorker = method, path, query.Get("worker")
+		return 200, []byte(`{"status":"ok","directives":[{"id":"d1","title":"Ship","body":"Cut the release.","kind":"instruction"}]}`), nil
+	}
+	caller := store.WorkerRec{PrincipalID: "prin-1"}
+	out, rpcErr := h.toolDirectivesList(caller, nil)
+	if rpcErr != nil {
+		t.Fatal(rpcErr.Message)
+	}
+	if gotMethod != http.MethodGet || gotPath != "/api/v1/directives" || gotWorker != "prin-1" {
+		t.Fatalf("coord %s %s worker=%s", gotMethod, gotPath, gotWorker)
+	}
+	doc := out.(map[string]any)
+	rows := doc["directives"].([]any)
+	if len(rows) != 1 || rows[0].(map[string]any)["id"] != "d1" {
+		t.Fatalf("directives %v", rows)
+	}
+}
+
+func TestDirectivesListEmptyOnCoordinator404(t *testing.T) {
+	h := New(nil, nil, t.TempDir())
+	h.CoordinatorDo = func(method, path string, query url.Values, body []byte) (int, []byte, error) {
+		return 404, []byte(`{"error":"not found"}`), nil
+	}
+	out, rpcErr := h.toolDirectivesList(store.WorkerRec{PrincipalID: "prin-1"}, nil)
+	if rpcErr != nil {
+		t.Fatal(rpcErr.Message)
+	}
+	doc := out.(map[string]any)
+	if doc["status"] != "ok" || len(doc["directives"].([]any)) != 0 {
+		t.Fatalf("%v", doc)
+	}
+}
+
+func TestDirectivesListRejectsArguments(t *testing.T) {
+	h := New(nil, nil, t.TempDir())
+	h.CoordinatorDo = func(method, path string, query url.Values, body []byte) (int, []byte, error) {
+		t.Fatal("coordinator must not run")
+		return 0, nil, nil
+	}
+	_, rpcErr := h.toolDirectivesList(store.WorkerRec{PrincipalID: "prin-1"}, json.RawMessage(`{"worker":"other"}`))
+	if rpcErr == nil || !strings.Contains(rpcErr.Message, "rejected") {
+		t.Fatalf("%v", rpcErr)
+	}
+	_, rpcErr = h.toolDirectivesList(store.WorkerRec{PrincipalID: "prin-1"}, json.RawMessage(`{"limit":1}`))
+	if rpcErr == nil || !strings.Contains(rpcErr.Message, "no arguments") {
+		t.Fatalf("%v", rpcErr)
+	}
+}
+
 func TestToolListIncludesInbox(t *testing.T) {
 	h := New(nil, nil, t.TempDir())
 	list := h.toolList()
@@ -173,7 +226,7 @@ func TestToolListIncludesInbox(t *testing.T) {
 		names[tdef["name"].(string)] = true
 	}
 	for _, want := range []string{
-		"whoami", "mcp_add", "inbox_list", "inbox_get",
+		"whoami", "mcp_add", "inbox_list", "inbox_get", "directives_list",
 		"task_claim", "task_renew", "task_release", "task_complete", "task_fail",
 		"task_update", "task_wait",
 		"directive_propose",
