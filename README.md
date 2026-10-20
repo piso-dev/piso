@@ -2,7 +2,7 @@
 
 > **Public mirror.** This repository is a read-only mirror published from an
 > upstream private repository; pull requests cannot be merged here. See
-> [CONTRIBUTING.md](CONTRIBUTING.md).
+> [CONTRIBUTING.md](https://github.com/piso-dev/piso/blob/main/CONTRIBUTING.md).
 
 Isolate an AI coding agent (pi) inside a Docker worker, with all egress gated
 through a MITM gateway that substitutes fake credentials for real ones and
