@@ -59,5 +59,5 @@ chat. When it is unset, these unattended-only rules do not apply.
   permission; never repeatedly file the same rejected ask.
 - Board events are advisory, not lifecycle transitions. Posting `waiting` on
   the board does not remove a task from the runnable inbox.
-- `hammerspace_*` and `boost_*` are advisory. Skip them on `unpaired` or
-  `needs-auth` rather than blocking unrelated work.
+- `boost_*` is advisory. Skip it on `unpaired` or `needs-auth` rather
+  than blocking unrelated work.
