@@ -16,12 +16,39 @@ const (
 	monitorSlug       = "monitor"
 )
 
-// activePiSession describes a worker that currently has a live pi process.
+// pi roles observed from the process cmdline. Only a user attach or an
+// unattended task run holds work a container recreate would destroy. The
+// supervisor's rpc session is worker infrastructure that the entrypoint
+// respawns, exactly like the monitor's wake loop, so it must not block updates.
+const (
+	roleUser       = "user"
+	roleTask       = "task"
+	roleSupervisor = "supervisor"
+)
+
+// activePiSession describes a worker that currently has one or more live pi
+// processes. PIDs are the outermost PID-namespace ids (the host-side pid as
+// Linux exposes it in /proc/<pid>/status NSpid), not container-relative ids,
+// so they name a process on a native Linux host. On Docker Desktop the
+// outermost pid belongs to the Linux VM; the worker name is the usable handle.
 type activePiSession struct {
 	Worker string   `json:"worker"`
 	Slug   string   `json:"slug,omitempty"`
 	PIDs   []string `json:"pids"`
 	Uptime string   `json:"uptime"` // human interval, e.g. "12m", "3h2m"
+	Roles  []string `json:"roles,omitempty"`
+}
+
+// blocksUpdate reports whether recreating the worker would kill real work: a
+// user attach or an unattended task run. A worker whose only live pi is the
+// supervisor rpc session does not block.
+func (s activePiSession) blocksUpdate() bool {
+	for _, role := range s.Roles {
+		if role == roleUser || role == roleTask {
+			return true
+		}
+	}
+	return false
 }
 
 // isMonitorWorker reports the shared project-manager container. It lives in
@@ -31,17 +58,43 @@ func isMonitorWorker(name, slug string) bool {
 	return slug == monitorSlug || name == monitorWorkerName
 }
 
-// blockingSessions are user attaches that must stop `piso update`.
-// Monitor pi is excluded: the monitor is rolled with the shared image and
-// its in-flight pi -p is killed by the recreate.
+// blockingSessions are sessions that must stop `piso update`: user attaches
+// and unattended task runs. The monitor worker and the supervisor rpc session
+// are worker infrastructure — rolled with the shared image and respawned by
+// the entrypoint — so they are excluded.
 func blockingSessions(sessions []activePiSession) []activePiSession {
 	var out []activePiSession
 	for _, s := range sessions {
-		if !isMonitorWorker(s.Worker, s.Slug) {
-			out = append(out, s)
+		if isMonitorWorker(s.Worker, s.Slug) || !s.blocksUpdate() {
+			continue
 		}
+		out = append(out, s)
 	}
 	return out
+}
+
+// infraSessions are non-monitor workers whose only live pi is infrastructure
+// (the supervisor rpc session). Their pi is killed by the recreate and comes
+// back from the entrypoint respawner, like the monitor's.
+func infraSessions(sessions []activePiSession) []activePiSession {
+	var out []activePiSession
+	for _, s := range sessions {
+		if isMonitorWorker(s.Worker, s.Slug) || s.blocksUpdate() {
+			continue
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
+// printSession renders one session line for `piso update`. Roles are sorted to
+// keep the output stable regardless of /proc iteration order.
+func printSession(s activePiSession) {
+	role := strings.Join(s.Roles, "+")
+	if role == "" {
+		role = "pi"
+	}
+	fmt.Printf("  %s (%s): %s, host-side PIDs %s, up %s\n", s.Worker, s.Slug, role, strings.Join(s.PIDs, ","), s.Uptime)
 }
 
 func monitorSessions(sessions []activePiSession) []activePiSession {
@@ -81,9 +134,27 @@ func scanActivePiSessions(recs []pisoconfig.WorkerRec) []activePiSession {
 # real pi: full dist path, or the bare pi arg (argv[0]=pi, or a lone pi token)
 want1 = re.compile(r'pi-coding-agent')
 want2 = re.compile(r'(^|\s)pi(\s|$)')        # token exactly 'pi'
-# reject infra that merely contains piso-/bin/pi substrings
+# reject infra that merely contains piso-/bin/pi substrings. This text also
+# contains the strings below, so the scanner excludes its own python process.
 bad = re.compile(r'piso-entrypoint|piso-planning-watch|docker-init|sleep infinity')
 hz = os.sysconf('SC_CLK_TCK'); up = time.monotonic()
+def host_pid(pid):
+    # outermost PID namespace id = host-side pid (native Linux); on Docker
+    # Desktop it is the Linux VM pid. Fall back to the container pid.
+    try:
+        for line in open('/proc/%s/status' % pid):
+            if line.startswith('NSpid:'):
+                ids = line.split()[1:]
+                return ids[0] if ids else pid
+    except OSError:
+        pass
+    return pid
+def role_of(cmd, name):
+    if re.search(r'--mode\s+rpc', cmd) or name.startswith('piso-'):
+        return 'supervisor'
+    if re.search(r'(^|\s)-p(\s|$)', cmd):
+        return 'task'
+    return 'user'
 for p in os.listdir('/proc'):
     if not p.isdigit(): continue
     try:
@@ -91,12 +162,15 @@ for p in os.listdir('/proc'):
         cmd = raw.decode('utf-8', 'replace')
         if bad.search(cmd): continue
         if not (want1.search(cmd) or want2.search(cmd)): continue
+        name = ''
+        m = re.search(r'--name\s+(\S+)', cmd)
+        if m: name = m.group(1)
         st = open('/proc/%s/stat' % p).read()
         st = st[st.rfind(')') + 2:]
         f = st.split()
         start = int(f[19])
         secs = int(up - start / hz)
-        print('%s %d' % (p, secs))
+        print('%s\t%s\t%s\t%d' % (host_pid(p), role_of(cmd, name), name, secs))
     except Exception:
         pass
 `
@@ -109,15 +183,20 @@ for p in os.listdir('/proc'):
 		if err != nil || strings.TrimSpace(raw) == "" {
 			continue
 		}
-		var pids []string
+		var pids, roles []string
+		seenRole := map[string]bool{}
 		var maxSecs int
 		for _, line := range strings.Split(strings.TrimSpace(raw), "\n") {
-			fields := strings.Fields(line)
-			if len(fields) < 2 {
+			fields := strings.Split(line, "\t")
+			if len(fields) < 4 {
 				continue
 			}
 			pids = append(pids, fields[0])
-			if secs, err := strconv.Atoi(fields[1]); err == nil && secs > maxSecs {
+			if !seenRole[fields[1]] {
+				seenRole[fields[1]] = true
+				roles = append(roles, fields[1])
+			}
+			if secs, err := strconv.Atoi(fields[3]); err == nil && secs > maxSecs {
 				maxSecs = secs
 			}
 		}
@@ -125,8 +204,9 @@ for p in os.listdir('/proc'):
 			continue
 		}
 		sort.Strings(pids)
+		sort.Strings(roles)
 		out = append(out, activePiSession{
-			Worker: w.Name, Slug: w.Slug, PIDs: pids, Uptime: fmtInterval(maxSecs),
+			Worker: w.Name, Slug: w.Slug, PIDs: pids, Uptime: fmtInterval(maxSecs), Roles: roles,
 		})
 	}
 	return out

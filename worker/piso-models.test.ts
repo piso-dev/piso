@@ -391,7 +391,10 @@ describe("Piso provider stack", () => {
 		let catalog: any[] = [];
 		const ctx = {
 			isIdle: () => idle,
-			modelRegistry: { find: () => undefined, getModelsOfType: () => catalog },
+			modelRegistry: {
+				find: (_provider: string, id: string) => catalog.find((m) => m.id === id),
+				getModelsOfType: () => catalog,
+			},
 		};
 		const apply = wireLiveApply(pi as any);
 		// Busy: the switch waits for an idle boundary.
@@ -405,5 +408,77 @@ describe("Piso provider stack", () => {
 		catalog = [{ id: "m1", provider: "piso" }];
 		await apply(ctx as any, false);
 		expect(setModels.at(-1)?.id).toBe("m1");
+	});
+
+	test("a missing default model is not replaced by the first catalog entry", async () => {
+		await stackDir(
+			{ "piso-two": { apiKey: "piso_two", baseUrl: "https://two/v1", models: [{ id: "m2" }] } },
+			{ defaultProvider: "piso-two", defaultModel: "deleted-model" },
+		);
+		const setModels: any[] = [];
+		const warnings: string[] = [];
+		console.warn = (message) => { warnings.push(message); };
+		const pi = {
+			registerProvider() {},
+			unregisterProvider() {},
+			setModel(model: any) {
+				setModels.push(model);
+				return Promise.resolve(true);
+			},
+			on() {
+				return () => {};
+			},
+		};
+		const catalog = [{ id: "m2", provider: "piso-two" }];
+		const ctx = {
+			isIdle: () => true,
+			modelRegistry: {
+				find: (_provider: string, id: string) => catalog.find((m) => m.id === id),
+				getModelsOfType: () => catalog,
+			},
+		};
+		const apply = wireLiveApply(pi as any);
+		await apply(ctx as any, true);
+		await apply(ctx as any, false);
+		// The old behavior switched to m2 here, which is how a worker ended up
+		// on an arbitrary model with no explanation.
+		expect(setModels).toHaveLength(0);
+		expect(warnings).toHaveLength(1);
+		expect(warnings[0]).toContain("piso-two/deleted-model");
+		expect(warnings[0]).toContain("keeping the current model");
+	});
+
+	test("a legacy routstr default resolves against the piso namespace", async () => {
+		await stackDir(
+			{ routstr: { apiKey: "piso_legacy", baseUrl: "https://legacy/v1", models: [{ id: "m1" }] } },
+			{ defaultProvider: "routstr", defaultModel: "m1" },
+		);
+		const setModels: any[] = [];
+		const seen: string[] = [];
+		const pi = {
+			registerProvider() {},
+			unregisterProvider() {},
+			setModel(model: any) {
+				setModels.push(model);
+				return Promise.resolve(true);
+			},
+			on() {
+				return () => {};
+			},
+		};
+		const ctx = {
+			isIdle: () => true,
+			modelRegistry: {
+				find: (provider: string, id: string) => {
+					seen.push(provider);
+					return provider === "piso" && id === "m1" ? { id, provider } : undefined;
+				},
+				getModelsOfType: () => [{ id: "m1", provider: "piso" }],
+			},
+		};
+		await wireLiveApply(pi as any)(ctx as any, true);
+		expect(seen).toContain("piso");
+		expect(seen).not.toContain("routstr");
+		expect(setModels.at(-1)).toEqual({ id: "m1", provider: "piso" });
 	});
 });

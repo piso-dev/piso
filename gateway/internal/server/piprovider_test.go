@@ -435,3 +435,74 @@ func TestPiProviderCheckedEmptyCatalogIsKnown(t *testing.T) {
 	}
 	t.Fatal("seeded provider missing from the list")
 }
+
+// TestPiProviderListFlatDefaultMatchesActive is the CLI contract guard: `piso
+// up` reads defaultProvider/defaultModel from the top level of this response
+// to write the worker profile. They must describe the activated profile and
+// carry the same effectiveModel fallback the worker resolves against.
+func TestPiProviderListFlatDefaultMatchesActive(t *testing.T) {
+	dir := t.TempDir()
+	profile := filepath.Join(dir, "pi-profile")
+	t.Setenv("PISO_PI_PROFILE", profile)
+	st, err := store.New(filepath.Join(dir, "state.json"), filepath.Join(dir, "log.jsonl"), filepath.Join(dir, "patterns.json"), filepath.Join(dir, "activities.db"), 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AddSecret(store.SecretRec{ID: "sec", Name: "A", Placeholder: "piso_a", Value: "real-a"}); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{Store: st, DataDir: dir}
+
+	put := func(id, model string) piProviderView {
+		body := fmt.Sprintf(`{"id":%q,"name":"A","secretId":"sec","baseUrl":"https://a.example/v1","defaultModel":%q,"models":["model-a","model-b"]}`, id, model)
+		rec := httptest.NewRecorder()
+		s.handlePutPiProvider(rec, httptest.NewRequest(http.MethodPut, "/api/v1/pi-provider", strings.NewReader(body)))
+		if rec.Code != 200 {
+			t.Fatalf("put: %d %s", rec.Code, rec.Body.String())
+		}
+		var view piProviderView
+		if err := json.Unmarshal(rec.Body.Bytes(), &view); err != nil {
+			t.Fatal(err)
+		}
+		return view
+	}
+	list := func() (piProviderListView, map[string]any) {
+		rec := httptest.NewRecorder()
+		s.handleGetPiProvider(rec, httptest.NewRequest(http.MethodGet, "/api/v1/pi-provider", nil))
+		if rec.Code != 200 {
+			t.Fatalf("list: %d %s", rec.Code, rec.Body.String())
+		}
+		var view piProviderListView
+		if err := json.Unmarshal(rec.Body.Bytes(), &view); err != nil {
+			t.Fatal(err)
+		}
+		var raw map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &raw); err != nil {
+			t.Fatal(err)
+		}
+		return view, raw
+	}
+
+	// No model chosen: the effective model is the first catalog entry.
+	added := put("", "")
+	view, raw := list()
+	if view.ActiveID != added.ID || view.DefaultProvider != added.ID {
+		t.Fatalf("flat provider %q, active %q, want %q", view.DefaultProvider, view.ActiveID, added.ID)
+	}
+	if view.DefaultModel != "model-a" || raw["defaultModel"] != "model-a" {
+		t.Fatalf("flat model %v (view %q), want the catalog fallback model-a", raw["defaultModel"], view.DefaultModel)
+	}
+
+	// An explicit choice wins over the fallback.
+	put(added.ID, "model-b")
+	view, raw = list()
+	if view.DefaultModel != "model-b" || raw["defaultModel"] != "model-b" || view.DefaultProvider != added.ID {
+		t.Fatalf("flat default after save: %v / %q", raw["defaultModel"], view.DefaultProvider)
+	}
+	// defaultModel is always present, even when empty: absence is how a client
+	// detects a gateway that predates the field, and that must not be confused
+	// with an explicit clear.
+	if _, ok := raw["defaultModel"]; !ok {
+		t.Fatalf("defaultModel missing from the list response: %v", raw)
+	}
+}

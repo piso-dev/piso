@@ -1,4 +1,6 @@
-// PI_CLI_PATH=/path/to/pi-coding-agent/dist/cli.js node --test worker/piso-models.integration.test.mjs
+// PI_CLI_PATH=/path/to/pi-coding-agent/dist/cli.js node --test worker/piso-models.integration.mjs
+// Named without .test. on purpose: `bun test` cannot skip a node:test file
+// without PI_CLI_PATH, and this suite must not fail the local runner.
 // Uses the real CLI startup pipeline, but only a local model catalog and fake credential.
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
@@ -12,13 +14,17 @@ import test from "node:test";
 const cli = process.env.PI_CLI_PATH;
 const extension = process.env.PISO_TEST_EXTENSION || fileURLToPath(new URL("./piso-models.ts", import.meta.url));
 
-for (const { defaultModel, mode } of [
-	{ mode: "rpc" },
-	{ mode: "rpc", defaultModel: "unbiased/pareto-26.10-preview" },
-	{ mode: "print", defaultModel: "unbiased/pareto-26.10-preview" },
+for (const { mode, provider, defaultModel } of [
+	{ mode: "rpc", provider: "piso" },
+	{ mode: "rpc", provider: "piso", defaultModel: "unbiased/pareto-26.10-preview" },
+	{ mode: "print", provider: "piso", defaultModel: "unbiased/pareto-26.10-preview" },
+	// A dashboard stack names its provider "piso-<id>"; the saved default
+	// must resolve there too, not only in the legacy namespace.
+	{ mode: "rpc", provider: "piso-two", defaultModel: "unbiased/pareto-26.10-preview" },
 ]) {
-test(`real Pi CLI ${mode} first launch: ${defaultModel ? "respects the saved default rather than the first catalog entry" : "selects a model with no default"}`, {
-	skip: !cli && "Set PI_CLI_PATH to the installed Pi dist/cli.js", timeout: 30_000,
+test(`real Pi CLI ${mode} first launch: ${defaultModel ? `respects the saved ${provider} default rather than the first catalog entry` : "selects a model with no default"}`, {
+	// Needs a real Pi CLI; set PI_CLI_PATH to its dist/cli.js to run.
+	skip: !cli, timeout: 30_000,
 }, async (t) => {
 	const dir = await mkdtemp(resolve(".piso-model-cli-test-"));
 	let child;
@@ -55,12 +61,12 @@ test(`real Pi CLI ${mode} first launch: ${defaultModel ? "respects the saved def
 		res.end(JSON.stringify({ data: [{ id: "first-launch-model" }, { id: "unbiased/pareto-26.10-preview" }] }));
 	});
 	await new Promise((done) => server.listen(0, "127.0.0.1", done));
-	const profile = JSON.stringify({ providers: { piso: {
+	const profile = JSON.stringify({ providers: { [provider]: {
 		apiKey: "piso_piso_test", baseUrl: `http://127.0.0.1:${server.address().port}/v1`,
 	} } });
 	await writeFile(join(agentDir, "models.json"), profile);
 	await writeFile(join(agentDir, "settings.json"), JSON.stringify(defaultModel
-		? { defaultProvider: "piso", defaultModel } : {}));
+		? { defaultProvider: provider, defaultModel } : {}));
 	const debugArgs = process.env.PISO_TEST_PRELOAD ? ["--import", process.env.PISO_TEST_PRELOAD] : [];
 	child = spawn(process.execPath, [...debugArgs, resolve(cli), ...(mode === "print" ? ["-p", "Say ok"] : ["--mode", "rpc", "--no-session"]),
 		"--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "-e", resolve(extension)], {
@@ -102,13 +108,13 @@ test(`real Pi CLI ${mode} first launch: ${defaultModel ? "respects the saved def
 		});
 		child.stdin.write(JSON.stringify({ type: "get_state", id: "startup" }) + "\n");
 	});
-	assert.equal(state.model?.provider, "piso", JSON.stringify({ model: state.model, requests, stderr }));
+	assert.equal(state.model?.provider, provider, JSON.stringify({ model: state.model, requests, stderr }));
 	assert.equal(state.model?.id, defaultModel ?? "first-launch-model");
 	}
 	assert.ok(requests >= 1);
 	assert.equal(await readFile(join(agentDir, "models.json"), "utf8"), profile);
 	const settings = JSON.parse(await readFile(join(agentDir, "settings.json"), "utf8"));
-	assert.equal(settings.defaultProvider, defaultModel ? "piso" : undefined);
+	assert.equal(settings.defaultProvider, defaultModel ? provider : undefined);
 	assert.equal(settings.defaultModel, defaultModel);
 });
 }

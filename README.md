@@ -79,6 +79,21 @@ advisory: saving or activating a provider never waits on it, and a provider
 with no reachable catalog still saves and activates. When no default model is
 known, the extension resolves the first registered model at session start.
 
+That first-model fallback applies only to a profile with **no** saved default.
+A saved default the session's catalog does not contain is never swapped for
+"whatever came first": the session keeps its current model and logs one
+warning naming the missing `provider/model`, which is what a stale default
+looks like after a provider's catalog changes.
+
+`piso up` copies the host pi profile's settings (`theme`, `tools`, `prompts`,
+`packages`, …) into the shared profile, but never its model selection: if the
+shared profile names a dashboard provider, the host's `defaultProvider`,
+`defaultModel`, and `enabledModels` are dropped, because `enabledModels`
+outranks `defaultModel` in pi's start-up resolution. A machine with its own pi
+install therefore cannot change which model a worker starts on. `piso attach`
+warns when the shared profile's default disagrees with the dashboard; run
+`piso up` to re-sync.
+
 The dashboard loads a provider's catalog as soon as its API base URL and
 secret are present, even in the Add provider dialog before it is saved, so the
 default model can be picked on the first pass. The same loaded list is kept on
