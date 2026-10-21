@@ -40,3 +40,26 @@ board see the discovery, not just the edit.
 **Why this is first:** the most common failure is building net-new what
 already exists in a reachable repo, a curated booster, or a standing
 directive. Discovery is cheaper than reimplementation.
+
+# Scope you were not given
+
+If discovery turns up work the task did not ask for, propose it — do not widen
+your own task. Call `task_propose(requestId, title, body, acceptanceCriteria)`:
+it creates a real task in the `proposed` state that no worker can claim until a
+human approves it. Reuse the same `requestId` on a retry so you cannot create a
+second copy.
+
+Propose when the work is separate, checkable, and someone else could pick it up
+later: a broken test you noticed, a missing guard, a follow-up the reviewer will
+ask for. Fix it in place instead when it is a two-line consequence of your own
+change and the task's acceptance criteria already cover it.
+
+Your proposal stays yours while it is undecided: `task_propose_edit` fixes a
+title or body you got wrong, and `task_propose_withdraw` takes it back (with a
+reason). Both stop working the moment a human decides — after approval the task
+is in the queue and you claim it like any other work.
+
+Do not propose what you were asked to do, and do not propose a standing
+preference — directives are the human's to write, and `directives_list` is
+read-only for you. Mention the proposal in your handoff by its id so the human
+can find it on the board.

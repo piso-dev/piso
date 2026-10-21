@@ -2210,9 +2210,13 @@
       // Task state is separate from global refresh: only the visible page is polled.
       const taskUI = {group: "active", cursor: "", previous: [], next: null,
         rows: [], detail: null, id: "", error: "", loading: false, sequence: 0, search: "", searchDraft: ""};
-      const taskStatus = (t) => ({open: "Queued", working: "Working", waiting:
+      // A proposed task is a worker's suggestion: it is a real row, but nothing
+      // can claim it until a human approves it in Needs you.
+      const taskStatus = (t) => ({proposed: "Proposed", open: "Queued", working: "Working", waiting:
         t.waitReasons?.includes("review") ? "Needs review" : "Waiting",
         done: "Done", failed: "Failed", cancelled: "Cancelled"}[t.status] || t.status);
+      const taskTone = (t) =>
+        t.status === "proposed" ? "info" : t.status === "failed" ? "bad" : t.status === "done" ? "good" : "";
       async function loadTasks() {
         const sequence = ++taskUI.sequence;
         taskUI.loading = true;
@@ -2243,7 +2247,8 @@
         if (taskUI.id) {
           const t = taskUI.detail;
           const prose = (title, text) => text ? `<section><h2>${esc(title)}</h2><p class="task-prose">${esc(text)}</p></section>` : "";
-          replaceContent(`<p><a href="#/tasks">Back to tasks</a></p>${notice}${t ? `<article class="task-detail"><header><h2>${esc(t.title)}</h2>${badge(taskStatus(t), t.status === "failed" ? "bad" : "")}</header>
+          replaceContent(`<p><a href="#/tasks">Back to tasks</a></p>${notice}${t ? `<article class="task-detail"><header><h2>${esc(t.title)}</h2>${badge(taskStatus(t), taskTone(t))}</header>
+            ${t.status === "proposed" ? `<p>${esc(t.proposedBy || "A worker")} proposed this work. Nothing can claim it until you approve it, and it can be revised or withdrawn until you do. <a href="#/attention">Decide in Needs you</a>.</p>` : ""}
             ${t.status === "waiting" ? '<p><a href="#/attention">Review requests in Needs you</a></p>' : ""}
             ${prose("Instructions", t.body)}${prose("Acceptance criteria", t.acceptanceCriteria)}
             ${prose("Latest checkpoint", t.checkpoint)}${prose("Result", t.result?.summary)}${prose("Evidence", t.result?.evidence)}
@@ -2260,7 +2265,7 @@
         const end = searchFocused ? active.selectionEnd : null;
         replaceContent(`<div class="subnav" aria-label="Task status">${["active", "finished"].map(g => `<button data-action="task-group" data-id="${g}" aria-pressed="${taskUI.group === g}">${g === "active" ? "Active" : "Finished"}</button>`).join("")}</div>
           <form id="taskSearchForm" class="toolbar"><label class="search">Search titles<input id="taskSearch" type="search" maxlength="300" value="${esc(taskUI.searchDraft)}"></label><button type="submit">Search</button></form>
-          ${notice}<div class="task-list" aria-busy="${taskUI.loading}">${taskUI.rows.map(t => `<a class="task-row" href="#/tasks/${enc(t.id)}"><strong>${esc(t.title)}</strong>${badge(taskStatus(t), t.status === "failed" ? "bad" : t.status === "done" ? "good" : "")}</a>`).join("") || (taskUI.loading ? '<p role="status">Loading tasks…</p>' : taskUI.error ? "" : empty(taskUI.search ? "No matching tasks" : taskUI.group === "active" ? "No active tasks" : "No finished tasks", taskUI.group === "active" ? "Create a task. Eligible workers pick up queued work automatically." : "Completed, failed, and cancelled tasks appear here."))}</div>
+          ${notice}<div class="task-list" aria-busy="${taskUI.loading}">${taskUI.rows.map(t => `<a class="task-row" href="#/tasks/${enc(t.id)}"><strong>${esc(t.title)}</strong>${badge(taskStatus(t), taskTone(t))}</a>`).join("") || (taskUI.loading ? '<p role="status">Loading tasks…</p>' : taskUI.error ? "" : empty(taskUI.search ? "No matching tasks" : taskUI.group === "active" ? "No active tasks" : "No finished tasks", taskUI.group === "active" ? "Create a task. Eligible workers pick up queued work automatically." : "Completed, failed, and cancelled tasks appear here."))}</div>
           ${taskUI.previous.length || taskUI.next ? `<nav class="actions task-pagination" aria-label="Task pages"><button data-action="task-prev" ${!taskUI.previous.length || taskUI.loading ? "disabled" : ""}>Previous</button><span>Page ${taskUI.previous.length + 1}</span><button data-action="task-next" ${!taskUI.next || taskUI.loading ? "disabled" : ""}>Next</button></nav>` : ""}`);
         $("#taskSearch").oninput = e => { taskUI.searchDraft = e.target.value; };
         $("#taskSearchForm").onsubmit = e => { e.preventDefault(); taskUI.search = $("#taskSearch").value.trim(); taskUI.cursor = ""; taskUI.previous = []; taskUI.rows = []; taskUI.next = null; loadTasks(); };
@@ -2952,8 +2957,10 @@
       setInterval(() => {
         if (!document.hidden) updateTimeline();
       }, 1000);
-      function askCard(kind, source, title, description, actions, extra = "") {
-        return `<article class="ask"><div class="ask-top"><span>${esc(kind)}</span><span>${esc(source)}</span></div><h3>${esc(title)}</h3><p>${esc(description)}</p>${extra}<div class="actions">${actions}</div></article>`;
+      function askCard(kind, source, title, description, actions, extra = "", revision = "") {
+        // The revision the card was rendered from rides along so a decision can
+        // name exactly the text the human read, not whatever arrived since.
+        return `<article class="ask"${revision ? ` data-revision="${esc(revision)}"` : ""}><div class="ask-top"><span>${esc(kind)}</span><span>${esc(source)}</span></div><h3>${esc(title)}</h3><p>${esc(description)}</p>${extra}<div class="actions">${actions}</div></article>`;
       }
       function renderAttention() {
         const cards = [];
@@ -2983,13 +2990,20 @@
               ),
             );
           }
+          const proposal = a.kind === "approval" && a.action === "task.propose";
           cards.push(
             askCard(
-              a.kind === "human" ? "Human task" : "Decision",
+              a.kind === "human"
+                ? "Human task"
+                : proposal
+                  ? "Proposed work"
+                  : "Decision",
               a.from || "",
               a.title || a.action || "Request",
               a.instructions ||
-                a.action ||
+                (proposal
+                  ? `${a.detail || ""} Approving queues it like any other task; rejecting cancels it.`.trim()
+                  : a.action) ||
                 "The worker is waiting for your decision.",
               a.kind === "human"
                 ? button("Done", "ask-completed", a.id, "primary") +
@@ -2997,6 +3011,8 @@
                     button("Can’t do this", "ask-rejected", a.id, "danger")
                 : button("Approve", "ask-approved", a.id, "primary") +
                     button("Reject", "ask-rejected", a.id, "danger"),
+              "",
+              proposal ? a.revision || "" : "",
             ),
           );
         });
@@ -3138,7 +3154,6 @@
         blocked: "bad",
         complete: "info",
         cancelled: "warn",
-        proposed: "info",
       };
       const directiveKindLabel = (kind) =>
         (directiveKinds.find(([k]) => k === kind) || [kind, kind])[1];
@@ -3147,12 +3162,6 @@
           status,
           status.charAt(0).toUpperCase() + status.slice(1),
         ])[1];
-      // "proposed" is not an editable status, but the form must still show it:
-      // falling back to the first option would silently approve the proposal.
-      const directiveStatusChoices = (current) =>
-        directiveStatuses.some(([k]) => k === current)
-          ? directiveStatuses
-          : [[current, directiveStatusLabel(current)], ...directiveStatuses];
       const directiveLabelsText = (labels) =>
         Object.entries(labels || {})
           .map(([k, v]) => k + "=" + v)
@@ -3254,7 +3263,7 @@
               hint: "An objective is a work container; preference kinds apply to tasks.",
             }) +
             field("status", "Status", d?.status || "active", {
-              choices: directiveStatusChoices(d?.status || "active"),
+              choices: directiveStatuses,
             }) +
             field("priority", "Priority", d?.priority ?? 0, {
               type: "number",
@@ -5037,14 +5046,33 @@
             });
             return changed(["asks"]);
           }
-          await api(
-            "asks/" +
-              (a.kind === "human" ? "human-actions/" : "approvals/") +
-              enc(id) +
-              (a.kind === "human" ? "/resolve" : "/decide"),
-            "POST",
-            a.kind === "human" ? { status: decision } : { decision },
-          );
+          // The revision rendered into this card, not the newest one fetched:
+          // a poll between painting and clicking must not launder an edit.
+          const seen =
+            source?.closest?.(".ask")?.dataset.revision || a.revision;
+          try {
+            await api(
+              "asks/" +
+                (a.kind === "human" ? "human-actions/" : "approvals/") +
+                enc(id) +
+                (a.kind === "human" ? "/resolve" : "/decide"),
+              "POST",
+              a.kind === "human"
+                ? { status: decision }
+                : { decision, ...(seen ? { seenRevision: seen } : {}) },
+            );
+          } catch (error) {
+            // A stale card is not an error the human caused: refresh it, say so
+            // in plain words, and let them read the current text.
+            if (error.status === 409 || error.status === 400) {
+              await changed(["asks"]);
+              notify(
+                "That request changed while you were deciding. The card is refreshed — check it and decide again.",
+              );
+              return;
+            }
+            throw error;
+          }
           return changed(["asks"]);
         }
         if (name === "mcp-auth") return authorizeMCP(id);

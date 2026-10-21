@@ -85,20 +85,117 @@ func (h *Handler) registerInbox() {
 		})
 	}
 	h.Register(Tool{
-		Name:        "directive_propose",
-		Description: "Suggest a goal. It gets a D-code like any directive but is not active until a human approves.",
+		Name:        "task_propose",
+		Description: "Suggest work you found but were not asked to do. It becomes a real task in the 'proposed' state that nobody can claim until a human approves it in Needs you; rejecting it cancels it. Pass the same requestId on retries so a duplicate proposal is not created.",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"title":      map[string]any{"type": "string"},
-				"body":       map[string]any{"type": "string"},
-				"completion": map[string]any{"type": "string"},
+				"requestId":          map[string]any{"type": "string"},
+				"title":              map[string]any{"type": "string"},
+				"body":               map[string]any{"type": "string"},
+				"acceptanceCriteria": map[string]any{"type": "string"},
+				"labels":             map[string]any{"type": "object"},
+				"priority":           map[string]any{"type": "integer"},
 			},
-			"required": []string{"title", "body"},
+			"required": []string{"requestId", "title", "body"},
 		},
 		Write: true,
-		Call:  h.toolDirectivePropose,
+		Call:  h.toolTaskPropose,
 	})
+	proposalProperties := map[string]any{
+		"id":                 map[string]any{"type": "string"},
+		"requestId":          map[string]any{"type": "string"},
+		"title":              map[string]any{"type": "string"},
+		"body":               map[string]any{"type": "string"},
+		"acceptanceCriteria": map[string]any{"type": "string"},
+		"labels":             map[string]any{"type": "object"},
+		"priority":           map[string]any{"type": "integer"},
+	}
+	h.Register(Tool{
+		Name:        "task_propose_edit",
+		Description: "Revise a proposal you made that a human has not decided yet. Only the fields you pass change, and the approval card shows the new text; once it is approved or rejected the proposal is frozen, so claim the task instead.",
+		InputSchema: map[string]any{
+			"type":                 "object",
+			"properties":           proposalProperties,
+			"required":             []string{"id", "requestId"},
+			"additionalProperties": false,
+		},
+		Write: true,
+		Call:  h.toolTaskProposeEdit,
+	})
+	withdrawProperties := map[string]any{
+		"id":        map[string]any{"type": "string"},
+		"requestId": map[string]any{"type": "string"},
+		"reason":    map[string]any{"type": "string"},
+	}
+	h.Register(Tool{
+		Name:        "task_propose_withdraw",
+		Description: "Take back your own proposal while it is still undecided. It becomes cancelled, its approval card disappears, and the reason stays on the task for the audit trail.",
+		InputSchema: map[string]any{
+			"type":                 "object",
+			"properties":           withdrawProperties,
+			"required":             []string{"id", "requestId"},
+			"additionalProperties": false,
+		},
+		Write: true,
+		Call:  h.toolTaskProposeWithdraw,
+	})
+}
+
+// proposalBody keeps only the keys the caller actually sent, so an edit is a
+// patch rather than a full rewrite that would blank the fields it omits.
+func proposalBody(in map[string]any, keys ...string) (map[string]any, *rpcError) {
+	requestID, _ := in["requestId"].(string)
+	requestID = strings.TrimSpace(requestID)
+	if requestID == "" {
+		return nil, &rpcError{Code: codeInvalidParams, Message: "requestId required"}
+	}
+	body := map[string]any{"requestId": requestID}
+	for _, key := range keys {
+		value, ok := in[key]
+		if !ok || value == nil {
+			continue
+		}
+		if text, isText := value.(string); isText && strings.TrimSpace(text) == "" {
+			continue // An empty string means "leave it alone", not "erase it".
+		}
+		body[key] = value
+	}
+	return body, nil
+}
+
+func (h *Handler) toolTaskProposeEdit(caller store.WorkerRec, args json.RawMessage) (any, *rpcError) {
+	if err := rejectWorkerArg(args); err != nil {
+		return nil, err
+	}
+	var in map[string]any
+	if err := json.Unmarshal(args, &in); err != nil || in == nil {
+		return nil, &rpcError{Code: codeInvalidParams, Message: "object required"}
+	}
+	body, rpcErr := proposalBody(in,
+		"title", "body", "acceptanceCriteria", "labels", "priority")
+	if rpcErr != nil {
+		return nil, rpcErr
+	}
+	if len(body) == 1 {
+		return nil, &rpcError{Code: codeInvalidParams, Message: "nothing to change"}
+	}
+	return h.postTask(caller, args, "/proposal/edit", body)
+}
+
+func (h *Handler) toolTaskProposeWithdraw(caller store.WorkerRec, args json.RawMessage) (any, *rpcError) {
+	if err := rejectWorkerArg(args); err != nil {
+		return nil, err
+	}
+	var in map[string]any
+	if err := json.Unmarshal(args, &in); err != nil || in == nil {
+		return nil, &rpcError{Code: codeInvalidParams, Message: "object required"}
+	}
+	body, rpcErr := proposalBody(in, "reason")
+	if rpcErr != nil {
+		return nil, rpcErr
+	}
+	return h.postTask(caller, args, "/proposal/withdraw", body)
 }
 
 func rejectWorkerArg(args json.RawMessage) *rpcError {
@@ -307,24 +404,40 @@ func (h *Handler) toolTaskClaim(caller store.WorkerRec, args json.RawMessage) (a
 	return h.postTask(caller, args, "/claim", body)
 }
 
-func (h *Handler) toolDirectivePropose(caller store.WorkerRec, args json.RawMessage) (any, *rpcError) {
+func (h *Handler) toolTaskPropose(caller store.WorkerRec, args json.RawMessage) (any, *rpcError) {
 	if err := rejectWorkerArg(args); err != nil {
 		return nil, err
 	}
 	var in struct {
-		Title      string `json:"title"`
-		Body       string `json:"body"`
-		Completion string `json:"completion"`
+		RequestID          string         `json:"requestId"`
+		Title              string         `json:"title"`
+		Body               string         `json:"body"`
+		AcceptanceCriteria string         `json:"acceptanceCriteria"`
+		Labels             map[string]any `json:"labels"`
+		Priority           *int           `json:"priority"`
 	}
-	if err := json.Unmarshal(args, &in); err != nil || strings.TrimSpace(in.Title) == "" || strings.TrimSpace(in.Body) == "" {
-		return nil, &rpcError{Code: codeInvalidParams, Message: "title and body required"}
+	if err := json.Unmarshal(args, &in); err != nil {
+		return nil, &rpcError{Code: codeInvalidParams, Message: "object required"}
 	}
-	body := map[string]any{"title": strings.TrimSpace(in.Title), "body": strings.TrimSpace(in.Body)}
-	if strings.TrimSpace(in.Completion) != "" {
-		body["completion"] = strings.TrimSpace(in.Completion)
+	if strings.TrimSpace(in.RequestID) == "" || strings.TrimSpace(in.Title) == "" || strings.TrimSpace(in.Body) == "" {
+		return nil, &rpcError{Code: codeInvalidParams, Message: "requestId, title, and body required"}
+	}
+	body := map[string]any{
+		"requestId": strings.TrimSpace(in.RequestID),
+		"title":     strings.TrimSpace(in.Title),
+		"body":      in.Body,
+	}
+	if strings.TrimSpace(in.AcceptanceCriteria) != "" {
+		body["acceptanceCriteria"] = in.AcceptanceCriteria
+	}
+	if len(in.Labels) > 0 {
+		body["labels"] = in.Labels
+	}
+	if in.Priority != nil {
+		body["priority"] = *in.Priority
 	}
 	raw, _ := json.Marshal(body)
-	status, doc, rpcErr := h.coord(caller, http.MethodPost, "/api/v1/directives", nil, raw)
+	status, doc, rpcErr := h.coord(caller, http.MethodPost, "/api/v1/tasks/propose", nil, raw)
 	if rpcErr != nil {
 		return nil, rpcErr
 	}
