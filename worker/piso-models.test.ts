@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import pisoModels, { loadProfiles, mergeCatalog, normalizeModel, wireLiveApply } from "./piso-models";
 
@@ -8,6 +8,8 @@ const originalFetch = globalThis.fetch;
 const originalOffline = process.env.PI_OFFLINE;
 const originalWarn = console.warn;
 const originalTimeout = AbortSignal.timeout;
+const originalGatewayUrl = process.env.GATEWAY_URL;
+const originalWorkerName = process.env.PISO_WORKER_NAME;
 const tempDirs: string[] = [];
 
 afterEach(async () => {
@@ -18,6 +20,10 @@ afterEach(async () => {
 	else process.env.PI_OFFLINE = originalOffline;
 	if (originalAgentDir === undefined) delete process.env.PI_AGENT_DIR;
 	else process.env.PI_AGENT_DIR = originalAgentDir;
+	if (originalGatewayUrl === undefined) delete process.env.GATEWAY_URL;
+	else process.env.GATEWAY_URL = originalGatewayUrl;
+	if (originalWorkerName === undefined) delete process.env.PISO_WORKER_NAME;
+	else process.env.PISO_WORKER_NAME = originalWorkerName;
 	await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
 
@@ -479,6 +485,131 @@ describe("Piso provider stack", () => {
 		await wireLiveApply(pi as any)(ctx as any, true);
 		expect(seen).toContain("piso");
 		expect(seen).not.toContain("routstr");
+		expect(setModels.at(-1)).toEqual({ id: "m1", provider: "piso" });
+	});
+});
+
+describe("Piso worker model overrides", () => {
+	// stackDir deliberately leaves GATEWAY_URL unset: every other suite runs
+	// without a gateway, and the override fetch must stay inert there.
+	async function stackDir(providers: unknown, settings: unknown): Promise<string> {
+		const dir = await mkdtemp(join(process.cwd(), ".piso-model-test-"));
+		tempDirs.push(dir);
+		process.env.PI_AGENT_DIR = dir;
+		process.env.PI_OFFLINE = "1";
+		delete process.env.GATEWAY_URL;
+		delete process.env.PISO_WORKER_NAME;
+		await writeFile(join(dir, "models.json"), JSON.stringify({ providers }));
+		await writeFile(join(dir, "settings.json"), JSON.stringify(settings));
+		return dir;
+	}
+
+	function liveApply(providers: Record<string, { id: string }[]>) {
+		const setModels: any[] = [];
+		const pi = {
+			registerProvider() {},
+			unregisterProvider() {},
+			setModel(model: any) {
+				setModels.push(model);
+				return Promise.resolve(true);
+			},
+			on() {
+				return () => {};
+			},
+		};
+		const ctx = {
+			isIdle: () => true,
+			modelRegistry: {
+				find: (provider: string, id: string) => {
+					const hit = (providers[provider] ?? []).some((m) => m.id === id);
+					return hit ? { id, provider } : undefined;
+				},
+				getModelsOfType: (_type: string, provider: string) => providers[provider] ?? [],
+			},
+		};
+		return { apply: wireLiveApply(pi as any), ctx: ctx as any, setModels };
+	}
+
+	const stack = {
+		piso: { apiKey: "piso_one", baseUrl: "https://one/v1", models: [{ id: "m1" }] },
+		"piso-two": { apiKey: "piso_two", baseUrl: "https://two/v1", models: [{ id: "m2" }] },
+	};
+	const catalogs = { piso: [{ id: "m1" }], "piso-two": [{ id: "m2" }] };
+
+	test("a gateway answer pins the worker and outranks the account default", async () => {
+		const dir = await stackDir(stack, { defaultProvider: "piso", defaultModel: "m1" });
+		process.env.GATEWAY_URL = "http://gateway:8083";
+		process.env.PISO_WORKER_NAME = "piso-worker-demo";
+		let requested = "";
+		globalThis.fetch = (async (input: any) => {
+			requested = String(input);
+			return Response.json({ worker: "piso-worker-demo", slug: "demo", provider: "piso-two", model: "m2", source: "override" });
+		}) as typeof fetch;
+
+		const { apply, ctx, setModels } = liveApply(catalogs);
+		await apply(ctx, true);
+
+		expect(requested).toContain("/api/v1/worker/model?worker=piso-worker-demo");
+		expect(setModels.at(-1)).toEqual({ id: "m2", provider: "piso-two" });
+		// The cached answer is what a restart (or an unreachable gateway) reads.
+		expect(JSON.parse(await readFile(join(dir, "piso-model.json"), "utf8"))).toEqual({
+			provider: "piso-two",
+			model: "m2",
+		});
+	});
+
+	test("the account default applies when the gateway reports no override", async () => {
+		await stackDir(stack, { defaultProvider: "piso", defaultModel: "m1" });
+		process.env.GATEWAY_URL = "http://gateway:8083";
+		process.env.PISO_WORKER_NAME = "piso-worker-demo";
+		globalThis.fetch = (async () =>
+			Response.json({ provider: "piso", model: "m1", source: "account" })) as typeof fetch;
+
+		const { apply, ctx, setModels } = liveApply(catalogs);
+		await apply(ctx, true);
+		expect(setModels.at(-1)).toEqual({ id: "m1", provider: "piso" });
+	});
+
+	test("a removed override does not resurrect from the cache", async () => {
+		const dir = await stackDir(stack, { defaultProvider: "piso", defaultModel: "m1" });
+		await writeFile(join(dir, "piso-model.json"), JSON.stringify({ provider: "piso-two", model: "m2" }));
+		process.env.GATEWAY_URL = "http://gateway:8083";
+		process.env.PISO_WORKER_NAME = "piso-worker-demo";
+		globalThis.fetch = (async () =>
+			Response.json({ provider: "", model: "", source: "account" })) as typeof fetch;
+
+		const { apply, ctx, setModels } = liveApply(catalogs);
+		await apply(ctx, true);
+		expect(setModels.at(-1)).toEqual({ id: "m1", provider: "piso" });
+		expect(JSON.parse(await readFile(join(dir, "piso-model.json"), "utf8")).provider).toBe("");
+	});
+
+	test("an unreachable gateway keeps the cached override", async () => {
+		const dir = await stackDir(stack, { defaultProvider: "piso", defaultModel: "m1" });
+		await writeFile(join(dir, "piso-model.json"), JSON.stringify({ provider: "piso-two", model: "m2" }));
+		process.env.GATEWAY_URL = "http://gateway:8083";
+		process.env.PISO_WORKER_NAME = "piso-worker-demo";
+		globalThis.fetch = (async () => {
+			throw new Error("connection refused");
+		}) as typeof fetch;
+
+		const { apply, ctx, setModels } = liveApply(catalogs);
+		await apply(ctx, true);
+		expect(setModels.at(-1)).toEqual({ id: "m2", provider: "piso-two" });
+		expect(JSON.parse(await readFile(join(dir, "piso-model.json"), "utf8")).provider).toBe("piso-two");
+	});
+
+	test("no gateway configured means no override request at all", async () => {
+		await stackDir(stack, { defaultProvider: "piso", defaultModel: "m1" });
+		let calls = 0;
+		globalThis.fetch = (async () => {
+			calls++;
+			return Response.json({});
+		}) as typeof fetch;
+
+		const { apply, ctx, setModels } = liveApply(catalogs);
+		await apply(ctx, true);
+		expect(calls).toBe(0);
 		expect(setModels.at(-1)).toEqual({ id: "m1", provider: "piso" });
 	});
 });

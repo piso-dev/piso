@@ -912,6 +912,12 @@
         padding: 12px 16px 22px;
         max-width: 100%;
       }
+      /* A directive's text is the rule itself, so keep its line breaks. */
+      .directive-text {
+        margin: 0 0 14px;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+      }
       .record-body .actions {
         margin-top: 18px;
         padding: 8px 0;
@@ -1578,6 +1584,28 @@
         .github-gate { padding: 24px 16px; }
         .github-routing-table th, .github-routing-table td { padding: 12px; }
       }
+      /* Worker overrides. One row per pinned worker, above the inherit line:
+         the account default is the norm, so the exceptions have to read as
+         exceptions rather than as a list that is missing most workers. */
+      .override-section { margin-top: 36px; border-top: 1px solid var(--line); padding-top: 20px; }
+      .override-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
+      .override-head h2 { margin: 0; font-size: 16px; }
+      .override-inherit { color: var(--muted); font-size: 13px; margin: 6px 0 0; }
+      .override-list { list-style: none; margin: 16px 0 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+      .override-row {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 12px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: var(--inset);
+        padding: 12px 16px;
+      }
+      .override-worker { font-weight: 600; }
+      .override-provider { color: var(--muted); font-size: 13px; }
+      .override-model { margin-left: auto; font-family: monospace; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+      .override-warning { flex: 1 1 100%; color: var(--amber); font-size: 13px; }
     </style>
   </head>
   <body>
@@ -1594,6 +1622,9 @@
           >
           <a href="#/tasks" data-view="tasks"
             ><span class="nav-icon" aria-hidden="true">☑</span>Tasks</a
+          >
+          <a href="#/directives" data-view="directives"
+            ><span class="nav-icon" aria-hidden="true">≡</span>Directives</a
           >
           <a href="#/attention" data-view="attention"
             ><span class="nav-icon" aria-hidden="true">◈</span>Needs you
@@ -1688,11 +1719,13 @@
         telegram: "telegram",
         secrets: "secrets",
         provider: "pi-provider",
+        modelOverrides: "model-overrides",
         rules: "rules",
         patterns: "patterns",
         exceptions: "exceptions",
         domains: "domains",
         routes: "routes",
+        directives: "directives",
         technocore: "technocore",
       };
       const data = Object.fromEntries(
@@ -1721,6 +1754,10 @@
       const titles = {
         projects: ["Projects", "Recent worker activity by project."],
         tasks: ["Tasks", "Create work and follow it from queue to completion."],
+        directives: [
+          "Directives",
+          "Standing instructions workers read before they plan, each with a code they can cite.",
+        ],
         attention: [
           "Needs you",
           "Decisions, access requests, and jobs the agents cannot finish alone.",
@@ -2027,7 +2064,12 @@
             if (pending.has(key)) return pending.get(key);
             const job = api(endpoints[key])
               .then((value) => {
-                data[key] = key === "asks" ? value?.asks || [] : value;
+                data[key] =
+                  key === "asks"
+                    ? value?.asks || []
+                    : key === "directives"
+                      ? value?.directives || []
+                      : value;
                 loaded.add(key);
                 failures.delete(key);
               })
@@ -2110,7 +2152,7 @@
         const [title, description] = titles[view];
         document.title = title + " / piso";
         $("#page").innerHTML =
-          `<header class="page-head"><div><h1>${title}</h1><p>${description}</p></div><div class="page-actions">${view === "tasks" ? button("New task", "task-new", "", "primary") : view === "projects" ? button("New task", "task-new") + button("Review requests", "go-attention", "", "quiet") : view === "traffic" ? button(paused ? "Resume feed" : "Pause feed", "pause", "", "quiet") : ""}</div></header>${sections[view] ? `<div class="subnav" aria-label="${title} sections">${sections[view].map(([k, t]) => `<button data-action="section" data-id="${k}" aria-pressed="${sub === k}">${t}</button>`).join("")}</div>` : ""}${["attention", "tasks"].includes(view) ? "" : `<div class="toolbar"><label class="search"><span class="sr-label" hidden>Search</span><input id="search" type="search" aria-label="Search ${esc(title)}" placeholder="${view === "projects" ? "Find a project…" : view === "traffic" ? "Find a worker, address, or request…" : "Filter records…"}"></label>${view === "projects" ? '<label>Show <select id="projectFilter"><option value="all">Visible projects</option><option value="needs">Needs attention</option><option value="hidden">Hidden projects</option></select></label>' : view === "traffic" ? '<label>Verdict <select id="verdictFilter"><option value="all">All requests</option><option value="block">Blocked</option><option value="substitute">Substituted</option><option value="allow">Allowed</option></select></label>' : ""}<span class="count" id="resultCount"></span></div>`}<div id="content"></div>`;
+          `<header class="page-head"><div><h1>${title}</h1><p>${description}</p></div><div class="page-actions">${view === "tasks" ? button("New task", "task-new", "", "primary") : view === "directives" ? button("New directive", "directive-new", "", "primary") : view === "projects" ? button("New task", "task-new") + button("Review requests", "go-attention", "", "quiet") : view === "traffic" ? button(paused ? "Resume feed" : "Pause feed", "pause", "", "quiet") : ""}</div></header>${sections[view] ? `<div class="subnav" aria-label="${title} sections">${sections[view].map(([k, t]) => `<button data-action="section" data-id="${k}" aria-pressed="${sub === k}">${t}</button>`).join("")}</div>` : ""}${["attention", "tasks"].includes(view) ? "" : `<div class="toolbar"><label class="search"><span class="sr-label" hidden>Search</span><input id="search" type="search" aria-label="Search ${esc(title)}" placeholder="${view === "projects" ? "Find a project…" : view === "traffic" ? "Find a worker, address, or request…" : "Filter records…"}"></label>${view === "projects" ? '<label>Show <select id="projectFilter"><option value="all">Visible projects</option><option value="needs">Needs attention</option><option value="hidden">Hidden projects</option></select></label>' : view === "traffic" ? '<label>Verdict <select id="verdictFilter"><option value="all">All requests</option><option value="block">Blocked</option><option value="substitute">Substituted</option><option value="allow">Allowed</option></select></label>' : ""}<span class="count" id="resultCount"></span></div>`}<div id="content"></div>`;
         $("#search")?.addEventListener("input", (e) => {
           query = e.target.value.toLowerCase();
           renderContent();
@@ -2183,6 +2225,7 @@
         if (!$("#content")) return;
         if (view === "projects") renderProjects();
         else if (view === "tasks") renderTasks();
+        else if (view === "directives") renderDirectives();
         else if (view === "attention") renderAttention();
         else if (view === "traffic") renderTraffic();
         else renderSettings();
@@ -2190,9 +2233,13 @@
       // Task state is separate from global refresh: only the visible page is polled.
       const taskUI = {group: "active", cursor: "", previous: [], next: null,
         rows: [], detail: null, id: "", error: "", loading: false, sequence: 0, search: "", searchDraft: ""};
-      const taskStatus = (t) => ({open: "Queued", working: "Working", waiting:
+      // A proposed task is a worker's suggestion: it is a real row, but nothing
+      // can claim it until a human approves it in Needs you.
+      const taskStatus = (t) => ({proposed: "Proposed", open: "Queued", working: "Working", waiting:
         t.waitReasons?.includes("review") ? "Needs review" : "Waiting",
         done: "Done", failed: "Failed", cancelled: "Cancelled"}[t.status] || t.status);
+      const taskTone = (t) =>
+        t.status === "proposed" ? "info" : t.status === "failed" ? "bad" : t.status === "done" ? "good" : "";
       async function loadTasks() {
         const sequence = ++taskUI.sequence;
         taskUI.loading = true;
@@ -2223,7 +2270,8 @@
         if (taskUI.id) {
           const t = taskUI.detail;
           const prose = (title, text) => text ? `<section><h2>${esc(title)}</h2><p class="task-prose">${esc(text)}</p></section>` : "";
-          replaceContent(`<p><a href="#/tasks">Back to tasks</a></p>${notice}${t ? `<article class="task-detail"><header><h2>${esc(t.title)}</h2>${badge(taskStatus(t), t.status === "failed" ? "bad" : "")}</header>
+          replaceContent(`<p><a href="#/tasks">Back to tasks</a></p>${notice}${t ? `<article class="task-detail"><header><h2>${esc(t.title)}</h2>${badge(taskStatus(t), taskTone(t))}</header>
+            ${t.status === "proposed" ? `<p>${esc(t.proposedBy || "A worker")} proposed this work. Nothing can claim it until you approve it, and it can be revised or withdrawn until you do. <a href="#/attention">Decide in Needs you</a>.</p>` : ""}
             ${t.status === "waiting" ? '<p><a href="#/attention">Review requests in Needs you</a></p>' : ""}
             ${prose("Instructions", t.body)}${prose("Acceptance criteria", t.acceptanceCriteria)}
             ${prose("Latest checkpoint", t.checkpoint)}${prose("Result", t.result?.summary)}${prose("Evidence", t.result?.evidence)}
@@ -2240,7 +2288,7 @@
         const end = searchFocused ? active.selectionEnd : null;
         replaceContent(`<div class="subnav" aria-label="Task status">${["active", "finished"].map(g => `<button data-action="task-group" data-id="${g}" aria-pressed="${taskUI.group === g}">${g === "active" ? "Active" : "Finished"}</button>`).join("")}</div>
           <form id="taskSearchForm" class="toolbar"><label class="search">Search titles<input id="taskSearch" type="search" maxlength="300" value="${esc(taskUI.searchDraft)}"></label><button type="submit">Search</button></form>
-          ${notice}<div class="task-list" aria-busy="${taskUI.loading}">${taskUI.rows.map(t => `<a class="task-row" href="#/tasks/${enc(t.id)}"><strong>${esc(t.title)}</strong>${badge(taskStatus(t), t.status === "failed" ? "bad" : t.status === "done" ? "good" : "")}</a>`).join("") || (taskUI.loading ? '<p role="status">Loading tasks…</p>' : taskUI.error ? "" : empty(taskUI.search ? "No matching tasks" : taskUI.group === "active" ? "No active tasks" : "No finished tasks", taskUI.group === "active" ? "Create a task. Eligible workers pick up queued work automatically." : "Completed, failed, and cancelled tasks appear here."))}</div>
+          ${notice}<div class="task-list" aria-busy="${taskUI.loading}">${taskUI.rows.map(t => `<a class="task-row" href="#/tasks/${enc(t.id)}"><strong>${esc(t.title)}</strong>${badge(taskStatus(t), taskTone(t))}</a>`).join("") || (taskUI.loading ? '<p role="status">Loading tasks…</p>' : taskUI.error ? "" : empty(taskUI.search ? "No matching tasks" : taskUI.group === "active" ? "No active tasks" : "No finished tasks", taskUI.group === "active" ? "Create a task. Eligible workers pick up queued work automatically." : "Completed, failed, and cancelled tasks appear here."))}</div>
           ${taskUI.previous.length || taskUI.next ? `<nav class="actions task-pagination" aria-label="Task pages"><button data-action="task-prev" ${!taskUI.previous.length || taskUI.loading ? "disabled" : ""}>Previous</button><span>Page ${taskUI.previous.length + 1}</span><button data-action="task-next" ${!taskUI.next || taskUI.loading ? "disabled" : ""}>Next</button></nav>` : ""}`);
         $("#taskSearch").oninput = e => { taskUI.searchDraft = e.target.value; };
         $("#taskSearchForm").onsubmit = e => { e.preventDefault(); taskUI.search = $("#taskSearch").value.trim(); taskUI.cursor = ""; taskUI.previous = []; taskUI.rows = []; taskUI.next = null; loadTasks(); };
@@ -2932,8 +2980,10 @@
       setInterval(() => {
         if (!document.hidden) updateTimeline();
       }, 1000);
-      function askCard(kind, source, title, description, actions, extra = "") {
-        return `<article class="ask"><div class="ask-top"><span>${esc(kind)}</span><span>${esc(source)}</span></div><h3>${esc(title)}</h3><p>${esc(description)}</p>${extra}<div class="actions">${actions}</div></article>`;
+      function askCard(kind, source, title, description, actions, extra = "", revision = "") {
+        // The revision the card was rendered from rides along so a decision can
+        // name exactly the text the human read, not whatever arrived since.
+        return `<article class="ask"${revision ? ` data-revision="${esc(revision)}"` : ""}><div class="ask-top"><span>${esc(kind)}</span><span>${esc(source)}</span></div><h3>${esc(title)}</h3><p>${esc(description)}</p>${extra}<div class="actions">${actions}</div></article>`;
       }
       function renderAttention() {
         const cards = [];
@@ -2963,13 +3013,20 @@
               ),
             );
           }
+          const proposal = a.kind === "approval" && a.action === "task.propose";
           cards.push(
             askCard(
-              a.kind === "human" ? "Human task" : "Decision",
+              a.kind === "human"
+                ? "Human task"
+                : proposal
+                  ? "Proposed work"
+                  : "Decision",
               a.from || "",
               a.title || a.action || "Request",
               a.instructions ||
-                a.action ||
+                (proposal
+                  ? `${a.detail || ""} Approving queues it like any other task; rejecting cancels it.`.trim()
+                  : a.action) ||
                 "The worker is waiting for your decision.",
               a.kind === "human"
                 ? button("Done", "ask-completed", a.id, "primary") +
@@ -2977,6 +3034,8 @@
                     button("Can’t do this", "ask-rejected", a.id, "danger")
                 : button("Approve", "ask-approved", a.id, "primary") +
                     button("Reject", "ask-rejected", a.id, "danger"),
+              "",
+              proposal ? a.revision || "" : "",
             ),
           );
         });
@@ -3096,6 +3155,182 @@
                 )
           }`,
         );
+      }
+      // Directives are standing instructions, not tasks. Workers read them before
+      // they plan, and the code (D4) is the name a worker cites when it follows
+      // one, so every row leads with the code and shows it in the record key too.
+      const directiveKinds = [
+        ["instruction", "Instruction"],
+        ["policy", "Policy"],
+        ["objective", "Objective"],
+      ];
+      const directiveStatuses = [
+        ["active", "Active"],
+        ["paused", "Paused"],
+        ["blocked", "Blocked"],
+        ["complete", "Complete"],
+        ["cancelled", "Cancelled"],
+      ];
+      const directiveTone = {
+        active: "good",
+        paused: "warn",
+        blocked: "bad",
+        complete: "info",
+        cancelled: "warn",
+      };
+      const directiveKindLabel = (kind) =>
+        (directiveKinds.find(([k]) => k === kind) || [kind, kind])[1];
+      const directiveStatusLabel = (status) =>
+        (directiveStatuses.find(([k]) => k === status) || [
+          status,
+          status.charAt(0).toUpperCase() + status.slice(1),
+        ])[1];
+      const directiveLabelsText = (labels) =>
+        Object.entries(labels || {})
+          .map(([k, v]) => k + "=" + v)
+          .join(", ");
+      function parseDirectiveLabels(value) {
+        const labels = {};
+        String(value || "")
+          .split(",")
+          .map((part) => part.trim())
+          .filter(Boolean)
+          .forEach((part) => {
+            const at = part.indexOf("=");
+            const key = at < 0 ? "" : part.slice(0, at).trim();
+            const val = at < 0 ? "" : part.slice(at + 1).trim();
+            if (!key || !val)
+              throw new Error(
+                "Labels are key=value pairs, separated by commas. For example repo=v1-mono.",
+              );
+            labels[key] = val;
+          });
+        return labels;
+      }
+      function renderDirectives() {
+        const rows = list("directives").filter((r) =>
+          matches(
+            r.code,
+            r.title,
+            r.body,
+            r.kind,
+            r.status,
+            directiveLabelsText(r.labels),
+          ),
+        );
+        count(rows.length, "directives");
+        replaceContent(
+          rows
+            .map((r) =>
+              record(
+                "directive-" + r.id,
+                r.code + " · " + r.title,
+                r.body.length > 140 ? r.body.slice(0, 140) + "…" : r.body,
+                badge(
+                  directiveStatusLabel(r.status),
+                  directiveTone[r.status] || "",
+                ),
+                `<p class="directive-text">${esc(r.body)}</p>` +
+                  facts([
+                    ["Code", r.code],
+                    ["Kind", directiveKindLabel(r.kind)],
+                    [
+                      "Applies to",
+                      r.kind === "objective"
+                        ? "This objective's tasks"
+                        : directiveLabelsText(r.labels) || "Every task",
+                    ],
+                    ["Priority", r.priority ? String(r.priority) : ""],
+                    ["Completion", r.completionCriteria],
+                    [
+                      "Updated",
+                      r.updatedAt ? new Date(r.updatedAt).toLocaleString() : "",
+                    ],
+                  ]) +
+                  `<div class="actions">${button("Edit", "directive-edit", r.id, "small")}${["active", "paused"].includes(r.status) ? button(r.status === "paused" ? "Resume" : "Pause", "directive-toggle", r.id, "small") : ""}${button("Delete", "directive-delete", r.id, "small danger")}</div>`,
+                directiveKindLabel(r.kind),
+              ),
+            )
+            .join("") ||
+            empty(
+              query
+                ? "No matches"
+                : loaded.has("directives")
+                  ? "No directives yet"
+                  : "Data not available yet",
+              query
+                ? "Try another search."
+                : "Directives are standing instructions. Use “New directive” to add one; workers read them before they plan.",
+            ),
+        );
+      }
+      function directiveForm(id) {
+        const d = list("directives").find((d) => d.id === id);
+        if (id && !d) throw new Error("Directive not found; refresh the page.");
+        // An id is minted once per dialog so a retry cannot create two directives.
+        const directiveUUID = taskUUID();
+        formDialog(
+          id ? "Edit " + d.code : "New directive",
+          id
+            ? "Editing the text changes what workers read next session. Retire a directive by pausing it."
+            : "Workers read directives at session start and cite the code they followed. Nothing here is a task: a directive shapes how work is done.",
+          field("title", "Title", d?.title, { required: true, full: true }) +
+            field("body", "Instruction", d?.body, {
+              type: "textarea",
+              required: true,
+              full: true,
+              hint: "Write it as a rule the worker can follow, and say why it matters.",
+            }) +
+            field("kind", "Kind", d?.kind || "instruction", {
+              choices: directiveKinds,
+              hint: "An objective is a work container; preference kinds apply to tasks.",
+            }) +
+            field("status", "Status", d?.status || "active", {
+              choices: directiveStatuses,
+            }) +
+            field("priority", "Priority", d?.priority ?? 0, {
+              type: "number",
+              min: 0,
+              max: 1000,
+              hint: "Higher reads first when several apply.",
+            }) +
+            field("labels", "Labels", directiveLabelsText(d?.labels), {
+              full: true,
+              hint: "Optional key=value scope, comma separated (repo=v1-mono, area=auth). Blank applies to every task.",
+            }) +
+            field("completionCriteria", "Completion criteria", d?.completionCriteria, {
+              type: "textarea",
+              full: true,
+            }),
+          id ? "Save directive" : "Create directive",
+          async (values) => {
+            if (!values.title.trim()) throw new Error("Enter a title.");
+            if (!values.body.trim()) throw new Error("Enter the instruction.");
+            const priority = Number(values.priority || 0);
+            if (!Number.isInteger(priority) || priority < 0 || priority > 1000)
+              throw new Error("Priority is a whole number from 0 to 1000.");
+            const payload = {
+              title: values.title.trim(),
+              body: values.body,
+              kind: values.kind,
+              status: values.status,
+              priority,
+              labels: parseDirectiveLabels(values.labels),
+              completionCriteria: values.completionCriteria,
+            };
+            const row = id
+              ? await api("directives/" + enc(id), "PUT", payload)
+              : await api("directives", "POST", { id: directiveUUID, ...payload });
+            await changed(["directives"]);
+            return (id ? "Saved " : "Created ") + row.code + ".";
+          },
+        );
+        if ($("#f-title")) $("#f-title").maxLength = 300;
+        if ($("#f-body")) {
+          $("#f-body").maxLength = 20000;
+          $("#f-body").rows = 8;
+        }
+        $("#f-title")?.focus();
       }
       const intros = {
         secrets: [
@@ -3449,7 +3684,8 @@
                 : empty(
                     "No providers yet",
                     "Add a provider to choose the model pi sessions start on.",
-                  )),
+                  )) +
+              (providers.length ? overrideSection() : ""),
           );
         }
         rows = rows.filter((r) =>
@@ -4089,6 +4325,104 @@
           </div>
         </article>`;
       }
+      function overrideData() {
+        const raw = data.modelOverrides;
+        if (!raw || Array.isArray(raw)) return { overrides: [], account: {}, providers: [] };
+        return {
+          overrides: Array.isArray(raw.overrides) ? raw.overrides : [],
+          account: raw.account || {},
+          providers: Array.isArray(raw.providers) ? raw.providers : [],
+        };
+      }
+
+      // A worker override pins one worker to one provider in the shared stack.
+      // The stack stays exactly as it is; only the starting selection differs,
+      // so an override needs no container recreate and no second profile.
+      function overrideSection() {
+        const { overrides, account, providers } = overrideData();
+        const workers = list("workers");
+        const pinned = new Set(overrides.map((o) => o.slug));
+        const inheriting = workers.filter((w) => !pinned.has(w.slug)).length;
+        const accountLine = account.providerId
+          ? `Account default: <strong>${esc(account.providerName || account.providerId)}</strong>` +
+            (account.model ? ` · ${esc(account.model)}` : "") +
+            (inheriting
+              ? ` — ${inheriting} ${inheriting === 1 ? "worker follows" : "workers follow"} it.`
+              : " — no worker is left on it.")
+          : "No account default is set yet; workers without an override fall back to the first registered model.";
+        const rows = overrides
+          .map((o) => {
+            const live = o.model ? o.model : "no model resolved";
+            const warning = o.warning
+              ? `<p class="override-warning">${esc(o.warning)}</p>`
+              : "";
+            return `<li class="override-row">
+              <span class="override-worker">${esc(o.slug)}</span>
+              <span class="override-provider">${esc(o.providerName || o.providerId || "provider removed")}</span>
+              <span class="override-model">${esc(live)}</span>
+              ${button("Remove", "override-remove", o.slug, "small danger")}
+              ${warning}
+            </li>`;
+          })
+          .join("");
+        return `<section class="override-section">
+          <div class="override-head">
+            <div>
+              <h2>Worker overrides</h2>
+              <p class="override-inherit">${accountLine}</p>
+            </div>
+            ${button(overrides.length ? "Add override" : "Override a worker", "override-add")}
+          </div>
+          ${rows ? `<ul class="override-list">${rows}</ul>` : `<p class="override-inherit" style="margin-top:16px">Every worker follows the account default.</p>`}
+        </section>`;
+      }
+
+      function overrideForm() {
+        const { overrides, providers } = overrideData();
+        const pinned = new Set(overrides.map((o) => o.slug));
+        const free = list("workers").filter((w) => w.slug && !pinned.has(w.slug));
+        if (!providers.length) {
+          notify("Add a provider before overriding a worker.", true);
+          return;
+        }
+        if (!free.length) {
+          notify(
+            overrides.length
+              ? "Every worker already has an override. Remove one to change it."
+              : "No workers have registered yet.",
+            true,
+          );
+          return;
+        }
+        const scopeNote = (p) =>
+          Array.isArray(p.workers) && p.workers.length
+            ? ` (secret granted to ${p.workers.length === 1 ? "one worker" : p.workers.length + " workers"})`
+            : "";
+        formDialog(
+          "Override a worker's provider",
+          "The worker starts on this provider instead of the account default. The shared provider stack is unchanged, and the switch happens at the worker's next idle boundary — no reload is needed. A provider whose secret is not granted to the worker cannot be chosen: the worker would receive a placeholder it has no value for.",
+          field("slug", "Worker", free[0].slug, {
+            required: true,
+            full: true,
+            choices: free.map((w) => [w.slug, w.slug]),
+          }) +
+            field("providerId", "Provider", providers[0].id, {
+              required: true,
+              full: true,
+              choices: providers.map((p) => [
+                p.id,
+                (p.name || p.id) + (p.defaultModel ? " · " + p.defaultModel : "") + scopeNote(p),
+              ]),
+            }),
+          "Pin worker",
+          async (f) => {
+            await api("model-overrides", "PUT", { slug: f.slug, providerId: f.providerId });
+            await changed(["modelOverrides"]);
+            return "Override saved. The worker switches at its next idle boundary.";
+          },
+        );
+      }
+
       function providerForm(id) {
         const p = (data.provider?.providers || []).find((x) => x.id === id) || {};
         const catalog = { models: [] };
@@ -4124,7 +4458,7 @@
               id: id || "",
               models: catalog.models,
             });
-            await changed(["provider"]);
+            await changed(["provider", "modelOverrides"]);
             if (out.warning) return out.warning;
             return id ? "Provider saved." : "Provider added.";
           },
@@ -4687,6 +5021,8 @@
       }
       async function action(name, id, source) {
         if (name === "task-new") return newTask();
+        if (name === "directive-new") return directiveForm("");
+        if (name === "directive-edit") return directiveForm(id);
         if (name === "task-retry") return loadTasks();
         if (name === "task-next") { taskUI.previous.push(taskUI.cursor); taskUI.cursor = taskUI.next; return loadTasks(); }
         if (name === "task-prev") { taskUI.cursor = taskUI.previous.pop() || ""; return loadTasks(); }
@@ -4751,10 +5087,24 @@
         if (name === "github-user-authorize") return githubUserStart();
         if (name === "github-user-signout") return githubUserStop();
         if (name === "provider-edit") return providerForm(id);
+        if (name === "override-add") return overrideForm();
+        if (name === "override-remove") {
+          if (!id) return;
+          return confirmAction(
+            "Remove override?",
+            id +
+              " goes back to whatever the account default is at its next idle boundary, and loses the pin to its current provider.",
+            "Remove",
+            async () => {
+              await api("model-overrides/" + encodeURIComponent(id), "DELETE");
+              await changed(["modelOverrides"]);
+            },
+          );
+        }
         if (name === "provider-activate") {
           if (!id) return;
           await api("pi-provider/activate", "POST", { id });
-          await changed(["provider"]);
+          await changed(["provider", "modelOverrides"]);
           return;
         }
         if (name === "provider-delete") {
@@ -4768,7 +5118,7 @@
             "Delete",
             async () => {
               await api("pi-provider/delete", "POST", { id });
-              await changed(["provider"]);
+              await changed(["provider", "modelOverrides"]);
             },
           );
         }
@@ -4832,14 +5182,33 @@
             });
             return changed(["asks"]);
           }
-          await api(
-            "asks/" +
-              (a.kind === "human" ? "human-actions/" : "approvals/") +
-              enc(id) +
-              (a.kind === "human" ? "/resolve" : "/decide"),
-            "POST",
-            a.kind === "human" ? { status: decision } : { decision },
-          );
+          // The revision rendered into this card, not the newest one fetched:
+          // a poll between painting and clicking must not launder an edit.
+          const seen =
+            source?.closest?.(".ask")?.dataset.revision || a.revision;
+          try {
+            await api(
+              "asks/" +
+                (a.kind === "human" ? "human-actions/" : "approvals/") +
+                enc(id) +
+                (a.kind === "human" ? "/resolve" : "/decide"),
+              "POST",
+              a.kind === "human"
+                ? { status: decision }
+                : { decision, ...(seen ? { seenRevision: seen } : {}) },
+            );
+          } catch (error) {
+            // A stale card is not an error the human caused: refresh it, say so
+            // in plain words, and let them read the current text.
+            if (error.status === 409 || error.status === 400) {
+              await changed(["asks"]);
+              notify(
+                "That request changed while you were deciding. The card is refreshed — check it and decide again.",
+              );
+              return;
+            }
+            throw error;
+          }
           return changed(["asks"]);
         }
         if (name === "mcp-auth") return authorizeMCP(id);
@@ -4876,6 +5245,41 @@
               await changed(["github", "githubPending", "connections"]);
             },
           );
+        if (name === "directive-toggle") {
+          const d = list("directives").find((d) => d.id === id);
+          if (!d) throw new Error("Directive not found; refresh the page.");
+          const paused = d.status === "paused";
+          return confirmAction(
+            paused ? "Resume " + d.code + "?" : "Pause " + d.code + "?",
+            paused
+              ? "Workers read it again at their next session start. Tasks already running are unchanged."
+              : "Workers stop reading it at their next session start. Nothing is deleted, and the code stays reserved for this directive.",
+            paused ? "Resume directive" : "Pause directive",
+            async () => {
+              await api("directives/" + enc(id), "PUT", {
+                status: paused ? "active" : "paused",
+              });
+              await changed(["directives"]);
+            },
+          );
+        }
+        if (name === "directive-delete") {
+          const d = list("directives").find((d) => d.id === id);
+          if (!d) throw new Error("Directive not found; refresh the page.");
+          return confirmAction(
+            "Delete " + d.code + "?",
+            "Workers stop seeing “" +
+              d.title +
+              "”. The code " +
+              d.code +
+              " is never reused, so any handoff that cites it stays traceable. Pausing keeps the text if you only want a break.",
+            "Delete directive",
+            async () => {
+              await api("directives/" + enc(id), "DELETE");
+              await changed(["directives"]);
+            },
+          );
+        }
         if (name === "route-open") {
           const r = list("routes").find((r) => r.id === id);
           return openExternal(routeURL(r.name));

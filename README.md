@@ -103,6 +103,36 @@ The shared profile is a read-only mount. A running session re-reads it every
 15 seconds and applies provider or default changes at its next idle boundary,
 so selecting a provider does not require a restart or `/reload`.
 
+### Per-worker overrides
+
+The active provider is the default for every worker. When one worker needs a
+different model, the dashboard's **Worker overrides** list pins that worker to
+another profile from the same stack — it does not add a provider, a key, or a
+second profile. A worker with no override keeps following the active provider,
+so an empty override list is exactly the previous behaviour.
+
+The override is keyed by the worker **slug** and stores only a provider id, so
+there is at most one per worker: adding a second replaces the first, and
+deleting a worker drops its row (a later project that claims the same slug
+starts clean). It lives in `state.json` and is never synced to Technocore, the
+same way a per-worker internet toggle is local to this gateway.
+
+Workers read their own answer from `GET /api/v1/worker/model` on the same
+15-second tick that re-reads the shared profile, and cache it in
+`~/.pi/agent/piso-model.json`. That is why an override needs no container
+restart and also reaches remote ("cloud-ship") workers, whose `/etc/piso` the
+gateway cannot write: the cache carries the last answer, so a worker that boots
+while the gateway is down still starts on its pinned provider and corrects
+itself on the next successful poll. Precedence is override → active provider →
+first registered model, resolved in one place on the gateway.
+
+The provider must already be in the stack, and its secret must be granted to
+that worker: an override whose placeholder the worker never receives could
+only fail with a 403, so the dashboard refuses the pick and names the fix
+(**Access → Secrets**). If a pinned provider is later deleted the row stays
+visible and marked, and the worker falls back to the active provider until the
+provider is recreated or the override is removed.
+
 ### Windows
 
 The worker and gateway are still Linux containers. Native `piso.exe` talks to Docker Desktop (Linux engine). Cloning inside WSL2 and following the Unix install above is simpler and faster for project bind-mounts; use this path when you want a Windows CLI.

@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Api, Model, ModelsStoreEntry, RefreshModelsContext } from "@earendil-works/pi-ai";
@@ -31,6 +31,13 @@ type ActiveDefault = {
 	provider: string;
 	model: string;
 };
+
+// The gateway's per-worker answer lives in the agent dir rather than in the
+// shared profile: settings.json is a read-only mount, and a worker that starts
+// while the gateway is unreachable must still know which provider it was pinned
+// to. The file holds no secret — a provider id and a model id.
+const OVERRIDE_CACHE_FILE = "piso-model.json";
+const OVERRIDE_FETCH_TIMEOUT_MS = 3_000;
 
 function isObject(value: unknown): value is JsonObject {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -214,7 +221,73 @@ export async function loadProfiles(dir = agentDir()): Promise<ProviderProfile[]>
 	return [...byId.values()];
 }
 
+// ModelOverride is the gateway's answer to "which provider should this worker
+// start on". An empty provider means the worker follows the account default.
+type ModelOverride = { provider: string; model: string };
+
+function overrideCachePath(dir: string): string {
+	return join(dir, OVERRIDE_CACHE_FILE);
+}
+
+function gatewayBase(): string {
+	return (process.env.GATEWAY_URL ?? "").trim().replace(/\/+$/, "");
+}
+
+function parseOverride(payload: unknown): ModelOverride | undefined {
+	if (!isObject(payload)) return undefined;
+	const raw = typeof payload.provider === "string" ? payload.provider.trim() : "";
+	return {
+		provider: raw ? normalizeProviderId(raw) : "",
+		model: typeof payload.model === "string" ? payload.model.trim() : "",
+	};
+}
+
+// refreshOverrideCache asks the gateway which provider this worker is pinned to
+// and stores the answer next to the agent profile. Failures are silent and
+// non-retrying: the previous answer stays in the cache, so an unreachable
+// gateway means a worker keeps starting on the provider it last used instead of
+// losing its override. The file is only rewritten when the answer changes.
+async function refreshOverrideCache(dir = agentDir()): Promise<void> {
+	const base = gatewayBase();
+	const worker = process.env.PISO_WORKER_NAME?.trim();
+	if (!base || !worker) return;
+	let next: ModelOverride | undefined;
+	try {
+		const response = await fetch(
+			`${base}/api/v1/worker/model?worker=${encodeURIComponent(worker)}`,
+			{
+				headers: { accept: "application/json" },
+				redirect: "error",
+				signal: AbortSignal.timeout(OVERRIDE_FETCH_TIMEOUT_MS),
+			},
+		);
+		if (!response.ok) return;
+		next = parseOverride(await response.json());
+	} catch {
+		return;
+	}
+	if (!next) return;
+	const current = parseOverride(await readJson(overrideCachePath(dir)));
+	if (current && current.provider === next.provider && current.model === next.model) return;
+	try {
+		await writeFile(
+			overrideCachePath(dir),
+			`${JSON.stringify({ provider: next.provider, model: next.model })}\n`,
+		);
+	} catch {
+		// A read-only or full agent dir must not break the session.
+	}
+}
+
 async function loadActiveDefault(dir = agentDir()): Promise<ActiveDefault> {
+	// A worker override outranks the account default. The cache is written by
+	// refreshOverrideCache, and an empty provider in it means "the gateway says
+	// follow the account default", so a removed override cannot resurrect from
+	// a stale file a restart later.
+	const override = parseOverride(await readJson(overrideCachePath(dir)));
+	if (override && override.provider) {
+		return { provider: override.provider, model: override.model };
+	}
 	const payload = await readJson(join(dir, "settings.json"));
 	if (!isObject(payload)) return { provider: "", model: "" };
 	const provider = typeof payload.defaultProvider === "string" ? payload.defaultProvider.trim() : "";
@@ -383,6 +456,9 @@ export function wireLiveApply(
 	for (const profile of initialProfiles) state.configs.set(profile.id, providerConfigKey(profile));
 
 	const apply = async (ctx: ExtensionContext, force: boolean): Promise<void> => {
+		// Ask the gateway for this worker's provider pin before reading the
+		// shared profile: the pin decides which of the shared providers wins.
+		await refreshOverrideCache();
 		const profiles = await loadProfiles();
 		const active = await loadActiveDefault();
 		const signature = snapshotKey(profiles, active);
@@ -444,6 +520,21 @@ export function wireLiveApply(
 						`Piso: default model ${active.provider}/${active.model} is not in this session's catalog ` +
 							`(${catalog.length} chat models registered for ${active.provider}); keeping the current model. ` +
 							"Re-save the provider in the dashboard, or clear its default model to accept the first catalog entry.",
+					);
+				}
+			} else if (catalog.length === 0) {
+				// The selected provider has no models at all: a worker override
+				// pointing at a provider the dashboard never wrote into the
+				// shared profile lands here. Retry silently while the catalog
+				// fills in, then say it once instead of looping forever.
+				const key = `empty:${active.provider}`;
+				const streak = (unresolvedStreak.get(key) ?? 0) + 1;
+				unresolvedStreak.set(key, streak);
+				if (streak >= UNRESOLVED_POLLS) {
+					warnOnce(
+						key,
+						`Piso: provider ${active.provider} has no models registered in this session; keeping the current model. ` +
+							"Re-save it in the dashboard (or clear the worker override) to apply.",
 					);
 				}
 			}

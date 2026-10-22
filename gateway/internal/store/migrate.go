@@ -145,5 +145,14 @@ func applyMigrations(st *State) bool {
 		st.Version = 10
 		changed = true
 	}
+	// v10→v11: per-worker model overrides. Older files simply have no rows,
+	// which means every worker follows the account default.
+	if st.Version < 11 {
+		if st.ModelOverrides == nil {
+			st.ModelOverrides = []ModelOverrideRec{}
+		}
+		st.Version = 11
+		changed = true
+	}
 	return changed
 }

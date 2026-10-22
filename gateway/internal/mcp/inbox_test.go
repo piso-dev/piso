@@ -146,22 +146,167 @@ func TestTaskCompleteRequiresSummary(t *testing.T) {
 	t.Fatalf("summary must be required, got %v", required)
 }
 
-func TestDirectivePropose(t *testing.T) {
+func TestTaskPropose(t *testing.T) {
 	h := New(nil, nil, t.TempDir())
 	var gotPath, gotBody string
 	h.CoordinatorDo = func(method, path string, query url.Values, body []byte) (int, []byte, error) {
 		gotPath, gotBody = path, string(body)
-		return 201, []byte(`{"id":"d1","status":"pending"}`), nil
+		return 201, []byte(`{"id":"t1","status":"proposed","approvalId":"a1"}`), nil
 	}
-	out, rpcErr := h.toolDirectivePropose(store.WorkerRec{PrincipalID: "prin-1"}, json.RawMessage(`{"title":"Host","body":"Add one."}`))
+	out, rpcErr := h.toolTaskPropose(store.WorkerRec{PrincipalID: "prin-1"}, json.RawMessage(
+		`{"requestId":"r1","title":"Host","body":"Add one.","acceptanceCriteria":"paired"}`))
 	if rpcErr != nil {
 		t.Fatal(rpcErr.Message)
 	}
-	if gotPath != "/api/v1/directives" || !strings.Contains(gotBody, `"title":"Host"`) {
+	// Proposals ride the task surface: they are work, not standing orders.
+	if gotPath != "/api/v1/tasks/propose" || !strings.Contains(gotBody, `"title":"Host"`) {
 		t.Fatalf("%s %s", gotPath, gotBody)
 	}
-	if out.(map[string]any)["status"] != "pending" {
+	if !strings.Contains(gotBody, `"requestId":"r1"`) || !strings.Contains(gotBody, `"acceptanceCriteria":"paired"`) {
+		t.Fatalf("requestId and criteria must survive: %s", gotBody)
+	}
+	if out.(map[string]any)["status"] != "proposed" {
 		t.Fatalf("%v", out)
+	}
+}
+
+func TestTaskProposeEditSendsOnlyWhatChanged(t *testing.T) {
+	h := New(nil, nil, t.TempDir())
+	var gotPath, gotBody string
+	h.CoordinatorDo = func(method, path string, query url.Values, body []byte) (int, []byte, error) {
+		gotPath, gotBody = path, string(body)
+		return 200, []byte(`{"id":"t1","status":"proposed","revised":["title"]}`), nil
+	}
+	out, rpcErr := h.tools["task_propose_edit"].Call(store.WorkerRec{PrincipalID: "prin-1"},
+		json.RawMessage(`{"id":"t1","requestId":"r1","title":"Add two hosts","acceptanceCriteria":""}`))
+	if rpcErr != nil {
+		t.Fatal(rpcErr.Message)
+	}
+	if gotPath != "/api/v1/tasks/t1/proposal/edit" {
+		t.Fatalf("path %s", gotPath)
+	}
+	// A patch must not carry the fields the caller left alone: an empty string
+	// means "unchanged", and re-sending the whole task would erase an edit.
+	var sent map[string]any
+	if err := json.Unmarshal([]byte(gotBody), &sent); err != nil {
+		t.Fatal(err)
+	}
+	if sent["title"] != "Add two hosts" || sent["requestId"] != "r1" {
+		t.Fatalf("body %s", gotBody)
+	}
+	if _, ok := sent["acceptanceCriteria"]; ok {
+		t.Fatalf("blank field must be omitted: %s", gotBody)
+	}
+	if out.(map[string]any)["status"] != "proposed" {
+		t.Fatalf("%v", out)
+	}
+}
+
+func TestTaskProposeEditNeedsAChangeAndKey(t *testing.T) {
+	h := New(nil, nil, t.TempDir())
+	h.CoordinatorDo = func(method, path string, query url.Values, body []byte) (int, []byte, error) {
+		t.Fatal("coordinator must not run")
+		return 0, nil, nil
+	}
+	for _, args := range []string{
+		`{"id":"t1","requestId":"r1"}`,
+		`{"id":"t1","title":"Only a title"}`,
+	} {
+		if _, rpcErr := h.toolTaskProposeEdit(store.WorkerRec{PrincipalID: "p"}, json.RawMessage(args)); rpcErr == nil {
+			t.Fatalf("accepted %s", args)
+		}
+	}
+}
+
+func TestTaskProposeWithdraw(t *testing.T) {
+	h := New(nil, nil, t.TempDir())
+	var gotPath, gotBody string
+	h.CoordinatorDo = func(method, path string, query url.Values, body []byte) (int, []byte, error) {
+		gotPath, gotBody = path, string(body)
+		return 200, []byte(`{"id":"t1","status":"cancelled"}`), nil
+	}
+	out, rpcErr := h.tools["task_propose_withdraw"].Call(store.WorkerRec{PrincipalID: "prin-1"},
+		json.RawMessage(`{"id":"t1","requestId":"r1","reason":"duplicate"}`))
+	if rpcErr != nil {
+		t.Fatal(rpcErr.Message)
+	}
+	if gotPath != "/api/v1/tasks/t1/proposal/withdraw" || !strings.Contains(gotBody, `"reason":"duplicate"`) {
+		t.Fatalf("%s %s", gotPath, gotBody)
+	}
+	if out.(map[string]any)["status"] != "cancelled" {
+		t.Fatalf("%v", out)
+	}
+	// A withdraw without its requestId would not be replay-safe.
+	if _, rpcErr := h.toolTaskProposeWithdraw(store.WorkerRec{PrincipalID: "p"},
+		json.RawMessage(`{"id":"t1","reason":"duplicate"}`)); rpcErr == nil {
+		t.Fatal("requestId must be required")
+	}
+}
+
+func TestTaskProposeRequiresKeys(t *testing.T) {
+	h := New(nil, nil, t.TempDir())
+	// A retry without its requestId would duplicate the proposal, so it is required.
+	for _, args := range []string{
+		`{"title":"Host","body":"Add one."}`,
+		`{"requestId":"r1","title":"Host"}`,
+		`{"requestId":"r1","body":"Add one."}`,
+	} {
+		if _, rpcErr := h.toolTaskPropose(store.WorkerRec{PrincipalID: "prin-1"}, json.RawMessage(args)); rpcErr == nil {
+			t.Fatalf("accepted %s", args)
+		}
+	}
+}
+
+func TestDirectivesListPassesEnvelopePrincipal(t *testing.T) {
+	h := New(nil, nil, t.TempDir())
+	var gotMethod, gotPath, gotWorker string
+	h.CoordinatorDo = func(method, path string, query url.Values, body []byte) (int, []byte, error) {
+		gotMethod, gotPath, gotWorker = method, path, query.Get("worker")
+		return 200, []byte(`{"status":"ok","directives":[{"id":"d1","title":"Ship","body":"Cut the release.","kind":"instruction"}]}`), nil
+	}
+	caller := store.WorkerRec{PrincipalID: "prin-1"}
+	out, rpcErr := h.toolDirectivesList(caller, nil)
+	if rpcErr != nil {
+		t.Fatal(rpcErr.Message)
+	}
+	if gotMethod != http.MethodGet || gotPath != "/api/v1/directives" || gotWorker != "prin-1" {
+		t.Fatalf("coord %s %s worker=%s", gotMethod, gotPath, gotWorker)
+	}
+	doc := out.(map[string]any)
+	rows := doc["directives"].([]any)
+	if len(rows) != 1 || rows[0].(map[string]any)["id"] != "d1" {
+		t.Fatalf("directives %v", rows)
+	}
+}
+
+func TestDirectivesListEmptyOnCoordinator404(t *testing.T) {
+	h := New(nil, nil, t.TempDir())
+	h.CoordinatorDo = func(method, path string, query url.Values, body []byte) (int, []byte, error) {
+		return 404, []byte(`{"error":"not found"}`), nil
+	}
+	out, rpcErr := h.toolDirectivesList(store.WorkerRec{PrincipalID: "prin-1"}, nil)
+	if rpcErr != nil {
+		t.Fatal(rpcErr.Message)
+	}
+	doc := out.(map[string]any)
+	if doc["status"] != "ok" || len(doc["directives"].([]any)) != 0 {
+		t.Fatalf("%v", doc)
+	}
+}
+
+func TestDirectivesListRejectsArguments(t *testing.T) {
+	h := New(nil, nil, t.TempDir())
+	h.CoordinatorDo = func(method, path string, query url.Values, body []byte) (int, []byte, error) {
+		t.Fatal("coordinator must not run")
+		return 0, nil, nil
+	}
+	_, rpcErr := h.toolDirectivesList(store.WorkerRec{PrincipalID: "prin-1"}, json.RawMessage(`{"worker":"other"}`))
+	if rpcErr == nil || !strings.Contains(rpcErr.Message, "rejected") {
+		t.Fatalf("%v", rpcErr)
+	}
+	_, rpcErr = h.toolDirectivesList(store.WorkerRec{PrincipalID: "prin-1"}, json.RawMessage(`{"limit":1}`))
+	if rpcErr == nil || !strings.Contains(rpcErr.Message, "no arguments") {
+		t.Fatalf("%v", rpcErr)
 	}
 }
 
@@ -173,10 +318,10 @@ func TestToolListIncludesInbox(t *testing.T) {
 		names[tdef["name"].(string)] = true
 	}
 	for _, want := range []string{
-		"whoami", "mcp_add", "inbox_list", "inbox_get",
+		"whoami", "mcp_add", "inbox_list", "inbox_get", "directives_list",
 		"task_claim", "task_renew", "task_release", "task_complete", "task_fail",
 		"task_update", "task_wait",
-		"directive_propose",
+		"task_propose", "task_propose_edit", "task_propose_withdraw",
 	} {
 		if !names[want] {
 			t.Fatalf("missing %s in %#v", want, names)
