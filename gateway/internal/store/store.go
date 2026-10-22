@@ -21,7 +21,7 @@ import (
 
 // CurrentStateVersion is written into state.json. Bump when adding a
 // migration in applyMigrations.
-const CurrentStateVersion = 10
+const CurrentStateVersion = 11
 
 // State is the persisted configuration.
 type State struct {
@@ -56,6 +56,10 @@ type State struct {
 	// names the one new sessions start on.
 	PiProviders        []PiProviderRec `json:"piProviders,omitempty"`
 	ActivePiProviderID string          `json:"activePiProviderId,omitempty"`
+	// ModelOverrides pins individual workers to one provider from the stack.
+	// The stack and its active entry stay account-wide; an override only
+	// changes which provider that one worker starts on.
+	ModelOverrides []ModelOverrideRec `json:"modelOverrides,omitempty"`
 }
 
 // PiProviderRec is not a secret. SecretID is a technocore resource UUID so

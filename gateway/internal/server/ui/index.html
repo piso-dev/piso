@@ -1584,6 +1584,28 @@
         .github-gate { padding: 24px 16px; }
         .github-routing-table th, .github-routing-table td { padding: 12px; }
       }
+      /* Worker overrides. One row per pinned worker, above the inherit line:
+         the account default is the norm, so the exceptions have to read as
+         exceptions rather than as a list that is missing most workers. */
+      .override-section { margin-top: 36px; border-top: 1px solid var(--line); padding-top: 20px; }
+      .override-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
+      .override-head h2 { margin: 0; font-size: 16px; }
+      .override-inherit { color: var(--muted); font-size: 13px; margin: 6px 0 0; }
+      .override-list { list-style: none; margin: 16px 0 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+      .override-row {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 12px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: var(--inset);
+        padding: 12px 16px;
+      }
+      .override-worker { font-weight: 600; }
+      .override-provider { color: var(--muted); font-size: 13px; }
+      .override-model { margin-left: auto; font-family: monospace; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+      .override-warning { flex: 1 1 100%; color: var(--amber); font-size: 13px; }
     </style>
   </head>
   <body>
@@ -1697,6 +1719,7 @@
         telegram: "telegram",
         secrets: "secrets",
         provider: "pi-provider",
+        modelOverrides: "model-overrides",
         rules: "rules",
         patterns: "patterns",
         exceptions: "exceptions",
@@ -3661,7 +3684,8 @@
                 : empty(
                     "No providers yet",
                     "Add a provider to choose the model pi sessions start on.",
-                  )),
+                  )) +
+              (providers.length ? overrideSection() : ""),
           );
         }
         rows = rows.filter((r) =>
@@ -4301,6 +4325,104 @@
           </div>
         </article>`;
       }
+      function overrideData() {
+        const raw = data.modelOverrides;
+        if (!raw || Array.isArray(raw)) return { overrides: [], account: {}, providers: [] };
+        return {
+          overrides: Array.isArray(raw.overrides) ? raw.overrides : [],
+          account: raw.account || {},
+          providers: Array.isArray(raw.providers) ? raw.providers : [],
+        };
+      }
+
+      // A worker override pins one worker to one provider in the shared stack.
+      // The stack stays exactly as it is; only the starting selection differs,
+      // so an override needs no container recreate and no second profile.
+      function overrideSection() {
+        const { overrides, account, providers } = overrideData();
+        const workers = list("workers");
+        const pinned = new Set(overrides.map((o) => o.slug));
+        const inheriting = workers.filter((w) => !pinned.has(w.slug)).length;
+        const accountLine = account.providerId
+          ? `Account default: <strong>${esc(account.providerName || account.providerId)}</strong>` +
+            (account.model ? ` · ${esc(account.model)}` : "") +
+            (inheriting
+              ? ` — ${inheriting} ${inheriting === 1 ? "worker follows" : "workers follow"} it.`
+              : " — no worker is left on it.")
+          : "No account default is set yet; workers without an override fall back to the first registered model.";
+        const rows = overrides
+          .map((o) => {
+            const live = o.model ? o.model : "no model resolved";
+            const warning = o.warning
+              ? `<p class="override-warning">${esc(o.warning)}</p>`
+              : "";
+            return `<li class="override-row">
+              <span class="override-worker">${esc(o.slug)}</span>
+              <span class="override-provider">${esc(o.providerName || o.providerId || "provider removed")}</span>
+              <span class="override-model">${esc(live)}</span>
+              ${button("Remove", "override-remove", o.slug, "small danger")}
+              ${warning}
+            </li>`;
+          })
+          .join("");
+        return `<section class="override-section">
+          <div class="override-head">
+            <div>
+              <h2>Worker overrides</h2>
+              <p class="override-inherit">${accountLine}</p>
+            </div>
+            ${button(overrides.length ? "Add override" : "Override a worker", "override-add")}
+          </div>
+          ${rows ? `<ul class="override-list">${rows}</ul>` : `<p class="override-inherit" style="margin-top:16px">Every worker follows the account default.</p>`}
+        </section>`;
+      }
+
+      function overrideForm() {
+        const { overrides, providers } = overrideData();
+        const pinned = new Set(overrides.map((o) => o.slug));
+        const free = list("workers").filter((w) => w.slug && !pinned.has(w.slug));
+        if (!providers.length) {
+          notify("Add a provider before overriding a worker.", true);
+          return;
+        }
+        if (!free.length) {
+          notify(
+            overrides.length
+              ? "Every worker already has an override. Remove one to change it."
+              : "No workers have registered yet.",
+            true,
+          );
+          return;
+        }
+        const scopeNote = (p) =>
+          Array.isArray(p.workers) && p.workers.length
+            ? ` (secret granted to ${p.workers.length === 1 ? "one worker" : p.workers.length + " workers"})`
+            : "";
+        formDialog(
+          "Override a worker's provider",
+          "The worker starts on this provider instead of the account default. The shared provider stack is unchanged, and the switch happens at the worker's next idle boundary — no reload is needed. A provider whose secret is not granted to the worker cannot be chosen: the worker would receive a placeholder it has no value for.",
+          field("slug", "Worker", free[0].slug, {
+            required: true,
+            full: true,
+            choices: free.map((w) => [w.slug, w.slug]),
+          }) +
+            field("providerId", "Provider", providers[0].id, {
+              required: true,
+              full: true,
+              choices: providers.map((p) => [
+                p.id,
+                (p.name || p.id) + (p.defaultModel ? " · " + p.defaultModel : "") + scopeNote(p),
+              ]),
+            }),
+          "Pin worker",
+          async (f) => {
+            await api("model-overrides", "PUT", { slug: f.slug, providerId: f.providerId });
+            await changed(["modelOverrides"]);
+            return "Override saved. The worker switches at its next idle boundary.";
+          },
+        );
+      }
+
       function providerForm(id) {
         const p = (data.provider?.providers || []).find((x) => x.id === id) || {};
         const catalog = { models: [] };
@@ -4336,7 +4458,7 @@
               id: id || "",
               models: catalog.models,
             });
-            await changed(["provider"]);
+            await changed(["provider", "modelOverrides"]);
             if (out.warning) return out.warning;
             return id ? "Provider saved." : "Provider added.";
           },
@@ -4965,10 +5087,24 @@
         if (name === "github-user-authorize") return githubUserStart();
         if (name === "github-user-signout") return githubUserStop();
         if (name === "provider-edit") return providerForm(id);
+        if (name === "override-add") return overrideForm();
+        if (name === "override-remove") {
+          if (!id) return;
+          return confirmAction(
+            "Remove override?",
+            id +
+              " goes back to whatever the account default is at its next idle boundary, and loses the pin to its current provider.",
+            "Remove",
+            async () => {
+              await api("model-overrides/" + encodeURIComponent(id), "DELETE");
+              await changed(["modelOverrides"]);
+            },
+          );
+        }
         if (name === "provider-activate") {
           if (!id) return;
           await api("pi-provider/activate", "POST", { id });
-          await changed(["provider"]);
+          await changed(["provider", "modelOverrides"]);
           return;
         }
         if (name === "provider-delete") {
@@ -4982,7 +5118,7 @@
             "Delete",
             async () => {
               await api("pi-provider/delete", "POST", { id });
-              await changed(["provider"]);
+              await changed(["provider", "modelOverrides"]);
             },
           );
         }
