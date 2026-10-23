@@ -3469,8 +3469,11 @@
           const warningHtml = warnings
             .map((w) => `<p class="notice" role="status">${esc(w)}</p>`)
             .join("");
-          const cards = providers.map(providerCard).join("");
+          // Marked before the cards are built: the local branch resolves
+          // synchronously and never re-renders, so a card built first would
+          // keep rendering the "pending" text it was handed.
           loadProviderCatalogs();
+          const cards = providers.map(providerCard).join("");
           return replaceContent(
             intro +
               warningHtml +
