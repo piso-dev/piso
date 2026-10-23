@@ -372,6 +372,32 @@
         border-color: var(--line);
         color: var(--text);
       }
+      /* Tabs inside a dialog form: same affordance as .subnav, but they sit in
+         the form grid and must not carry its page-level bottom margin. */
+      .form-tabs {
+        display: flex;
+        gap: 7px;
+        flex-wrap: wrap;
+        grid-column: 1/-1;
+        padding-bottom: 14px;
+        border-bottom: 1px solid var(--line);
+      }
+      .form-tabs button {
+        background: transparent;
+        color: var(--muted);
+        border-color: transparent;
+      }
+      .form-tabs button[aria-pressed="true"] {
+        background: var(--panel);
+        border-color: var(--line);
+        color: var(--text);
+      }
+      .fixed-url {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 12px;
+        color: var(--text);
+        overflow-wrap: anywhere;
+      }
       .notice {
         background: #29261f;
         border: 1px solid #65563a;
@@ -2290,6 +2316,10 @@
         };
         $("#f-title").focus();
       }
+      // The Tinfoil provider is the enclave proxy the worker runs on loopback.
+      // It is a constant, not a user-entered URL: the proxy is only reachable
+      // from inside the worker, so a host-authored value would be wrong there.
+      const TINFOIL_BASE_URL = "http://127.0.0.1:3301/v1";
       const TL_HOUR = 3600000,
         TL_HISTORY = 3 * TL_HOUR,
         TL_VISIBLE = TL_HOUR / 4,
@@ -4092,35 +4122,48 @@
       function providerForm(id) {
         const p = (data.provider?.providers || []).find((x) => x.id === id) || {};
         const catalog = { models: [] };
+        // Editing keeps the provider's own URL, so an existing Tinfoil provider
+        // reopens on the Tinfoil tab with its URL intact and unshown.
+        let mode = (p.baseUrl || "").trim() === TINFOIL_BASE_URL ? "tinfoil" : "other";
+        const shared =
+          field("name", "Name", p.name, { required: true, full: true }) +
+          field(
+            "secretId",
+            "API key secret",
+            list("secrets").find(
+              (s) => s.id === p.secretId || s.technocoreId === p.secretId,
+            )?.technocoreId || p.secretId,
+            {
+              required: true,
+              full: true,
+              choices: [
+                ["", "Select a secret"],
+                ...list("secrets").map((s) => [s.technocoreId || s.id, s.name]),
+              ],
+            },
+          );
+        const tabs = `<div class="form-tabs" role="tablist" aria-label="Provider type">
+            <button type="button" role="tab" data-provider-mode="tinfoil" aria-pressed="false">Tinfoil</button>
+            <button type="button" role="tab" data-provider-mode="other" aria-pressed="false">Other provider</button>
+          </div>`;
+        const tinfoilPanel = `<div class="field full" data-tinfoil-panel hidden><span>API base URL</span><p class="fixed-url">${esc(TINFOIL_BASE_URL)}</p><small>Fixed: the enclave proxy inside the worker. The secret used here must allow <code>*.tinfoil.sh</code>, because the proxy's real request leaves for a router enclave rather than 127.0.0.1.</small></div>`;
+        const urlPanel = field("baseUrl", "API base URL", p.baseUrl, {
+          type: "url",
+          required: true,
+          full: true,
+        });
+        const modelField = `<label class="field full" for="f-defaultModel"><span>Default model (optional)</span><input name="defaultModel" id="f-defaultModel" type="text" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="modelList" autocomplete="off" placeholder="First model the provider lists" value="${esc(p.defaultModel || "")}"><ul id="modelList" class="suggestions" role="listbox" hidden></ul><small id="modelHint">Choose an API key secret to load its model list.</small></label>`;
         formDialog(
           id ? "Edit provider" : "Add provider",
           "A provider is a secret, an API base URL, and an optional default model. Saving writes it to the shared pi profile; activating it makes it the startup default for new sessions. The model list is optional: a provider saves even when its catalog cannot be reached.",
-          field("name", "Name", p.name, { required: true, full: true }) +
-            field(
-              "secretId",
-              "API key secret",
-              list("secrets").find(
-                (s) => s.id === p.secretId || s.technocoreId === p.secretId,
-              )?.technocoreId || p.secretId,
-              {
-                required: true,
-                full: true,
-                choices: [
-                  ["", "Select a secret"],
-                  ...list("secrets").map((s) => [s.technocoreId || s.id, s.name]),
-                ],
-              },
-            ) +
-            field("baseUrl", "API base URL", p.baseUrl, {
-              type: "url",
-              required: true,
-              full: true,
-            }) +
-            `<label class="field full" for="f-defaultModel"><span>Default model (optional)</span><input name="defaultModel" id="f-defaultModel" type="text" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="modelList" autocomplete="off" placeholder="First model the provider lists" value="${esc(p.defaultModel || "")}"><ul id="modelList" class="suggestions" role="listbox" hidden></ul><small id="modelHint">Enter the API base URL and choose a secret to load its model list.</small></label>`,
+          tabs + shared + urlPanel + tinfoilPanel + modelField,
           id ? "Save provider" : "Add provider",
           async (f) => {
+            // The Tinfoil tab has no URL input at all; its URL is a constant.
+            const baseUrl = mode === "tinfoil" ? TINFOIL_BASE_URL : f.baseUrl;
             const out = await api("pi-provider", "PUT", {
               ...f,
+              baseUrl,
               id: id || "",
               models: catalog.models,
             });
@@ -4129,7 +4172,50 @@
             return id ? "Provider saved." : "Provider added.";
           },
         );
-        wireModelAutocomplete(id, catalog);
+
+        const urlField = $("#f-baseUrl");
+        const setMode = (next) => {
+          mode = next;
+          const tinfoil = mode === "tinfoil";
+          document
+            .querySelectorAll("[data-provider-mode]")
+            .forEach((b) =>
+              b.setAttribute(
+                "aria-pressed",
+                String(b.dataset.providerMode === mode),
+              ),
+            );
+          // Remove the inactive URL control rather than hiding it: a hidden
+          // required input blocks submit with "not focusable", and a disabled
+          // one drops out of FormData, which is what we want for Tinfoil.
+          if (tinfoil) {
+            if (urlField) {
+              urlField.closest(".field").hidden = true;
+              urlField.disabled = true;
+              urlField.required = false;
+            }
+            document.querySelector("[data-tinfoil-panel]").hidden = false;
+          } else {
+            if (urlField) {
+              urlField.closest(".field").hidden = false;
+              urlField.disabled = false;
+              urlField.required = true;
+            }
+            document.querySelector("[data-tinfoil-panel]").hidden = true;
+          }
+          const hint = $("#modelHint");
+          if (hint && !catalog.models.length)
+            hint.textContent = tinfoil
+              ? "Choose an API key secret to load its model list. The enclave proxy must be running in the worker first."
+              : "Choose an API key secret to load its model list.";
+        };
+        document
+          .querySelectorAll("[data-provider-mode]")
+          .forEach((b) => b.addEventListener("click", () => setMode(b.dataset.providerMode)));
+        setMode(mode);
+        wireModelAutocomplete(id, catalog, () =>
+          mode === "tinfoil" ? TINFOIL_BASE_URL : ($("#f-baseUrl")?.value || "").trim(),
+        );
       }
 
       // Suggest model ids from the provider's live catalog. The gateway holds
@@ -4137,13 +4223,16 @@
       // base URL and secret are present, including before the provider has
       // been saved, so the first round can already pick a model. A catalog
       // that cannot be loaded leaves the field as plain text.
-      function wireModelAutocomplete(id, catalog) {
+      function wireModelAutocomplete(id, catalog, getBaseUrl) {
         const input = $("#f-defaultModel");
         const listbox = $("#modelList");
         const hint = $("#modelHint");
         const baseUrlField = $("#f-baseUrl");
         const secretField = $("#f-secretId");
-        if (!input || !listbox || !baseUrlField || !secretField) return;
+        if (!input || !listbox || !secretField) return;
+        // The Tinfoil tab renders no editable URL, so callers may inject the
+        // effective base URL instead of it being read from the input.
+        const readBaseUrl = getBaseUrl || (() => (baseUrlField ? baseUrlField.value.trim() : ""));
         let models = [];
         let active = -1;
         let loadedKey = "";
@@ -4151,7 +4240,7 @@
         let seq = 0;
         let timer;
         const pairKey = () =>
-          baseUrlField.value.trim() + "\u0000" + (secretField.value || "");
+          readBaseUrl() + "\u0000" + (secretField.value || "");
         const show = (items) => {
           active = -1;
           listbox.innerHTML = items
@@ -4219,7 +4308,7 @@
           }
         };
         const load = () => {
-          const baseUrl = baseUrlField.value.trim();
+          const baseUrl = readBaseUrl();
           const secretId = secretField.value;
           if (!baseUrl || !secretId) {
             hint.textContent = !baseUrl
@@ -4266,16 +4355,18 @@
           if (key !== loadedKey && key !== loadingKey) {
             setModels([]);
             loadedKey = "";
-            if (baseUrlField.value.trim() && secretField.value)
+            if (readBaseUrl() && secretField.value)
               hint.textContent = "Loading model list…";
           }
           timer = setTimeout(load, 250);
         };
-        baseUrlField.addEventListener("input", schedule);
-        baseUrlField.addEventListener("change", schedule);
+        if (baseUrlField) {
+          baseUrlField.addEventListener("input", schedule);
+          baseUrlField.addEventListener("change", schedule);
+        }
         secretField.addEventListener("input", schedule);
         secretField.addEventListener("change", schedule);
-        if (baseUrlField.value.trim() && secretField.value) load();
+        if (readBaseUrl() && secretField.value) load();
       }
 
       // A card must not keep saying "model list pending" for a provider whose
