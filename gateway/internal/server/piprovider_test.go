@@ -784,3 +784,30 @@ func TestSecretCoversTinfoilFleet(t *testing.T) {
 		}
 	}
 }
+
+// A local provider's catalog is only ever as fresh as its last save, because
+// the list lives behind a proxy inside the worker. Reporting "pending" would
+// claim the gateway is still asking when it never will, and the dashboard
+// renders that verbatim on the provider card.
+func TestProviderViewCatalogForLocalKind(t *testing.T) {
+	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer fake.Close()
+	s, _ := providerTestServer(t, fake)
+	for _, tc := range []struct {
+		name string
+		rec  store.PiProviderRec
+		want string
+	}{
+		{"remote never fetched", store.PiProviderRec{ID: "piso-a", SecretID: "sec_local"}, "pending"},
+		{"remote with models", store.PiProviderRec{ID: "piso-b", SecretID: "sec_local", Models: []string{"m1"}}, "ok"},
+		{"tinfoil with nothing cached", store.PiProviderRec{ID: "piso-c", SecretID: "sec_local", Kind: piProviderKindTinfoil}, "local"},
+		{"tinfoil with a stale failure", store.PiProviderRec{ID: "piso-d", SecretID: "sec_local", Kind: piProviderKindTinfoil, CatalogError: "boom"}, "local"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			view := s.providerViewFor(&tc.rec, profileFileState{})
+			if view.Catalog != tc.want {
+				t.Fatalf("catalog = %q, want %q", view.Catalog, tc.want)
+			}
+		})
+	}
+}

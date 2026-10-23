@@ -302,6 +302,13 @@ func (s *Server) providerViewFor(p *store.PiProviderRec, fs profileFileState) pi
 	default:
 		view.Catalog = "pending"
 	}
+	// A local provider's catalog lives inside the worker, behind a proxy the
+	// gateway has no route to. Reporting "pending" would say the gateway is
+	// still asking, which it never will: the list is only ever as fresh as the
+	// last save, so name where it comes from instead.
+	if p.Kind == piProviderKindTinfoil {
+		view.Catalog = "local"
+	}
 	rec, ok := s.secretForPiProvider(p.SecretID)
 	if !ok || !strings.HasPrefix(rec.Placeholder, model.PlaceholderPrefix) {
 		view.Warning = "selected secret is not on this gateway yet"
