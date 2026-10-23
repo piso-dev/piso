@@ -4098,9 +4098,11 @@
           ? count + (count === 1 ? " model" : " models")
           : p.catalog === "failed"
             ? "model list unavailable"
-            : p.catalog === "ok"
-              ? "no models listed"
-              : "model list pending";
+            : p.catalog === "local"
+              ? "model list served by the worker"
+              : p.catalog === "ok"
+                ? "no models listed"
+                : "model list pending";
         const active =
           p.active && p.applied
             ? badge("Active", "good")
@@ -4296,7 +4298,10 @@
         };
         const applyCatalog = (result) => {
           setModels(result?.models);
-          if (result?.catalog === "failed") {
+          if (result?.catalog === "local") {
+            hint.textContent =
+              "Model list is served by the worker's enclave proxy, so the dashboard cannot read it. Type a model id, or leave empty for the first one pi discovers at startup.";
+          } else if (result?.catalog === "failed") {
             hint.textContent = models.length
               ? "Model list unavailable; showing the last known models. Type a model id, or leave empty."
               : "Model list unavailable. Type a model id, or leave empty; it resolves when the provider responds.";
@@ -4387,11 +4392,13 @@
               provider.catalog =
                 result?.catalog === "failed"
                   ? "failed"
-                  : result?.catalog === "ok"
-                    ? "ok"
-                    : provider.models.length
+                  : result?.catalog === "local"
+                    ? "local"
+                    : result?.catalog === "ok"
                       ? "ok"
-                      : "pending";
+                      : provider.models.length
+                        ? "ok"
+                        : "pending";
               if (result?.checkedAt) provider.checkedAt = result.checkedAt;
               provider.catalogError =
                 result?.catalog === "failed"

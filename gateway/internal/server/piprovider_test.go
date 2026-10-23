@@ -506,3 +506,62 @@ func TestPiProviderListFlatDefaultMatchesActive(t *testing.T) {
 		t.Fatalf("defaultModel missing from the list response: %v", raw)
 	}
 }
+
+// The Tinfoil provider points pi at the enclave proxy inside the worker. The
+// gateway runs in its own container with no copy of that sidecar, so a fetch
+// here can only get connection refused. It must report the reason instead of
+// recording a failure, and must not clobber a cached list.
+func TestPiProviderModelsLocalSidecar(t *testing.T) {
+	// The sidecar is never reached, so the fake must fail loudly if it is.
+	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("gateway dialled a worker-sidecar URL: %s", r.URL)
+	}))
+	defer fake.Close()
+	s, _ := providerTestServer(t, fake)
+	s.Store.SetPiProvider(&store.PiProviderRec{
+		SecretID: "11111111-1111-1111-1111-111111111111",
+		BaseURL:  "http://127.0.0.1:3301/v1",
+		Models:   []string{"kimi-k2", "llama-3.3-70b"},
+	})
+	rec := httptest.NewRecorder()
+	s.handleGetPiProviderModels(rec, httptest.NewRequest(http.MethodGet, "/api/v1/pi-provider/models", nil))
+	if rec.Code != 200 {
+		t.Fatalf("status %d", rec.Code)
+	}
+	var catalog piProviderCatalog
+	if err := json.Unmarshal(rec.Body.Bytes(), &catalog); err != nil {
+		t.Fatal(err)
+	}
+	if catalog.Catalog != "local" {
+		t.Fatalf("catalog state: %+v", catalog)
+	}
+	if catalog.Error != "" {
+		t.Fatalf("local sidecar reported as an error: %+v", catalog)
+	}
+	if len(catalog.Models) != 2 {
+		t.Fatalf("cached models dropped: %+v", catalog)
+	}
+	if got := s.Store.PiProvider(); got == nil || got.CatalogError != "" {
+		t.Fatalf("local sidecar must not record a catalog failure: %+v", got)
+	}
+}
+
+// An unrelated loopback endpoint is a normal provider and is still fetched:
+// the guard must not widen to all of 127.0.0.0/8.
+func TestLocalPiBaseURLIsNarrow(t *testing.T) {
+	for _, tc := range []struct {
+		url  string
+		want bool
+	}{
+		{"http://127.0.0.1:3301/v1", true},
+		{"http://127.0.0.1:3301/v1/", true},
+		{"HTTP://127.0.0.1:3301/v1", true},
+		{"http://127.0.0.1:8080/v1", false},
+		{"http://localhost:3301/v1", false},
+		{"https://api.example.com/v1", false},
+	} {
+		if got := localPiBaseURL(tc.url); got != tc.want {
+			t.Errorf("localPiBaseURL(%q) = %v, want %v", tc.url, got, tc.want)
+		}
+	}
+}

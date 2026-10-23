@@ -542,6 +542,23 @@ func (s *Server) handleGetPiProviderModels(w http.ResponseWriter, r *http.Reques
 		writeJSON(w, 400, map[string]string{"error": err.Error()})
 		return
 	}
+	// A loopback base URL names a sidecar inside the WORKER (the Tinfoil
+	// enclave proxy on 127.0.0.1:3301), not something this gateway can dial.
+	// Fetching it here could only produce "connection refused" and a scary
+	// "catalog unavailable" badge for a provider that works at runtime: pi
+	// discovers /v1/models through the worker's own proxy. Report the reason
+	// instead of failing, and leave any cached list untouched.
+	if localPiBaseURL(baseURL) {
+		out := piProviderCatalog{Catalog: "local"}
+		if saved != nil && saved.BaseURL == baseURL {
+			out.Models = append([]string(nil), saved.Models...)
+			if !saved.CatalogCheckedAt.IsZero() {
+				out.CheckedAt = saved.CatalogCheckedAt.UTC().Format(time.RFC3339)
+			}
+		}
+		writeJSON(w, 200, out)
+		return
+	}
 	rec, ok := s.secretForPiProvider(secretID)
 	if !ok || rec.Value == "" {
 		writeJSON(w, 409, map[string]string{"error": "provider secret is not on this gateway yet"})
@@ -575,6 +592,27 @@ func (s *Server) handleGetPiProviderModels(w http.ResponseWriter, r *http.Reques
 	}
 	out := piProviderCatalog{Models: ids, Catalog: "ok", CheckedAt: time.Now().UTC().Format(time.RFC3339)}
 	writeJSON(w, 200, out)
+}
+
+// tinfoilProxyBaseURL is the enclave proxy the worker runs on its own loopback.
+// It is the only provider endpoint this gateway knows it cannot reach: the
+// proxy is a sidecar in the worker that runs pi, so the gateway container, with
+// its own network namespace and no copy of the binary, gets connection
+// refused. Kept in step with TINFOIL_BASE_URL in ui/index.html.
+const tinfoilProxyBaseURL = "http://127.0.0.1:3301/v1"
+
+// localPiBaseURL reports whether baseURL names a worker-side sidecar rather
+// than an endpoint this gateway can dial. Deliberately narrow: a plain loopback
+// test server or an on-prem provider on 127.0.0.1 is still fetched normally.
+func localPiBaseURL(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	normalized := strings.ToLower(
+		u.Scheme + "://" + u.Host + strings.TrimRight(u.Path, "/"),
+	)
+	return normalized == tinfoilProxyBaseURL
 }
 
 // providerModelIDs calls <baseURL>/models with the real key. Only model IDs
