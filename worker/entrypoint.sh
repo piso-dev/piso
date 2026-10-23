@@ -53,10 +53,10 @@ fi
 # and logging to a persistent path. Exit code 3 means a configuration error
 # (missing env / role mismatch) — back off 30s instead of hot-looping.
 respawn() {
-  local bin="$1" log="$2"
+  local bin="$1" log="$2"; shift 2
   (
     while true; do
-      "$bin" >>"$log" 2>&1
+      "$bin" "$@" >>"$log" 2>&1
       rc=$?
       if [ "$rc" = "3" ]; then
         echo "$(date -u +%FT%TZ) $bin config error (exit 3); retry in 30s" >>"$log"
@@ -274,6 +274,70 @@ fi
 # session, so a Telegram message joins the running conversation.
 if [ "${PISO_TASK_LOOP:-}" = "1" ] && [ -n "${GATEWAY_URL:-}" ] && [ -n "${PISO_WORKER_NAME:-}" ] && [ -n "${PISO_WORKER_SLUG:-}" ] && [ -x /usr/local/bin/piso-supervisor-session ]; then
   respawn /usr/local/bin/piso-supervisor-session "$PISO_LOG_DIR/supervisor-session.log"
+fi
+
+# Tinfoil local proxy: plaintext HTTP on 127.0.0.1:3301, sealed (EHBP) to an
+# attested Tinfoil enclave. The agent points a pi provider at it with the piso
+# placeholder as its API key; the body is sealed so the gateway can swap the
+# Authorization header but cannot read the prompt.
+#
+# Gate: only start when this worker actually holds a tinfoil placeholder.
+# Unconditional start is NOT safe -- with no egress the binary attests at boot,
+# fails, and exits 1, so `respawn` would hot-loop the log on every worker that
+# never touches Tinfoil. The placeholder is NOT in the container env: it lives
+# in the read-only /etc/piso/placeholders.env (the gateway rewrites it by
+# atomic rename), which is what `piso attach` sources. Both sources are read
+# here, and the check is polled because a secret can be granted after boot.
+tinfoil_key_var() {
+  {
+    env
+    sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=\(piso_[^[:space:]]*\)$/\1=\2/p' \
+      /etc/piso/placeholders.env 2>/dev/null
+  } | awk -F= '$1 ~ /TINFOIL/ && $2 ~ /^piso_/ { print $1; exit }'
+}
+
+start_tinfoil_proxy() {
+  # Prompt-cache secret: the proxy otherwise writes ~/.tinfoil/user_cache_secret,
+  # which lands on the read-only rootfs (HOME=/root) and silently falls back to
+  # an in-memory value, losing cache continuity on every restart. Pin one on
+  # the persistent agent volume instead.
+  local state=/root/.pi/agent/tinfoil
+  mkdir -p "$state" 2>/dev/null || true
+  if [ ! -s "$state/user_cache_secret" ]; then
+    head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' > "$state/user_cache_secret" \
+      && chmod 600 "$state/user_cache_secret"
+  fi
+  if [ -z "${TINFOIL_USER_CACHE_SECRET:-}" ] && [ -s "$state/user_cache_secret" ]; then
+    TINFOIL_USER_CACHE_SECRET="$(cat "$state/user_cache_secret")"
+  fi
+  export TINFOIL_USER_CACHE_SECRET
+  respawn /usr/local/bin/tinfoil-proxy "$PISO_LOG_DIR/tinfoil-proxy.log" \
+    --bind 127.0.0.1 --port 3301 --log-format json
+  # Attestation takes a moment; wait so the first model call is not a
+  # connection-refused race against the fresh listener.
+  local i
+  for i in $(seq 1 50); do
+    (echo >/dev/tcp/127.0.0.1/3301) >/dev/null 2>&1 && return 0
+    sleep 0.2
+  done
+  return 0
+}
+
+if [ -x /usr/local/bin/tinfoil-proxy ]; then
+  if [ -n "$(tinfoil_key_var)" ]; then
+    start_tinfoil_proxy
+  else
+    # Re-check so `piso secrets add` grants take effect without a restart.
+    (
+      while true; do
+        sleep 15
+        if [ -n "$(tinfoil_key_var)" ]; then
+          start_tinfoil_proxy
+          break
+        fi
+      done
+    ) &
+  fi
 fi
 
 # Signal that seeding is done so `piso up` / `piso attach` can wait. /run is

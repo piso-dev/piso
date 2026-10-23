@@ -157,4 +157,64 @@ func TestPublishPiProviderSendsStack(t *testing.T) {
 	if first["id"] != "piso-one" || first["secretId"] != "sec1" {
 		t.Fatalf("first provider: %+v", first)
 	}
+	// Kind decides whether a gateway may fetch a catalog, so a synced profile
+	// that loses it would be probed by every peer. It must travel.
+	if _, ok := first["kind"]; !ok {
+		t.Fatalf("kind missing from the published provider: %+v", first)
+	}
+}
+
+// A kind that survives the round trip: published, then merged back by a peer.
+func TestPiProviderKindRoundTrip(t *testing.T) {
+	st := testStore(t)
+	if err := st.AddSecret(store.SecretRec{ID: "sec1", Placeholder: "piso_tinfoil", Value: "fake"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpsertPiProviderActive(store.PiProviderRec{ID: "piso-tinfoil", Name: "Tinfoil", SecretID: "sec1", BaseURL: "http://127.0.0.1:3301/v1", Kind: "tinfoil"}); err != nil {
+		t.Fatal(err)
+	}
+	var published map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&published)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	old := serverHTTP
+	serverHTTP = srv.Client()
+	defer func() { serverHTTP = old }()
+	id, err := tc.Generate(srv.URL, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := publishPiProvider(st, id); err != nil {
+		t.Fatal(err)
+	}
+	// Serve that document back to a fresh gateway, as a coordinator would.
+	raw, err := json.Marshal(published)
+	if err != nil {
+		t.Fatal(err)
+	}
+	peer := testStore(t)
+	peerDir := t.TempDir()
+	t.Setenv("PISO_PI_PROFILE", filepath.Join(peerDir, "pi-profile"))
+	if err := peer.AddSecret(store.SecretRec{ID: "sec1", Placeholder: "piso_tinfoil", Value: "fake"}); err != nil {
+		t.Fatal(err)
+	}
+	read := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(raw)
+	}))
+	defer read.Close()
+	serverHTTP = read.Client()
+	readID, err := tc.Generate(read.URL, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := syncPiProvider(peer, peerDir, readID); err != nil {
+		t.Fatal(err)
+	}
+	got := peer.PiProviderByID("piso-tinfoil")
+	if got == nil || got.Kind != "tinfoil" || got.BaseURL != "http://127.0.0.1:3301/v1" {
+		t.Fatalf("kind lost in sync: %+v", got)
+	}
 }
