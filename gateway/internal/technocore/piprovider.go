@@ -34,6 +34,7 @@ type piProviderDoc struct {
 			Name         string `json:"name"`
 			SecretID     string `json:"secretId"`
 			BaseURL      string `json:"baseUrl"`
+			Kind         string `json:"kind"`
 			DefaultModel string `json:"defaultModel"`
 		} `json:"providers"`
 	} `json:"metadata"`
@@ -84,11 +85,16 @@ func syncPiProvider(st *store.Store, dataDir string, id tc.Identity) error {
 			if strings.TrimSpace(rp.ID) == "" || rp.SecretID == "" || rp.BaseURL == "" {
 				continue
 			}
+			// Kind travels with the record. A coordinator that predates it
+			// omits the field, which reads as remote: the decider must never be
+			// re-derived from the URL, so such a profile is treated as an
+			// endpoint this gateway may try (and report as unavailable).
 			if err := st.UpsertPiProvider(store.PiProviderRec{
 				ID:           rp.ID,
 				Name:         rp.Name,
 				SecretID:     rp.SecretID,
 				BaseURL:      rp.BaseURL,
+				Kind:         rp.Kind,
 				DefaultModel: rp.DefaultModel,
 				UpdatedAt:    remoteAt,
 			}); err != nil {
@@ -166,6 +172,7 @@ func publishPiProvider(st *store.Store, id tc.Identity) error {
 			"name":         p.Name,
 			"secretId":     p.SecretID,
 			"baseUrl":      p.BaseURL,
+			"kind":         p.Kind,
 			"defaultModel": p.DefaultModel,
 		})
 	}

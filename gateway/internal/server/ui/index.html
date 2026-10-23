@@ -4125,8 +4125,15 @@
         const p = (data.provider?.providers || []).find((x) => x.id === id) || {};
         const catalog = { models: [] };
         // Editing keeps the provider's own URL, so an existing Tinfoil provider
-        // reopens on the Tinfoil tab with its URL intact and unshown.
-        let mode = (p.baseUrl || "").trim() === TINFOIL_BASE_URL ? "tinfoil" : "other";
+        // reopens on the Tinfoil tab with its URL intact and unshown. The kind
+        // is stored on the record; the URL check only covers a provider saved
+        // before kinds existed, and the next save stamps one.
+        const savedKind = (p.kind || "").trim();
+        let mode =
+          savedKind === "tinfoil" ||
+          (!savedKind && (p.baseUrl || "").trim() === TINFOIL_BASE_URL)
+            ? "tinfoil"
+            : "other";
         const shared =
           field("name", "Name", p.name, { required: true, full: true }) +
           field(
@@ -4138,9 +4145,15 @@
             {
               required: true,
               full: true,
+              // A provider's key is substituted as a literal value on the model
+              // host. Minted credentials (github-app) and gateway-only secrets
+              // cannot work that way, so they are not offered; the server
+              // refuses them too.
               choices: [
                 ["", "Select a secret"],
-                ...list("secrets").map((s) => [s.technocoreId || s.id, s.name]),
+                ...list("secrets")
+                  .filter((s) => !s.kind && !s.gatewayOnly)
+                  .map((s) => [s.technocoreId || s.id, s.name]),
               ],
             },
           );
@@ -4161,11 +4174,13 @@
           tabs + shared + urlPanel + tinfoilPanel + modelField,
           id ? "Save provider" : "Add provider",
           async (f) => {
-            // The Tinfoil tab has no URL input at all; its URL is a constant.
+            // The Tinfoil tab has no URL input at all; its URL is a constant,
+            // and the server pins it for the kind regardless of what is sent.
             const baseUrl = mode === "tinfoil" ? TINFOIL_BASE_URL : f.baseUrl;
             const out = await api("pi-provider", "PUT", {
               ...f,
               baseUrl,
+              kind: mode === "tinfoil" ? "tinfoil" : "",
               id: id || "",
               models: catalog.models,
             });
@@ -4215,8 +4230,17 @@
           .querySelectorAll("[data-provider-mode]")
           .forEach((b) => b.addEventListener("click", () => setMode(b.dataset.providerMode)));
         setMode(mode);
-        wireModelAutocomplete(id, catalog, () =>
-          mode === "tinfoil" ? TINFOIL_BASE_URL : ($("#f-baseUrl")?.value || "").trim(),
+        wireModelAutocomplete(
+          id,
+          catalog,
+          () =>
+            mode === "tinfoil"
+              ? TINFOIL_BASE_URL
+              : ($("#f-baseUrl")?.value || "").trim(),
+          () => mode,
+          // The saved list for a provider whose catalog the gateway cannot read
+          // is all the dialog can show; a brand new one starts empty.
+          () => (p.kind === "tinfoil" ? p.models || [] : []),
         );
       }
 
@@ -4225,7 +4249,7 @@
       // base URL and secret are present, including before the provider has
       // been saved, so the first round can already pick a model. A catalog
       // that cannot be loaded leaves the field as plain text.
-      function wireModelAutocomplete(id, catalog, getBaseUrl) {
+      function wireModelAutocomplete(id, catalog, getBaseUrl, getKind, savedModels) {
         const input = $("#f-defaultModel");
         const listbox = $("#modelList");
         const hint = $("#modelHint");
@@ -4235,6 +4259,7 @@
         // The Tinfoil tab renders no editable URL, so callers may inject the
         // effective base URL instead of it being read from the input.
         const readBaseUrl = getBaseUrl || (() => (baseUrlField ? baseUrlField.value.trim() : ""));
+        const readKind = getKind || (() => "");
         let models = [];
         let active = -1;
         let loadedKey = "";
@@ -4327,6 +4352,18 @@
           }
           const key = pairKey();
           if (key === loadedKey || key === loadingKey) return;
+          // A local provider is served by a proxy that runs inside the worker,
+          // which the gateway has no route to. Asking it would only earn a
+          // connection error, so render the stored list and say why.
+          if (readKind() === "tinfoil") {
+            loadingKey = "";
+            loadedKey = key;
+            applyCatalog({
+              catalog: "local",
+              models: savedModels ? savedModels() : [],
+            });
+            return;
+          }
           loadingKey = key;
           const token = ++seq;
           hint.textContent = "Loading model list…";
@@ -4386,6 +4423,13 @@
           if (!provider.id || providerCatalogs.has(provider.id)) continue;
           if (Array.isArray(provider.models) && provider.models.length) continue;
           providerCatalogs.add(provider.id);
+          // A local provider's catalog is served by a proxy inside the worker
+          // and is unreachable from here, so there is nothing to ask for. Skip
+          // the round trip and say so directly.
+          if ((provider.kind || "") === "tinfoil") {
+            provider.catalog = "local";
+            continue;
+          }
           api("pi-provider/models?id=" + encodeURIComponent(provider.id))
             .then((result) => {
               provider.models = Array.isArray(result?.models) ? result.models : [];
