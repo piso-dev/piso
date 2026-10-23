@@ -76,6 +76,14 @@ type PiProviderRec struct {
 	// APIType is the pi models.json api adapter. Empty means
 	// openai-completions.
 	APIType string `json:"api,omitempty"`
+	// Kind is the provider's transport shape, decided once when it is saved
+	// from the dashboard. Empty ("remote") is an endpoint the gateway can
+	// reach itself; "tinfoil" is the enclave proxy pi runs beside it, which
+	// the gateway cannot dial. Deliberately not derived from BaseURL at read
+	// time: the answer decides whether the gateway is allowed to fetch a
+	// catalog, and that must not depend on string comparison against a
+	// constant that lives in another file.
+	Kind string `json:"kind,omitempty"`
 	// Models is the last successfully fetched catalog. It is advisory: it
 	// feeds the dashboard autocomplete and lazy default resolution, never the
 	// save path. CatalogError holds the last failure for display.

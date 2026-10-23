@@ -40,6 +40,7 @@ type piProviderView struct {
 	Name           string   `json:"name,omitempty"`
 	SecretID       string   `json:"secretId,omitempty"`
 	BaseURL        string   `json:"baseUrl,omitempty"`
+	Kind           string   `json:"kind,omitempty"` // "" remote | "tinfoil"
 	Placeholder    string   `json:"placeholder,omitempty"`
 	DefaultModel   string   `json:"defaultModel"`
 	EffectiveModel string   `json:"effectiveModel,omitempty"`
@@ -47,7 +48,7 @@ type piProviderView struct {
 	Active         bool     `json:"active"`
 	Applied        bool     `json:"applied"`
 	Warning        string   `json:"warning,omitempty"`
-	Catalog        string   `json:"catalog,omitempty"` // ok | failed | pending
+	Catalog        string   `json:"catalog,omitempty"` // ok | failed | pending | local
 	CatalogError   string   `json:"catalogError,omitempty"`
 	Models         []string `json:"models,omitempty"`
 	CheckedAt      string   `json:"checkedAt,omitempty"`
@@ -79,6 +80,7 @@ func (s *Server) handlePutPiProvider(w http.ResponseWriter, r *http.Request) {
 		Name         string   `json:"name"`
 		SecretID     string   `json:"secretId"`
 		BaseURL      string   `json:"baseUrl"`
+		Kind         string   `json:"kind"`
 		DefaultModel string   `json:"defaultModel"`
 		API          string   `json:"api"`
 		Models       []string `json:"models"`
@@ -88,7 +90,11 @@ func (s *Server) handlePutPiProvider(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, map[string]string{"error": "bad json"})
 		return
 	}
-	baseURL := strings.TrimSpace(in.BaseURL)
+	kind, baseURL, err := piProviderEndpoint(strings.TrimSpace(in.Kind), strings.TrimSpace(in.BaseURL))
+	if err != nil {
+		writeJSON(w, 400, map[string]string{"error": err.Error()})
+		return
+	}
 	if err := validatePiBaseURL(baseURL); err != nil {
 		writeJSON(w, 400, map[string]string{"error": err.Error()})
 		return
@@ -100,6 +106,19 @@ func (s *Server) handlePutPiProvider(w http.ResponseWriter, r *http.Request) {
 	}
 	if !strings.HasPrefix(rec.Placeholder, model.PlaceholderPrefix) {
 		writeJSON(w, 400, map[string]string{"error": "secret has no piso_ placeholder"})
+		return
+	}
+	// A provider's apiKey is substituted as a literal credential on the model
+	// host. Kinds that are not literal values (github-app mints per host,
+	// telegram is a bot token) or that workers may not use would only fail at
+	// request time with a confusing rule or mint error, so refuse the binding
+	// here, where the operator can still see why.
+	if rec.Kind != model.SecretKindOpaque {
+		writeJSON(w, 400, map[string]string{"error": "provider secret must be a plain API key, not a " + rec.Kind + " credential"})
+		return
+	}
+	if rec.GatewayOnly {
+		writeJSON(w, 400, map[string]string{"error": "provider secret must be usable by workers; this one is gateway-only"})
 		return
 	}
 
@@ -121,6 +140,7 @@ func (s *Server) handlePutPiProvider(w http.ResponseWriter, r *http.Request) {
 		Name:         strings.TrimSpace(in.Name),
 		SecretID:     resourceIDFor(rec, in.SecretID),
 		BaseURL:      baseURL,
+		Kind:         kind,
 		DefaultModel: strings.TrimSpace(in.DefaultModel),
 		APIType:      strings.TrimSpace(in.API),
 		UpdatedAt:    time.Now().UTC(),
@@ -143,7 +163,6 @@ func (s *Server) handlePutPiProvider(w http.ResponseWriter, r *http.Request) {
 	if pointer.DefaultModel != "" && len(pointer.Models) > 0 && !containsString(pointer.Models, pointer.DefaultModel) {
 		warning = "default model is not in the provider's last known catalog; it was saved anyway"
 	}
-	var err error
 	if in.Activate {
 		err = s.Store.UpsertPiProviderActive(*pointer)
 	} else {
@@ -253,6 +272,7 @@ func (s *Server) providerViewFor(p *store.PiProviderRec, fs profileFileState) pi
 		Name:           p.Name,
 		SecretID:       p.SecretID,
 		BaseURL:        p.BaseURL,
+		Kind:           p.Kind,
 		DefaultModel:   p.DefaultModel,
 		EffectiveModel: effectivePiModel(p),
 		API:            p.APIType,
@@ -531,6 +551,14 @@ func (s *Server) handleGetPiProviderModels(w http.ResponseWriter, r *http.Reques
 	if baseURL == "" && saved != nil {
 		baseURL = saved.BaseURL
 	}
+	// Only a saved record can say what kind a provider is. The add dialog
+	// never asks for a local one: it knows the catalog is unreachable and
+	// renders the explanation itself, so an unsaved request lands here as
+	// remote and simply fails to fetch.
+	kind := ""
+	if saved != nil {
+		kind = saved.Kind
+	}
 	if secretID == "" && saved != nil {
 		secretID = saved.SecretID
 	}
@@ -542,13 +570,13 @@ func (s *Server) handleGetPiProviderModels(w http.ResponseWriter, r *http.Reques
 		writeJSON(w, 400, map[string]string{"error": err.Error()})
 		return
 	}
-	// A loopback base URL names a sidecar inside the WORKER (the Tinfoil
-	// enclave proxy on 127.0.0.1:3301), not something this gateway can dial.
-	// Fetching it here could only produce "connection refused" and a scary
-	// "catalog unavailable" badge for a provider that works at runtime: pi
-	// discovers /v1/models through the worker's own proxy. Report the reason
-	// instead of failing, and leave any cached list untouched.
-	if localPiBaseURL(baseURL) {
+	// A local provider's catalog is served by a proxy that runs beside pi, in
+	// the worker, so this gateway cannot reach it by design. Fetching would
+	// only produce "connection refused" and a scary "catalog unavailable"
+	// badge for a provider that works: pi discovers /v1/models through its own
+	// proxy. Report the reason instead of failing, and leave the cached list
+	// untouched.
+	if kind == piProviderKindTinfoil {
 		out := piProviderCatalog{Catalog: "local"}
 		if saved != nil && saved.BaseURL == baseURL {
 			out.Models = append([]string(nil), saved.Models...)
@@ -594,25 +622,34 @@ func (s *Server) handleGetPiProviderModels(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, 200, out)
 }
 
-// tinfoilProxyBaseURL is the enclave proxy the worker runs on its own loopback.
-// It is the only provider endpoint this gateway knows it cannot reach: the
-// proxy is a sidecar in the worker that runs pi, so the gateway container, with
-// its own network namespace and no copy of the binary, gets connection
-// refused. Kept in step with TINFOIL_BASE_URL in ui/index.html.
+// Pi provider transport kinds. A provider's kind is decided once, when the
+// dashboard saves it, and stored on the record. It is never inferred from
+// BaseURL at read time: the answer decides whether the gateway may fetch a
+// catalog, and that must not hinge on comparing a string to a constant that
+// lives in a different file.
+const (
+	piProviderKindRemote  = ""
+	piProviderKindTinfoil = "tinfoil"
+)
+
+// tinfoilProxyBaseURL is the enclave proxy the worker starts on its own
+// loopback. pi reaches it because it runs in that same container; this gateway
+// can only ever get connection refused. Kept in step with TINFOIL_BASE_URL in
+// ui/index.html and --port in worker/entrypoint.sh.
 const tinfoilProxyBaseURL = "http://127.0.0.1:3301/v1"
 
-// localPiBaseURL reports whether baseURL names a worker-side sidecar rather
-// than an endpoint this gateway can dial. Deliberately narrow: a plain loopback
-// test server or an on-prem provider on 127.0.0.1 is still fetched normally.
-func localPiBaseURL(raw string) bool {
-	u, err := url.Parse(raw)
-	if err != nil {
-		return false
+// piProviderEndpoint resolves the stored kind and base URL for a save. A local
+// kind pins its URL: the dashboard hides the field for it, so the server must
+// not trust whatever the client sent. Anything else is a remote endpoint and
+// keeps the operator's URL.
+func piProviderEndpoint(kind, baseURL string) (string, string, error) {
+	if kind != piProviderKindRemote && kind != piProviderKindTinfoil {
+		return "", "", fmt.Errorf("unknown provider kind %q", kind)
 	}
-	normalized := strings.ToLower(
-		u.Scheme + "://" + u.Host + strings.TrimRight(u.Path, "/"),
-	)
-	return normalized == tinfoilProxyBaseURL
+	if kind == piProviderKindTinfoil {
+		return kind, tinfoilProxyBaseURL, nil
+	}
+	return piProviderKindRemote, baseURL, nil
 }
 
 // providerModelIDs calls <baseURL>/models with the real key. Only model IDs
