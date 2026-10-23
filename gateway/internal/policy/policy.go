@@ -258,14 +258,14 @@ func githubAppReady(in Input, token string) bool {
 }
 
 // lookupRule finds a substitution rule for placeholder on this host.
-// A rule matches when: same placeholder, and (host == "*" or host == this host).
+// A rule matches when: same placeholder, and its host pattern covers this
+// host (exact, "*.suffix" subdomain, or the legacy any-host "*").
 func lookupRule(in Input, placeholder string) (model.Rule, bool) {
-	host := strings.ToLower(in.Host)
 	for _, r := range in.Rules {
 		if r.Placeholder != placeholder {
 			continue
 		}
-		if r.Host == "*" || strings.EqualFold(r.Host, host) {
+		if model.HostRuleMatch(r.Host, in.Host) {
 			return r, true
 		}
 	}

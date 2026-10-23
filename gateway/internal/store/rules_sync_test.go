@@ -110,3 +110,52 @@ func TestSyncRulesForSecretReplacesOwnKeepsOthers(t *testing.T) {
 		t.Fatalf("total rules: %+v", rs)
 	}
 }
+
+func TestCanonicalRuleHostsWildcardAndInvalid(t *testing.T) {
+	// A subdomain wildcard is a bound destination, not "any host".
+	got := CanonicalRuleHosts([]string{" *.Tinfoil.sh ", "*.tinfoil.sh", "router-0.tinfoil.sh"})
+	if len(got) != 2 || got[0] != "*.Tinfoil.sh" || got[1] != "router-0.tinfoil.sh" {
+		t.Fatalf("wildcard dedupe: %+v", got)
+	}
+	// Unsupported shapes are dropped instead of approximated...
+	got = CanonicalRuleHosts([]string{"router-*.tinfoil.sh", "*tinfoil.sh", "api.*.com", "api.example.com"})
+	if len(got) != 1 || got[0] != "api.example.com" {
+		t.Fatalf("invalid dropped: %+v", got)
+	}
+	// ...and reported so the API can 400 rather than silently ignore them.
+	bad := InvalidRuleHosts([]string{"api.example.com", "router-*.tinfoil.sh", " ", "*.tinfoil.sh"})
+	if len(bad) != 1 || bad[0] != "router-*.tinfoil.sh" {
+		t.Fatalf("invalid hosts: %+v", bad)
+	}
+}
+
+func TestHasRuleMatchesWildcard(t *testing.T) {
+	st := newRuleStore(t)
+	sec := SecretRec{ID: "sec_w", Placeholder: "piso_tinfoil_w", Value: "v",
+		AllowedHosts: []string{"*.tinfoil.sh"}}
+	if err := st.AddSecret(sec); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SyncRulesForSecret(sec); err != nil {
+		t.Fatal(err)
+	}
+	if !st.HasRule("piso_tinfoil_w", "router-0.tinfoil.sh") {
+		t.Fatal("wildcard rule should cover router-0.tinfoil.sh")
+	}
+	if st.HasRule("piso_tinfoil_w", "tinfoil.sh") {
+		t.Fatal("wildcard rule must not cover the apex")
+	}
+}
+
+func TestSuffixWildcardForms(t *testing.T) {
+	// A bare TLD is accepted but reported as broad.
+	if !HasBroadSuffixWildcard([]string{"*.com"}) {
+		t.Fatal("*.com should be flagged broad")
+	}
+	if HasBroadSuffixWildcard([]string{"*.example.com"}) {
+		t.Fatal("*.example.com is not broad")
+	}
+	if HasBroadSuffixWildcard([]string{"*"}) {
+		t.Fatal("plain * is not a suffix wildcard")
+	}
+}

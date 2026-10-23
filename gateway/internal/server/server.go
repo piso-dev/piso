@@ -256,6 +256,10 @@ func (s *Server) routes(mux *http.ServeMux) {
 			writeJSON(w, 400, map[string]string{"error": "invalid envKey (set one explicitly or use a name that derives a key)"})
 			return
 		}
+		if bad := store.InvalidRuleHosts(in.AllowedHosts); len(bad) > 0 {
+			writeJSON(w, 400, map[string]string{"error": "invalid allowedHosts: " + strings.Join(bad, ", ") + " (use an exact host such as api.example.com, a subdomain wildcard such as *.example.com, or * for any host)"})
+			return
+		}
 		// Destination binding is required: an empty host list used to mean
 		// "every host", which silently turned every vault key into a universal
 		// credential. A secret with no hosts is inert, so reject it up front
@@ -334,6 +338,10 @@ func (s *Server) routes(mux *http.ServeMux) {
 		// match. Matching retryable captures are replayed so an edit that newly
 		// allows a host also unblocks requests that were stuck on it.
 		rec.AllowedHosts = in.AllowedHosts
+		if bad := store.InvalidRuleHosts(rec.AllowedHosts); len(bad) > 0 {
+			writeJSON(w, 400, map[string]string{"error": "invalid allowedHosts: " + strings.Join(bad, ", ") + " (use an exact host such as api.example.com, a subdomain wildcard such as *.example.com, or * for any host)"})
+			return
+		}
 		if !rec.GatewayOnly && len(store.CanonicalRuleHosts(rec.AllowedHosts)) == 0 {
 			writeJSON(w, 400, map[string]string{"error": "allowedHosts required: list the hosts this secret may be substituted on (use [\"*\"] only if you really want any host)"})
 			return

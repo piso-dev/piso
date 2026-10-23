@@ -53,10 +53,10 @@ fi
 # and logging to a persistent path. Exit code 3 means a configuration error
 # (missing env / role mismatch) — back off 30s instead of hot-looping.
 respawn() {
-  local bin="$1" log="$2"
+  local bin="$1" log="$2"; shift 2
   (
     while true; do
-      "$bin" >>"$log" 2>&1
+      "$bin" "$@" >>"$log" 2>&1
       rc=$?
       if [ "$rc" = "3" ]; then
         echo "$(date -u +%FT%TZ) $bin config error (exit 3); retry in 30s" >>"$log"
@@ -274,6 +274,47 @@ fi
 # session, so a Telegram message joins the running conversation.
 if [ "${PISO_TASK_LOOP:-}" = "1" ] && [ -n "${GATEWAY_URL:-}" ] && [ -n "${PISO_WORKER_NAME:-}" ] && [ -n "${PISO_WORKER_SLUG:-}" ] && [ -x /usr/local/bin/piso-supervisor-session ]; then
   respawn /usr/local/bin/piso-supervisor-session "$PISO_LOG_DIR/supervisor-session.log"
+fi
+
+# Tinfoil local proxy: plaintext HTTP to 127.0.0.1:3301, sealed (EHBP) to an
+# attested router enclave, so the model API key only ever leaves as a piso
+# placeholder the gateway substitutes. Started ONLY when this worker actually
+# holds a tinfoil placeholder — the var name comes from the secret's envKey
+# (DeriveEnvKey("tinfoil") = TINFOIL, DeriveEnvKey("tinfoil api key") =
+# TINFOIL_API_KEY), so match on the value, not a fixed name. Without a bound
+# secret the proxy would just add a listener and a failing attestation fetch.
+TINFOIL_KEY_VAR=""
+while IFS='=' read -r _k _v; do
+  case "$_k" in
+    *TINFOIL*) case "$_v" in piso_*) TINFOIL_KEY_VAR="$_k" ;; esac ;;
+  esac
+done < <(env)
+
+if [ -n "$TINFOIL_KEY_VAR" ] && [ -x /usr/local/bin/tinfoil-proxy ]; then
+  # Prompt-cache secret: the proxy otherwise writes ~/.tinfoil/user_cache_secret,
+  # which lands on the read-only rootfs (HOME=/root) and silently falls back to
+  # an in-memory value — every restart would then lose cache continuity. Pin one
+  # on the persistent agent volume instead.
+  TINFOIL_STATE=/root/.pi/agent/tinfoil
+  mkdir -p "$TINFOIL_STATE" 2>/dev/null || true
+  if [ ! -s "$TINFOIL_STATE/user_cache_secret" ]; then
+    head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' > "$TINFOIL_STATE/user_cache_secret" \
+      && chmod 600 "$TINFOIL_STATE/user_cache_secret"
+  fi
+  if [ -n "${TINFOIL_USER_CACHE_SECRET:-}" ]; then
+    export TINFOIL_USER_CACHE_SECRET
+  elif [ -s "$TINFOIL_STATE/user_cache_secret" ]; then
+    TINFOIL_USER_CACHE_SECRET="$(cat "$TINFOIL_STATE/user_cache_secret")"
+    export TINFOIL_USER_CACHE_SECRET
+  fi
+  respawn /usr/local/bin/tinfoil-proxy "$PISO_LOG_DIR/tinfoil-proxy.log" \
+    --bind 127.0.0.1 --port 3301 --log-format json
+  # Attestation + router discovery take a moment; wait so the agent's first
+  # model call is not a connection-refused race against the fresh listener.
+  for _i in $(seq 1 50); do
+    (echo >/dev/tcp/127.0.0.1/3301) >/dev/null 2>&1 && break
+    sleep 0.2
+  done
 fi
 
 # Signal that seeding is done so `piso up` / `piso attach` can wait. /run is
