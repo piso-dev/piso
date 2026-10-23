@@ -251,10 +251,168 @@
       .dot.ok {
         background: var(--green);
       }
-      #pairing {
+      #live {
         margin-top: 9px;
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        width: 100%;
+        padding: 6px 8px;
+        border: 1px solid transparent;
+        border-radius: 5px;
+        background: transparent;
         color: var(--muted);
-        line-height: 1.6;
+        font-size: 12px;
+        line-height: 1.5;
+        text-align: left;
+      }
+      #live:hover:not(:disabled) {
+        background: var(--panel);
+        border-color: var(--line);
+        color: var(--text);
+      }
+      #live[aria-current="page"] {
+        background: var(--panel);
+        border-color: var(--line);
+        color: var(--text);
+      }
+      #live .live-chev {
+        margin-left: auto;
+        color: var(--muted);
+      }
+      #liveText {
+        overflow-wrap: anywhere;
+      }
+      .dot.bad {
+        background: var(--red);
+      }
+      /* Live connection panel. The QR needs true black-on-white, so it sits on
+         an unthemed card inside the graphite console rather than being tinted. */
+      .live-wrap {
+        max-width: 780px;
+        display: grid;
+        gap: 18px;
+      }
+      .live-lead {
+        color: var(--muted);
+        margin: 0;
+        max-width: 62ch;
+      }
+      .live-card {
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: var(--panel);
+        padding: 22px;
+      }
+      .live-card h2 {
+        margin: 0 0 6px;
+        font-size: 15px;
+      }
+      .live-card p {
+        margin: 10px 0 0;
+      }
+      .live-scan {
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr);
+        gap: 24px;
+        align-items: start;
+      }
+      .live-qr {
+        background: #fff;
+        border-radius: 6px;
+        padding: 12px;
+        line-height: 0;
+      }
+      .live-qr img {
+        width: 208px;
+        height: 208px;
+        display: block;
+      }
+      .live-meta {
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr);
+        gap: 7px 18px;
+        margin: 18px 0 0;
+        font-size: 13px;
+      }
+      .live-meta dt {
+        color: var(--muted);
+      }
+      .live-meta dd {
+        margin: 0;
+        font-family: Consolas, ui-monospace, monospace;
+        overflow-wrap: anywhere;
+      }
+      .live-countdown {
+        font-variant-numeric: tabular-nums;
+      }
+      .live-form {
+        display: grid;
+        gap: 14px;
+        margin-top: 18px;
+        max-width: 460px;
+      }
+      .live-form label {
+        display: grid;
+        gap: 6px;
+        font-size: 12px;
+        color: var(--muted);
+      }
+      .live-form input {
+        padding: 9px 10px;
+        border-radius: 5px;
+        border: 1px solid var(--line);
+        background: var(--inset);
+        color: var(--text);
+      }
+      .live-form input:focus-visible {
+        outline: 2px solid var(--blue);
+        outline-offset: 1px;
+      }
+      .live-hint {
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .live-cli {
+        border-top: 1px solid var(--line);
+        padding-top: 14px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .live-cli pre {
+        margin: 10px 0 0;
+        padding: 12px;
+        background: var(--inset);
+        border-radius: 5px;
+        overflow-x: auto;
+      }
+      .live-state {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        color: var(--muted);
+        font-size: 13px;
+      }
+      .live-state .dot {
+        animation: live-pulse 1.8s ease-in-out infinite;
+      }
+      @keyframes live-pulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.35; }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .live-state .dot { animation: none; }
+      }
+      @media (max-width: 720px) {
+        .live-scan {
+          grid-template-columns: minmax(0, 1fr);
+        }
+        .live-qr {
+          justify-self: center;
+        }
+        .live-card {
+          padding: 18px;
+        }
       }
       .trust {
         margin-top: 20px;
@@ -1382,8 +1540,12 @@
           flex-wrap: wrap;
           font-size: 11px;
         }
-        #pairing {
+        #live {
           margin: 0;
+          width: auto;
+          padding: 5px 7px;
+          min-height: 34px;
+          color: var(--muted);
         }
         .trust {
           display: none;
@@ -1674,11 +1836,11 @@
         </div>
       </nav>
       <div class="rail-foot">
-        <div class="connection">
-          <span class="dot" id="connectionDot"></span
-          ><span id="connectionText">Connecting…</span>
-        </div>
-        <div id="pairing">Checking gateway pairing…</div>
+        <button type="button" id="live" data-action="go-live">
+          <span class="dot" id="liveDot" aria-hidden="true"></span>
+          <span id="liveText">Checking gateway pairing…</span>
+          <span class="live-chev" aria-hidden="true">›</span>
+        </button>
         <p class="trust">
           Real credentials stay at the gateway.<br />Workers use placeholders.
         </p>
@@ -1804,6 +1966,10 @@
           "Policy",
           "Decide when credentials are substituted, detected, or blocked.",
         ],
+        live: [
+          "Live connection",
+          "Pair this gateway with your Technocore coordinator, or check what it is syncing.",
+        ],
       };
       const sections = {
         access: [
@@ -1834,12 +2000,15 @@
           signal: AbortSignal.timeout(timeout),
         });
         if (!r.ok) {
-          let message = await r.text();
+          let text = await r.text();
+          let body = {};
           try {
-            message = JSON.parse(message).error || message;
+            body = JSON.parse(text);
+            text = body.error || text;
           } catch {}
-          const error = new Error(message || "Request failed (" + r.status + ")");
+          const error = new Error(text || "Request failed (" + r.status + ")");
           error.status = r.status;
+          error.body = body;
           throw error;
         }
         return r.status === 204 ? null : r.json();
@@ -1863,43 +2032,338 @@
         if (n < 86400000) return Math.floor(n / 3600000) + "h ago";
         return Math.floor(n / 86400000) + "d ago";
       }
-      // pairingLine turns the raw enrollment snapshot into one rail line. Sync
-      // age is only meaningful once paired, so an unpaired gateway says what it
-      // is instead of "unpaired / synced 739905d ago".
+      // pairingLine names the enrollment state in one rail line. Sync age only
+      // exists once paired: an unpaired gateway has never synced, so it must
+      // not report an age, and a missing timestamp is not "a very long time
+      // ago". The rail line is a button into the Live connection view, which
+      // owns the QR, the countdown, and the confirm.
       function pairingLine(tc) {
         const status = tc.status || "unpaired";
+        const title = [tc.name, tc.placement, tc.fingerprint, tc.lastError]
+          .filter(Boolean)
+          .join("\n");
         if (status === "active")
           return {
+            phase: "active",
+            tone: "ok",
             text:
               "Technocore: paired" +
               (tc.lastSync
                 ? " · synced " + age(tc.lastSync)
                 : " · awaiting first sync"),
-            title: [tc.name, tc.placement, tc.fingerprint, tc.lastError]
-              .filter(Boolean)
-              .join("\n"),
-            href: "",
+            title,
+          };
+        if (tc.awaitingConfirm)
+          return {
+            phase: "awaiting",
+            tone: "",
+            text: "Technocore: approved · confirm",
+            title:
+              (tc.pairApprover
+                ? "Approved by " + tc.pairApprover
+                : "Approved from a phone") +
+              ". Open Live connection to finish.",
           };
         if (status === "pending")
           return {
+            phase: "scan",
+            tone: "",
             text: "Technocore: awaiting approval",
             title: tc.pairUrl
               ? "Approve this gateway at " + tc.pairUrl
-              : "Approve this gateway on the Technocore server.",
-            href: tc.pairUrl || "",
+              : "Approve this gateway on your phone.",
           };
         if (status === "error")
           return {
+            phase: "error",
+            tone: "bad",
             text: "Technocore: error",
             title: tc.lastError || "The Technocore identity could not be read.",
-            href: "",
           };
         return {
+          phase: "form",
+          tone: "",
           text: "Technocore: not connected",
           title:
-            "No Technocore server is paired. Projects, tasks, and workers run locally without one.",
-          href: "",
+            "No Technocore coordinator is paired. Projects, tasks, and workers run locally without one.",
         };
+      }
+      // Live connection state. `key` gates re-rendering so the 1.5s poll does
+      // not rebuild the panel under a finger or a keyboard; only the countdown
+      // is patched in place every second.
+      const liveUI = {
+        key: "",
+        timer: 0,
+        ticker: 0,
+        error: "",
+        needsLogin: "",
+      };
+      function livePhase(tc) {
+        if ((tc.status || "unpaired") === "active") return "active";
+        if (tc.awaitingConfirm) return "awaiting";
+        if (tc.status === "pending" && tc.pairUrl) return "scan";
+        if (tc.status === "error") return "error";
+        return "form";
+      }
+      // remaining renders the pairing deadline as m:ss. An unparseable or
+      // zero timestamp (older gateways serialize Go's zero time) is blank, not
+      // "expired 739905 days ago".
+      function remaining(ts) {
+        const at = new Date(ts).getTime();
+        if (!Number.isFinite(at) || at < Date.UTC(2000, 0, 1)) return "";
+        const left = at - Date.now();
+        if (left <= 0) return "expired";
+        const m = Math.floor(left / 60000);
+        const sec = Math.floor((left % 60000) / 1000);
+        return m + ":" + String(sec).padStart(2, "0");
+      }
+      function stopLiveClock() {
+        clearInterval(liveUI.timer);
+        clearInterval(liveUI.ticker);
+        liveUI.timer = 0;
+        liveUI.ticker = 0;
+      }
+      function startLiveClock() {
+        if (liveUI.timer) return;
+        liveUI.timer = setInterval(pollLive, 1500);
+        liveUI.ticker = setInterval(tickLive, 1000);
+      }
+      function tickLive() {
+        const tc = data.technocore || {};
+        const text = remaining(tc.pairExpiresAt);
+        document.querySelectorAll("[data-live-countdown]").forEach((el) => {
+          el.textContent = text || "—";
+        });
+      }
+      async function pollLive() {
+        if (view !== "live" || document.hidden) return;
+        try {
+          data.technocore = await api("technocore");
+          loaded.add("technocore");
+          failures.delete("technocore");
+        } catch (e) {
+          failures.set("technocore", e.message);
+        }
+        renderGlobal();
+        if (view === "live") renderLive();
+        else stopLiveClock();
+      }
+      function renderLive() {
+        if (!$("#content")) return;
+        if (!loaded.has("technocore"))
+          return replaceContent(
+            '<p class="loading">Loading the connection state…</p>',
+          );
+        const tc = data.technocore || {};
+        const phase = livePhase(tc);
+        // Poll fast only while this panel is on screen and the tab is visible.
+        if (view !== "live" || (phase !== "scan" && phase !== "awaiting"))
+          stopLiveClock();
+        else if (!document.hidden) startLiveClock();
+        const key = [
+          phase,
+          tc.pairUrl,
+          tc.fingerprint,
+          tc.pairApprover,
+          tc.pairAccount,
+          tc.lastError,
+          liveUI.error,
+          liveUI.needsLogin,
+        ].join("|");
+        if (key !== liveUI.key) {
+          liveUI.key = key;
+          replaceContent(liveMarkup(tc, phase));
+          bindLiveForm();
+        }
+        tickLive();
+      }
+      function liveMarkup(tc, phase) {
+        const notice = liveUI.error
+          ? `<div class="notice error" role="alert"><p>${esc(liveUI.error)}</p></div>`
+          : "";
+        const cli = `<details class="live-cli">
+          <summary>Connect from the terminal instead</summary>
+          <pre><code>piso gateway launch</code></pre>
+          <p>Interactive, it prints the pairing page and waits here for the confirm. Add <code>--yes</code> to confirm from the terminal once your phone approves.</p>
+        </details>`;
+        if (phase === "active")
+          return `<div class="live-wrap">${liveActive(tc)}${cli}</div>`;
+        if (phase === "error")
+          return `<div class="live-wrap"><div class="live-card">
+            <h2>The gateway identity could not be read</h2>
+            <p class="live-lead">${esc(tc.lastError || "Unknown error")}</p>
+            <div class="actions">${button("Retry", "pair-refresh")}</div>
+          </div>${cli}</div>`;
+        if (phase === "awaiting")
+          return `<div class="live-wrap">${liveAwaiting(tc)}${cli}</div>`;
+        if (phase === "scan")
+          return `<div class="live-wrap">${liveScan(tc)}${cli}</div>`;
+        return `<div class="live-wrap">${notice}${liveForm(tc)}${cli}</div>`;
+      }
+      function liveForm(tc) {
+        const expired = /expired/i.test(tc.lastError || "");
+        const declined = /declined/i.test(tc.lastError || "");
+        const lead = expired
+          ? "Code expired. Show a new one."
+          : declined
+            ? "Pairing declined. Nothing was shared."
+            : "Pairing gives this gateway the credentials your workers need. The coordinator stores only public keys and ciphertext.";
+        const server =
+          tc.serverUrl && tc.serverUrl !== "https://server.com"
+            ? tc.serverUrl
+            : "";
+        return `<section class="live-card">
+          <h2>Connect this gateway</h2>
+          <p class="live-lead">${esc(lead)}</p>
+          ${tc.lastError && !expired && !declined ? `<p class="live-hint">${esc(tc.lastError)}</p>` : ""}
+          <form class="live-form" id="liveForm">
+            <label for="pairServer">Coordinator URL
+              <input id="pairServer" name="serverUrl" type="url" inputmode="url" autocomplete="off" spellcheck="false" placeholder="https://piso.dev" value="${esc(server)}" required>
+            </label>
+            <label for="pairName">Name this gateway
+              <input id="pairName" name="name" autocomplete="off" spellcheck="false" maxlength="80" placeholder="${esc(tc.name || "gateway")}" value="${esc(tc.name || "")}">
+            </label>
+            <div class="actions"><button class="primary" id="liveStart" type="submit">Show pairing code</button></div>
+          </form>
+          <p class="live-hint">The coordinator URL is the one you opened in a browser during setup, for example <code>https://piso.dev</code>.</p>
+        </section>`;
+      }
+      function liveScan(tc) {
+        const href = safeURL(tc.pairUrl || "");
+        const link = href
+          ? `<a href="${esc(href)}" target="_blank" rel="noreferrer">${esc(tc.pairUrl)}</a>`
+          : esc(tc.pairUrl || "");
+        return `<section class="live-card live-scan">
+          <div class="live-qr"><img src="/api/v1/technocore/pair/qr.svg?v=${enc(tc.pairUrl || "")}" alt="QR code for the pairing page" width="208" height="208"></div>
+          <div>
+            <h2>Scan this with your phone</h2>
+            <p class="live-lead">Any phone will do: no app to install, and no sign-in unless your coordinator has more than one account. You will see this gateway's fingerprint and tap approve.</p>
+            <p class="live-hint">${link}</p>
+            <dl class="live-meta">
+              <dt>Fingerprint</dt><dd>${esc(tc.fingerprint || "—")}</dd>
+              <dt>Code expires in</dt><dd class="live-countdown" data-live-countdown>${esc(remaining(tc.pairExpiresAt) || "—")}</dd>
+            </dl>
+            <p class="live-state"><span class="dot" aria-hidden="true"></span>Waiting for your phone…</p>
+            <p class="live-hint">Approve on the phone first; nothing connects until you confirm on this machine. A screenshot of this code is not enough on its own.</p>
+            <div class="actions">${button("Cancel", "pair-cancel", "", "quiet")}</div>
+          </div>
+        </section>`;
+      }
+      function liveAwaiting(tc) {
+        const who = tc.pairApprover || "";
+        const account = tc.pairAccount || "";
+        const heading = account
+          ? `Connect ${tc.name || "this gateway"} to ${account}?`
+          : `Connect ${tc.name || "this gateway"}?`;
+        const login = liveUI.needsLogin
+          ? `<div class="notice" role="status">
+              <p>Your phone approved without signing in. Finish in the coordinator: open Technocore, review this gateway, and choose Confirm connection.</p>
+              <div class="actions"><button type="button" class="primary" data-action="pair-login">Open Technocore to confirm</button></div>
+            </div>`
+          : "";
+        return `${login}<section class="live-card">
+          <h2>${esc(heading)}</h2>
+          <p class="live-lead">${who ? "Approved by " + esc(who) : "Approved from a phone"}. Connecting makes this gateway a member of the account, and the other gateways wrap their stored credentials for it.</p>
+          <dl class="live-meta">
+            <dt>Gateway</dt><dd>${esc(tc.name || "—")}</dd>
+            <dt>Fingerprint</dt><dd>${esc(tc.fingerprint || "—")}</dd>
+            <dt>Approved by</dt><dd>${esc(who || "a phone")}</dd>
+            ${account ? `<dt>Account</dt><dd>${esc(account)}</dd>` : ""}
+            <dt>Approval expires in</dt><dd class="live-countdown" data-live-countdown>${esc(remaining(tc.pairExpiresAt) || "—")}</dd>
+          </dl>
+          <div class="actions">
+            <button type="button" class="primary" data-action="pair-confirm">Connect this gateway</button>
+            <button type="button" class="quiet" data-action="pair-decline">Decline</button>
+          </div>
+          <p class="live-hint">Nothing has been shared yet. Declining leaves this gateway unpaired.</p>
+        </section>`;
+      }
+      function liveActive(tc) {
+        const c = tc.secrets || {};
+        const total = c.total || 0;
+        const vault =
+          total + " credential" + (total === 1 ? "" : "s") + " synced" +
+          (c.pending ? " · " + c.pending + " waiting to publish" : "");
+        return `<section class="live-card">
+          <h2>Paired</h2>
+          <p class="live-lead">This gateway syncs from ${esc(tc.serverUrl || "the coordinator")}. Workers only ever see placeholders; real values stay here.</p>
+          <dl class="live-meta">
+            <dt>Gateway</dt><dd>${esc(tc.name || "—")}</dd>
+            <dt>Fingerprint</dt><dd>${esc(tc.fingerprint || "—")}</dd>
+            <dt>Placement</dt><dd>${esc(tc.placement || "local")}</dd>
+            <dt>Last sync</dt><dd>${esc(tc.lastSync ? age(tc.lastSync) : "awaiting first sync")}</dd>
+            <dt>Vault</dt><dd>${esc(vault)}</dd>
+          </dl>
+          <p class="live-hint">This panel is read-only. Re-enrolling or switching coordinators is a terminal action: <code>piso gateway launch</code>.</p>
+        </section>`;
+      }
+      function bindLiveForm() {
+        const form = $("#liveForm");
+        if (!form) return;
+        form.onsubmit = (e) => {
+          e.preventDefault();
+          pairStart($("#pairServer").value.trim(), $("#pairName").value.trim());
+        };
+      }
+      function appliedTechnocore(tc) {
+        data.technocore = tc;
+        loaded.add("technocore");
+        failures.delete("technocore");
+        liveUI.key = "";
+        renderGlobal();
+        if (view === "live") renderLive();
+      }
+      function liveFailed(error) {
+        liveUI.error = error.message;
+        liveUI.key = "";
+        if (view === "live") renderLive();
+      }
+      async function pairStart(serverUrl, name) {
+        liveUI.error = "";
+        liveUI.needsLogin = "";
+        try {
+          appliedTechnocore(
+            await api("technocore/pair", "POST", { serverUrl, name }),
+          );
+          notify("Pairing code ready. Scan it with your phone.");
+        } catch (e) {
+          liveFailed(e);
+        }
+      }
+      async function pairConfirm() {
+        liveUI.error = "";
+        liveUI.needsLogin = "";
+        try {
+          appliedTechnocore(await api("technocore/pair/confirm", "POST", {}));
+          notify("Gateway paired.");
+        } catch (e) {
+          if (e.status === 409 && e.body?.needsLogin) {
+            liveUI.needsLogin = safeURL(e.body.confirmUrl || "");
+            liveUI.key = "";
+            if (view === "live") renderLive();
+            return;
+          }
+          liveFailed(e);
+        }
+      }
+      async function pairDecline() {
+        liveUI.error = "";
+        liveUI.needsLogin = "";
+        try {
+          appliedTechnocore(await api("technocore/pair/decline", "POST", {}));
+          notify("Pairing declined. Nothing was shared.");
+        } catch (e) {
+          liveFailed(e);
+        }
+      }
+      async function pairCancel() {
+        liveUI.error = "";
+        liveUI.needsLogin = "";
+        try {
+          appliedTechnocore(await api("technocore/pair/cancel", "POST", {}));
+        } catch (e) {
+          liveFailed(e);
+        }
       }
       function badge(text, tone = "") {
         return `<span class="status ${esc(tone)}">${esc(text)}</span>`;
@@ -2135,27 +2599,26 @@
         $("#attentionCount").textContent = n || "";
         $("#blockedCount").textContent =
           list("requests").filter((r) => r.action === "block").length || "";
-        $("#connectionDot").className =
-          "dot" + (healthOK && streamOK ? " ok" : "");
-        $("#connectionText").textContent = !healthOK
-          ? "API unavailable"
-          : streamOK
-            ? "Live connection"
-            : "Polling · stream reconnecting";
+        // One rail button carries both signals: the API/stream state wins,
+        // because a dead API makes every pairing claim stale.
         const tc = data.technocore || {};
-        if (!loaded.has("technocore")) {
-          $("#pairing").textContent = "Pairing status unavailable";
-          $("#pairing").title = "";
-        } else {
-          const pair = pairingLine(tc);
-          const href = pair.href ? safeURL(pair.href) : "";
-          $("#pairing").innerHTML =
-            esc(pair.text) +
-            (href
-              ? `<br><a href="${esc(href)}" target="_blank" rel="noreferrer">Open pairing page</a>`
-              : "");
-          $("#pairing").title = pair.title;
-        }
+        const pair = loaded.has("technocore") ? pairingLine(tc) : null;
+        const tone = !healthOK || !pair ? "bad" : pair.tone;
+        $("#liveDot").className = "dot" + (tone ? " " + tone : "");
+        $("#liveText").textContent = !healthOK
+          ? "Gateway API unavailable"
+          : pair
+            ? pair.text
+            : "Technocore: status unavailable";
+        $("#live").title = [
+          !healthOK
+            ? "The gateway API is not answering. Check that the piso gateway process is running."
+            : "",
+          pair?.title || "",
+          "Open Live connection",
+        ]
+          .filter(Boolean)
+          .join("\n");
         $("#updated").textContent = lastRefresh
           ? "Updated " + time(lastRefresh)
           : "Waiting for data";
@@ -2175,10 +2638,13 @@
           if (a.dataset.view === view) a.setAttribute("aria-current", "page");
           else a.removeAttribute("aria-current");
         });
+        if (view === "live") $("#live").setAttribute("aria-current", "page");
+        else $("#live").removeAttribute("aria-current");
+        if (view !== "live") stopLiveClock();
         const [title, description] = titles[view];
         document.title = title + " / piso";
         $("#page").innerHTML =
-          `<header class="page-head"><div><h1>${title}</h1><p>${description}</p></div><div class="page-actions">${view === "tasks" ? button("New task", "task-new", "", "primary") : view === "directives" ? button("New directive", "directive-new", "", "primary") : view === "projects" ? button("New task", "task-new") + button("Review requests", "go-attention", "", "quiet") : view === "traffic" ? button(paused ? "Resume feed" : "Pause feed", "pause", "", "quiet") : ""}</div></header>${sections[view] ? `<div class="subnav" aria-label="${title} sections">${sections[view].map(([k, t]) => `<button data-action="section" data-id="${k}" aria-pressed="${sub === k}">${t}</button>`).join("")}</div>` : ""}${["attention", "tasks"].includes(view) ? "" : `<div class="toolbar"><label class="search"><span class="sr-label" hidden>Search</span><input id="search" type="search" aria-label="Search ${esc(title)}" placeholder="${view === "projects" ? "Find a project…" : view === "traffic" ? "Find a worker, address, or request…" : "Filter records…"}"></label>${view === "projects" ? '<label>Show <select id="projectFilter"><option value="all">Visible projects</option><option value="needs">Needs attention</option><option value="hidden">Hidden projects</option></select></label>' : view === "traffic" ? '<label>Verdict <select id="verdictFilter"><option value="all">All requests</option><option value="block">Blocked</option><option value="substitute">Substituted</option><option value="allow">Allowed</option></select></label>' : ""}<span class="count" id="resultCount"></span></div>`}<div id="content"></div>`;
+          `<header class="page-head"><div><h1>${title}</h1><p>${description}</p></div><div class="page-actions">${view === "tasks" ? button("New task", "task-new", "", "primary") : view === "directives" ? button("New directive", "directive-new", "", "primary") : view === "projects" ? button("New task", "task-new") + button("Review requests", "go-attention", "", "quiet") : view === "traffic" ? button(paused ? "Resume feed" : "Pause feed", "pause", "", "quiet") : ""}</div></header>${sections[view] ? `<div class="subnav" aria-label="${title} sections">${sections[view].map(([k, t]) => `<button data-action="section" data-id="${k}" aria-pressed="${sub === k}">${t}</button>`).join("")}</div>` : ""}${["attention", "tasks", "live"].includes(view) ? "" : `<div class="toolbar"><label class="search"><span class="sr-label" hidden>Search</span><input id="search" type="search" aria-label="Search ${esc(title)}" placeholder="${view === "projects" ? "Find a project…" : view === "traffic" ? "Find a worker, address, or request…" : "Filter records…"}"></label>${view === "projects" ? '<label>Show <select id="projectFilter"><option value="all">Visible projects</option><option value="needs">Needs attention</option><option value="hidden">Hidden projects</option></select></label>' : view === "traffic" ? '<label>Verdict <select id="verdictFilter"><option value="all">All requests</option><option value="block">Blocked</option><option value="substitute">Substituted</option><option value="allow">Allowed</option></select></label>' : ""}<span class="count" id="resultCount"></span></div>`}<div id="content"></div>`;
         $("#search")?.addEventListener("input", (e) => {
           query = e.target.value.toLowerCase();
           renderContent();
@@ -2254,6 +2720,7 @@
         else if (view === "directives") renderDirectives();
         else if (view === "attention") renderAttention();
         else if (view === "traffic") renderTraffic();
+        else if (view === "live") renderLive();
         else renderSettings();
       }
       // Task state is separate from global refresh: only the visible page is polled.
@@ -5410,6 +5877,18 @@
           location.hash = "#/attention";
           return;
         }
+        if (name === "go-live") {
+          location.hash = "#/live";
+          return;
+        }
+        if (name === "pair-refresh") return refresh(["technocore"]);
+        if (name === "pair-confirm") return pairConfirm();
+        if (name === "pair-decline") return pairDecline();
+        if (name === "pair-cancel") return pairCancel();
+        if (name === "pair-login") {
+          if (liveUI.needsLogin) openExternal(liveUI.needsLogin);
+          return;
+        }
         if (name === "go-github") {
           location.hash = "#/access/github";
           return;
@@ -5716,6 +6195,10 @@
         $("#main").focus();
       });
       window.addEventListener("hashchange", navigate);
+      document.addEventListener("visibilitychange", () => {
+        if (document.hidden) stopLiveClock();
+        else if (view === "live") renderLive();
+      });
       let streamTimer;
       function stream() {
         const es = new EventSource("/api/v1/requests/stream");

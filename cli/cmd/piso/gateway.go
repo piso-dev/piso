@@ -1,13 +1,10 @@
 package main
 
 import (
-	"bytes"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -58,11 +55,12 @@ func cmdGatewayLaunch(args []string) error {
 	name := fs.String("name", "", "gateway display name")
 	server := fs.String("server", strings.TrimSpace(os.Getenv("PISO_SERVER_URL")), "technocore server URL")
 	noQR := fs.Bool("no-qr", false, "print the approve URL without a terminal QR")
+	yes := fs.Bool("yes", false, "confirm the enrollment without opening the dashboard (headless runners)")
 	standalone := fs.Bool("standalone", false, "always-on gateway; eligible to host launched workers")
 	placement := fs.String("placement", "", "local or standalone (default local; --standalone is an alias)")
 	publicURL := fs.String("url", "", "public HTTPS URL for remote workers (implies --standalone), e.g. https://gw.example.com:8443")
 	if err := fs.Parse(args); err != nil || fs.NArg() != 0 {
-		return errors.New("usage: piso gateway launch [--name name] [--server url] [--no-qr] [--standalone] [--url https://host:8443]")
+		return errors.New("usage: piso gateway launch [--name name] [--server url] [--no-qr] [--yes] [--standalone] [--url https://host:8443]")
 	}
 	*publicURL = strings.TrimRight(strings.TrimSpace(*publicURL), "/")
 	if *publicURL != "" {
@@ -121,12 +119,14 @@ func cmdGatewayLaunch(args []string) error {
 	}
 
 	if id.PairingID == "" || id.Status != technocore.StatusPending {
-		if err := startPairing(&id, path); err != nil {
+		updated, err := technocore.StartPairing(path, id)
+		if err != nil {
 			return err
 		}
+		id = updated
 	}
 
-	approveURL := fmt.Sprintf("%s/pair/%s/", id.ServerURL, id.PairingID)
+	approveURL := technocore.PairURL(id)
 	fmt.Printf("piso: fingerprint %s\n", id.Fingerprint())
 	fmt.Printf("piso: placement %s\n", id.PlacementOrLocal())
 	if id.PublicURL != "" {
@@ -141,32 +141,71 @@ func cmdGatewayLaunch(args []string) error {
 	if !healthy(pisoconfig.ControlAPIURL()) {
 		fmt.Println("piso: local gateway is not up; run `piso up` so it can connect after approval")
 	}
-	fmt.Println("piso: waiting for approval...")
+	fmt.Println("piso: waiting for approval on the phone...")
 
 	deadline := time.Now().Add(15 * time.Minute)
+	confirmPrinted := false
 	for time.Now().Before(deadline) {
-		status, principal, err := pollPairing(id)
+		state, err := technocore.PollPairing(id)
 		if err != nil {
+			if errors.Is(err, technocore.ErrPollToken) {
+				return errors.New("pairing was cancelled on the server; rerun `piso gateway launch`")
+			}
 			return err
 		}
-		switch status {
-		case "approved":
-			id.Status = technocore.StatusActive
-			id.PrincipalID = principal
-			if err := technocore.Save(path, id); err != nil {
+		switch state.Status {
+		case technocore.PairStatusAwaitingGateway:
+			// The phone only recorded intent. Enrollment needs a second tap on
+			// the machine that will hold the keys.
+			if *yes {
+				principal, err := technocore.ConfirmPairing(id)
+				if err != nil {
+					return err
+				}
+				if err := enrollLocal(path, id, principal); err != nil {
+					return err
+				}
+				fmt.Printf("piso: gateway enrolled (%s)\n", principal)
+				fmt.Println("piso: leave the gateway running; it will connect and sync secrets")
+				return nil
+			}
+			if !confirmPrinted {
+				confirmPrinted = true
+				who := state.ApprovedBy
+				if who == "" {
+					who = "someone"
+				}
+				fmt.Printf("piso: %s approved this gateway on their phone.\n", who)
+				fmt.Printf("piso: confirm it here: %s/#/live\n", pisoconfig.DashboardURL())
+				fmt.Println("piso: or rerun with --yes to confirm from this terminal")
+			}
+		case technocore.PairStatusApproved:
+			if err := enrollLocal(path, id, state.PrincipalID); err != nil {
 				return err
 			}
-			fmt.Printf("piso: gateway enrolled (%s)\n", principal)
+			fmt.Printf("piso: gateway enrolled (%s)\n", state.PrincipalID)
 			fmt.Println("piso: leave the gateway running; it will connect and sync secrets")
 			return nil
-		case "rejected":
+		case technocore.PairStatusRejected:
 			return errors.New("pairing rejected")
-		case "expired":
+		case technocore.PairStatusExpired:
 			return errors.New("pairing expired; rerun `piso gateway launch`")
 		}
 		time.Sleep(2 * time.Second)
 	}
 	return errors.New("timed out waiting for approval")
+}
+
+func enrollLocal(path string, id technocore.Identity, principal string) error {
+	_, err := technocore.Update(path, func(cur *technocore.Identity) error {
+		cur.Status = technocore.StatusActive
+		cur.PrincipalID = principal
+		cur.PairPhase = ""
+		cur.PairApprover = ""
+		cur.PairAccount = ""
+		return nil
+	})
+	return err
 }
 
 func cmdGatewayStatus() error {
@@ -216,61 +255,4 @@ func identityPath() (string, error) {
 		return "", err
 	}
 	return technocore.Path(dir), nil
-}
-
-func startPairing(id *technocore.Identity, path string) error {
-	body, _ := json.Marshal(map[string]any{
-		"kind":              "gateway",
-		"device_pubkey":     id.SigningPublicKey,
-		"encryption_pubkey": id.EncryptionPublicKey,
-		"name":              id.Name,
-		"placement":         id.PlacementOrLocal(),
-		"capabilities":      []string{"credential-relay"},
-	})
-	res, err := http.Post(id.ServerURL+"/api/v1/pairing-requests", "application/json", bytes.NewReader(body))
-	if err != nil {
-		return fmt.Errorf("pairing: %w", err)
-	}
-	defer res.Body.Close()
-	raw, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
-	if res.StatusCode != 201 {
-		return fmt.Errorf("pairing HTTP %d: %s", res.StatusCode, raw)
-	}
-	var out struct {
-		ID        string `json:"id"`
-		PollToken string `json:"poll_token"`
-	}
-	if err := json.Unmarshal(raw, &out); err != nil {
-		return err
-	}
-	id.PairingID = out.ID
-	id.PollToken = out.PollToken
-	id.Status = technocore.StatusPending
-	return technocore.Save(path, *id)
-}
-
-func pollPairing(id technocore.Identity) (status, principal string, err error) {
-	u := fmt.Sprintf("%s/api/v1/pairing-requests/%s", id.ServerURL, id.PairingID)
-	req, err := http.NewRequest(http.MethodGet, u, nil)
-	if err != nil {
-		return "", "", err
-	}
-	req.Header.Set(technocore.HeaderPollToken, id.PollToken)
-	res, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return "", "", err
-	}
-	defer res.Body.Close()
-	raw, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
-	if res.StatusCode != 200 {
-		return "", "", fmt.Errorf("poll HTTP %d: %s", res.StatusCode, raw)
-	}
-	var out struct {
-		Status      string `json:"status"`
-		PrincipalID string `json:"principal_id"`
-	}
-	if err := json.Unmarshal(raw, &out); err != nil {
-		return "", "", err
-	}
-	return out.Status, out.PrincipalID, nil
 }
