@@ -726,3 +726,61 @@ func TestPutPiProviderRejectsUnknownKind(t *testing.T) {
 		t.Fatalf("status %d, want 400: %s", rec.Code, rec.Body.String())
 	}
 }
+
+// A tinfoil provider's real request leaves the worker's proxy for a numbered
+// router enclave, so a secret bound to the loopback address substitutes
+// nothing and every call fails 407. Saving is still allowed (the binding is a
+// separate record), but the operator has to be told.
+func TestPutPiProviderWarnsWhenSecretMissesTheEnclave(t *testing.T) {
+	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer fake.Close()
+	s, _ := providerTestServer(t, fake)
+	// Replace the default secret with one bound to loopback, the mistake that
+	// looks right because it matches the URL the provider dials.
+	if err := s.Store.DeleteSecret("sec_local"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Store.AddSecret(store.SecretRec{
+		ID: "sec_loop", Name: "Tinfoil", Placeholder: "piso_tinfoil",
+		Value: "tk_fake", AllowedHosts: []string{"127.0.0.1"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rec := putPiProvider(t, s, map[string]any{
+		"name": "Tinfoil", "secretId": "sec_loop", "kind": piProviderKindTinfoil,
+	})
+	if rec.Code != 200 {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+	}
+	var view piProviderView
+	if err := json.Unmarshal(rec.Body.Bytes(), &view); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(view.Warning, "*.tinfoil.sh") {
+		t.Fatalf("warning %q does not name the host the secret must allow", view.Warning)
+	}
+}
+
+func TestSecretCoversTinfoilFleet(t *testing.T) {
+	for _, tc := range []struct {
+		hosts []string
+		want  bool
+	}{
+		{nil, false},
+		{[]string{}, false},
+		{[]string{"127.0.0.1"}, false},
+		{[]string{"tinfoil.sh"}, false},
+		{[]string{"*.tinfoil.sh"}, true},
+		{[]string{"*"}, true},
+		{[]string{"api.example.com", "*.tinfoil.sh"}, true},
+		// One numbered router works until the next attestation picks another.
+		{[]string{"router-0.tinfoil.sh"}, false},
+		// The rejected spellings never reach here, but if they did the rule set
+		// is empty and nothing is substitutable.
+		{[]string{"router-*.tinfoil.sh"}, false},
+	} {
+		if got := secretCoversTinfoilFleet(tc.hosts); got != tc.want {
+			t.Errorf("secretCoversTinfoilFleet(%v) = %v, want %v", tc.hosts, got, tc.want)
+		}
+	}
+}
