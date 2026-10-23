@@ -18,6 +18,16 @@ func (s *Server) coordinatorJSON(method, path string, body []byte) (int, []byte,
 	return gtwc.Call(id, method, path, nil, body)
 }
 
+// unpairedCode marks a refusal that is a state, not a failure: this gateway has
+// no active coordinator link. The dashboard reads it as "not available yet" and
+// renders the pairing banner instead of a refresh error, so an unpaired install
+// does not look broken in the browser console.
+const unpairedCode = "technocore_unpaired"
+
+func writeUnpaired(w http.ResponseWriter, message string) {
+	writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": message, "code": unpairedCode})
+}
+
 func (s *Server) handleAsksList(w http.ResponseWriter, r *http.Request) {
 	status, payload, err := s.coordinatorJSON(http.MethodGet, "/api/v1/asks", nil)
 	if err != nil {
