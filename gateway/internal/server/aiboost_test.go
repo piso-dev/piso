@@ -72,6 +72,24 @@ func TestBoostBrowserFlow(t *testing.T) {
 				t.Error("incorrect edit payload", payload)
 			}
 			io.WriteString(w, `{"id":"33333333-3333-3333-3333-333333333333","status":"submitted","revision":2,"name":"Updated draft","description":"Original description","content":{"format":"markdown","body":"# Original body"},"suggestedTags":[],"rationale":"Useful","destination":{"tagId":"library-id","name":"Library","visibility":"private"}}`)
+		case "/api/drafts/44444444-4444-4444-4444-444444444444/withdraw/":
+			if r.Method != "POST" || r.Header.Get("Authorization") != "Bearer sensitive-access" || r.Header.Get("Idempotency-Key") != "" {
+				t.Error("incorrect withdrawal request")
+			}
+			var payload map[string]any
+			if json.NewDecoder(r.Body).Decode(&payload) != nil || len(payload) != 2 || payload["expectedRevision"] != float64(1) || payload["reason"] != "Wrong target" {
+				t.Error("incorrect withdrawal payload", payload)
+			}
+			io.WriteString(w, strings.Replace(versionProposalResponse, `"status":"submitted"`, `"status":"withdrawn"`, 1))
+		case "/api/drafts/withdraw/":
+			if r.Method != "POST" || r.Header.Get("Authorization") != "Bearer sensitive-access" || r.Header.Get("Idempotency-Key") != "misfire-key" {
+				t.Error("incorrect key withdrawal request")
+			}
+			var payload map[string]any
+			if json.NewDecoder(r.Body).Decode(&payload) != nil || len(payload) != 1 || payload["reason"] != "Submitted in error" {
+				t.Error("key withdrawal must not pin a revision", payload)
+			}
+			io.WriteString(w, strings.Replace(versionProposalResponse, `"status":"submitted"`, `"status":"withdrawn"`, 1))
 		case "/api/drafts/44444444-4444-4444-4444-444444444444/":
 			if r.Header.Get("Authorization") != "Bearer sensitive-access" {
 				t.Error("version read/edit missing gateway token")
@@ -221,6 +239,8 @@ func TestBoostBrowserFlow(t *testing.T) {
 		{"boost_get_draft", map[string]any{"id": "44444444-4444-4444-4444-444444444444"}, "Publish new version"},
 		{"boost_draft_version", map[string]any{"boosterId": "22222222-2222-2222-2222-222222222222", "baseVersionId": "11111111-1111-1111-1111-111111111111", "version": "1.1.0", "content": map[string]any{"format": "markdown", "body": "# Updated"}, "changelog": "New checks", "rationale": "Useful", "idempotencyKey": "stable-submission"}, "new_version"},
 		{"boost_edit_draft", map[string]any{"id": "44444444-4444-4444-4444-444444444444", "expectedRevision": 1, "baseVersionId": "11111111-1111-1111-1111-111111111111", "version": "1.2.0", "changelog": "Rebased"}, "1.2.0"},
+		{"boost_withdraw_draft", map[string]any{"id": "44444444-4444-4444-4444-444444444444", "expectedRevision": 1, "reason": "Wrong target"}, "withdrawn"},
+		{"boost_withdraw_draft", map[string]any{"idempotencyKey": "misfire-key", "reason": "Submitted in error"}, "withdrawn"},
 		{"boost_draft", map[string]any{"name": "Go", "description": "Go guidance", "rationale": "Useful", "content": map[string]any{"format": "markdown", "body": "# Go"}, "idempotencyKey": "stable-submission"}, "draft-id"},
 	} {
 		sealed, response := sealCall(t, gwPub, pub, priv, "tools/call", map[string]any{"name": call.name, "arguments": call.args}, time.Now())

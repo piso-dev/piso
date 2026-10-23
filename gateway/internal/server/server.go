@@ -653,12 +653,19 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/projects/{slug}/visibility", s.handleProjectVisibility)
 	mux.HandleFunc("POST /api/v1/workers/{name}/internet", s.handleSetWorkerInternet)
 
+	// Per-worker model overrides: a pin from a worker to one provider in the
+	// shared stack. The active provider stays the account-wide default.
+	mux.HandleFunc("GET /api/v1/model-overrides", s.handleGetModelOverrides)
+	mux.HandleFunc("PUT /api/v1/model-overrides", s.handlePutModelOverride)
+	mux.HandleFunc("DELETE /api/v1/model-overrides/{slug}", s.handleDeleteModelOverride)
+
 	// Host inbox: list / approve / dismiss. Create and cancel are worker-only
 	// on WorkerHandler (/api/v1/worker/planning).
 	mux.HandleFunc("GET /api/v1/ingress/requests", s.handleListIngress)
 	mux.HandleFunc("POST /api/v1/ingress/requests/{id}/approve", s.handleApproveIngress)
 	mux.HandleFunc("POST /api/v1/ingress/requests/{id}/dismiss", s.handleDismissIngress)
 	s.registerTasks(mux)
+	s.registerDirectives(mux)
 	mux.HandleFunc("GET /api/v1/asks", s.handleAsksList)
 	mux.HandleFunc("POST /api/v1/asks/approvals/{id}/decide", s.handleAskApprove)
 	mux.HandleFunc("POST /api/v1/asks/human-actions/{id}/resolve", s.handleAskResolve)

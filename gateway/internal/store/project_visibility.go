@@ -8,9 +8,14 @@ func (s *Store) DeleteWorker(name string) error {
 	for i, rec := range s.state.Workers {
 		if rec.Name == name {
 			old := s.state.Workers
+			oldOverrides := s.state.ModelOverrides
 			s.state.Workers = append(append([]WorkerRec{}, old[:i]...), old[i+1:]...)
+			// A model override is keyed by slug, so it would otherwise survive
+			// deletion and re-target whatever project claims that slug next.
+			s.pruneModelOverrideLocked(rec.Slug)
 			if err := s.save(); err != nil {
 				s.state.Workers = old
+				s.state.ModelOverrides = oldOverrides
 				return err
 			}
 			return nil

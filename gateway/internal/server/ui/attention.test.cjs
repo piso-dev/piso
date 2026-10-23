@@ -101,12 +101,17 @@ const dispatcherSlice = script.slice(
   at('if (name === "mcp-auth") return authorizeMCP(id);'),
 );
 
-function dispatcher(asks, promptValue = "looks good") {
+// ``source`` is the clicked button and ``notify`` is the toast: the real action()
+// takes all three, so the harness must declare them or the slice cannot run.
+function dispatcher(asks, promptValue = "looks good", options = {}) {
   const calls = [];
+  const toasts = [];
+  const refreshes = [];
   const window = { prompt: () => promptValue };
   const list = (key) => (key === "asks" ? asks : []);
   const api = async (...args) => {
     calls.push(args);
+    if (options.fail) throw options.fail;
     return {};
   };
   const factory = new Function(
@@ -116,10 +121,28 @@ function dispatcher(asks, promptValue = "looks good") {
     "enc",
     "rid",
     "changed",
+    "notify",
+    "source",
     `return async function action(name, id) {\n${dispatcherSlice}\n};`,
   );
-  const action = factory(window, list, api, encodeURIComponent, () => "req-1", async () => {});
-  return { action, calls };
+  const action = factory(
+    window,
+    list,
+    api,
+    encodeURIComponent,
+    () => "req-1",
+    async (keys) => refreshes.push(keys),
+    (text) => toasts.push(text),
+    options.source,
+  );
+  return { action, calls, toasts, refreshes };
+}
+
+// A click target shaped like the rendered card: the revision the human is
+// looking at lives in the DOM, not in whatever the last poll put in memory.
+function cardButton(revision) {
+  const card = { dataset: revision === undefined ? {} : { revision } };
+  return { closest: (sel) => (sel === ".ask" ? card : null) };
 }
 
 test("respond dispatcher posts the idempotency key and wait id", async () => {
@@ -151,4 +174,46 @@ test("respond dispatcher routes approvals to the decide endpoint", async () => {
   assert.equal(calls.length, 1);
   assert.equal(calls[0][0], "asks/approvals/a-1/decide");
   assert.deepEqual(calls[0][2], { decision: "approved" });
+});
+
+// A proposed task's card is the one ask whose text can move under the reader, so
+// the decision must name the revision that was rendered, and a stale one must
+// refresh instead of failing at the human.
+test("proposal decision cites the revision rendered on the card", async () => {
+  const { action, calls, toasts } = dispatcher(
+    [{ kind: "approval", id: "a-1", action: "task.propose", title: "Add a host", revision: "R2" }],
+    "unused",
+    { source: cardButton("R1") },
+  );
+  await action("ask-approved", "a-1");
+  assert.equal(calls.length, 1);
+  // The card said R1 while memory already held R2: the human read R1.
+  assert.deepEqual(calls[0][2], { decision: "approved", seenRevision: "R1" });
+  assert.deepEqual(toasts, []);
+});
+
+test("a stale proposal refreshes the card and explains instead of erroring", async () => {
+  const stale = Object.assign(new Error("proposal was revised after you loaded it"), {
+    status: 409,
+  });
+  const { action, calls, toasts, refreshes } = dispatcher(
+    [{ kind: "approval", id: "a-1", action: "task.propose", title: "Add a host", revision: "R2" }],
+    "unused",
+    { source: cardButton("R1"), fail: stale },
+  );
+  // Resolving means the human was told and the card was refetched, not that an
+  // error dialog appeared.
+  await assert.doesNotReject(() => action("ask-approved", "a-1"));
+  assert.deepEqual(refreshes, [["asks"]], "the card was refetched");
+  assert.equal(calls.length, 1, "the decision was posted once, not retried");
+  assert.match(toasts[0], /check it and decide again/);
+});
+
+test("other approvals decide without a revision", async () => {
+  const { action, calls, toasts } = dispatcher([
+    { kind: "approval", id: "a-1", from: "gw", title: "Publish", action: "publish" },
+  ]);
+  await action("ask-approved", "a-1");
+  assert.deepEqual(calls[0][2], { decision: "approved" });
+  assert.deepEqual(toasts, []);
 });

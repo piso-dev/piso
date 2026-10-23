@@ -33,6 +33,7 @@ func (s *Server) WorkerHandler() http.Handler {
 	mux.HandleFunc("POST /api/v1/worker/context", s.handleWorkerPostContext)
 	mux.HandleFunc("POST /api/v1/worker/checkin", s.handleWorkerCheckin)
 	mux.HandleFunc("GET /api/v1/worker/capabilities", s.handleWorkerCapabilities)
+	mux.HandleFunc("GET /api/v1/worker/model", s.handleWorkerGetModel)
 	mux.HandleFunc("POST /api/v1/worker/ports", s.handleWorkerPostPorts)
 	mux.HandleFunc("POST /api/v1/worker/activity", s.handleWorkerPostActivity)
 	mux.HandleFunc("GET /api/v1/worker/activities", s.handleWorkerGetActivities)
@@ -98,6 +99,13 @@ func (s *Server) mcpHandler() *mcp.Handler {
 			return aiboost.Draft{}, err
 		}
 		return client.GetDraft(ctx, id)
+	}
+	h.BoostWithdraw = func(ctx context.Context, w aiboost.Withdrawal) (aiboost.Draft, error) {
+		client, err := s.boostClient()
+		if err != nil {
+			return aiboost.Draft{}, err
+		}
+		return client.Withdraw(ctx, w)
 	}
 	h.BoostDraftVersion = func(ctx context.Context, draft aiboost.VersionDraft, key string) (aiboost.Draft, error) {
 		client, err := s.boostClient()

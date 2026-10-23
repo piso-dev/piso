@@ -53,6 +53,7 @@ type Handler struct {
 	BoostEditDraft    func(context.Context, string, aiboost.DraftEdit) (aiboost.Draft, error)
 	BoostListDrafts   func(context.Context, string, string) (aiboost.DraftPage, error)
 	BoostGetDraft     func(context.Context, string) (aiboost.Draft, error)
+	BoostWithdraw     func(context.Context, aiboost.Withdrawal) (aiboost.Draft, error)
 	BoostDraftVersion func(context.Context, aiboost.VersionDraft, string) (aiboost.Draft, error)
 }
 
