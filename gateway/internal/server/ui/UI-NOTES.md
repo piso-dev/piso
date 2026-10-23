@@ -72,9 +72,14 @@ a read-only summary of the paired gateway. The terminal equivalent stays one
   visible; the ten-second global refresh is the backstop, and hidden tabs stop
   both. Re-rendering is gated on a state key so a poll cannot rebuild the panel
   under a finger; only the countdown text is patched each second.
+- The phone page signs in first: `/pair/<id>/` sends a stranger through
+  `/login/?next=/pair/<id>/` and returns them to the same request, so the
+  approval always names the person who gave it. Login is also what lets the
+  phone finish the enrollment itself.
 - Nothing connects on the phone tap. The connect button is the only thing that
-  mints the membership, and it names the account it will join. If the phone
-  approved anonymously the API answers 409 and the panel swaps in a link to the
+  mints the membership, and it names the account it will join. A request
+  approved without a session (an older client writing to the API) still cannot
+  be finished here: the API answers 409 and the panel swaps in a link to the
   signed-in coordinator page instead of a dead end.
 - A paired gateway is read-only here: re-enrolling or switching coordinators is
   a terminal action, because it changes who can decrypt the vault.

@@ -167,9 +167,10 @@ func (s *Server) handleTechnocoreConfirm(w http.ResponseWriter, r *http.Request)
 	if err != nil {
 		var needsLogin *tc.NeedsLoginError
 		if errors.As(err, &needsLogin) {
-			// The phone approved without signing in. Nothing is minted yet;
-			// the operator finishes it in a signed-in browser and this
-			// gateway's poller sees the approval a moment later.
+			// The approval carries no signed-in person behind it (an older
+			// client writing to the API). Nothing is minted yet; the operator
+			// finishes it in a signed-in browser and this gateway's poller
+			// sees the approval a moment later.
 			confirm := strings.TrimRight(id.ServerURL, "/") + needsLogin.ConfirmURL
 			writeJSON(w, http.StatusConflict, map[string]any{
 				"error":      err.Error(),

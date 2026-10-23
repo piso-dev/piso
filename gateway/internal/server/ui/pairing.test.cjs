@@ -157,6 +157,10 @@ test('showing a code posts the origin and renders the QR and countdown', async t
   const img = content(w).querySelector('.live-qr img');
   assert.match(img.getAttribute('src'), /\/api\/v1\/technocore\/pair\/qr\.svg\?v=/);
   assert.match(content(w).textContent, /Scan this with your phone/);
+  // The phone page signs in before it approves, so the panel must not promise
+  // a sign-in-free approval.
+  assert.match(content(w).textContent, /Sign in on the coordinator/);
+  assert.doesNotMatch(content(w).textContent, /no sign-in/i);
   assert.match(content(w).textContent, /Waiting for your phone/);
   assert.match(content(w).textContent, /79541a2e2f78/);
   assert.match(w.document.querySelector('[data-live-countdown]').textContent, /^1:[0-3]\d$/);
