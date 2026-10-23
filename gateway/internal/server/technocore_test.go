@@ -321,8 +321,9 @@ func TestConfirmEnrollsImmediately(t *testing.T) {
 	}
 }
 
-// An anonymous phone approval mints nothing on purpose. The dashboard must
-// hand the operator a signed-in URL instead of pretending it failed.
+// An approval with no signed-in person behind it mints nothing on purpose. The
+// dashboard must hand the operator a signed-in URL instead of pretending it
+// failed.
 func TestConfirmReportsSignedInConfirmationNeeded(t *testing.T) {
 	st, coord := newCoordStub(t)
 	st.confirmLogin = true
