@@ -163,6 +163,13 @@ func (s *Server) handlePutPiProvider(w http.ResponseWriter, r *http.Request) {
 	if pointer.DefaultModel != "" && len(pointer.Models) > 0 && !containsString(pointer.Models, pointer.DefaultModel) {
 		warning = "default model is not in the provider's last known catalog; it was saved anyway"
 	}
+	// A tinfoil provider's real request leaves the worker's proxy for a router
+	// enclave, so a secret bound only to loopback substitutes nothing and every
+	// call fails 407. Warn rather than refuse: the secret's hosts are its own
+	// field, and a hand-built config may bind hosts this rule cannot know.
+	if kind == piProviderKindTinfoil && !secretCoversTinfoilFleet(rec.AllowedHosts) {
+		warning = joinWarning(warning, "the selected secret is not bound to *.tinfoil.sh; the proxy's real request leaves for a numbered router enclave, so a loopback or unrelated host rule substitutes nothing")
+	}
 	if in.Activate {
 		err = s.Store.UpsertPiProviderActive(*pointer)
 	} else {
@@ -637,6 +644,36 @@ const (
 // can only ever get connection refused. Kept in step with TINFOIL_BASE_URL in
 // ui/index.html and --port in worker/entrypoint.sh.
 const tinfoilProxyBaseURL = "http://127.0.0.1:3301/v1"
+
+// tinfoilEnclaveSuffix is the domain the tinfoil proxy's sealed request leaves
+// for after the worker hands it over. It is the host the operator's secret has
+// to be bound to, not the loopback address pi dials.
+const tinfoilEnclaveSuffix = "tinfoil.sh"
+
+// secretCoversTinfoilFleet reports whether allowedHosts can match the router
+// enclave the proxy will actually reach. The fleet is numbered (router-0,
+// router-1, ...), so the check probes more than one index: a rule pinned to a
+// single router works until the next attestation and then silently stops
+// substituting.
+func secretCoversTinfoilFleet(allowedHosts []string) bool {
+	hosts := store.CanonicalRuleHosts(allowedHosts)
+	if len(hosts) == 0 {
+		return false
+	}
+	for _, probe := range []string{"router-0." + tinfoilEnclaveSuffix, "router-1." + tinfoilEnclaveSuffix} {
+		covered := false
+		for _, rule := range hosts {
+			if model.HostRuleMatch(rule, probe) {
+				covered = true
+				break
+			}
+		}
+		if !covered {
+			return false
+		}
+	}
+	return true
+}
 
 // piProviderEndpoint resolves the stored kind and base URL for a save. A local
 // kind pins its URL: the dashboard hides the field for it, so the server must

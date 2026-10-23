@@ -4121,6 +4121,35 @@
           </div>
         </article>`;
       }
+      // The secret a Tinfoil provider is bound to must cover the enclave the
+      // proxy sends to, not the loopback address pi dials.
+      const TINFOIL_HOST_RULE = "*.tinfoil.sh";
+      function hostOf(raw) {
+        try {
+          return new URL(raw).hostname.toLowerCase();
+        } catch {
+          return "";
+        }
+      }
+      // The vault does not derive placeholders, so two secrets with the same
+      // name would collide: SecretByPlaceholder answers with the first match and
+      // both providers would share one key. Suffix until it is free.
+      function uniquePlaceholder(name) {
+        const slug =
+          "piso_" +
+          String(name || "")
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, "_")
+            .replace(/^_+|_+$/g, "");
+        const used = new Set(
+          list("secrets").map((s) => (s.placeholder || "").toLowerCase()),
+        );
+        const base = slug === "piso_" ? "piso_key" : slug;
+        if (!used.has(base)) return base;
+        for (let i = 2; i < 100; i++)
+          if (!used.has(base + "_" + i)) return base + "_" + i;
+        return base + "_" + Date.now();
+      }
       function providerForm(id) {
         const p = (data.provider?.providers || []).find((x) => x.id === id) || {};
         const catalog = { models: [] };
@@ -4134,8 +4163,19 @@
           (!savedKind && (p.baseUrl || "").trim() === TINFOIL_BASE_URL)
             ? "tinfoil"
             : "other";
+        // A key can be picked from the vault or created here, so a first
+        // provider does not need a detour through the Secrets page. Editing an
+        // existing provider only offers the existing secret: swapping the key
+        // belongs with the other secret fields.
+        let keyMode = "existing";
         const shared =
           field("name", "Name", p.name, { required: true, full: true }) +
+          (id
+            ? ""
+            : `<div class="form-tabs" role="tablist" aria-label="API key source">
+                <button type="button" role="tab" data-key-mode="existing" aria-pressed="false">Use an existing secret</button>
+                <button type="button" role="tab" data-key-mode="new" aria-pressed="false">Create a new one</button>
+              </div>`) +
           field(
             "secretId",
             "API key secret",
@@ -4156,7 +4196,20 @@
                   .map((s) => [s.technocoreId || s.id, s.name]),
               ],
             },
-          );
+          ) +
+          (id
+            ? ""
+            : `<div data-new-secret hidden>
+                ${field("newSecretName", "Key name", "", { required: false })}
+                ${field("newSecretValue", "Key value", "", {
+                  type: "password",
+                  full: true,
+                })}
+                ${field("newSecretHosts", "Allowed hosts", "", {
+                  full: true,
+                  hint: "Where the real key may be substituted. Prefilled from the base URL; use commas for more hosts.",
+                })}
+              </div>`);
         const tabs = `<div class="form-tabs" role="tablist" aria-label="Provider type">
             <button type="button" role="tab" data-provider-mode="tinfoil" aria-pressed="false">Tinfoil</button>
             <button type="button" role="tab" data-provider-mode="other" aria-pressed="false">Other provider</button>
@@ -4177,13 +4230,78 @@
             // The Tinfoil tab has no URL input at all; its URL is a constant,
             // and the server pins it for the kind regardless of what is sent.
             const baseUrl = mode === "tinfoil" ? TINFOIL_BASE_URL : f.baseUrl;
-            const out = await api("pi-provider", "PUT", {
-              ...f,
-              baseUrl,
-              kind: mode === "tinfoil" ? "tinfoil" : "",
-              id: id || "",
-              models: catalog.models,
-            });
+            // The key being created belongs to the secret POST only. Spreading
+            // the whole form into the provider body would put the real
+            // credential in the provider record and every request log.
+            const {
+              newSecretName,
+              newSecretValue,
+              newSecretHosts,
+              ...providerFields
+            } = f;
+            let secretId = f.secretId;
+            let created = false;
+            if (keyMode === "new" && !id) {
+              const name = (newSecretName || "").trim();
+              const value = (newSecretValue || "").trim();
+              const hosts = (newSecretHosts || "")
+                .split(",")
+                .map((h) => h.trim())
+                .filter(Boolean);
+              if (!name || !value)
+                throw new Error("A new secret needs a name and a value.");
+              if (!hosts.length)
+                throw new Error(
+                  "List at least one allowed host for the new secret, or an unbound key can never be substituted.",
+                );
+              // The vault derives nothing, so a second "Tinfoil" key would
+              // otherwise collide with the first one's placeholder and both
+              // providers would share whichever secret the gateway resolves
+              // first.
+              const placeholder = uniquePlaceholder(name);
+              const written = await api("secrets", "POST", {
+                name,
+                value,
+                placeholder,
+                envKey: placeholder.replace(/^piso_/, "").toUpperCase(),
+                allowedHosts: hosts,
+                // A provider key is used by pi inside the worker, so it can be
+                // neither gateway-only nor scoped away from every worker.
+                gatewayOnly: false,
+                workers: [],
+              });
+              secretId = written?.secret?.id;
+              if (!secretId)
+                throw new Error(
+                  "The secret was created but the gateway returned no id for it. Check the Secrets page.",
+                );
+              created = true;
+              await changed(["secrets", "rules", "requests"]);
+            }
+            if (!secretId)
+              throw new Error("Select an API key secret, or create one.");
+            let out;
+            try {
+              out = await api("pi-provider", "PUT", {
+                ...providerFields,
+                secretId,
+                baseUrl,
+                kind: mode === "tinfoil" ? "tinfoil" : "",
+                id: id || "",
+                models: catalog.models,
+              });
+            } catch (error) {
+              // The secret is already stored and is not rolled back: deleting
+              // a credential as cleanup could remove one that is in use. Say
+              // what survived so the operator can retry the provider alone.
+              if (created)
+                throw new Error(
+                  "The secret was saved, but the provider was not: " +
+                    error.message +
+                    " Open Add provider again and pick that secret.",
+                );
+              throw error;
+            }
             await changed(["provider"]);
             if (out.warning) return out.warning;
             return id ? "Provider saved." : "Provider added.";
@@ -4191,6 +4309,58 @@
         );
 
         const urlField = $("#f-baseUrl");
+        const hostsField = $("#f-newSecretHosts");
+        let reloadModels = () => {};
+        // A provider key bound to the wrong host is inert: the gateway finds no
+        // rule and answers 407. Derive the binding from the URL the operator
+        // already typed, and pin it for Tinfoil so the common case is correct.
+        const syncHosts = () => {
+          if (!hostsField) return;
+          if (mode === "tinfoil") {
+            hostsField.value = TINFOIL_HOST_RULE;
+            hostsField.readOnly = true;
+            return;
+          }
+          hostsField.readOnly = false;
+          if (hostsField.dataset.auto === "0") return;
+          const host = hostOf(urlField?.value || "");
+          if (host) {
+            hostsField.value = host;
+            hostsField.dataset.auto = "1";
+          }
+        };
+        const setKeyMode = (next) => {
+          keyMode = next;
+          document
+            .querySelectorAll("[data-key-mode]")
+            .forEach((b) =>
+              b.setAttribute(
+                "aria-pressed",
+                String(b.dataset.keyMode === keyMode),
+              ),
+            );
+          const fresh = keyMode === "new";
+          const panel = document.querySelector("[data-new-secret]");
+          if (panel) panel.hidden = !fresh;
+          // Same rule as the URL field: disable so the inactive controls drop
+          // out of FormData instead of submitting empty values, and drop
+          // `required` so a hidden field cannot block submit.
+          for (const [selector, enabled] of [
+            ["#f-newSecretName", fresh],
+            ["#f-newSecretValue", fresh],
+            ["#f-newSecretHosts", fresh],
+            ["#f-secretId", !fresh],
+          ]) {
+            const el = $(selector);
+            if (!el) continue;
+            el.disabled = !enabled;
+            el.required = enabled;
+            const wrap = el.closest(".field");
+            if (wrap) wrap.hidden = !enabled;
+          }
+          syncHosts();
+          reloadModels();
+        };
         const setMode = (next) => {
           mode = next;
           const tinfoil = mode === "tinfoil";
@@ -4225,11 +4395,25 @@
             hint.textContent = tinfoil
               ? "Choose an API key secret to load its model list. The enclave proxy must be running in the worker first."
               : "Choose an API key secret to load its model list.";
+          // The binding depends on the tab, so it is refreshed after it moves.
+          syncHosts();
         };
         document
           .querySelectorAll("[data-provider-mode]")
           .forEach((b) => b.addEventListener("click", () => setMode(b.dataset.providerMode)));
+        document
+          .querySelectorAll("[data-key-mode]")
+          .forEach((b) =>
+            b.addEventListener("click", () => setKeyMode(b.dataset.keyMode)),
+          );
+        if (hostsField)
+          hostsField.addEventListener("input", () => {
+            hostsField.dataset.auto = "0";
+          });
+        // The derived host follows the URL until the operator edits it.
+        if (urlField) urlField.addEventListener("input", syncHosts);
         setMode(mode);
+        setKeyMode(keyMode);
         wireModelAutocomplete(
           id,
           catalog,
@@ -4241,7 +4425,15 @@
           // The saved list for a provider whose catalog the gateway cannot read
           // is all the dialog can show; a brand new one starts empty.
           () => (p.kind === "tinfoil" ? p.models || [] : []),
+          // Until the secret exists there is nothing to look a catalog up with;
+          // saying so is better than "Choose a key" for a key being typed.
+          () =>
+            keyMode === "new"
+              ? "Saved with its secret, so its model list loads when you edit the provider. Type a model id, or leave it empty for the first one pi discovers."
+              : "",
         );
+        reloadModels = () =>
+          $("#f-secretId")?.dispatchEvent(new Event("change"));
       }
 
       // Suggest model ids from the provider's live catalog. The gateway holds
@@ -4249,7 +4441,7 @@
       // base URL and secret are present, including before the provider has
       // been saved, so the first round can already pick a model. A catalog
       // that cannot be loaded leaves the field as plain text.
-      function wireModelAutocomplete(id, catalog, getBaseUrl, getKind, savedModels) {
+      function wireModelAutocomplete(id, catalog, getBaseUrl, getKind, savedModels, getBlocked) {
         const input = $("#f-defaultModel");
         const listbox = $("#modelList");
         const hint = $("#modelHint");
@@ -4338,6 +4530,19 @@
           }
         };
         const load = () => {
+          // Checked before the URL/secret guard: a caller with a reason the
+          // catalog cannot be fetched (no secret yet) needs that reason shown,
+          // not "Choose an API key secret".
+          const blocked = getBlocked ? getBlocked() : "";
+          if (blocked) {
+            loadingKey = "";
+            if (loadedKey !== pairKey()) {
+              setModels([]);
+              loadedKey = "";
+            }
+            hint.textContent = blocked;
+            return;
+          }
           const baseUrl = readBaseUrl();
           const secretId = secretField.value;
           if (!baseUrl || !secretId) {
