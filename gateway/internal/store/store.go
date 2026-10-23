@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"piso/gateway/internal/model"
 	"piso/gateway/internal/patterns"
 	"piso/internal/ownfile"
 )
@@ -79,6 +80,14 @@ type PiProviderRec struct {
 	// APIType is the pi models.json api adapter. Empty means
 	// openai-completions.
 	APIType string `json:"api,omitempty"`
+	// Kind is the provider's transport shape, decided once when it is saved
+	// from the dashboard. Empty ("remote") is an endpoint the gateway can
+	// reach itself; "tinfoil" is the enclave proxy pi runs beside it, which
+	// the gateway cannot dial. Deliberately not derived from BaseURL at read
+	// time: the answer decides whether the gateway is allowed to fetch a
+	// catalog, and that must not depend on string comparison against a
+	// constant that lives in another file.
+	Kind string `json:"kind,omitempty"`
 	// Models is the last successfully fetched catalog. It is advisory: it
 	// feeds the dashboard autocomplete and lazy default resolution, never the
 	// save path. CatalogError holds the last failure for display.
@@ -859,12 +868,14 @@ func (s *Store) ReplaceSecret(rec SecretRec) error {
 	return fmt.Errorf("secret %s not found", rec.ID)
 }
 
-// HasRule reports whether placeholder already has a rule for host or "*".
+// HasRule reports whether placeholder already has a rule matching host (or an
+// any-host rule). Uses the same matcher as policy, so a "*.example.com" rule
+// counts as present for api.example.com.
 func (s *Store) HasRule(placeholder, host string) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	for _, r := range s.state.Rules {
-		if r.Placeholder == placeholder && (r.Host == host || r.Host == "*") {
+		if r.Placeholder == placeholder && model.HostRuleMatch(r.Host, host) {
 			return true
 		}
 	}
@@ -876,7 +887,9 @@ func (s *Store) HasRule(placeholder, host string) bool {
 // to at least one destination. A literal "*" is still accepted (existing
 // secrets, explicit opt-in) and yields one wildcard rule, but it is no longer
 // the default — an unbound secret is the common case that made every vault key
-// usable against every host. Unique trimmed hosts keep first-seen casing.
+// usable against every host. Hosts that are not valid rule patterns are
+// dropped here (InvalidRuleHosts reports them for a 400 at the API edge).
+// Unique trimmed hosts keep first-seen casing.
 func CanonicalRuleHosts(hosts []string) []string {
 	var out []string
 	seen := map[string]bool{}
@@ -889,6 +902,9 @@ func CanonicalRuleHosts(hosts []string) []string {
 			// Wildcard disables destination binding: keep it explicit only.
 			return []string{"*"}
 		}
+		if !model.ValidRuleHost(h) {
+			continue
+		}
 		if seen[strings.ToLower(h)] {
 			continue
 		}
@@ -898,11 +914,52 @@ func CanonicalRuleHosts(hosts []string) []string {
 	return out
 }
 
+// InvalidRuleHosts returns the non-blank host entries that are not accepted
+// rule patterns, so the API can reject them instead of silently dropping them.
+func InvalidRuleHosts(hosts []string) []string {
+	var bad []string
+	for _, h := range hosts {
+		h = strings.TrimSpace(h)
+		if h == "" {
+			continue
+		}
+		if !model.ValidRuleHost(h) {
+			bad = append(bad, h)
+		}
+	}
+	return bad
+}
+
 // HasWildcardHost reports whether the host list opts into any-host
 // substitution. Used to warn loudly at creation/edit time.
 func HasWildcardHost(hosts []string) bool {
 	for _, h := range hosts {
 		if strings.TrimSpace(h) == "*" {
+			return true
+		}
+	}
+	return false
+}
+
+// HasBroadSuffixWildcard reports whether the host list binds a bare
+// single-label suffix ("*.com"), which reaches every domain under that name.
+// Not rejected (it is narrower than "*"), but warned about.
+func HasBroadSuffixWildcard(hosts []string) bool {
+	for _, h := range hosts {
+		suffix, ok := strings.CutPrefix(strings.ToLower(strings.TrimSpace(h)), "*.")
+		if ok && suffix != "" && !strings.Contains(suffix, ".") {
+			return true
+		}
+	}
+	return false
+}
+
+// HasSuffixWildcard reports whether the host list binds any subdomain pattern
+// ("*.example.com"). Narrower than HasWildcardHost, so it warrants a note
+// rather than the any-destination warning.
+func HasSuffixWildcard(hosts []string) bool {
+	for _, h := range hosts {
+		if strings.HasPrefix(strings.TrimSpace(h), "*.") {
 			return true
 		}
 	}

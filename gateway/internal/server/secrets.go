@@ -52,9 +52,16 @@ func (s *Server) saveSecret(ctx context.Context, rec store.SecretRec) ([]RetryRe
 // destination binding for that secret: any host the worker can reach may
 // receive the real credential. Keep it explicit and loud.
 func secretHostWarnings(hosts []string) []string {
-	if !store.HasWildcardHost(hosts) {
-		return nil
+	if store.HasWildcardHost(hosts) {
+		log.Printf("secrets: WILDCARD host rule registered — this secret substitutes on ANY destination")
+		return []string{"WILDCARD host: this secret can be substituted on ANY destination. Prefer an explicit host list."}
 	}
-	log.Printf("secrets: WILDCARD host rule registered — this secret substitutes on ANY destination")
-	return []string{"WILDCARD host: this secret can be substituted on ANY destination. Prefer an explicit host list."}
+	if store.HasBroadSuffixWildcard(hosts) {
+		log.Printf("secrets: BROAD subdomain wildcard registered — this secret substitutes on any host under a bare top-level name")
+		return []string{"Broad subdomain wildcard: a bare name like *.com covers every domain under it. Prefer a registrable domain such as *.example.com."}
+	}
+	if store.HasSuffixWildcard(hosts) {
+		return []string{"Subdomain wildcard: this secret substitutes on any subdomain of the listed domains (the apex is not covered — add it as its own host if needed)."}
+	}
+	return nil
 }

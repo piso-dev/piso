@@ -140,7 +140,9 @@ test("an unsaved provider change does not offer the previous catalog", async (t)
   });
   await new Promise((r) => setTimeout(r, 20));
   assert.equal(calls.length, 0);
-  assert.match(dialog.querySelector("#modelHint").textContent, /Enter the API base URL/);
+  // The secret, not the URL, is what unlocks a catalog now, so the hint asks
+  // for one. A provider with no URL still offers nothing from a previous save.
+  assert.match(dialog.querySelector("#modelHint").textContent, /Choose an API key secret/);
   assert.equal(dialog.querySelector("#modelList").hidden, true);
 });
 

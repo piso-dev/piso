@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"piso/gateway/internal/model"
 	"piso/gateway/internal/store"
 )
 
@@ -504,5 +505,309 @@ func TestPiProviderListFlatDefaultMatchesActive(t *testing.T) {
 	// with an explicit clear.
 	if _, ok := raw["defaultModel"]; !ok {
 		t.Fatalf("defaultModel missing from the list response: %v", raw)
+	}
+}
+
+// A tinfoil provider's catalog is served by a proxy that runs beside pi in the
+// worker, so this gateway cannot reach it by design. It must report the reason
+// instead of recording a failure, and must not clobber a cached list.
+func TestPiProviderModelsLocalSidecar(t *testing.T) {
+	// The sidecar must never be dialled, so the fake fails loudly if it is.
+	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("gateway dialled a worker-sidecar URL: %s", r.URL)
+	}))
+	defer fake.Close()
+	s, _ := providerTestServer(t, fake)
+	s.Store.SetPiProvider(&store.PiProviderRec{
+		SecretID: "11111111-1111-1111-1111-111111111111",
+		BaseURL:  tinfoilProxyBaseURL,
+		Kind:     piProviderKindTinfoil,
+		Models:   []string{"kimi-k2", "llama-3.3-70b"},
+	})
+	rec := httptest.NewRecorder()
+	s.handleGetPiProviderModels(rec, httptest.NewRequest(http.MethodGet, "/api/v1/pi-provider/models", nil))
+	if rec.Code != 200 {
+		t.Fatalf("status %d", rec.Code)
+	}
+	var catalog piProviderCatalog
+	if err := json.Unmarshal(rec.Body.Bytes(), &catalog); err != nil {
+		t.Fatal(err)
+	}
+	if catalog.Catalog != "local" {
+		t.Fatalf("catalog state: %+v", catalog)
+	}
+	if catalog.Error != "" {
+		t.Fatalf("local sidecar reported as an error: %+v", catalog)
+	}
+	if len(catalog.Models) != 2 {
+		t.Fatalf("cached models dropped: %+v", catalog)
+	}
+	if got := s.Store.PiProvider(); got == nil || got.CatalogError != "" {
+		t.Fatalf("local sidecar must not record a catalog failure: %+v", got)
+	}
+}
+
+// Kind, not the URL, decides whether the gateway may fetch. A remote provider
+// that happens to sit on the sidecar's address is still fetched, which is the
+// property the URL-comparison version could not express.
+func TestPiProviderModelsRemoteOnLoopbackIsFetched(t *testing.T) {
+	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"data":[{"id":"on-prem-model"}]}`)
+	}))
+	defer fake.Close()
+	s, _ := providerTestServer(t, fake)
+	s.Store.SetPiProvider(&store.PiProviderRec{
+		SecretID: "11111111-1111-1111-1111-111111111111",
+		BaseURL:  fake.URL + "/v1",
+		Kind:     piProviderKindRemote,
+	})
+	rec := httptest.NewRecorder()
+	s.handleGetPiProviderModels(rec, httptest.NewRequest(http.MethodGet, "/api/v1/pi-provider/models", nil))
+	var catalog piProviderCatalog
+	if err := json.Unmarshal(rec.Body.Bytes(), &catalog); err != nil {
+		t.Fatal(err)
+	}
+	if catalog.Catalog != "ok" || len(catalog.Models) != 1 || catalog.Models[0] != "on-prem-model" {
+		t.Fatalf("remote provider must be fetched: %+v", catalog)
+	}
+}
+
+// The tinfoil kind owns its URL: the dialog hides the field, so a client that
+// sends something else must not be able to point the provider elsewhere.
+func TestPiProviderEndpoint(t *testing.T) {
+	if gotKind, gotURL, err := piProviderEndpoint(piProviderKindTinfoil, "https://evil.example.com/v1"); err != nil {
+		t.Fatalf("tinfoil: %v", err)
+	} else if gotKind != piProviderKindTinfoil || gotURL != tinfoilProxyBaseURL {
+		t.Fatalf("tinfoil must pin its URL, got %q %q", gotKind, gotURL)
+	}
+	if _, gotURL, err := piProviderEndpoint(piProviderKindRemote, "https://api.example.com/v1"); err != nil {
+		t.Fatalf("remote: %v", err)
+	} else if gotURL != "https://api.example.com/v1" {
+		t.Fatalf("remote must keep the operator URL, got %q", gotURL)
+	}
+	if _, _, err := piProviderEndpoint("bogus", "https://api.example.com/v1"); err == nil {
+		t.Fatal("unknown kind must be rejected")
+	}
+}
+
+// putPiProvider posts one provider body and returns the recorder.
+func putPiProvider(t *testing.T, s *Server, body map[string]any) *httptest.ResponseRecorder {
+	t.Helper()
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/pi-provider", bytes.NewReader(raw))
+	req.Header.Set("Content-Type", "application/json")
+	s.handlePutPiProvider(rec, req)
+	return rec
+}
+
+// The tinfoil tab has no URL field, so the server pins it. A client that sends
+// its own URL must not be able to redirect the provider.
+func TestPutPiProviderTinfoilPinsURL(t *testing.T) {
+	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer fake.Close()
+	s, _ := providerTestServer(t, fake)
+	rec := putPiProvider(t, s, map[string]any{
+		"name":     "Tinfoil",
+		"secretId": "sec_local",
+		"kind":     piProviderKindTinfoil,
+		"baseUrl":  "https://evil.example.com/v1",
+	})
+	if rec.Code != 200 {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+	}
+	got := s.Store.PiProvider()
+	if got == nil {
+		t.Fatal("provider not saved")
+	}
+	if got.Kind != piProviderKindTinfoil || got.BaseURL != tinfoilProxyBaseURL {
+		t.Fatalf("tinfoil provider not pinned: kind=%q baseUrl=%q", got.Kind, got.BaseURL)
+	}
+	var view piProviderView
+	if err := json.Unmarshal(rec.Body.Bytes(), &view); err != nil {
+		t.Fatal(err)
+	}
+	if view.Kind != piProviderKindTinfoil {
+		t.Fatalf("kind missing from the view: %+v", view)
+	}
+}
+
+// The kind is not derived from the URL, so it has to survive an unrelated edit
+// that does not mention it. Without this, editing a tinfoil provider would
+// silently turn it back into a remote one and the dashboard would dial it.
+func TestPutPiProviderKeepsKindAcrossEdits(t *testing.T) {
+	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer fake.Close()
+	s, _ := providerTestServer(t, fake)
+	first := putPiProvider(t, s, map[string]any{
+		"id": "piso-tinfoil", "name": "Tinfoil", "secretId": "sec_local",
+		"kind": piProviderKindTinfoil, "defaultModel": "kimi-k2",
+	})
+	if first.Code != 200 {
+		t.Fatalf("create: %d %s", first.Code, first.Body.String())
+	}
+	// An edit that resends kind, the way the dialog does.
+	if rec := putPiProvider(t, s, map[string]any{
+		"id": "piso-tinfoil", "name": "Tinfoil renamed", "secretId": "sec_local",
+		"kind": piProviderKindTinfoil,
+	}); rec.Code != 200 {
+		t.Fatalf("edit: %d %s", rec.Code, rec.Body.String())
+	}
+	got := s.Store.PiProviderByID("piso-tinfoil")
+	if got == nil || got.Kind != piProviderKindTinfoil || got.BaseURL != tinfoilProxyBaseURL {
+		t.Fatalf("kind lost on edit: %+v", got)
+	}
+	if got.Name != "Tinfoil renamed" {
+		t.Fatalf("edit did not apply: %+v", got)
+	}
+}
+
+// A provider's apiKey becomes a literal credential on the model host. Kinds
+// that are not literal values, or that workers may not use, fail at request
+// time with a confusing mint or rule error, so refuse the binding at save.
+func TestPutPiProviderRejectsNonAPIKeySecrets(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		secret store.SecretRec
+		want   string
+	}{
+		{
+			name: "github-app",
+			secret: store.SecretRec{
+				ID: "sec_gh", Name: "GitHub", Placeholder: "piso_githubapp",
+				Kind: model.SecretKindGithubApp,
+			},
+			want: "must be a plain API key",
+		},
+		{
+			name: "gateway-only",
+			secret: store.SecretRec{
+				ID: "sec_go", Name: "Vault", Placeholder: "piso_vault", GatewayOnly: true,
+			},
+			want: "must be usable by workers",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+			defer fake.Close()
+			s, _ := providerTestServer(t, fake)
+			if err := s.Store.AddSecret(tc.secret); err != nil {
+				t.Fatal(err)
+			}
+			rec := putPiProvider(t, s, map[string]any{
+				"name": "Bad", "secretId": tc.secret.ID, "baseUrl": "https://api.example.com/v1",
+			})
+			if rec.Code != 400 {
+				t.Fatalf("status %d, want 400: %s", rec.Code, rec.Body.String())
+			}
+			if !strings.Contains(rec.Body.String(), tc.want) {
+				t.Fatalf("error %q missing %q", rec.Body.String(), tc.want)
+			}
+			if got := s.Store.PiProvider(); got != nil {
+				t.Fatalf("rejected provider was saved: %+v", got)
+			}
+		})
+	}
+}
+
+// Unknown kinds are refused rather than silently stored as remote, so a typo in
+// a hand-written request cannot downgrade a local provider into a fetched one.
+func TestPutPiProviderRejectsUnknownKind(t *testing.T) {
+	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer fake.Close()
+	s, _ := providerTestServer(t, fake)
+	rec := putPiProvider(t, s, map[string]any{
+		"name": "Typo", "secretId": "sec_local", "baseUrl": "https://api.example.com/v1", "kind": "tinfoill",
+	})
+	if rec.Code != 400 {
+		t.Fatalf("status %d, want 400: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// A tinfoil provider's real request leaves the worker's proxy for a numbered
+// router enclave, so a secret bound to the loopback address substitutes
+// nothing and every call fails 407. Saving is still allowed (the binding is a
+// separate record), but the operator has to be told.
+func TestPutPiProviderWarnsWhenSecretMissesTheEnclave(t *testing.T) {
+	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer fake.Close()
+	s, _ := providerTestServer(t, fake)
+	// Replace the default secret with one bound to loopback, the mistake that
+	// looks right because it matches the URL the provider dials.
+	if err := s.Store.DeleteSecret("sec_local"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Store.AddSecret(store.SecretRec{
+		ID: "sec_loop", Name: "Tinfoil", Placeholder: "piso_tinfoil",
+		Value: "tk_fake", AllowedHosts: []string{"127.0.0.1"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rec := putPiProvider(t, s, map[string]any{
+		"name": "Tinfoil", "secretId": "sec_loop", "kind": piProviderKindTinfoil,
+	})
+	if rec.Code != 200 {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+	}
+	var view piProviderView
+	if err := json.Unmarshal(rec.Body.Bytes(), &view); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(view.Warning, "*.tinfoil.sh") {
+		t.Fatalf("warning %q does not name the host the secret must allow", view.Warning)
+	}
+}
+
+func TestSecretCoversTinfoilFleet(t *testing.T) {
+	for _, tc := range []struct {
+		hosts []string
+		want  bool
+	}{
+		{nil, false},
+		{[]string{}, false},
+		{[]string{"127.0.0.1"}, false},
+		{[]string{"tinfoil.sh"}, false},
+		{[]string{"*.tinfoil.sh"}, true},
+		{[]string{"*"}, true},
+		{[]string{"api.example.com", "*.tinfoil.sh"}, true},
+		// One numbered router works until the next attestation picks another.
+		{[]string{"router-0.tinfoil.sh"}, false},
+		// The rejected spellings never reach here, but if they did the rule set
+		// is empty and nothing is substitutable.
+		{[]string{"router-*.tinfoil.sh"}, false},
+	} {
+		if got := secretCoversTinfoilFleet(tc.hosts); got != tc.want {
+			t.Errorf("secretCoversTinfoilFleet(%v) = %v, want %v", tc.hosts, got, tc.want)
+		}
+	}
+}
+
+// A local provider's catalog is only ever as fresh as its last save, because
+// the list lives behind a proxy inside the worker. Reporting "pending" would
+// claim the gateway is still asking when it never will, and the dashboard
+// renders that verbatim on the provider card.
+func TestProviderViewCatalogForLocalKind(t *testing.T) {
+	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer fake.Close()
+	s, _ := providerTestServer(t, fake)
+	for _, tc := range []struct {
+		name string
+		rec  store.PiProviderRec
+		want string
+	}{
+		{"remote never fetched", store.PiProviderRec{ID: "piso-a", SecretID: "sec_local"}, "pending"},
+		{"remote with models", store.PiProviderRec{ID: "piso-b", SecretID: "sec_local", Models: []string{"m1"}}, "ok"},
+		{"tinfoil with nothing cached", store.PiProviderRec{ID: "piso-c", SecretID: "sec_local", Kind: piProviderKindTinfoil}, "local"},
+		{"tinfoil with a stale failure", store.PiProviderRec{ID: "piso-d", SecretID: "sec_local", Kind: piProviderKindTinfoil, CatalogError: "boom"}, "local"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			view := s.providerViewFor(&tc.rec, profileFileState{})
+			if view.Catalog != tc.want {
+				t.Fatalf("catalog = %q, want %q", view.Catalog, tc.want)
+			}
+		})
 	}
 }

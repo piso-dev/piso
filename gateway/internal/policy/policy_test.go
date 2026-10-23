@@ -614,3 +614,40 @@ func TestCredentialNamedLeafSubstitutes(t *testing.T) {
 		t.Fatalf("want substitute, got %q sub=%v %+v", d.Action, d.Substituted, d.Reasons)
 	}
 }
+
+func TestSubdomainWildcardRuleSubstitutes(t *testing.T) {
+	ph := "piso_tinfoil_abc"
+	sec := model.Secret{ID: "s1", Placeholder: ph, Value: "tk-real"}
+	in := func(host string) Input {
+		return Input{
+			Method: "POST", Host: host, Path: "/v1/chat/completions",
+			Scan:                scanner.Result{Placeholders: []model.Finding{{Kind: model.FindingPlaceholder, Token: ph, Location: "authorization"}}},
+			SecretByPlaceholder: map[string]model.Secret{ph: sec},
+			Rules:               []model.Rule{{ID: "r1", SecretID: "s1", Host: "*.tinfoil.sh", Placeholder: ph}},
+		}
+	}
+
+	// rotation-proof: any router-N is covered by the one rule
+	for _, host := range []string{"router-0.tinfoil.sh", "router-3.tinfoil.sh", "inference.tinfoil.sh"} {
+		if d := Decide(in(host)); d.Action != model.ActionSubstitute {
+			t.Fatalf("%s: want substitute, got %q %+v", host, d.Action, d.Reasons)
+		}
+	}
+
+	// the apex and lookalikes still need their own rule → fail closed
+	for _, host := range []string{"tinfoil.sh", "eviltinfoil.sh", "router-0.tinfoil.sh.evil.com"} {
+		d := Decide(in(host))
+		if d.Action != model.ActionBlock {
+			t.Fatalf("%s: want block, got %q", host, d.Action)
+		}
+		found := false
+		for _, r := range d.Reasons {
+			if r == model.ReasonNoSecretRule {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("%s: want no-secret-rule reason, got %+v", host, d.Reasons)
+		}
+	}
+}

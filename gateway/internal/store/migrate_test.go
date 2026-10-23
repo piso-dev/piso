@@ -138,3 +138,30 @@ func TestMigrationMaterializesLegacyWildcardHosts(t *testing.T) {
 		t.Fatalf("bound hosts rewritten: %v", st.Secrets[2].AllowedHosts)
 	}
 }
+
+// Kind is optional in state.json: a record written before providers had one
+// loads as remote (""), and a tinfoil record survives a save/load round trip.
+func TestPiProviderKindPersists(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state.json")
+	st, err := New(path, filepath.Join(dir, "log.jsonl"), filepath.Join(dir, "patterns.json"), filepath.Join(dir, "activities.db"), 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpsertPiProvider(PiProviderRec{ID: "piso-tinfoil", BaseURL: "http://127.0.0.1:3301/v1", Kind: "tinfoil"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpsertPiProvider(PiProviderRec{ID: "piso-remote", BaseURL: "https://api.example/v1"}); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := New(path, filepath.Join(dir, "log.jsonl"), filepath.Join(dir, "patterns.json"), filepath.Join(dir, "activities.db"), 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := reopened.PiProviderByID("piso-tinfoil"); got == nil || got.Kind != "tinfoil" {
+		t.Fatalf("kind lost on reload: %+v", got)
+	}
+	if got := reopened.PiProviderByID("piso-remote"); got == nil || got.Kind != "" {
+		t.Fatalf("remote kind must stay empty: %+v", got)
+	}
+}
