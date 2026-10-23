@@ -100,6 +100,13 @@ func (s *Server) mcpHandler() *mcp.Handler {
 		}
 		return client.GetDraft(ctx, id)
 	}
+	h.BoostWithdraw = func(ctx context.Context, w aiboost.Withdrawal) (aiboost.Draft, error) {
+		client, err := s.boostClient()
+		if err != nil {
+			return aiboost.Draft{}, err
+		}
+		return client.Withdraw(ctx, w)
+	}
 	h.BoostDraftVersion = func(ctx context.Context, draft aiboost.VersionDraft, key string) (aiboost.Draft, error) {
 		client, err := s.boostClient()
 		if err != nil {

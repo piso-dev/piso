@@ -26,7 +26,7 @@ func boostReviewError(w http.ResponseWriter, err error) {
 		case 404:
 			status, message = 404, "Draft not found in this connection."
 		case 409:
-			status, message = 409, "Draft changed or was already decided. Close and reopen the preview before deciding again."
+			status, message = 409, "Draft changed, was withdrawn, or was already decided. Close and reopen the preview before deciding again."
 		case 429:
 			status, message = 429, "AI Boost rate limit reached. Try again later."
 		}
