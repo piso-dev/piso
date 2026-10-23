@@ -17,6 +17,12 @@ function harness(t) {
   openExternal: url => opened.push(url), safeURL: url => url || '',
   api: async (path, method='GET', body) => { calls.push({path, method, body}); return {login:'octocat', orgs:[{login:'acme', id:1}]}; },
   esc: v => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])),
+  // refresh() delegates to fetchKey and reads the pairing gate; give this
+  // slice the same pieces the page provides.
+  coordinatorKeys: new Set(),
+  coordinatorState: () => ({tc:{}, known:true, status:'active', ready:true}),
+  taskUI: {rows:[], detail:null, cursor:'', previous:[], next:null, error:''},
+  view: 'projects',
  };
  vm.createContext(context);
  vm.runInContext(slice('function button(', 'function facts(') + slice('function field(', 'async function refresh(') + slice('async function githubUserForm(', 'function providerForm(') + slice('async function githubConnect(', 'async function githubInstall('), context);
@@ -29,7 +35,7 @@ test('status refresh preserves session on failure, recovers, and honors confirme
   endpoints:{githubUser:'github-user'}, pending:new Map(), loaded:new Set(), failures:new Map(),
   renderGlobal:()=>{}, renderContent:()=>{}, lastRefresh:0,
  });
- vm.runInContext(slice('async function refresh(', 'async function health('), h.context);
+ vm.runInContext(slice('function fetchKey(', 'async function refresh(') + slice('async function refresh(', 'async function health('), h.context);
  const session = h.context.data.githubUser;
  h.context.api = async () => { throw new Error('GitHub verification unavailable'); };
  await vm.runInContext('refresh()', h.context);

@@ -67,6 +67,11 @@ func TestTaskControlBoundaryAndUnpaired(t *testing.T) {
 		if w.Code != 503 {
 			t.Fatalf("unpaired: %d %s", w.Code, w.Body)
 		}
+		// The dashboard tells "no coordinator yet" apart from a real failure by
+		// this code, and renders a pairing banner instead of a refresh error.
+		if !strings.Contains(w.Body.String(), `"code":"`+unpairedCode+`"`) {
+			t.Fatalf("unpaired code: %s", w.Body)
+		}
 		w = doJSON(t, s.WorkerHandler(), "GET", path, nil)
 		if w.Code == 200 {
 			t.Fatalf("worker exposed %s", path)

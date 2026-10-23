@@ -34,6 +34,7 @@ A grid of status cards and giant counters would be a generic monitoring dashboar
 - Existing API capabilities remain: asks, MCP authorization/revocation, GitHub app setup/install/remove, secret CRUD, provider configuration, rules/patterns/exceptions/domains, routes, worker egress controls, block resolution and replay.
 - Pausing traffic pauses presentation only. Keep receiving bounded updates and label that distinction.
 - SSE status is distinct from API health and Technocore pairing. Polls backstop stream events; partial failures are visible and retryable.
+- Coordinator-owned views (Tasks, Directives) are gated on an active pairing, not on a failed request. The page renders one info banner naming the enrollment state and turns its create actions off before asking the API; a `503 technocore_unpaired` refusal is a state, never a refresh error. The nav keeps those destinations reachable and only mutes them, because the banner that explains them lives on the page.
 - The pairing line names the enrollment state in words (not connected / awaiting approval / paired / error) and shows a sync age only once paired. An unpaired gateway has never synced, so it must never report an age; a missing timestamp is not "a very long time ago".
 - Native dialogs supply focus trapping and Escape behavior. Error feedback stays alongside the action; no browser alerts. Destructive actions require confirmation.
 - No runtime dependencies or frontend build step; the existing Go-embedded single HTML asset remains deployable.
