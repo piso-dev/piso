@@ -103,25 +103,37 @@ type Draft struct {
 	Status   string `json:"status"`
 	Revision int    `json:"revision"`
 	DraftPayload
-	Type          string          `json:"type,omitempty"`
-	BoosterID     string          `json:"boosterId,omitempty"`
-	BaseVersionID string          `json:"baseVersionId,omitempty"`
-	Version       string          `json:"version,omitempty"`
-	Changelog     string          `json:"changelog,omitempty"`
-	Review        *DraftReview    `json:"review,omitempty"`
-	CreatedAt     string          `json:"createdAt,omitempty"`
-	UpdatedAt     string          `json:"updatedAt,omitempty"`
-	Decision      json.RawMessage `json:"decision,omitempty"`
-	Result        json.RawMessage `json:"result,omitempty"`
-	Destination   struct {
+	Type           string           `json:"type,omitempty"`
+	BoosterID      string           `json:"boosterId,omitempty"`
+	BaseVersionID  string           `json:"baseVersionId,omitempty"`
+	Version        string           `json:"version,omitempty"`
+	Changelog      string           `json:"changelog,omitempty"`
+	Review         *DraftReview     `json:"review,omitempty"`
+	CreatedAt      string           `json:"createdAt,omitempty"`
+	UpdatedAt      string           `json:"updatedAt,omitempty"`
+	IdempotencyKey string           `json:"idempotencyKey,omitempty"`
+	Decision       json.RawMessage  `json:"decision,omitempty"`
+	Withdrawal     *DraftWithdrawal `json:"withdrawal,omitempty"`
+	Result         json.RawMessage  `json:"result,omitempty"`
+	Destination    struct {
 		TagID      string `json:"tagId"`
 		Name       string `json:"name"`
 		Visibility string `json:"visibility"`
 	} `json:"destination"`
 }
 
-// Validate matches the delegated AI Boost draft input contract.
-func (d DraftPayload) Validate(key string) error {
+// DraftWithdrawal records how a draft was retracted. A withdrawal is not a
+// review decision: it needs drafts:write, publishes nothing, and keeps the
+// draft's revisions and comments intact.
+type DraftWithdrawal struct {
+	Revision     int    `json:"revision"`
+	Reason       string `json:"reason"`
+	WithdrawnAt  string `json:"withdrawnAt,omitempty"`
+	ConnectionID string `json:"connectionId,omitempty"`
+}
+
+// validKey reports whether key satisfies the upstream Idempotency-Key contract.
+func validKey(key string) error {
 	if len(key) < 1 || len(key) > 128 || strings.TrimSpace(key) != key {
 		return errors.New("stable Idempotency-Key required (1–128 printable ASCII characters)")
 	}
@@ -129,6 +141,14 @@ func (d DraftPayload) Validate(key string) error {
 		if r < 33 || r > 126 {
 			return errors.New("Idempotency-Key must be printable ASCII without spaces")
 		}
+	}
+	return nil
+}
+
+// Validate matches the delegated AI Boost draft input contract.
+func (d DraftPayload) Validate(key string) error {
+	if err := validKey(key); err != nil {
+		return err
 	}
 	return d.validatePayload()
 }

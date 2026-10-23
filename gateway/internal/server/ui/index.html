@@ -4143,6 +4143,12 @@
           if (sub === "aiBoost") renderSettings();
         }
       }
+      // Queue statuses need to read apart at a glance: awaiting review is
+      // actionable, a decision is done, and withdrawn is terminal with nothing
+      // to do here. Withdrawn keeps the base muted tone (no class), which is
+      // distinct now that no other status is left uncoloured.
+      const boostTone = (status) =>
+        status === "submitted" ? "warn" : status === "converted" ? "good" : status === "rejected" ? "bad" : "";
       function renderBoostReview(intro) {
         const connection = data.aiBoost || {};
         const connected = connection.status === "ok";
@@ -4151,9 +4157,9 @@
         if (!connected) return replaceContent(intro + controls + empty("Connect your library", "Sign in to AI Boost to fetch drafts for the library you chose."));
         const rows = boostReview.items.filter(r => matches(r.review?.title, r.name, r.description, r.changelog, r.status));
         count(rows.length);
-        replaceContent(intro + controls + `<div class="section-intro boost-review-toolbar"><label for="boostStatus">Status <select id="boostStatus" ${boostReview.loading ? "disabled" : ""}>${[["submitted","Awaiting review"],["converted","Approved"],["rejected","Rejected"],["","All"]].map(([v,label]) => `<option value="${v}" ${boostReview.status === v ? "selected" : ""}>${label}</option>`).join("")}</select></label><button type="button" class="boost-fetch" data-action="boost-review-refresh" aria-busy="${boostReview.loading}"><svg class="boost-refresh-icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M6.1 6.1A8 8 0 0 1 20 12M4 12a8 8 0 0 0 13.9 5.9"/></svg><span>${boostReview.loading ? "Loading…" : "Fetch drafts"}</span></button></div>` +
+        replaceContent(intro + controls + `<div class="section-intro boost-review-toolbar"><label for="boostStatus">Status <select id="boostStatus" ${boostReview.loading ? "disabled" : ""}>${[["submitted","Awaiting review"],["converted","Approved"],["rejected","Rejected"],["withdrawn","Withdrawn"],["","All"]].map(([v,label]) => `<option value="${v}" ${boostReview.status === v ? "selected" : ""}>${label}</option>`).join("")}</select></label><button type="button" class="boost-fetch" data-action="boost-review-refresh" aria-busy="${boostReview.loading}"><svg class="boost-refresh-icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M6.1 6.1A8 8 0 0 1 20 12M4 12a8 8 0 0 0 13.9 5.9"/></svg><span>${boostReview.loading ? "Loading…" : "Fetch drafts"}</span></button></div>` +
           (boostReview.error ? `<div class="notice error" role="alert">${esc(boostReview.error)}</div>` : "") +
-          rows.map(r => record(`boost-${r.id}`, r.review?.title || r.name, r.type === "new_version" ? `${r.review?.baseVersion || r.baseVersionId} → ${r.version}` : r.description, badge(r.status), facts([["Revision",r.revision],["Library",r.destination?.name],["Updated",r.updatedAt]]) + `<div class="actions">${button("Review draft", "boost-preview", r.id)}</div>`)).join("") +
+          rows.map(r => record(`boost-${r.id}`, r.review?.title || r.name, r.type === "new_version" ? `${r.review?.baseVersion || r.baseVersionId} → ${r.version}` : r.description, badge(r.status, boostTone(r.status)), facts([["Revision",r.revision],["Library",r.destination?.name],["Updated",r.updatedAt]]) + `<div class="actions">${button("Review draft", "boost-preview", r.id)}</div>`)).join("") +
           (!rows.length && !boostReview.loading && !boostReview.error ? empty(boostReview.loaded ? "No drafts in this view" : "Fetch the review queue", boostReview.loaded ? "Choose another status or fetch again after a worker submits a draft." : "Fetch drafts directly from the connected AI Boost library.") : "") +
           `<div class="actions" style="padding: 14px 0 6px">${boostReview.previousCursor ? button("Previous page", "boost-review-page", boostReview.previousCursor) : ""}${boostReview.nextCursor ? button("Next page", "boost-review-page", boostReview.nextCursor) : ""}</div>`);
         $("#boostStatus").onchange = e => { boostReview.status = e.target.value; loadBoostDrafts(""); };
@@ -4165,11 +4171,15 @@
         const pending = item.status === "submitted";
         const versionDraft = item.type === "new_version";
         const approveLabel = versionDraft ? "Publish new version" : "Create new booster";
-        const details = facts([["Status", item.status], ["Revision", item.revision], ["Library", item.destination?.name], ["Library ID", item.destination?.tagId], ["Visibility", item.destination?.visibility], ...(versionDraft ? [["Booster", item.review?.boosterName], ["Booster ID", item.boosterId], ["Base version", item.review?.baseVersion], ["Base version ID", item.baseVersionId], ["Proposed version", item.version], ["Changelog", item.changelog]] : [["Description", item.description], ["Suggested tags", item.suggestedTags]]), ["Rationale", item.rationale]]) +
-          (item.decision ? facts([["Decision", item.decision.action], ["Feedback", item.decision.feedback]]) : "");
+        const details = facts([["Status", item.status], ["Revision", item.revision], ["Library", item.destination?.name], ["Library ID", item.destination?.tagId], ["Visibility", item.destination?.visibility], ...(item.idempotencyKey ? [["Submission key", item.idempotencyKey]] : []), ...(versionDraft ? [["Booster", item.review?.boosterName], ["Booster ID", item.boosterId], ["Base version", item.review?.baseVersion], ["Base version ID", item.baseVersionId], ["Proposed version", item.version], ["Changelog", item.changelog]] : [["Description", item.description], ["Suggested tags", item.suggestedTags]]), ["Rationale", item.rationale]]) +
+          (item.decision ? facts([["Decision", item.decision.action], ["Feedback", item.decision.feedback]]) : "") +
+          (item.withdrawal ? facts([["Withdrawn", item.withdrawal.withdrawnAt], ["Withdrawal revision", item.withdrawal.revision], ["Withdrawal reason", item.withdrawal.reason || "—"], ["Submitted via", item.withdrawal.connectionId]]) : "");
+        const headline = item.status === "withdrawn"
+          ? "This draft was withdrawn by the connection that submitted it and cannot be decided. Nothing was published."
+          : "This draft has already been decided.";
         mountDialog(item.review?.title || item.name, `<form id="boostReviewForm" class="boost-review-form">
           <div class="boost-review-scroll" tabindex="0" role="region" aria-label="Draft details and Markdown">
-            <p>${pending ? (versionDraft ? "Approval publishes a new version of the existing booster." : "Approval creates a private booster in the library shown below.") + " Your decision applies only to this displayed revision." : "This draft has already been decided."}</p>
+            <p>${pending ? (versionDraft ? "Approval publishes a new version of the existing booster." : "Approval creates a private booster in the library shown below.") + " Your decision applies only to this displayed revision." : headline}</p>
             ${details}
             <section class="boost-markdown" aria-labelledby="boostMarkdownTitle"><h3 id="boostMarkdownTitle">Markdown content</h3><pre>${esc(item.content?.body || "")}</pre></section>
             ${pending ? field("feedback", "Feedback (optional)", "", {type: "textarea", full: true}) : ""}

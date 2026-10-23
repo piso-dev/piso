@@ -78,7 +78,7 @@ func (h *Handler) toolBoostEditDraft(_ store.WorkerRec, args json.RawMessage) (a
 			case 401:
 				return nil, &rpcError{Code: codeServer, Message: "AI Boost rejected edit authentication; check the connection and current draft before retrying"}
 			case 409:
-				return nil, &rpcError{Code: codeServer, Message: "AI Boost draft changed or was already decided; use boost_get_draft before editing again; do not guess a newer revision"}
+				return nil, &rpcError{Code: codeServer, Message: "AI Boost draft changed, was withdrawn, or was already decided; use boost_get_draft before editing again; do not guess a newer revision"}
 			case 429:
 				return nil, &rpcError{Code: codeServer, Message: "AI Boost rate limit reached; check the current draft before retrying later"}
 			}
