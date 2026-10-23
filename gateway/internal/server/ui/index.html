@@ -217,6 +217,15 @@
         color: var(--text);
         background: #29323e;
       }
+      /* Coordinator-owned destinations stay reachable: the page they open says
+         why it is empty. Only the tone says they need a paired gateway. */
+      nav a.is-gated {
+        color: var(--muted);
+        opacity: 0.62;
+      }
+      nav a.is-gated .nav-icon {
+        color: var(--muted);
+      }
       .nav-icon {
         width: 19px;
         font-size: 17px;
@@ -411,6 +420,23 @@
         background: #2c2226;
         border-color: #66464b;
         color: var(--red);
+      }
+      /* Info is the "unavailable for now" tone: quieter than the amber default,
+         so a gated view does not read as a fault. */
+      .notice.info {
+        background: #1e252f;
+        border-color: #3a4a5c;
+        color: var(--text);
+      }
+      .notice.info p + p {
+        color: var(--muted);
+      }
+      .notice.info .actions a {
+        color: var(--blue);
+      }
+      /* A gated control is not waiting on a request, so it does not spin. */
+      button:disabled.is-gated {
+        cursor: not-allowed;
       }
       .notice p + p {
         margin-top: 5px;
@@ -1760,6 +1786,11 @@
       const loaded = new Set(),
         failures = new Map(),
         pending = new Map();
+      // Tasks and directives are coordinator-owned: they live on the Technocore
+      // server, not in this gateway's local store. Everything else (projects,
+      // workers, traffic, policy) works without one, so only these wait for a
+      // paired gateway instead of asking for data that can only be refused.
+      const coordinatorKeys = new Set(["directives"]);
       // Provider ids whose catalog has been fetched for the card view this
       // page. Keeps the card list from refetching on every render.
       const providerCatalogs = new Set();
@@ -1835,11 +1866,18 @@
         });
         if (!r.ok) {
           let message = await r.text();
+          let code = "";
+          let parsed;
           try {
-            message = JSON.parse(message).error || message;
+            parsed = JSON.parse(message);
+            message = parsed.error || message;
+            code = parsed.code || "";
           } catch {}
           const error = new Error(message || "Request failed (" + r.status + ")");
           error.status = r.status;
+          // "No coordinator yet" is an access state the UI explains with a
+          // banner, not a refresh failure to report.
+          error.gated = code === "technocore_unpaired";
           throw error;
         }
         return r.status === 204 ? null : r.json();
@@ -1901,11 +1939,46 @@
           href: "",
         };
       }
+      // coordinatorState reads the same enrollment snapshot the rail renders.
+      // "Not loaded yet" is not "unpaired": the banner waits for the first
+      // snapshot so it does not flash on every page load.
+      function coordinatorState() {
+        const tc =
+          data.technocore && !Array.isArray(data.technocore)
+            ? data.technocore
+            : {};
+        const known = loaded.has("technocore");
+        const status = known ? tc.status || "unpaired" : "";
+        return { tc, known, status, ready: status === "active" };
+      }
+      // coordinatorNotice explains an access-restricted view. The statuses and
+      // wording track pairingLine so the rail and the page never disagree.
+      function coordinatorNotice(subject) {
+        const { status, tc } = coordinatorState();
+        if (!status || status === "active") return "";
+        const title =
+          status === "pending"
+            ? `${subject} load once this gateway is approved`
+            : status === "error"
+              ? `${subject} cannot load: this gateway's Technocore identity is unreadable`
+              : `${subject} need a paired gateway`;
+        let body;
+        if (status === "pending")
+          body =
+            "The pairing request is waiting for approval on the Technocore server. Tasks and directives stay unavailable here until it is approved.";
+        else if (status === "error")
+          body = esc(tc.lastError || "No detail was reported.");
+        else
+          body =
+            "Tasks and directives are kept on the Technocore server, and this gateway is not connected to one. Projects, workers, traffic, and policy work without it.";
+        const href = status === "pending" ? safeURL(tc.pairUrl || "") : "";
+        return `<div class="notice info" role="status"><p><strong>${esc(title)}</strong></p><p>${body}</p>${href ? `<div class="actions"><a href="${esc(href)}" target="_blank" rel="noreferrer">Open pairing page</a></div>` : ""}</div>`;
+      }
       function badge(text, tone = "") {
         return `<span class="status ${esc(tone)}">${esc(text)}</span>`;
       }
-      function button(text, action, id = "", cls = "", label = "") {
-        return `<button type="button" class="${esc(cls)}" data-action="${esc(action)}" data-id="${esc(id)}"${label ? ` aria-label="${esc(label)}" title="${esc(label)}"` : ""}>${esc(text)}</button>`;
+      function button(text, action, id = "", cls = "", label = "", gated = false) {
+        return `<button type="button" class="${esc((cls + (gated ? " is-gated" : "")).trim())}" data-action="${esc(action)}" data-id="${esc(id)}"${label ? ` aria-label="${esc(label)}" title="${esc(label)}"` : ""}${gated ? " disabled" : ""}>${esc(text)}</button>`;
       }
       function facts(entries) {
         return `<dl class="facts">${entries
@@ -2084,32 +2157,77 @@
           `<p>${esc(error.message || error)}</p><div class="actions">${button("Close", "close")}</div>`,
         );
       }
+      // fetchKey runs one endpoint and folds the result into `data`. Gated keys
+      // land here only when the gateway is paired.
+      function fetchKey(key) {
+        if (pending.has(key)) return pending.get(key);
+        const job = api(endpoints[key])
+          .then((value) => {
+            data[key] =
+              key === "asks"
+                ? value?.asks || []
+                : key === "directives"
+                  ? value?.directives || []
+                  : value;
+            loaded.add(key);
+            failures.delete(key);
+          })
+          .catch((e) => {
+            // A coordinator-owned surface refusing because this gateway has no
+            // coordinator is a state, not a broken refresh: the view's banner
+            // says so, and the pairing line is re-read below.
+            if (e.gated) {
+              loaded.delete(key);
+              failures.delete(key);
+              return refresh(["technocore"]);
+            }
+            failures.set(key, e.message);
+            // Keep the last known GitHub session on verification/network errors.
+            // Only a successful status response may change connected state.
+            if (key === "githubMappings") data.githubMappings = [];
+          })
+          .finally(() => pending.delete(key));
+        pending.set(key, job);
+        return job;
+      }
       async function refresh(keys = Object.keys(endpoints)) {
+        const wanted = [...new Set(keys)];
+        const wasReady = coordinatorState().ready;
+        // Learn the pairing state first, so an unpaired gateway never sends a
+        // request for a coordinator-owned view that can only be refused.
+        if (!loaded.has("technocore") && wanted.some((k) => coordinatorKeys.has(k)))
+          await fetchKey("technocore");
+        const ready = coordinatorState().ready;
         await Promise.allSettled(
-          keys.map((key) => {
-            if (pending.has(key)) return pending.get(key);
-            const job = api(endpoints[key])
-              .then((value) => {
-                data[key] =
-                  key === "asks"
-                    ? value?.asks || []
-                    : key === "directives"
-                      ? value?.directives || []
-                      : value;
-                loaded.add(key);
-                failures.delete(key);
-              })
-              .catch((e) => {
-                failures.set(key, e.message);
-                // Keep the last known GitHub session on verification/network errors.
-                // Only a successful status response may change connected state.
-                if (key === "githubMappings") data.githubMappings = [];
-              })
-              .finally(() => pending.delete(key));
-            pending.set(key, job);
-            return job;
-          }),
+          wanted
+            .filter((k) => k === "technocore" || ready || !coordinatorKeys.has(k))
+            .map(fetchKey),
         );
+        // A pairing that lands mid-session unlocks the gated views without a
+        // reload; one that drops clears their rows instead of leaving them
+        // looking current.
+        if (ready !== wasReady && loaded.has("technocore")) {
+          for (const k of coordinatorKeys) {
+            if (ready) await fetchKey(k);
+            else {
+              data[k] = [];
+              loaded.delete(k);
+              failures.delete(k);
+            }
+          }
+          if (!ready) {
+            taskUI.rows = [];
+            taskUI.detail = null;
+            taskUI.cursor = "";
+            taskUI.previous = [];
+            taskUI.next = null;
+            taskUI.error = "";
+          }
+          // The Tasks view may have been drawn before the first snapshot
+          // arrived, or unlocked by this one: (re)load it now rather than
+          // waiting for the next poll.
+          if (ready && view === "tasks" && !taskUI.loading) loadTasks();
+        }
         lastRefresh = Date.now();
         renderGlobal();
         renderContent();
@@ -2156,12 +2274,55 @@
               : "");
           $("#pairing").title = pair.title;
         }
+        // Coordinator-owned destinations lose their emphasis while unpaired.
+        // They stay reachable: the view they open carries the banner that says
+        // why it is empty, which a disabled link could not do.
+        const gate = coordinatorState();
+        document
+          .querySelectorAll('nav a[data-view="tasks"], nav a[data-view="directives"]')
+          .forEach((a) => {
+            const off = gate.known && !gate.ready;
+            a.classList.toggle("is-gated", off);
+            if (off) {
+              a.title = pairingLine(gate.tc).text;
+              a.setAttribute("aria-describedby", "pairing");
+            } else {
+              a.removeAttribute("title");
+              a.removeAttribute("aria-describedby");
+            }
+          });
+        const head = document.querySelector(".page-actions");
+        if (head) {
+          const html = pageActions();
+          if (head.innerHTML !== html) head.innerHTML = html;
+        }
         $("#updated").textContent = lastRefresh
           ? "Updated " + time(lastRefresh)
           : "Waiting for data";
-        $("#errors").innerHTML = failures.size
-          ? `<div class="notice error"><p>Some data could not be refreshed. Previously loaded records may be out of date.</p><details><summary>Connection details</summary>${[...failures].map(([k, v]) => `<p>${esc(k)}: ${esc(v)}</p>`).join("")}</details><div class="actions">${button("Retry", "retry")}</div></div>`
+        const shownFailures = [...failures].filter(
+          ([key]) => !(coordinatorKeys.has(key) && gate.known && !gate.ready),
+        );
+        $("#errors").innerHTML = shownFailures.length
+          ? `<div class="notice error"><p>Some data could not be refreshed. Previously loaded records may be out of date.</p><details><summary>Connection details</summary>${shownFailures.map(([k, v]) => `<p>${esc(k)}: ${esc(v)}</p>`).join("")}</details><div class="actions">${button("Retry", "retry")}</div></div>`
           : "";
+      }
+      // pageActions is a function because renderGlobal redraws it: the page
+      // header is drawn before the first Technocore snapshot arrives, so a
+      // coordinator-owned action has to be able to switch itself off later.
+      function pageActions() {
+        const ready = coordinatorState().ready;
+        if (view === "tasks")
+          return button("New task", "task-new", "", "primary", "", !ready);
+        if (view === "directives")
+          return button("New directive", "directive-new", "", "primary", "", !ready);
+        if (view === "projects")
+          return (
+            button("New task", "task-new", "", "", "", !ready) +
+            button("Review requests", "go-attention", "", "quiet")
+          );
+        if (view === "traffic")
+          return button(paused ? "Resume feed" : "Pause feed", "pause", "", "quiet");
+        return "";
       }
       function navigate() {
         hideTimelineTip();
@@ -2178,7 +2339,7 @@
         const [title, description] = titles[view];
         document.title = title + " / piso";
         $("#page").innerHTML =
-          `<header class="page-head"><div><h1>${title}</h1><p>${description}</p></div><div class="page-actions">${view === "tasks" ? button("New task", "task-new", "", "primary") : view === "directives" ? button("New directive", "directive-new", "", "primary") : view === "projects" ? button("New task", "task-new") + button("Review requests", "go-attention", "", "quiet") : view === "traffic" ? button(paused ? "Resume feed" : "Pause feed", "pause", "", "quiet") : ""}</div></header>${sections[view] ? `<div class="subnav" aria-label="${title} sections">${sections[view].map(([k, t]) => `<button data-action="section" data-id="${k}" aria-pressed="${sub === k}">${t}</button>`).join("")}</div>` : ""}${["attention", "tasks"].includes(view) ? "" : `<div class="toolbar"><label class="search"><span class="sr-label" hidden>Search</span><input id="search" type="search" aria-label="Search ${esc(title)}" placeholder="${view === "projects" ? "Find a project…" : view === "traffic" ? "Find a worker, address, or request…" : "Filter records…"}"></label>${view === "projects" ? '<label>Show <select id="projectFilter"><option value="all">Visible projects</option><option value="needs">Needs attention</option><option value="hidden">Hidden projects</option></select></label>' : view === "traffic" ? '<label>Verdict <select id="verdictFilter"><option value="all">All requests</option><option value="block">Blocked</option><option value="substitute">Substituted</option><option value="allow">Allowed</option></select></label>' : ""}<span class="count" id="resultCount"></span></div>`}<div id="content"></div>`;
+          `<header class="page-head"><div><h1>${title}</h1><p>${description}</p></div><div class="page-actions">${pageActions()}</div></header>${sections[view] ? `<div class="subnav" aria-label="${title} sections">${sections[view].map(([k, t]) => `<button data-action="section" data-id="${k}" aria-pressed="${sub === k}">${t}</button>`).join("")}</div>` : ""}${["attention", "tasks"].includes(view) ? "" : `<div class="toolbar"><label class="search"><span class="sr-label" hidden>Search</span><input id="search" type="search" aria-label="Search ${esc(title)}" placeholder="${view === "projects" ? "Find a project…" : view === "traffic" ? "Find a worker, address, or request…" : "Filter records…"}"></label>${view === "projects" ? '<label>Show <select id="projectFilter"><option value="all">Visible projects</option><option value="needs">Needs attention</option><option value="hidden">Hidden projects</option></select></label>' : view === "traffic" ? '<label>Verdict <select id="verdictFilter"><option value="all">All requests</option><option value="block">Blocked</option><option value="substitute">Substituted</option><option value="allow">Allowed</option></select></label>' : ""}<span class="count" id="resultCount"></span></div>`}<div id="content"></div>`;
         $("#search")?.addEventListener("input", (e) => {
           query = e.target.value.toLowerCase();
           renderContent();
@@ -2267,6 +2428,15 @@
       const taskTone = (t) =>
         t.status === "proposed" ? "info" : t.status === "failed" ? "bad" : t.status === "done" ? "good" : "";
       async function loadTasks() {
+        // Tasks are coordinator-owned. Do not ask for a list this gateway will
+        // refuse: the view shows the pairing banner instead of an error.
+        if (!coordinatorState().ready) {
+          taskUI.sequence++;
+          Object.assign(taskUI, {loading: false, rows: [], detail: null, cursor: "",
+            previous: [], next: null, error: ""});
+          if (view === "tasks") renderTasks();
+          return;
+        }
         const sequence = ++taskUI.sequence;
         taskUI.loading = true;
         if (view === "tasks") renderTasks();
@@ -2279,7 +2449,14 @@
           else { taskUI.rows = result.tasks; taskUI.next = result.nextCursor; }
           taskUI.error = "";
         } catch (e) {
-          if (sequence === taskUI.sequence) taskUI.error = e.message;
+          if (sequence === taskUI.sequence)
+            // A refusal for lack of a coordinator is not a refresh error: the
+            // pairing banner is the explanation, so re-read the snapshot that
+            // drives it instead of reporting a failure.
+            if (e.gated) {
+              taskUI.error = "";
+              refresh(["technocore"]);
+            } else taskUI.error = e.message;
         } finally {
           if (sequence === taskUI.sequence) {
             taskUI.loading = false;
@@ -2288,6 +2465,11 @@
         }
       }
       function renderTasks() {
+        const gate = coordinatorNotice("Tasks");
+        if (gate) return replaceContent(gate);
+        // Before the first pairing snapshot, "no tasks" would be a lie.
+        if (!coordinatorState().known)
+          return replaceContent('<p role="status">Loading tasks…</p>');
         const focusedHref = $("#content")?.contains(document.activeElement) ? document.activeElement.getAttribute("href") : null;
         const restoreLinkFocus = () => {
           if (focusedHref) [...$("#content").querySelectorAll("a")].find(a => a.getAttribute("href") === focusedHref)?.focus({preventScroll: true});
@@ -3234,6 +3416,15 @@
         return labels;
       }
       function renderDirectives() {
+        const gate = coordinatorNotice("Directives");
+        if (gate) {
+          count(0, "directives");
+          return replaceContent(gate);
+        }
+        if (!coordinatorState().known) {
+          count(0, "directives");
+          return replaceContent('<p role="status">Loading directives…</p>');
+        }
         const rows = list("directives").filter((r) =>
           matches(
             r.code,
@@ -5384,6 +5575,12 @@
         }
       }
       async function action(name, id, source) {
+        if (name === "task-new" || name === "directive-new" || name === "directive-edit") {
+          // The controls are disabled, so this is only reachable from a stale
+          // render. Say why instead of opening a form that cannot save.
+          if (!coordinatorState().ready)
+            return notify("Tasks and directives need a paired gateway.");
+        }
         if (name === "task-new") return newTask();
         if (name === "directive-new") return directiveForm("");
         if (name === "directive-edit") return directiveForm(id);

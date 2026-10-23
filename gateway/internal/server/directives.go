@@ -31,7 +31,7 @@ func (s *Server) handleDirectives(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	id, err := tc.Load(tc.Path(s.dataDir()))
 	if err != nil || id.Status != tc.StatusActive {
-		writeJSON(w, 503, map[string]string{"error": "Pair this gateway with Technocore to manage directives."})
+		writeUnpaired(w, "Pair this gateway with Technocore to manage directives.")
 		return
 	}
 	path := "/api/v1/control/directives"
@@ -48,13 +48,11 @@ func (s *Server) handleDirectives(w http.ResponseWriter, r *http.Request) {
 	}
 	status, payload, err := gtwc.Call(id, r.Method, path, nil, body)
 	if err != nil {
-		status = 502
-		message := "Technocore is unavailable. Retry with the same directive ID."
 		if errors.Is(err, gtwc.ErrUnpaired) {
-			status = 503
-			message = "Gateway is not paired."
+			writeUnpaired(w, "Gateway is not paired.")
+			return
 		}
-		writeJSON(w, status, map[string]string{"error": message})
+		writeJSON(w, 502, map[string]string{"error": "Technocore is unavailable. Retry with the same directive ID."})
 		return
 	}
 	// The dashboard stores a bare array per collection; unwrap the envelope once
