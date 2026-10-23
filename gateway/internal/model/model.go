@@ -3,6 +3,7 @@
 package model
 
 import (
+	"strings"
 	"time"
 )
 
@@ -37,9 +38,95 @@ type Secret struct {
 type Rule struct {
 	ID          string `json:"id"`
 	SecretID    string `json:"secretId"`    // which secret this resolves to
-	Host        string `json:"host"`        // host this rule applies to (may be "*")
+	Host        string `json:"host"`        // host pattern: "a.example.com", "*.example.com", or "*"
 	Placeholder string `json:"placeholder"` // piso_ token; empty = any of the secret's
 	Note        string `json:"note,omitempty"`
+}
+
+// Host rule patterns come in exactly two supported forms:
+//
+//	example.com     that host only; the apex is always its own rule
+//	*.example.com   strict subdomains of example.com
+//
+// The leading dot is what makes the wildcard safe: "*.example.com" requires
+// the literal suffix ".example.com", so it can never match the apex
+// "example.com" nor a lookalike such as "evilexample.com". A wildcard matches
+// one or more labels ("a.b.example.com"), which keeps deployment-numbered
+// fleets like router-0/router-1 covered by a single rule.
+//
+// A literal "*" (any destination) predates destination binding and is still
+// accepted for stored secrets, but it is flagged loudly wherever it appears;
+// it is not a recommended form.
+//
+// Every other shape — "router-*.example.com", "*example.com", "*.example.*" —
+// is rejected rather than approximated: an interior glob cannot be diffed
+// against a live host list, so a typo silently matches nothing.
+//
+// A single-label suffix ("*.com", "*.mycorp") is accepted, because a bare TLD
+// is no broader than the "*" rule that already exists, and internal networks
+// need "*.mycorp". It is flagged loudly at the API edge instead.
+
+// HostRuleMatch reports whether a rule host pattern covers host.
+func HostRuleMatch(ruleHost, host string) bool {
+	ruleHost = strings.ToLower(strings.TrimSpace(ruleHost))
+	host = strings.ToLower(strings.TrimSpace(host))
+	if ruleHost == "" || host == "" {
+		return false
+	}
+	if ruleHost == "*" {
+		return true
+	}
+	if suffix, ok := strings.CutPrefix(ruleHost, "*."); ok {
+		return strings.HasSuffix(host, "."+suffix)
+	}
+	return ruleHost == host
+}
+
+// ValidRuleHost reports whether h is an accepted rule host pattern.
+func ValidRuleHost(h string) bool {
+	h = strings.ToLower(strings.TrimSpace(h))
+	if h == "" {
+		return false
+	}
+	if h == "*" {
+		return true
+	}
+	if suffix, ok := strings.CutPrefix(h, "*."); ok {
+		// One wildcard label only. The suffix may itself be a single label
+		// ("*.mycorp" for an internal network): a bare TLD such as "*.com" is
+		// no broader than the "*" rule we already allow, so it is warned about
+		// at the API edge rather than rejected here.
+		if suffix == "" || strings.Contains(suffix, "*") {
+			return false
+		}
+		return validHostname(suffix)
+	}
+	if strings.Contains(h, "*") {
+		return false
+	}
+	return validHostname(h)
+}
+
+// validHostname accepts dot-separated DNS labels (letters, digits, "-", "_").
+func validHostname(h string) bool {
+	if len(h) > 253 {
+		return false
+	}
+	for _, label := range strings.Split(h, ".") {
+		if label == "" || len(label) > 63 {
+			return false
+		}
+		if label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for _, r := range label {
+			if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
+				continue
+			}
+			return false
+		}
+	}
+	return true
 }
 
 // Pattern is one entry of the "looks like a credential" regex library.

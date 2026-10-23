@@ -145,6 +145,32 @@ RUN set -eu; \
   tar xzf glow.tgz --no-same-owner;  install -m 0755 "glow_3.0.0_Linux_${GLOW_ARCH}/glow" /usr/local/bin/glow; \
   rm -rf "$D"
 
+# Tinfoil local proxy: verifies a Tinfoil router enclave against the public
+# attestation log and seals request/response bodies to it with EHBP, so the
+# operator's API key is the only thing an intermediary sees. Static Go binary,
+# so no build stage: pin the release asset by digest (same shape as the
+# bat/delta/glow block above) and pick the arch from uname.
+# The binary is harmless when unused — entrypoint.sh only starts it, and only
+# waits on it, when the worker actually holds a tinfoil placeholder (a secret
+# bound to *.tinfoil.sh). Bump TINFOIL_PROXY_VERSION to upgrade.
+# Must run BEFORE HTTPS_PROXY=gateway, like the other build-time curls.
+ARG TINFOIL_PROXY_VERSION=0.2.6
+RUN set -eu; \
+  case "$(uname -m)" in \
+    aarch64) TP_ARCH=arm64; \
+             TP_SHA=2464a6350e5e7d92d24ae729aee317cfbb91761596bad05f8e437adadf2be872 ;; \
+    x86_64)  TP_ARCH=amd64; \
+             TP_SHA=d690f03ec1b6a288b230ea2ae847633283b611b4df58d219e1623685b9d297f8 ;; \
+    *) echo "unsupported arch: $(uname -m)" >&2; exit 1 ;; \
+  esac; \
+  D=/tmp/piso-tinfoil; mkdir -p "$D"; cd "$D"; \
+  curl -fsSL -o tinfoil-proxy \
+    "https://github.com/tinfoilsh/tinfoil-proxy/releases/download/v${TINFOIL_PROXY_VERSION}/tinfoil-proxy-linux-${TP_ARCH}"; \
+  echo "$TP_SHA  tinfoil-proxy" | sha256sum -c -; \
+  install -m 0755 tinfoil-proxy /usr/local/bin/tinfoil-proxy; \
+  rm -rf "$D"; \
+  tinfoil-proxy --help >/dev/null
+
 # Egress: HTTP(S)_PROXY is the local retry forwarder (entrypoint). It dials
 # PISO_EGRESS_UPSTREAM (gateway:8080) and does not replay after the gateway
 # accepts. NO_PROXY keeps vpc services (worker API) direct. Lowercase +
