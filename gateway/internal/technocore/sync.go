@@ -3,6 +3,7 @@ package technocore
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -71,10 +72,20 @@ func Run(st *store.Store, dataDir string) {
 		})
 		if err != nil {
 			log.Printf("technocore: websocket: %v", err)
-			setLive(func(s *Status) { s.LastError = err.Error() })
+			now := time.Now().UTC()
+			setLive(func(s *Status) {
+				s.LastError = err.Error()
+				if s.OfflineSince == nil {
+					s.OfflineSince = &now
+				}
+			})
 		}
 		if ready {
 			backoff = time.Second
+			setLive(func(s *Status) {
+				s.OfflineSince = nil
+				s.LastError = ""
+			})
 		} else {
 			time.Sleep(backoff)
 			if backoff < 30*time.Second {
@@ -86,46 +97,88 @@ func Run(st *store.Store, dataDir string) {
 	}
 }
 
+// tickPending advances the pairing state machine. The phone's approve only
+// moves the request to awaiting_gateway; this process never confirms on its
+// own, because the confirm is the gateway operator's consent. Each branch
+// writes only the pairing fields through tc.Update so a concurrent CLI write
+// (placement, public URL) is not clobbered by a stale copy.
 func tickPending(path string, id tc.Identity) error {
-	status, principal, err := poll(id)
+	state, err := tc.PollPairing(id)
 	if err != nil {
-		return err
-	}
-	if status == "approved" && principal != "" {
-		id.Status = tc.StatusActive
-		id.PrincipalID = principal
-		if err := tc.Save(path, id); err != nil {
+		if !errors.Is(err, tc.ErrPollToken) {
 			return err
 		}
-		log.Printf("technocore: pairing approved (%s)", principal)
+		if _, err := tc.Update(path, func(cur *tc.Identity) error {
+			if cur.PairingID != id.PairingID {
+				// A newer attempt replaced this one; leave it alone.
+				return nil
+			}
+			resetPairFields(cur)
+			return nil
+		}); err != nil {
+			return err
+		}
+		setLive(func(s *Status) {
+			s.LastError = "the pairing request is no longer recognised; show a new code"
+		})
+		log.Printf("technocore: pairing token rejected; attempt cleared")
+		return nil
 	}
-	return nil
+
+	_, err = tc.Update(path, func(cur *tc.Identity) error {
+		if cur.PairingID != id.PairingID {
+			return nil
+		}
+		switch state.Status {
+		case tc.PairStatusPending:
+			cur.PairPhase = tc.PairStatusPending
+			cur.PairExpiresAt = state.ExpiresAt
+			cur.PairApprover = ""
+			cur.PairAccount = ""
+		case tc.PairStatusAwaitingGateway:
+			if cur.PairPhase != tc.PairStatusAwaitingGateway {
+				log.Printf("technocore: phone approved; waiting for the dashboard confirm")
+			}
+			cur.PairPhase = tc.PairStatusAwaitingGateway
+			cur.PairApprover = state.ApprovedBy
+			cur.PairAccount = state.AccountName
+			cur.PairExpiresAt = state.ExpiresAt
+		case tc.PairStatusApproved:
+			// Confirmed from this dashboard (or from `piso gateway launch
+			// --yes`). The principal already exists on the coordinator.
+			cur.Status = tc.StatusActive
+			cur.PrincipalID = state.PrincipalID
+			cur.PairPhase = ""
+			cur.PairExpiresAt = ""
+			cur.PairApprover = ""
+			cur.PairAccount = ""
+			log.Printf("technocore: pairing confirmed (%s)", state.PrincipalID)
+		case tc.PairStatusRejected:
+			resetPairFields(cur)
+			setLive(func(s *Status) { s.LastError = "the pairing was declined" })
+		case tc.PairStatusExpired:
+			resetPairFields(cur)
+			setLive(func(s *Status) { s.LastError = "the pairing code expired" })
+		}
+		return nil
+	})
+	return err
 }
 
-func poll(id tc.Identity) (string, string, error) {
-	u := fmt.Sprintf("%s/api/v1/pairing-requests/%s", strings.TrimRight(id.ServerURL, "/"), id.PairingID)
-	req, err := http.NewRequest(http.MethodGet, u, nil)
-	if err != nil {
-		return "", "", err
+// resetPairFields returns an unenrolled identity to a clean slate while
+// keeping the keys and the coordinator URL, so the next attempt reuses the
+// same fingerprint.
+func resetPairFields(cur *tc.Identity) {
+	if cur.Status == tc.StatusActive {
+		return
 	}
-	req.Header.Set(tc.HeaderPollToken, id.PollToken)
-	res, err := serverHTTP.Do(req)
-	if err != nil {
-		return "", "", err
-	}
-	defer res.Body.Close()
-	raw, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
-	if res.StatusCode != 200 {
-		return "", "", fmt.Errorf("poll HTTP %d", res.StatusCode)
-	}
-	var out struct {
-		Status      string `json:"status"`
-		PrincipalID string `json:"principal_id"`
-	}
-	if err := json.Unmarshal(raw, &out); err != nil {
-		return "", "", err
-	}
-	return out.Status, out.PrincipalID, nil
+	cur.Status = tc.StatusNew
+	cur.PairingID = ""
+	cur.PollToken = ""
+	cur.PairPhase = ""
+	cur.PairExpiresAt = ""
+	cur.PairApprover = ""
+	cur.PairAccount = ""
 }
 
 func syncAssignedWorkers(st *store.Store, id tc.Identity) error {
