@@ -43,6 +43,7 @@ func (s *Server) WorkerHandler() http.Handler {
 	mux.HandleFunc("GET /api/v1/worker/messages", s.handleWorkerGetMessages)
 	mux.HandleFunc("POST /api/v1/worker/messages/ack", s.handleWorkerAckMessages)
 	mux.HandleFunc("POST /api/v1/worker/reply", s.handleWorkerReply)
+	mux.HandleFunc("POST /api/v1/worker/status", s.handleWorkerStatus)
 	s.mountMCP(mux)
 	return mux
 }
