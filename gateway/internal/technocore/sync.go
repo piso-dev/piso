@@ -239,6 +239,21 @@ func syncAssignedWorkers(st *store.Store, id tc.Identity) error {
 	return st.ReplaceRemoteWorkers(rows)
 }
 
+// Pull applies the coordinator's current envelopes now. A writer that lost a
+// version race uses it to rebase: the coordinator's snapshot is authoritative,
+// so the caller re-applies its change to what the other gateway published
+// instead of overwriting it.
+func Pull(st *store.Store, dataDir string) error {
+	id, err := tc.Load(tc.Path(dataDir))
+	if err != nil {
+		return fmt.Errorf("not enrolled: %w", err)
+	}
+	if id.Status != tc.StatusActive {
+		return fmt.Errorf("gateway is not enrolled")
+	}
+	return syncSecrets(st, dataDir, id)
+}
+
 // syncSecrets replaces the local tc_ snapshot with a complete coordinator
 // response. A non-200, a transport error, or a body that does not parse
 // returns before any delete, so a restart blip cannot wipe the vault.
@@ -346,22 +361,18 @@ func applyEnvelope(st *store.Store, id tc.Identity, obj envelope) (string, error
 	return res.RowID, nil
 }
 
-// applySharedGithubUser materializes a peer's GitHub sign-in as this gateway's
-// own gateway-only rows, so every existing reader (status, authorize,
-// verifiedGithubUser) works unchanged. A session signed in here wins: signing
-// in on this gateway must not be reverted by the peer that was shared first.
+// applySharedGithubUser materializes the shared GitHub sign-in as this
+// gateway's own gateway-only rows, so every existing reader (status, authorize,
+// verifiedGithubUser) works unchanged. Any gateway may publish a session, so the
+// newest version wins and signing in anywhere replaces the session everywhere;
+// there is no per-gateway copy to protect.
 func applySharedGithubUser(st *store.Store, obj envelope, res appliedEnvelope) {
 	if !res.Applied {
 		return
 	}
 	u := st.GithubUser()
-	if u.SourceOrLocal() != store.GithubUserSourceTechnocore && u.TokenSecretID != "" {
-		if _, ok := secretValue(st, u.TokenSecretID); ok {
-			return
-		}
-	}
-	if u.SourceOrLocal() == store.GithubUserSourceTechnocore && obj.ContentVersion < u.ContentVersion {
-		// Never roll a newer shared session back to an older one.
+	if obj.ContentVersion < u.ContentVersion {
+		// Never roll a newer session back to an older one.
 		return
 	}
 	bundle, err := githubapp.DecodeUserBundle(res.Plain)
@@ -434,46 +445,40 @@ func upsertGithubOAuthRow(st *store.Store, id, name, value string) string {
 	return rec.ID
 }
 
-// clearSharedGithubUser drops a shared sign-in that the origin revoked, so
-// signing out on one gateway signs out everywhere.
+// clearSharedGithubUser drops the session a gateway signed out of. Sign-out is
+// global — one account session — so it applies here whether this gateway signed
+// in itself or received the shared copy. The OAuth App configuration survives:
+// signing back in needs no re-setup.
 func clearSharedGithubUser(st *store.Store) {
 	u := st.GithubUser()
-	if u.SourceOrLocal() != store.GithubUserSourceTechnocore {
-		// Signed in here: the person still has their own session, and the
-		// tombstone only tells us the shared copy is gone.
-		return
-	}
 	if u.TokenSecretID != "" {
 		_ = st.DeleteSecret(u.TokenSecretID)
 	}
-	if u.ClientSecretID != "" && u.ClientSecretID != u.TokenSecretID {
-		_ = st.DeleteSecret(u.ClientSecretID)
-	}
-	// Drop the mirrored transport row as well: its coordinator resource is the
-	// tombstone this envelope carries, so keeping it would only hand the next
-	// sign-in a dead row to republish into.
+	// The OAuth App configuration stays — client id and client secret rows are
+	// what let the next sign-in skip re-setup on every gateway.
+	// Drop the transport row too: its coordinator resource is the tombstone this
+	// envelope carries, so keeping it would only hand the next sign-in a dead row
+	// to republish into.
 	for _, rec := range st.Secrets() {
-		if rec.Kind == model.SecretKindGithubUser && rec.TechnocoreID == u.TechnocoreID {
+		if rec.Kind == model.SecretKindGithubUser {
 			_ = st.DeleteSecret(rec.ID)
 		}
 	}
-	if err := st.SetGithubUser(store.GithubUserRec{}); err != nil {
+	if err := st.SetGithubUser(store.GithubUserRec{ClientID: u.ClientID, ClientSecretID: u.ClientSecretID}); err != nil {
 		log.Printf("technocore: clear shared GitHub sign-in: %v", err)
 	}
 }
 
-// applySharedGithubApps rebuilds this gateway's copy of a peer's GitHub Apps.
-// Mirrored records are read-only and always follow the envelope; apps
-// configured here win, so a gateway that runs both never loses its own PEM to
-// an older peer.
+// applySharedGithubApps rebuilds this gateway's copy of a routing group from
+// the envelope. The envelope is authoritative: every gateway may publish, so a
+// row's provenance records where it was configured, not whether it may be
+// changed here. Apps are matched by GitHub App ID, so an app created on this
+// gateway and then edited on another converges instead of diverging.
 func applySharedGithubApps(st *store.Store, obj envelope, res appliedEnvelope) {
 	if obj.Status == statusRevoked {
 		for _, app := range st.GithubAppsBySecretID(res.RowID) {
-			if !app.Mirrored() {
-				continue
-			}
 			if err := st.DeleteGithubAppRecord(app.ID); err != nil {
-				log.Printf("technocore: drop mirrored app %s: %v", app.ID, err)
+				log.Printf("technocore: drop github app %s: %v", app.ID, err)
 			}
 		}
 		return
@@ -490,22 +495,33 @@ func applySharedGithubApps(st *store.Store, obj envelope, res appliedEnvelope) {
 	for _, rec := range bundle.Recs(res.RowID, obj.ResourceID, obj.ContentVersion) {
 		wanted[rec.AppID] = true
 		if existing, ok := st.GithubAppByAppID(rec.AppID); ok {
-			if existing.SecretID != res.RowID || !existing.Mirrored() {
-				// Connected on this gateway (or under another group): local wins.
-				continue
-			}
+			// Keep this gateway's row id so dashboard links and in-flight
+			// flows survive an update that originated elsewhere.
 			rec.ID = existing.ID
 			rec.CreatedAt = existing.CreatedAt
+			// These are not shared: an install or manifest started here must
+			// survive a sync that lands while the person is still at GitHub,
+			// and a discovery warning describes GitHub, not the bundle.
+			rec.InstallState = existing.InstallState
+			rec.StateExpires = existing.StateExpires
+			rec.ManifestState = existing.ManifestState
+			rec.RefreshError = existing.RefreshError
 		}
 		if _, err := st.UpsertGithubApp(rec); err != nil {
-			log.Printf("technocore: mirror app %d: %v", rec.AppID, err)
+			log.Printf("technocore: apply github app %d: %v", rec.AppID, err)
 		}
 	}
+	// The bundle at this version is the whole group, so an app it no longer
+	// lists was removed on whichever gateway published last. A record this
+	// gateway has never seen published (version 0) is an app minted here that
+	// has not reached the coordinator yet — including one still mid-manifest —
+	// so it is left for the reconcile pass to share rather than dropped.
 	for _, app := range st.GithubAppsBySecretID(res.RowID) {
-		if app.Mirrored() && !wanted[app.AppID] {
-			if err := st.DeleteGithubAppRecord(app.ID); err != nil {
-				log.Printf("technocore: drop mirrored app %s: %v", app.ID, err)
-			}
+		if wanted[app.AppID] || app.ContentVersion == 0 {
+			continue
+		}
+		if err := st.DeleteGithubAppRecord(app.ID); err != nil {
+			log.Printf("technocore: drop github app %s: %v", app.ID, err)
 		}
 	}
 }
@@ -612,9 +628,10 @@ func applySecretEnvelope(st *store.Store, id tc.Identity, obj envelope) (applied
 		if local.TechnocoreID == "" {
 			local.TechnocoreID = obj.ResourceID
 		}
-		if local.PublishedHash == "" {
-			local.PublishedHash = hash
-		}
+		// Any gateway may publish, so adopt the coordinator's hash: a gateway
+		// that received a bundle it did not change must not republish it and
+		// bounce content_version back and forth.
+		local.PublishedHash = hash
 		local.ContentVersion = obj.ContentVersion
 		if err := st.ReplaceSecret(local); err != nil {
 			return appliedEnvelope{}, err

@@ -83,7 +83,7 @@ func TestDecodeBundleRejectsNonBundle(t *testing.T) {
 	}
 }
 
-func TestBundleRecsMarkMirrors(t *testing.T) {
+func TestBundleRecsMarkProvenance(t *testing.T) {
 	plain, err := EncodeBundle([]store.GithubAppRec{bundleApp(7, "octocat")})
 	if err != nil {
 		t.Fatal(err)
@@ -97,13 +97,35 @@ func TestBundleRecsMarkMirrors(t *testing.T) {
 		t.Fatalf("recs: %+v", recs)
 	}
 	got := recs[0]
-	if got.Source != store.GithubAppSourceTechnocore || !got.Mirrored() {
-		t.Fatalf("not a mirror: %+v", got)
+	if got.Source != store.GithubAppSourceTechnocore {
+		t.Fatalf("provenance: %+v", got)
 	}
 	if got.ID != MirroredAppID(7) || got.SecretID != "tc_rid" || got.ContentVersion != 4 {
 		t.Fatalf("identity: %+v", got)
 	}
 	if got.PrivateKey == "" || strings.HasPrefix(got.PrivateKey, "piso_") {
 		t.Fatalf("pem: %q", got.PrivateKey)
+	}
+}
+
+// Re-encoding what a bundle applied must reproduce the same bytes. Every
+// gateway publishes its own copy of a group, so a bundle that does not
+// round-trip byte-for-byte would bounce content_version back and forth between
+// gateways forever.
+func TestBundleReencodeIsStable(t *testing.T) {
+	first, err := EncodeBundle([]store.GithubAppRec{bundleApp(7, "octocat"), bundleApp(9, "acme")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := DecodeBundle(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := EncodeBundle(b.Recs("tc_rid", "rid", 4))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(first) != string(second) {
+		t.Fatalf("re-encode changed the bundle:\n%s\n%s", first, second)
 	}
 }
