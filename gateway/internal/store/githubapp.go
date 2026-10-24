@@ -14,6 +14,15 @@ const (
 	GithubAppStatusOK            = "ok"
 )
 
+// Github app provenance. A local app was created or imported on this gateway;
+// a technocore app is a mirror of one published by another enrolled gateway
+// and is read-only here. Both carry the PEM: minting needs it locally, and the
+// key only ever moves between gateways inside a sealed envelope.
+const (
+	GithubAppSourceLocal      = "local"
+	GithubAppSourceTechnocore = "technocore"
+)
+
 // GithubInstallation is one GitHub account/org the app is installed on.
 type GithubInstallation struct {
 	AccountID   int64    `json:"accountId,omitempty"`
@@ -44,9 +53,28 @@ type GithubAppRec struct {
 	RefreshError  string               `json:"refreshError,omitempty"`
 	ManifestState string               `json:"manifestState,omitempty"`
 	Installations []GithubInstallation `json:"installations,omitempty"`
-	CreatedAt     time.Time            `json:"createdAt"`
-	UpdatedAt     time.Time            `json:"updatedAt"`
+	// Source is empty (or "local") for an app configured here and
+	// "technocore" for a mirror of a peer's app. TechnocoreID and
+	// ContentVersion are the coordinator resource and version the mirror was
+	// built from.
+	Source         string    `json:"source,omitempty"`
+	TechnocoreID   string    `json:"technocoreId,omitempty"`
+	ContentVersion int       `json:"contentVersion,omitempty"`
+	CreatedAt      time.Time `json:"createdAt"`
+	UpdatedAt      time.Time `json:"updatedAt"`
 }
+
+// SourceOrLocal normalises the empty default to "local".
+func (r GithubAppRec) SourceOrLocal() string {
+	if r.Source == "" {
+		return GithubAppSourceLocal
+	}
+	return r.Source
+}
+
+// Mirrored reports whether this app was imported from another gateway and so
+// must be treated as read-only here.
+func (r GithubAppRec) Mirrored() bool { return r.Source == GithubAppSourceTechnocore }
 
 // Status is the dashboard chip state.
 func (r GithubAppRec) Status() string {
@@ -71,6 +99,7 @@ func (r GithubAppRec) ToSummary() model.GithubApp {
 	return model.GithubApp{
 		ID: r.ID, SecretID: r.SecretID, Name: r.Name, Placeholder: r.Placeholder,
 		AppID: r.AppID, Slug: r.Slug, Status: r.Status(),
+		Source:  r.SourceOrLocal(),
 		OwnerID: r.OwnerID, Owner: r.Owner, OwnerType: r.OwnerType,
 		Installations: inst, CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt,
 	}
@@ -206,6 +235,74 @@ func (s *Store) UpsertGithubApp(rec GithubAppRec) (GithubAppRec, error) {
 	}
 	s.broadcastGithub(rec)
 	return copyGithubApp(rec), nil
+}
+
+// GithubAppsBySecretID returns every app attached to one routing group.
+func (s *Store) GithubAppsBySecretID(secretID string) []GithubAppRec {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var out []GithubAppRec
+	for _, r := range s.state.GithubApps {
+		if r.SecretID == secretID {
+			out = append(out, copyGithubApp(r))
+		}
+	}
+	return out
+}
+
+// GithubAppByAppID finds an app by its GitHub App id, local or mirrored.
+func (s *Store) GithubAppByAppID(appID int64) (GithubAppRec, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, r := range s.state.GithubApps {
+		if r.AppID == appID && appID != 0 {
+			return copyGithubApp(r), true
+		}
+	}
+	return GithubAppRec{}, false
+}
+
+// GithubGroupManagedByPeer reports whether this routing group holds an app
+// mirrored from another gateway. Configuring GitHub locally in that group
+// would be overwritten by the next envelope, so the dashboard and the write
+// handlers refuse it.
+func (s *Store) GithubGroupManagedByPeer(secretID string) bool {
+	if secretID == "" {
+		return false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, r := range s.state.GithubApps {
+		if r.SecretID == secretID && r.Mirrored() {
+			return true
+		}
+	}
+	return false
+}
+
+// DeleteGithubAppRecord removes one app record and leaves its routing group
+// alone. Mirrored apps use it: the secret row belongs to the coordinator, and
+// DeleteGithubApp would delete it along with the last app.
+func (s *Store) DeleteGithubAppRecord(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := s.state.GithubApps[:0]
+	removed := false
+	for _, r := range s.state.GithubApps {
+		if r.ID == id {
+			removed = true
+			continue
+		}
+		out = append(out, r)
+	}
+	if !removed {
+		return nil
+	}
+	s.state.GithubApps = out
+	if err := s.save(); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (s *Store) DeleteGithubApp(id string) error {
