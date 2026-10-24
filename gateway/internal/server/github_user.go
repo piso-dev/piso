@@ -27,6 +27,11 @@ type githubIdentity struct {
 
 var errGithubUserSignIn = errors.New("sign in to GitHub first")
 
+// githubOAuthSecretKind marks the gateway-only rows this file owns (the OAuth
+// client secret and the user token). They are looked up and replaced by name
+// so a re-auth or a config re-save never leaves an orphan behind.
+const githubOAuthSecretKind = "github-oauth"
+
 func githubUserCallback() string { return githubAppPublicBase() + "/api/v1/github-user/callback" }
 
 func (s *Server) githubUserJSON(r *http.Request, path, token string, out any) error {
@@ -72,9 +77,38 @@ func (s *Server) verifiedGithubUser(r *http.Request) (githubIdentity, error) {
 	return identity, nil
 }
 
+// saveGithubUserSecret stores one gateway-only OAuth credential. It replaces
+// the existing secret with the same name and kind on this gateway instead of
+// inserting a new row: a re-auth or a config re-save would otherwise leave an
+// orphaned "GitHub user OAuth — gateway only" secret behind, and the id the
+// GithubUser record points at has to keep resolving. Any other duplicate with
+// the same name is removed.
 func (s *Server) saveGithubUserSecret(name, value string) (string, error) {
+	keep := ""
+	for _, rec := range s.Store.Secrets() {
+		if rec.Kind != githubOAuthSecretKind || rec.Name != name {
+			continue
+		}
+		if keep == "" {
+			rec.Value = value
+			rec.GatewayOnly = true
+			if !strings.HasPrefix(rec.Placeholder, "piso_") {
+				rec.Placeholder = "piso_github_oauth_" + randID()
+			}
+			if err := s.Store.ReplaceSecret(rec); err != nil {
+				return "", err
+			}
+			keep = rec.ID
+			continue
+		}
+		// A duplicate from an older insert: the one we kept now owns the name.
+		_ = s.Store.DeleteSecret(rec.ID)
+	}
+	if keep != "" {
+		return keep, nil
+	}
 	id := "sec_" + randID()
-	err := s.storeSecret(store.SecretRec{ID: id, Name: name, Kind: "github-oauth", Placeholder: "piso_github_oauth_" + randID(), Value: value, GatewayOnly: true, CreatedAt: time.Now().UTC()})
+	err := s.storeSecret(store.SecretRec{ID: id, Name: name, Kind: githubOAuthSecretKind, Placeholder: "piso_github_oauth_" + randID(), Value: value, GatewayOnly: true, CreatedAt: time.Now().UTC()})
 	return id, err
 }
 func (s *Server) registerGithubUser(mux *http.ServeMux) {
@@ -101,21 +135,33 @@ func (s *Server) registerGithubUser(mux *http.ServeMux) {
 			writeJSON(w, 400, map[string]string{"error": "clientId and clientSecret required"})
 			return
 		}
+		clientID := strings.TrimSpace(in.ClientID)
+		old := s.Store.GithubUser()
 		id, err := s.saveGithubUserSecret("GitHub OAuth client secret", strings.TrimSpace(in.ClientSecret))
 		if err != nil {
 			writeJSON(w, 500, map[string]string{"error": "could not save client secret"})
 			return
 		}
-		old := s.Store.GithubUser()
-		u := store.GithubUserRec{ClientID: strings.TrimSpace(in.ClientID), ClientSecretID: id}
+		// Replacing the client secret must not sign the user out: the token
+		// minted by the same OAuth App is still valid. Only a different client
+		// ID invalidates it, because the token belongs to the old app.
+		u := old
+		u.ClientID = clientID
+		u.ClientSecretID = id
+		changedApp := old.ClientID != "" && old.ClientID != clientID
+		if changedApp {
+			u.TokenSecretID = ""
+			u.Login = ""
+			u.AccountID = 0
+		}
 		if s.Store.SetGithubUser(u) != nil {
 			writeJSON(w, 500, map[string]string{"error": "could not save configuration"})
 			return
 		}
-		if old.ClientSecretID != "" {
+		if old.ClientSecretID != "" && old.ClientSecretID != id {
 			s.Store.DeleteSecret(old.ClientSecretID)
 		}
-		if old.TokenSecretID != "" {
+		if changedApp && old.TokenSecretID != "" {
 			s.Store.DeleteSecret(old.TokenSecretID)
 		}
 		w.WriteHeader(204)
@@ -257,7 +303,7 @@ func (s *Server) handleGithubUserCallback(w http.ResponseWriter, r *http.Request
 		http.Error(w, "Could not save GitHub connection", 500)
 		return
 	}
-	if old != "" {
+	if old != "" && old != id {
 		s.Store.DeleteSecret(old)
 	}
 	http.SetCookie(w, &http.Cookie{Name: "piso_github_oauth", Value: "", Path: "/api/v1/github-user", HttpOnly: true, MaxAge: -1})

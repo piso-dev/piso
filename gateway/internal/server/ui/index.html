@@ -5661,9 +5661,21 @@
           ? data.provider.providers
           : [];
         for (const provider of providers) {
-          if (!provider.id || providerCatalogs.has(provider.id)) continue;
+          if (!provider.id) continue;
+          // Memoize on the fields the catalog describes, not the id alone: a
+          // provider whose endpoint or secret changed has a new catalog to
+          // load, and one whose stored catalog was dropped (e.g. by an edit)
+          // must be asked again instead of staying stuck on "model list
+          // pending".
+          const fingerprint =
+            provider.id +
+            "|" +
+            (provider.baseUrl || "") +
+            "|" +
+            (provider.secretId || "");
+          if (providerCatalogs.has(fingerprint)) continue;
           if (Array.isArray(provider.models) && provider.models.length) continue;
-          providerCatalogs.add(provider.id);
+          providerCatalogs.add(fingerprint);
           // A local provider's catalog is served by a proxy inside the worker
           // and is unreachable from here, so there is nothing to ask for. Skip
           // the round trip and say so directly.
