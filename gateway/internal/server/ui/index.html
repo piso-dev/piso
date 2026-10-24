@@ -4170,11 +4170,18 @@
         }
         const visible = groups.filter((g) => matches(JSON.stringify(g)));
         count(visible.length);
+        // A token can be valid for personal use without read:org. Say so and
+        // offer the re-auth instead of hiding every organization-owned app
+        // with no explanation.
+        const orgNotice =
+          github.connected && github.orgAccess === false
+            ? `<p class="notice" role="status">GitHub did not grant <code>read:org</code>, so organization-owned apps are hidden. Re-authorize and accept the organization access prompt. If an organization blocks third-party apps, an owner must approve this OAuth App under Organization settings → Third-party access. ${button("Re-authorize with organization access", "github-user-authorize", "", "small")}</p>`
+            : "";
         const signedIn = `<div class="github-session"><p>Managing apps${github.login ? ` as <strong>${esc(github.login)}</strong>` : ""}</p>${button("Sign out", "github-user-signout", "", "small quiet")}</div>`;
         const emptyState = groups.length
           ? empty("No matching access groups", "Try another search to see your connected apps.")
           : empty("Connect your first app", "Create a GitHub App or import an existing one using the actions above. Each access group gives workers one placeholder that can route to multiple account installations.");
-        replaceContent(intro + setup + signedIn + (visible.map(githubMapping).join("") || emptyState));
+        replaceContent(intro + setup + orgNotice + signedIn + (visible.map(githubMapping).join("") || emptyState));
         bindGithubRows();
       }
       // renderTelegram is the Access > Telegram tab. The gateway holds the bot
