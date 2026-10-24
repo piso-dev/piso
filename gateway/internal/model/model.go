@@ -16,6 +16,14 @@ const (
 	SecretKindOpaque    = ""
 	SecretKindGithubApp = "github-app"
 	SecretKindTelegram  = "telegram"
+	// SecretKindGithubUser carries a dashboard GitHub sign-in between enrolled
+	// gateways: the token, the OAuth client that minted it, and the identity it
+	// resolves to. Never substituted into worker traffic.
+	SecretKindGithubUser = "github-user"
+	// SecretKindGithubOAuth is one part of a GitHub sign-in (the OAuth client
+	// secret or the user token). These rows are materialized locally on each
+	// gateway from the github-user bundle, so they are never published alone.
+	SecretKindGithubOAuth = "github-oauth"
 )
 
 // Secret is a real credential plus its placeholder. Real values live ONLY in

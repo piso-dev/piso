@@ -7,11 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
 
+	"piso/gateway/internal/model"
 	"piso/gateway/internal/store"
 )
 
@@ -29,8 +31,10 @@ var errGithubUserSignIn = errors.New("sign in to GitHub first")
 
 // githubOAuthSecretKind marks the gateway-only rows this file owns (the OAuth
 // client secret and the user token). They are looked up and replaced by name
-// so a re-auth or a config re-save never leaves an orphan behind.
-const githubOAuthSecretKind = "github-oauth"
+// so a re-auth or a config re-save never leaves an orphan behind. The value is
+// shared with technocore, which materializes the same kind on a peer, so both
+// sides must use one constant.
+const githubOAuthSecretKind = model.SecretKindGithubOAuth
 
 // githubScopeGranted reports whether GitHub granted scope want. GitHub returns
 // the granted scopes as a space-separated list on the token exchange (and
@@ -66,6 +70,50 @@ func (s *Server) githubUserJSON(r *http.Request, path, token string, out any) er
 	}
 	return json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(out)
 }
+
+// githubUserBundleRow finds the local transport row for the shared sign-in.
+// The row carries no value of its own: technocore encodes the bundle from the
+// GithubUserRec and its gateway-only rows at share time, the same way it
+// encodes a GitHub App group from its app records.
+func (s *Server) githubUserBundleRow() (store.SecretRec, bool) {
+	for _, rec := range s.Store.Secrets() {
+		if rec.Kind == model.SecretKindGithubUser {
+			return rec, true
+		}
+	}
+	return store.SecretRec{}, false
+}
+
+// ensureGithubUserBundle creates the shared-sign-in row if this gateway has
+// none. It is created on sign-in, not at startup, so a gateway that never signs
+// in never publishes an empty session.
+//
+// Signing in always claims the session locally: a gateway that was showing
+// someone else's shared session now owns its own, so the next change is
+// published instead of being skipped as a mirror. An existing mirrored row is
+// reused (it already has a coordinator id, so the republish updates it in
+// place rather than minting a second session).
+func (s *Server) ensureGithubUserBundle() error {
+	rec, ok := s.githubUserBundleRow()
+	if !ok {
+		rec = store.SecretRec{
+			ID:          "sec_" + randID(),
+			Name:        "GitHub sign-in",
+			Kind:        model.SecretKindGithubUser,
+			Placeholder: "piso_github_user_" + randID(),
+			GatewayOnly: true,
+			CreatedAt:   time.Now().UTC(),
+		}
+		if err := s.Store.AddSecret(rec); err != nil {
+			return err
+		}
+	}
+	u := s.Store.GithubUser()
+	u.BundleID = rec.ID
+	u.Source = store.GithubUserSourceLocal
+	return s.Store.SetGithubUser(u)
+}
+
 func (s *Server) githubUserToken() (string, bool) {
 	u := s.Store.GithubUser()
 	sec, ok := s.Store.SecretByID(u.TokenSecretID)
@@ -143,7 +191,10 @@ func (s *Server) registerGithubUser(mux *http.ServeMux) {
 		if strings.TrimSpace(u.Scopes) != "" {
 			orgAccess = githubScopeGranted(u.Scopes, "read:org")
 		}
-		writeJSON(w, 200, map[string]any{"configured": configured && u.ClientID != "", "connected": connected, "login": u.Login, "accountId": u.AccountID, "orgAccess": orgAccess, "callbackUrl": githubUserCallback()})
+		// source tells the dashboard whether this session was signed in here or
+		// arrived from another enrolled gateway. Either way it is one account
+		// session, and signing out is global.
+		writeJSON(w, 200, map[string]any{"configured": configured && u.ClientID != "", "connected": connected, "login": u.Login, "accountId": u.AccountID, "orgAccess": orgAccess, "source": u.SourceOrLocal(), "callbackUrl": githubUserCallback()})
 	})
 	mux.HandleFunc("PUT /api/v1/github-user/config", func(w http.ResponseWriter, r *http.Request) {
 		var in struct {
@@ -183,20 +234,33 @@ func (s *Server) registerGithubUser(mux *http.ServeMux) {
 		if changedApp && old.TokenSecretID != "" {
 			s.Store.DeleteSecret(old.TokenSecretID)
 		}
+		s.publishShared()
 		w.WriteHeader(204)
 	})
 	// Top-level navigation sets the browser-binding cookie on the loopback callback origin.
 	mux.HandleFunc("GET /api/v1/github-user/authorize", s.handleGithubUserAuthorize)
 	mux.HandleFunc("GET /api/v1/github-user/callback", s.handleGithubUserCallback)
+	// Signing out is global: the session is one account session, shared with
+	// every enrolled gateway, so the tombstone is published and each peer drops
+	// its copy. The OAuth App configuration stays, so signing back in needs no
+	// re-setup.
 	mux.HandleFunc("DELETE /api/v1/github-user", func(w http.ResponseWriter, r *http.Request) {
 		u := s.Store.GithubUser()
 		id := u.TokenSecretID
 		u.TokenSecretID = ""
 		u.Login = ""
 		u.AccountID = 0
+		u.Scopes = ""
+		u.Source = ""
+		u.BundleID = ""
 		if s.Store.SetGithubUser(u) != nil {
 			writeJSON(w, 500, map[string]string{"error": "could not disconnect"})
 			return
+		}
+		if rec, ok := s.githubUserBundleRow(); ok {
+			// Revoking the transport row stops reconcile from republishing the
+			// session and tells every peer to forget it.
+			s.revokeOrDelete(rec)
 		}
 		if id != "" {
 			s.Store.DeleteSecret(id)
@@ -324,6 +388,13 @@ func (s *Server) handleGithubUserCallback(w http.ResponseWriter, r *http.Request
 	}
 	if old != "" && old != id {
 		s.Store.DeleteSecret(old)
+	}
+	// Share the session with the other enrolled gateways: sign in once here and
+	// every gateway's dashboard is signed in with the same account.
+	if err := s.ensureGithubUserBundle(); err == nil {
+		s.publishShared()
+	} else {
+		log.Printf("github-user: share sign-in: %v", err)
 	}
 	http.SetCookie(w, &http.Cookie{Name: "piso_github_oauth", Value: "", Path: "/api/v1/github-user", HttpOnly: true, MaxAge: -1})
 	http.Redirect(w, r, githubAppHomepage()+"/#github", 302)
