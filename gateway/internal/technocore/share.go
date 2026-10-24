@@ -13,6 +13,8 @@ import (
 	"slices"
 	"strings"
 
+	"piso/gateway/internal/githubapp"
+	"piso/gateway/internal/model"
 	"piso/gateway/internal/store"
 	tc "piso/internal/technocore"
 )
@@ -160,6 +162,40 @@ func PublishNow(st *store.Store, dataDir string) error {
 	return publishAllSecrets(st, dataDir)
 }
 
+// sharePlaintext is what actually travels in the envelope. A github-app
+// routing group has no vault value: the credential is the app record, so the
+// apps are serialized into a bundle and that JSON is sealed instead. Groups
+// mirrored from a peer are skipped — the origin gateway owns them, and
+// republishing a mirror would fight it for content_version.
+func sharePlaintext(st *store.Store, rec store.SecretRec) (string, bool) {
+	if rec.Revoked {
+		// A tombstone stays a tombstone: republishing its apps would resurrect
+		// a connection the origin gateway deleted.
+		return "", false
+	}
+	if rec.Kind != model.SecretKindGithubApp {
+		return rec.Value, rec.Value != ""
+	}
+	apps := st.GithubAppsBySecretID(rec.ID)
+	local := make([]store.GithubAppRec, 0, len(apps))
+	for _, app := range apps {
+		if app.Mirrored() {
+			return "", false
+		}
+		local = append(local, app)
+	}
+	if len(local) == 0 {
+		return "", false
+	}
+	bundle, err := githubapp.EncodeBundle(local)
+	if err != nil {
+		// Unregistered apps (no PEM yet) have nothing to share; the next
+		// reconcile pass after registration publishes the bundle.
+		return "", false
+	}
+	return bundle, true
+}
+
 // publishAllSecrets reconciles every local secret that has a value with
 // Technocore. Synced tc_ rows are included so a newly enrolled gateway can
 // still get wraps. Unchanged secrets (same coordinator id, content hash, and
@@ -180,10 +216,11 @@ func publishAllSecrets(st *store.Store, dataDir string) error {
 	recipients := wrapRecipientIDs(gateways, nil)
 	var first error
 	for _, rec := range st.Secrets() {
-		if rec.Value == "" {
+		plain, ok := sharePlaintext(st, rec)
+		if !ok {
 			continue
 		}
-		hash := plaintextHash(rec.Value)
+		hash := plaintextHash(plain)
 		if rec.TechnocoreID != "" && rec.PublishedHash == hash && sameRecipients(rec.PublishedRecipients, recipients) {
 			continue
 		}
@@ -201,7 +238,7 @@ func publishAllSecrets(st *store.Store, dataDir string) error {
 			Placeholder:  rec.Placeholder,
 			EnvKey:       rec.EnvKey,
 			AllowedHosts: rec.AllowedHosts,
-			Plaintext:    rec.Value,
+			Plaintext:    plain,
 			GatewayOnly:  rec.GatewayOnly,
 			BaseVersion:  rec.ContentVersion,
 		}
@@ -225,7 +262,8 @@ func PublishPlaceholder(st *store.Store, dataDir, placeholder string, recipients
 	if !ok {
 		return nil, fmt.Errorf("unknown placeholder %s", placeholder)
 	}
-	if rec.Value == "" {
+	plain, ok := sharePlaintext(st, rec)
+	if !ok {
 		return nil, fmt.Errorf("secret has no local value")
 	}
 	return Share(st, dataDir, ShareInput{
@@ -234,7 +272,7 @@ func PublishPlaceholder(st *store.Store, dataDir, placeholder string, recipients
 		Placeholder:  rec.Placeholder,
 		EnvKey:       rec.EnvKey,
 		AllowedHosts: rec.AllowedHosts,
-		Plaintext:    rec.Value,
+		Plaintext:    plain,
 		Recipients:   recipients,
 		GatewayOnly:  rec.GatewayOnly,
 		BaseVersion:  rec.ContentVersion,
