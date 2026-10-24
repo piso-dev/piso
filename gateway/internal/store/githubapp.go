@@ -14,10 +14,12 @@ const (
 	GithubAppStatusOK            = "ok"
 )
 
-// Github app provenance. A local app was created or imported on this gateway;
-// a technocore app is a mirror of one published by another enrolled gateway
-// and is read-only here. Both carry the PEM: minting needs it locally, and the
-// key only ever moves between gateways inside a sealed envelope.
+// Github app provenance. A local app was created or imported on this gateway; a
+// technocore app was last written by another enrolled gateway. Provenance is
+// informational: any gateway may change any app in the group, and the
+// coordinator's content_version decides which write wins. Both carry the PEM —
+// minting needs it locally, and the key only ever moves between gateways inside
+// a sealed envelope.
 const (
 	GithubAppSourceLocal      = "local"
 	GithubAppSourceTechnocore = "technocore"
@@ -71,10 +73,6 @@ func (r GithubAppRec) SourceOrLocal() string {
 	}
 	return r.Source
 }
-
-// Mirrored reports whether this app was imported from another gateway and so
-// must be treated as read-only here.
-func (r GithubAppRec) Mirrored() bool { return r.Source == GithubAppSourceTechnocore }
 
 // Status is the dashboard chip state.
 func (r GithubAppRec) Status() string {
@@ -262,27 +260,8 @@ func (s *Store) GithubAppByAppID(appID int64) (GithubAppRec, bool) {
 	return GithubAppRec{}, false
 }
 
-// GithubGroupManagedByPeer reports whether this routing group holds an app
-// mirrored from another gateway. Configuring GitHub locally in that group
-// would be overwritten by the next envelope, so the dashboard and the write
-// handlers refuse it.
-func (s *Store) GithubGroupManagedByPeer(secretID string) bool {
-	if secretID == "" {
-		return false
-	}
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	for _, r := range s.state.GithubApps {
-		if r.SecretID == secretID && r.Mirrored() {
-			return true
-		}
-	}
-	return false
-}
-
 // DeleteGithubAppRecord removes one app record and leaves its routing group
-// alone. Mirrored apps use it: the secret row belongs to the coordinator, and
-// DeleteGithubApp would delete it along with the last app.
+// alone, so a sync that drops an app does not take the group's secret with it.
 func (s *Store) DeleteGithubAppRecord(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -71,28 +71,39 @@ func (s *Server) githubUserJSON(r *http.Request, path, token string, out any) er
 	return json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(out)
 }
 
-// githubUserBundleRow finds the local transport row for the shared sign-in.
-// The row carries no value of its own: technocore encodes the bundle from the
+// githubUserBundleRow finds the transport row for the shared sign-in. The row
+// carries no value of its own: technocore encodes the bundle from the
 // GithubUserRec and its gateway-only rows at share time, the same way it
 // encodes a GitHub App group from its app records.
+//
+// A gateway can briefly hold more than one such row after a rebase; the one the
+// session points at is the one to republish into, so the others are not
+// resurrected as separate resources.
 func (s *Server) githubUserBundleRow() (store.SecretRec, bool) {
+	u := s.Store.GithubUser()
+	var fallback store.SecretRec
+	found := false
 	for _, rec := range s.Store.Secrets() {
-		if rec.Kind == model.SecretKindGithubUser {
+		if rec.Kind != model.SecretKindGithubUser {
+			continue
+		}
+		if u.BundleID != "" && rec.ID == u.BundleID {
 			return rec, true
 		}
+		if !found {
+			fallback, found = rec, true
+		}
 	}
-	return store.SecretRec{}, false
+	return fallback, found
 }
 
 // ensureGithubUserBundle creates the shared-sign-in row if this gateway has
 // none. It is created on sign-in, not at startup, so a gateway that never signs
 // in never publishes an empty session.
 //
-// Signing in always claims the session locally: a gateway that was showing
-// someone else's shared session now owns its own, so the next change is
-// published instead of being skipped as a mirror. An existing mirrored row is
-// reused (it already has a coordinator id, so the republish updates it in
-// place rather than minting a second session).
+// An existing row is reused rather than a second one minted: it already has a
+// coordinator resource id, so the republish updates that session in place
+// instead of publishing a rival copy.
 func (s *Server) ensureGithubUserBundle() error {
 	rec, ok := s.githubUserBundleRow()
 	if !ok {

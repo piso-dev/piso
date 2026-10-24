@@ -1,6 +1,6 @@
-// A routing group imported from another enrolled gateway must render as
-// read-only: no create/install/refresh/remove buttons, and a note pointing at
-// the gateway that owns it. Local groups keep their management actions.
+// A connection's origin is provenance, not a permission. The envelope is
+// authoritative and any gateway may publish, so a group that arrived from
+// another enrolled gateway renders and behaves exactly like a local one.
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -46,15 +46,26 @@ const local = {
   }],
 };
 
-test('mirrored app rows expose no management actions', () => {
+test('an app from another gateway offers every management action', () => {
   const context = harness();
   const html = vm.runInContext(`githubAppRows(${JSON.stringify(mirrored)})`, context);
   assert.match(html, /octocat\/only-repo/, 'repository details still render');
-  assert.match(html, /from another gateway/);
-  assert.match(html, /Managed on another gateway/);
-  for (const action of ['github-connect', 'github-install', 'github-reconnect', 'github-refresh', 'github-remove']) {
-    assert.equal(html.includes(action), false, `${action} must not be offered`);
+  for (const action of ['github-install', 'github-reconnect', 'github-refresh', 'github-remove']) {
+    assert.equal(html.includes(action), true, `${action} must be offered`);
   }
+  // No provenance caveat on the row: it is editable here like any other.
+  assert.equal(html.includes('from another gateway'), false);
+  assert.equal(html.includes('Managed on another gateway'), false);
+});
+
+test('every gateway renders the same row actions for the same app', () => {
+  const context = harness();
+  const fromPeer = vm.runInContext(`githubAppRows(${JSON.stringify(mirrored)})`, context);
+  const fromLocal = vm.runInContext(`githubAppRows(${JSON.stringify(local)})`, context);
+  const actions = (html) => [...html.matchAll(/data-action="([^"]+)"/g)].map((m) => m[1]).join(',');
+  assert.equal(actions(fromPeer), actions(fromLocal));
+  assert.match(fromPeer, /Manage app/);
+  assert.match(fromLocal, /Manage app/);
 });
 
 test('local app rows keep every management action', () => {
@@ -66,68 +77,67 @@ test('local app rows keep every management action', () => {
   assert.equal(html.includes('from another gateway'), false);
 });
 
-test('mirrored group explains where the connection lives', () => {
+test('a received group shows no peer notice and keeps scope editing', () => {
   const context = harness();
   const html = vm.runInContext(`githubMapping(${JSON.stringify(mirrored)})`, context);
-  assert.match(html, /configured on another enrolled gateway/);
-  assert.match(html, /worker scope is set here/);
-  // Worker scope is a local property of the group and stays editable.
+  assert.equal(html.includes('another enrolled gateway'), false);
+  // Worker scope is per-gateway and stays editable everywhere.
   assert.match(html, /secret-edit/);
 });
 
-test('local group shows no peer notice', () => {
-  const context = harness();
-  const html = vm.runInContext(`githubMapping(${JSON.stringify(local)})`, context);
-  assert.equal(html.includes('another enrolled gateway'), false);
+// Signing out is a fleet-wide state, so out of a session every gateway shows
+// the same gate and the same read-only rows — whether the connection was made
+// here or elsewhere.
+test('signed out looks the same on every gateway', () => {
+  const render = (groups) => {
+    const document = new JSDOM('<div id="content"></div><span id="resultCount"></span>', { url: 'http://piso.local' }).window.document;
+    const context = {
+      document,
+      $: (s) => document.querySelector(s),
+      data: { githubUser: { configured: false, connected: false }, githubMappings: groups },
+      list: () => groups,
+      matches: () => true,
+      count: () => {},
+      replaceContent: (html) => { document.querySelector('#content').innerHTML = html; },
+      esc: v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])),
+      empty: (t, d) => `<section class="empty"><h2>${t}</h2><p>${d}</p></section>`,
+      bindGithubRows: () => {},
+      button: (label, action, id) => `<button data-action="${action}" data-id="${id ?? ''}">${label}</button>`,
+      badge: (t) => `<span>${t}</span>`,
+      facts: () => '',
+      notify: () => {},
+      confirmAction: () => {},
+    };
+    vm.createContext(context);
+    vm.runInContext(slice('function githubSetup(', 'function renderTelegram('), context);
+    vm.runInContext('renderGithub("")', context);
+    return document.querySelector('#content').innerHTML;
+  };
+  const peerHtml = render([mirrored]);
+  assert.match(peerHtml, /Configure GitHub sign-in<\/h2>/, 'the gate is the same as anywhere else');
+  assert.equal(peerHtml.includes('Shared from another gateway'), false);
+  // Routes stay visible, actions do not: they act as the signed-in account.
+  assert.match(peerHtml, /octocat\/only-repo/);
+  for (const action of ['github-install', 'github-reconnect', 'github-refresh', 'github-remove']) {
+    assert.equal(peerHtml.includes(action), false, `${action} is withheld while signed out`);
+  }
+  assert.equal(peerHtml.includes('signed in on another gateway'), false);
+  // Nothing connected at all renders the same gate.
+  assert.match(render([]), /Configure GitHub sign-in<\/h2>/);
 });
 
-// A gateway whose only connection arrived from a peer must not be walked
-// through "configure sign-in → connect an app → install": none of that work
-// belongs to it. The read-only rows and their scope editor are the whole page.
-test('peer-only gateway shows no first-connection walkthrough', () => {
+// Every gateway is walked through the same first-connection steps, because any
+// of them can do the work.
+test('every gateway gets the same first-connection walkthrough', () => {
   const context = harness();
   vm.runInContext(slice('function githubSetup(', 'function setGithubRowExpanded('), context);
   const signedOut = { configured: false, connected: false };
-  assert.equal(vm.runInContext(`githubSetup(${JSON.stringify(signedOut)}, ${JSON.stringify([mirrored])})`, context), '');
-  // A gateway with its own app still gets the walkthrough.
-  assert.notEqual(vm.runInContext(`githubSetup(${JSON.stringify(signedOut)}, ${JSON.stringify([local])})`, context), '');
-  // No connections at all keeps the empty walkthrough.
+  const fromPeer = vm.runInContext(`githubSetup(${JSON.stringify(signedOut)}, ${JSON.stringify([mirrored])})`, context);
+  const fromLocal = vm.runInContext(`githubSetup(${JSON.stringify(signedOut)}, ${JSON.stringify([local])})`, context);
+  assert.notEqual(fromPeer, '');
+  assert.equal(fromPeer, fromLocal);
+  assert.match(fromPeer, /Configure sign-in/);
   assert.notEqual(vm.runInContext(`githubSetup(${JSON.stringify(signedOut)}, [])`, context), '');
-});
-
-// The peer opens on "shared", not on "configure sign-in": the connection works
-// for its workers and no OAuth App is needed to use it.
-test('peer gateway without an OAuth app says the connection is shared', () => {
-  const document = new JSDOM('<div id="content"></div><span id="resultCount"></span>', { url: 'http://piso.local' }).window.document;
-  const context = {
-    document,
-    $: (s) => document.querySelector(s),
-    data: { githubUser: { configured: false, connected: false }, githubMappings: [mirrored] },
-    list: (key) => [mirrored],
-    matches: () => true,
-    count: () => {},
-    replaceContent: (html) => { document.querySelector('#content').innerHTML = html; },
-    esc: v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])),
-    empty: (t, d) => `<section class="empty"><h2>${t}</h2><p>${d}</p></section>`,
-    bindGithubRows: () => {},
-    button: (label, action, id) => `<button data-action="${action}" data-id="${id ?? ''}">${label}</button>`,
-    badge: (t) => `<span>${t}</span>`,
-    facts: () => '',
-    notify: () => {},
-  };
-  vm.createContext(context);
-  vm.runInContext(slice('function githubSetup(', 'function renderTelegram('), context);
-  vm.runInContext('renderGithub("")', context);
-  const html = document.querySelector('#content').innerHTML;
-  assert.match(html, /Shared from another gateway/);
-  assert.doesNotMatch(html, /Configure GitHub sign-in<\/h2>/);
-  assert.match(html, /its workers can use them now/);
-  // A gateway with nothing at all still gets the first-connection gate.
-  const fresh = { ...context, data: { githubUser: { configured: false, connected: false }, githubMappings: [] }, list: () => [] };
-  vm.createContext(fresh);
-  vm.runInContext(slice('function githubSetup(', 'function renderTelegram('), fresh);
-  vm.runInContext('renderGithub("")', fresh);
-  assert.match(fresh.document.querySelector('#content').innerHTML, /Configure GitHub sign-in<\/h2>/);
 });
 
 // The sign-in itself is shared too, and signing out is global. The page says

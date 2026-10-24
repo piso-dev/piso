@@ -51,6 +51,11 @@ type Server struct {
 	boost        *aiboost.Client
 	boostTickets map[string]time.Time
 
+	// githubSync overrides the publish/pull half of a shared GitHub write so a
+	// test can lose a version race on purpose. Nil means technocore, which is
+	// what production always uses.
+	githubSync *githubSyncHooks
+
 	// directMu guards workers that have checked in on the public URL.
 	// Not persisted: a gateway restart must see a fresh direct check-in
 	// before it drops the relay pool.

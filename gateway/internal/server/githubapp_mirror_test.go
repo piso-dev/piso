@@ -1,10 +1,12 @@
 package server
 
 import (
+	"sort"
 	"strings"
 	"testing"
 
 	"piso/gateway/internal/store"
+	"piso/gateway/internal/technocore"
 )
 
 // mirrorGroup seeds a routing group holding one app configured on another
@@ -27,48 +29,49 @@ func mirrorGroup(t *testing.T, s *Server) {
 	}
 }
 
-// Every mutating GitHub route must refuse a mirrored app: the envelope would
-// overwrite the edit on the next sync, so the dashboard sends the operator to
-// the gateway that owns it.
-func TestGithubMirroredAppIsReadOnly(t *testing.T) {
+// A connection that arrived from another gateway is editable here. The envelope
+// is authoritative and any gateway may publish, so an edit made on this one is
+// adopted by the others instead of being reverted on the next sync.
+func TestGithubSharedAppIsEditable(t *testing.T) {
 	s := testServer(t)
 	signInGithubUser(t, s)
 	mirrorGroup(t, s)
-	stub := testGithubAppPEM(t)
 
-	cases := []struct {
-		name, method, path string
-		body               any
-	}{
-		{"import", "POST", "/api/v1/github-app/import", map[string]any{"appId": 42, "privateKey": stub.PrivateKey, "secretId": "tc_rid"}},
-		{"manifest", "POST", "/api/v1/github-app/manifest", map[string]any{"secretId": "tc_rid", "account": "octocat"}},
-		{"add installation", "POST", "/api/v1/github-app/gha_tc_42/installations", map[string]any{"id": 8, "account": "acme"}},
-		{"remove installation", "DELETE", "/api/v1/github-app/gha_tc_42/installations/7", nil},
-		{"refresh", "POST", "/api/v1/github-app/gha_tc_42/refresh", nil},
-		{"remove app", "DELETE", "/api/v1/github-app/gha_tc_42", nil},
+	// Add an installation.
+	w := doJSON(t, s.ControlHandler(), "POST", "/api/v1/github-app/gha_tc_42/installations",
+		map[string]any{"id": 8, "account": "acme"})
+	if w.Code != 200 {
+		t.Fatalf("add installation: status %d: %s", w.Code, w.Body.String())
 	}
-	for _, c := range cases {
-		w := doJSON(t, s.ControlHandler(), c.method, c.path, c.body)
-		if w.Code != 409 {
-			t.Fatalf("%s: status %d: %s", c.name, w.Code, w.Body.String())
-		}
-		if !strings.Contains(w.Body.String(), "another gateway") {
-			t.Fatalf("%s: unhelpful error: %s", c.name, w.Body.String())
-		}
-	}
-
-	// Nothing above changed the mirror.
 	app, ok := s.Store.GithubAppByID("gha_tc_42")
-	if !ok || len(app.Installations) != 1 || app.Installations[0].ID != 7 {
-		t.Fatalf("mirror mutated: %+v", app)
+	if !ok || len(app.Installations) != 2 {
+		t.Fatalf("installation not added: %+v", app)
+	}
+
+	// Remove one.
+	w = doJSON(t, s.ControlHandler(), "DELETE", "/api/v1/github-app/gha_tc_42/installations/7", nil)
+	if w.Code != 200 {
+		t.Fatalf("remove installation: status %d: %s", w.Code, w.Body.String())
+	}
+	app, _ = s.Store.GithubAppByID("gha_tc_42")
+	if len(app.Installations) != 1 || app.Installations[0].ID != 8 {
+		t.Fatalf("installation not removed: %+v", app.Installations)
+	}
+
+	// Remove the app itself; the group goes with the last one.
+	w = doJSON(t, s.ControlHandler(), "DELETE", "/api/v1/github-app/gha_tc_42", nil)
+	if w.Code != 204 {
+		t.Fatalf("remove app: status %d: %s", w.Code, w.Body.String())
+	}
+	if _, ok := s.Store.GithubAppByID("gha_tc_42"); ok {
+		t.Fatal("app survived removal")
 	}
 }
 
-// The mapping view tells the dashboard which apps it may not edit.
-// Deliberately signed out: a gateway holding a connection from a peer has no
-// local app and usually no local OAuth App either, and this view is what tells
-// the operator (and the dashboard's read-only rows) that the connection is
-// there. Signing in gates actions, not visibility.
+// The mapping view reports where each app was last configured — provenance for
+// the dashboard, not a permission. Deliberately signed out: a gateway holding a
+// connection from a peer has no local app and usually no local OAuth App
+// either, and this view is what shows the operator that the connection works.
 func TestGithubMappingsReportAppSource(t *testing.T) {
 	s := testServer(t)
 	mirrorGroup(t, s)
@@ -89,5 +92,80 @@ func TestGithubMappingsReportAppSource(t *testing.T) {
 	}
 	if strings.Contains(body, "BEGIN RSA PRIVATE KEY") {
 		t.Fatal("PEM leaked into the mapping view")
+	}
+}
+
+// Two gateways editing different parts of one group must not lose each other's
+// work. The loser of the version race pulls the winner's snapshot and re-applies
+// its own intent on top instead of surfacing a conflict.
+func TestGithubEditRebasesOnLostRace(t *testing.T) {
+	s := testServer(t)
+	signInGithubUser(t, s)
+	mirrorGroup(t, s) // app 42, installation 7
+
+	publishes := 0
+	s.githubSync = &githubSyncHooks{
+		Publish: func(string) error {
+			publishes++
+			if publishes == 1 {
+				return &technocore.StaleError{Detail: "stale content_version"}
+			}
+			return nil
+		},
+		Pull: func() error {
+			// What the winner published: the same app with installation 9 added.
+			app, ok := s.Store.GithubAppByID("gha_tc_42")
+			if !ok {
+				t.Fatal("app missing before rebase")
+			}
+			app.Installations = []store.GithubInstallation{{ID: 7, Account: "octocat"}, {ID: 9, Account: "peer"}}
+			app.ContentVersion = 6
+			_, err := s.Store.UpsertGithubApp(app)
+			return err
+		},
+	}
+
+	// Our change: install on account 8.
+	w := doJSON(t, s.ControlHandler(), "POST", "/api/v1/github-app/gha_tc_42/installations",
+		map[string]any{"id": 8, "account": "acme"})
+	if w.Code != 200 {
+		t.Fatalf("rebase failed: status %d: %s", w.Code, w.Body.String())
+	}
+	if publishes != 2 {
+		t.Fatalf("expected a republish after the rebase, got %d publishes", publishes)
+	}
+	app, _ := s.Store.GithubAppByID("gha_tc_42")
+	var ids []int64
+	for _, inst := range app.Installations {
+		ids = append(ids, inst.ID)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	if len(ids) != 3 || ids[0] != 7 || ids[1] != 8 || ids[2] != 9 {
+		t.Fatalf("both changes did not survive: %+v", ids)
+	}
+}
+
+// A publish that keeps losing the race gives up rather than spinning, and says
+// so: the local edit was replaced by the snapshot, so success would be a lie.
+func TestGithubEditGivesUpAfterThreeRaces(t *testing.T) {
+	s := testServer(t)
+	signInGithubUser(t, s)
+	mirrorGroup(t, s)
+
+	publishes := 0
+	s.githubSync = &githubSyncHooks{
+		Publish: func(string) error {
+			publishes++
+			return &technocore.StaleError{Detail: "stale content_version"}
+		},
+		Pull: func() error { return nil },
+	}
+	w := doJSON(t, s.ControlHandler(), "POST", "/api/v1/github-app/gha_tc_42/installations",
+		map[string]any{"id": 8, "account": "acme"})
+	if w.Code != 502 {
+		t.Fatalf("status %d, want 502: %s", w.Code, w.Body.String())
+	}
+	if publishes != githubWriteAttempts {
+		t.Fatalf("publishes: %d", publishes)
 	}
 }
