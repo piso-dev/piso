@@ -183,3 +183,65 @@ func TestReplyRequiresTheSupervisor(t *testing.T) {
 		t.Fatalf("want 409, got %d %s", w.Code, w.Body.String())
 	}
 }
+
+// A status line is one message that follows the turn, so the second write must
+// edit the first one rather than post another.
+func TestStatusEditsTheSameMessage(t *testing.T) {
+	s := testServer(t)
+	setLiveSupervisor(t, s, mailWorker)
+	if err := s.Store.AddSecret(store.SecretRec{
+		ID: "sec_bot", Name: "Telegram bot", Kind: model.SecretKindTelegram,
+		GatewayOnly: true, Value: botToken, CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Store.UpsertTelegramUser(store.TelegramUser{UserID: 9, ChatID: 9, ClaimedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	type call struct{ method, text, messageID string }
+	var calls []call
+	s.Telegram.HTTP = &http.Client{Transport: handlerTransport{handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		method := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
+		calls = append(calls, call{method, r.Form.Get("text"), r.Form.Get("message_id")})
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true,"result":{"message_id":55,"date":0,"chat":{"id":9,"type":"private"},"text":"x"}}`))
+	})}}
+
+	first := doJSON(t, s.WorkerHandler(), "POST", "/api/v1/worker/status",
+		map[string]any{"worker": mailWorker, "chatId": 9, "text": "🔧 bash go test"})
+	if first.Code != 200 || !strings.Contains(first.Body.String(), `"messageId":55`) {
+		t.Fatalf("status %d %s", first.Code, first.Body.String())
+	}
+	second := doJSON(t, s.WorkerHandler(), "POST", "/api/v1/worker/status",
+		map[string]any{"worker": mailWorker, "chatId": 9, "text": "✅ done", "messageId": 55})
+	if second.Code != 200 {
+		t.Fatalf("status %d %s", second.Code, second.Body.String())
+	}
+	if len(calls) != 2 || calls[0].method != "sendMessage" || calls[1].method != "editMessageText" {
+		t.Fatalf("calls %+v", calls)
+	}
+	if calls[1].messageID != "55" || calls[1].text != "✅ done" {
+		t.Fatalf("edit %+v", calls[1])
+	}
+	// Status lines are still the bot speaking: an unclaimed chat is refused.
+	blocked := doJSON(t, s.WorkerHandler(), "POST", "/api/v1/worker/status",
+		map[string]any{"worker": mailWorker, "chatId": 10, "text": "spam"})
+	if blocked.Code != 403 {
+		t.Fatalf("want 403, got %d %s", blocked.Code, blocked.Body.String())
+	}
+}
+
+// A status line from a worker that is not the live supervisor is refused for
+// the same reason a reply is: the bot belongs to the gateway, not the worker.
+func TestStatusRequiresTheSupervisor(t *testing.T) {
+	s := testServer(t)
+	if err := s.Store.UpsertTelegramUser(store.TelegramUser{UserID: 9, ChatID: 9, ClaimedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	w := doJSON(t, s.WorkerHandler(), "POST", "/api/v1/worker/status",
+		map[string]any{"worker": mailWorker, "chatId": 9, "text": "working"})
+	if w.Code != 409 {
+		t.Fatalf("want 409, got %d %s", w.Code, w.Body.String())
+	}
+}
