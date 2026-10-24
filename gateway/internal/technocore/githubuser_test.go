@@ -99,7 +99,10 @@ func TestApplyEnvelopeRevokesSharedGithubSignIn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	plain, err := githubapp.EncodeUserBundle(githubapp.UserBundle{Token: "gho_token_value", Login: "octocat", AccountID: 583231})
+	plain, err := githubapp.EncodeUserBundle(githubapp.UserBundle{
+		ClientID: "Iv1.abc", ClientSecret: "client-secret-value",
+		Token: "gho_token_value", Login: "octocat", AccountID: 583231,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,11 +125,13 @@ func TestApplyEnvelopeRevokesSharedGithubSignIn(t *testing.T) {
 	}
 }
 
-// A gateway that signed in itself is not signed out by a peer's tombstone, and
-// an inbound sign-in never replaces a local one.
-func TestSharedGithubSignInLocalWins(t *testing.T) {
+// The session is one session: a newer version from another gateway replaces the
+// one signed in here, and a tombstone from another gateway signs this one out.
+// There is no local copy to protect — signing in anywhere sets the account
+// everywhere.
+func TestSharedGithubSignInNewestVersionWins(t *testing.T) {
 	st := testStore(t)
-	signInOrigin(t, st) // this gateway is signed in as octocat
+	signInOrigin(t, st) // this gateway is signed in as octocat at version 0
 	id, err := tc.Generate("https://s", "gw")
 	if err != nil {
 		t.Fatal(err)
@@ -139,21 +144,32 @@ func TestSharedGithubSignInLocalWins(t *testing.T) {
 		t.Fatal(err)
 	}
 	u := st.GithubUser()
-	if u.Login != "octocat" || u.TokenSecretID != "tk_1" || u.SourceOrLocal() != store.GithubUserSourceLocal {
-		t.Fatalf("local sign-in was overwritten: %+v", u)
+	if u.Login != "someone-else" || u.AccountID != 99 || u.ContentVersion != 5 {
+		t.Fatalf("newer shared sign-in did not apply: %+v", u)
+	}
+	if tok, ok := st.SecretByID(u.TokenSecretID); !ok || tok.Value != "gho_peer" {
+		t.Fatalf("token not materialized: %+v", tok)
+	}
+	// An older version never rolls it back.
+	if _, err := applyEnvelope(st, id, userEnvelope(t, id, "rid", "piso_github_user_peer", other, 4)); err != nil {
+		t.Fatal(err)
+	}
+	if u := st.GithubUser(); u.ContentVersion != 5 || u.Login != "someone-else" {
+		t.Fatalf("older version rolled the session back: %+v", u)
 	}
 	obj := userEnvelope(t, id, "rid", "piso_github_user_peer", other, 6)
 	obj.Status = statusRevoked
 	if _, err := applyEnvelope(st, id, obj); err != nil {
 		t.Fatal(err)
 	}
-	if u := st.GithubUser(); u.Login != "octocat" || u.TokenSecretID != "tk_1" {
-		t.Fatalf("peer tombstone signed this gateway out: %+v", u)
+	if u := st.GithubUser(); u.TokenSecretID != "" || u.Login != "" {
+		t.Fatalf("tombstone did not sign this gateway out: %+v", u)
 	}
 }
 
-// Only the gateway where the person signed in publishes the session, and only
-// while it has a token. The two halves of the sign-in never travel alone.
+// Any gateway holding a session publishes it, wherever the session came from:
+// the two halves of a sign-in never travel alone, and being signed in on this
+// gateway rather than another is provenance, not a permission.
 func TestSharePlaintextGithubSignIn(t *testing.T) {
 	st := testStore(t)
 	signInOrigin(t, st)
@@ -174,16 +190,23 @@ func TestSharePlaintextGithubSignIn(t *testing.T) {
 			t.Fatalf("%s published on its own", id)
 		}
 	}
-	// A mirror is never republished.
-	mirror := testStore(t)
-	if err := mirror.AddSecret(mustSecret(t, st, "sec_bundle")); err != nil {
+	// A session received from a peer is republished like any other, so a
+	// gateway that never signed in can still carry the latest version.
+	received := testStore(t)
+	if err := received.AddSecret(mustSecret(t, st, "sec_bundle")); err != nil {
 		t.Fatal(err)
 	}
-	if err := mirror.SetGithubUser(store.GithubUserRec{ClientID: "x", TokenSecretID: "tk", Login: "octocat", AccountID: 1, Source: store.GithubUserSourceTechnocore}); err != nil {
+	if err := received.SetGithubUser(store.GithubUserRec{ClientID: "Iv1.abc", ClientSecretID: "cs_1", TokenSecretID: "tk_1", Login: "octocat", AccountID: 1, Source: store.GithubUserSourceTechnocore}); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := sharePlaintext(mirror, mustSecret(t, mirror, "sec_bundle")); ok {
-		t.Fatal("mirrored sign-in was republished")
+	if err := received.AddSecret(store.SecretRec{ID: "tk_1", Kind: model.SecretKindGithubOAuth, GatewayOnly: true, Value: "gho_token_value"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := received.AddSecret(store.SecretRec{ID: "cs_1", Kind: model.SecretKindGithubOAuth, GatewayOnly: true, Value: "client-secret-value"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := sharePlaintext(received, mustSecret(t, received, "sec_bundle")); !ok {
+		t.Fatal("received session was not republished")
 	}
 	// Signed out: nothing to share.
 	if err := st.SetGithubUser(store.GithubUserRec{ClientID: "Iv1.abc", ClientSecretID: "cs_1"}); err != nil {
@@ -214,14 +237,12 @@ func mustSecret(t *testing.T, st *store.Store, id string) store.SecretRec {
 	return rec
 }
 
-// One gateway can hold its own sign-in and a peer's session at the same time.
-// Sharing is decided per row, so the peer's row is never republished with this
-// gateway's token (which would silently sign every other gateway in as the
-// wrong person).
-func TestSharePlaintextSkipsMirroredRowWhenAlsoSignedIn(t *testing.T) {
+// A gateway can hold more than one sign-in row (its own and one received from a
+// peer) after a rebase. Either publishes the same session, so which row is
+// replayed does not matter.
+func TestSharePlaintextPublishesSessionFromAnyRow(t *testing.T) {
 	st := testStore(t)
 	signInOrigin(t, st)
-	// The mirrored session from a peer, alongside the local one.
 	if err := st.AddSecret(store.SecretRec{
 		ID: "tc_peer", Name: "GitHub sign-in", Kind: model.SecretKindGithubUser,
 		Placeholder: "piso_github_user_peer", GatewayOnly: true,
@@ -229,16 +250,15 @@ func TestSharePlaintextSkipsMirroredRowWhenAlsoSignedIn(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	u := st.GithubUser()
-	u.BundleID = "sec_bundle" // the row this gateway created on sign-in
-	if err := st.SetGithubUser(u); err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := sharePlaintext(st, mustSecret(t, st, "sec_bundle")); !ok {
-		t.Fatal("own session not shared")
-	}
-	if _, ok := sharePlaintext(st, mustSecret(t, st, "tc_peer")); ok {
-		t.Fatal("peer's mirrored session republished with this gateway's token")
+	for _, id := range []string{"sec_bundle", "tc_peer"} {
+		plain, ok := sharePlaintext(st, mustSecret(t, st, id))
+		if !ok {
+			t.Fatalf("%s did not publish the session", id)
+		}
+		bundle, err := githubapp.DecodeUserBundle(plain)
+		if err != nil || bundle.Token != "gho_token_value" {
+			t.Fatalf("%s bundle: %+v %v", id, bundle, err)
+		}
 	}
 }
 
@@ -251,7 +271,10 @@ func TestRevokedSharedSignInDropsTransportRow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	plain, err := githubapp.EncodeUserBundle(githubapp.UserBundle{Token: "gho_token_value", Login: "octocat", AccountID: 583231})
+	plain, err := githubapp.EncodeUserBundle(githubapp.UserBundle{
+		ClientID: "Iv1.abc", ClientSecret: "client-secret-value",
+		Token: "gho_token_value", Login: "octocat", AccountID: 583231,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -264,8 +287,13 @@ func TestRevokedSharedSignInDropsTransportRow(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, rec := range st.Secrets() {
-		if rec.Kind == model.SecretKindGithubUser || rec.Kind == model.SecretKindGithubOAuth {
+		if rec.Kind == model.SecretKindGithubUser || rec.Name == "GitHub user OAuth — gateway only" {
 			t.Fatalf("row survived revocation: %+v", rec)
 		}
+	}
+	// The OAuth App configuration survives, so signing back in needs no
+	// re-setup on any gateway.
+	if u := st.GithubUser(); u.ClientID == "" || u.ClientSecretID == "" {
+		t.Fatalf("sign-out dropped the OAuth App configuration: %+v", u)
 	}
 }

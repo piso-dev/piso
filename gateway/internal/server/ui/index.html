@@ -4108,11 +4108,6 @@
       };
       function githubSetup(github, groups) {
         const apps = groups.flatMap((g) => g.apps || []);
-        // Every connection here arrived from another enrolled gateway, so the
-        // app, the install and the sign-in all belong to the origin. Walking
-        // this gateway through "configure sign-in" would point at work it does
-        // not own.
-        if (apps.length && apps.every((app) => app.source === "technocore")) return "";
         const registered = apps.some((app) => app.appId && app.status !== "needs-register");
         const installed = apps.some((app) => app.status === "ok" && app.installations?.length);
         // First-connection progress, not the health of every app. Do not use
@@ -4136,12 +4131,12 @@
           });
         });
       }
-      // An app mirrored from another enrolled gateway is read-only here: the
-      // origin gateway republishes the group on every change, so an edit made
-      // locally would be silently reverted. Worker scope stays local.
-      // canManage is false when this browser has no live GitHub session: the
-      // routes render so the operator can see what workers can reach, but every
-      // action is withheld — those endpoints need the signed-in identity, and
+      // Every gateway holding a connection can change it: the sealed bundle is
+      // authoritative, so an edit made here is published and the other gateways
+      // adopt it. A row's origin is not a permission.
+      // canManage is false when the fleet has no live GitHub session: the routes
+      // render so the operator can see what workers can reach, but every action
+      // is withheld — those endpoints act as the signed-in identity, and
       // offering a button that can only 401 is worse than saying why.
       function githubAppRows(g, canManage = true) {
         return (g.apps || []).flatMap((app) => {
@@ -4149,28 +4144,23 @@
           return installations.map((inst) => {
             const conflict = (g.conflicts || []).some((account) => account.toLowerCase() === inst.account.toLowerCase());
             const needsRegister = app.status === "needs-register";
-            const mirrored = app.source === "technocore";
             const key = [g.secretId, app.id, inst.id].map(value => encodeURIComponent(value)).join('-');
-            const next = mirrored || !canManage ? "" : needsRegister
+            const next = !canManage ? "" : needsRegister
               ? button("Create GitHub App", "github-connect", app.id, "small primary")
               : !app.installations?.length ? button("Install on an account", "github-install", app.id, "small primary") : "";
-            const maintenance = mirrored
-              ? `<div class="github-maintenance"><small>Managed on another gateway</small></div>`
-              : !canManage
+            const maintenance = !canManage
               ? `<div class="github-maintenance"><small>Sign in to manage</small></div>`
               : `<div class="github-maintenance"><button type="button" class="github-row-toggle small quiet" aria-expanded="false" aria-controls="github-repos-${key} github-actions-${key}" aria-label="Manage ${esc(app.name || app.slug || 'app')} on ${esc(inst.account)}">Manage app</button><div id="github-actions-${key}" class="actions" data-row-detail hidden>${!needsRegister && app.installations?.length ? button("Install on another account", "github-install", app.id, "small") : ""}${button("Replace credentials", "github-reconnect", app.id, "small")}${button("Refresh installations", "github-refresh", app.id, "small")}${button(conflict ? "Remove conflicting app" : "Remove app", "github-remove", app.id, "small danger")}</div></div>`;
-            return `<tr class="github-app-row${conflict ? ' github-conflict' : ''}" data-key="github-row-${key}"><td>${esc(inst.account)}<div id="github-repos-${key}" class="github-repositories" data-row-detail hidden>${inst.repos?.length ? inst.repos.map(repo => `<div>${esc(repo)}</div>`).join('') : '<small>No repositories listed</small>'}</div></td><td>${esc(app.name || app.slug)}<br><small>App ${esc(app.appId || "not registered")}${mirrored ? " · from another gateway" : ""}</small></td><td>${esc(inst.id)}</td><td>${badge(conflict ? "Ambiguous — blocked" : app.status, conflict || app.status !== "ok" ? "warn" : "good")}</td><td><div class="github-row-actions">${next}${maintenance}</div></td></tr>`;
+            return `<tr class="github-app-row${conflict ? ' github-conflict' : ''}" data-key="github-row-${key}"><td>${esc(inst.account)}<div id="github-repos-${key}" class="github-repositories" data-row-detail hidden>${inst.repos?.length ? inst.repos.map(repo => `<div>${esc(repo)}</div>`).join('') : '<small>No repositories listed</small>'}</div></td><td>${esc(app.name || app.slug)}<br><small>App ${esc(app.appId || "not registered")}</small></td><td>${esc(inst.id)}</td><td>${badge(conflict ? "Ambiguous — blocked" : app.status, conflict || app.status !== "ok" ? "warn" : "good")}</td><td><div class="github-row-actions">${next}${maintenance}</div></td></tr>`;
           });
         }).join("");
       }
       function githubMapping(g, canManage = true) {
         const scope = g.gatewayOnly ? "No workers" : !g.workers?.length || g.workers.includes("*") ? "All workers" : g.workers.join(", ");
-        const mirrored = (g.apps || []).some((app) => app.source === "technocore");
         return `<section class="github-mapping">
           <h3>${esc(g.name)}</h3>
           <div class="github-scope"><p><strong>Workers:</strong> ${esc(scope)}</p>${button("Edit worker scope", "secret-edit", g.secretId, "small")}</div>
           <details class="github-route-details" data-key="github-route-${esc(g.secretId)}"><summary>Routing details</summary>${facts([["Environment key", g.envKey], ["Placeholder", g.placeholder], ["Allowed hosts", g.allowedHosts]])}<p>Workers use the placeholder, not a real token. The gateway reads the account from the request URL or GraphQL variables and selects exactly one installation. Requests without an identifiable account require exactly one installation in this group. Missing or ambiguous routes are blocked; there is no default account.</p></details>
-          ${mirrored ? `<p class="notice" role="status">This connection was configured on another enrolled gateway. Its apps and installations are managed there; worker scope is set here.</p>` : ""}
           ${(g.conflicts || []).length ? `<div class="notice" role="status"><p>Routing blocked for ${esc(g.conflicts.join(", "))}. Highlighted rows map the same account more than once.</p><p>Remove a conflicting app, or change its installations on GitHub and refresh. Removing an app removes all of its routes from the gateway.</p></div>` : ""}
           ${(g.warnings || []).map((warning) => `<p class="notice" role="status">${esc(warning)}</p>`).join("")}
           <div class="github-table-scroll"><table class="github-routing-table"><caption class="sr-label">Account routes for ${esc(g.name)}</caption><colgroup><col style="width:25%"><col style="width:22%"><col style="width:12%"><col style="width:15%"><col style="width:26%"></colgroup><thead><tr><th scope="col">Account</th><th scope="col">App</th><th scope="col">Installation</th><th scope="col">Status</th><th scope="col">Actions</th></tr></thead><tbody>${githubAppRows(g, canManage) || '<tr><td colspan="5">No apps connected. Import an existing app or create one using the actions at the top of this page.</td></tr>'}</tbody></table></div>
@@ -4180,24 +4170,15 @@
         const github = data.githubUser || {};
         const groups = list("githubMappings");
         const setup = githubSetup(github, groups);
-        // Signed out is not a blank page. The routes below decide what workers
-        // can reach, so they stay visible read-only; the gate explains why no
-        // action is offered. A peer gateway fed by a shared connection has no
-        // local app at all, so hiding this behind a sign-in hid the feature.
+        // The session is one session for the whole fleet now, so every gateway
+        // shows the same thing. Signed out is not a blank page: the routes below
+        // decide what workers can reach, so they stay visible read-only and the
+        // gate explains why no action is offered.
         const canManage = !!github.connected;
-        // A connection shared from another enrolled gateway already works for
-        // this gateway's workers, and no OAuth App is needed to use it. Say
-        // that instead of opening with "configure sign-in", which reads as
-        // "nothing is connected here yet" and sends the operator to set up an
-        // OAuth App they do not need.
-        const shared = groups.some((g) => (g.apps || []).some((app) => app.source === "technocore"));
-        const configureGate = shared
-          ? `<section class="github-gate"><h3>Shared from another gateway</h3><p>This gateway holds connections configured on another enrolled gateway, and its workers can use them now. GitHub sign-in is not set up here; add an OAuth App only if you want to manage apps from this gateway.</p><div class="intro-actions">${button("Configure GitHub sign-in", "github-user-config", "", "quiet")}</div></section>`
-          : `<section class="empty github-gate"><h2>Configure GitHub sign-in</h2><p>Add a GitHub OAuth App (client ID and secret) once to enable dashboard sign-in. This does not grant workers repository access.</p><div class="intro-actions">${button("Configure GitHub sign-in", "github-user-config", "", "primary")}</div></section>`;
         const gate = canManage
           ? ""
           : !github.configured
-            ? configureGate
+            ? `<section class="empty github-gate"><h2>Configure GitHub sign-in</h2><p>Add a GitHub OAuth App (client ID and secret) once to enable dashboard sign-in. This does not grant workers repository access.</p><div class="intro-actions">${button("Configure GitHub sign-in", "github-user-config", "", "primary")}</div></section>`
             : `<section class="github-gate"><h3>Sign in to GitHub</h3><p>Sign in to manage your apps and installations. Signing out here does not stop existing worker access.</p><div class="intro-actions">${button("Sign in with GitHub", "github-user-authorize", "", "primary")}${button("Change OAuth App", "github-user-config", "", "quiet")}</div></section>`;
         const visible = groups.filter((g) => matches(JSON.stringify(g)));
         count(visible.length);

@@ -65,17 +65,11 @@ func TestDeleteGithubAppRecordKeepsGroupSecret(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if !st.GithubGroupManagedByPeer("tc_rid") {
-		t.Fatal("group not reported as peer-managed")
-	}
 	if err := st.DeleteGithubAppRecord("gha_tc_42"); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := st.SecretByID("tc_rid"); !ok {
-		t.Fatal("group secret removed with the mirrored app")
-	}
-	if st.GithubGroupManagedByPeer("tc_rid") {
-		t.Fatal("group still peer-managed after dropping the last mirror")
+		t.Fatal("group secret removed with the shared app")
 	}
 	// Removing the group itself is still a full delete.
 	if _, err := st.UpsertGithubApp(GithubAppRec{

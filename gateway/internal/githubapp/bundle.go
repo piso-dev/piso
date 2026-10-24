@@ -129,8 +129,9 @@ func DecodeBundle(plain string) (Bundle, error) {
 	return b, nil
 }
 
-// Recs converts a bundle into gateway records bound to secretID. Source marks
-// them as mirrors: only the gateway that created the app may edit it.
+// Recs converts a bundle into gateway records bound to secretID. Source records
+// that the app was last written on another gateway; it is provenance, not a
+// permission — any gateway may edit any app in the group.
 func (b Bundle) Recs(secretID, resourceID string, version int) []store.GithubAppRec {
 	out := make([]store.GithubAppRec, 0, len(b.Apps))
 	for _, app := range b.Apps {
@@ -156,9 +157,10 @@ func (b Bundle) Recs(secretID, resourceID string, version int) []store.GithubApp
 	return out
 }
 
-// MirroredAppID is the stable local id for an app imported from a peer. It is
-// derived from the GitHub App id so repeated syncs update one row instead of
-// piling up duplicates.
+// MirroredAppID is the deterministic local id for an app this gateway has only
+// ever seen in a bundle. It is derived from the GitHub App id so repeated syncs
+// land on one row instead of piling up duplicates; a gateway that configured the
+// app itself keeps its own id and the sync updates that row in place.
 func MirroredAppID(appID int64) string {
 	return fmt.Sprintf("gha_tc_%d", appID)
 }
