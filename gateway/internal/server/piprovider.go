@@ -306,11 +306,20 @@ func (s *Server) providerViewFor(p *store.PiProviderRec, fs profileFileState) pi
 	// gateway has no route to. Reporting "pending" would say the gateway is
 	// still asking, which it never will: the list is only ever as fresh as the
 	// last save, so name where it comes from instead.
-	if p.Kind == piProviderKindTinfoil {
+	if piProviderIsLocal(p) {
 		view.Catalog = "local"
 	}
 	rec, ok := s.secretForPiProvider(p.SecretID)
 	if !ok || !strings.HasPrefix(rec.Placeholder, model.PlaceholderPrefix) {
+		// The secret is not resolvable on this gateway right now. If the shared
+		// profile already carries a working placeholder for this provider, it
+		// is not unconfigured: it is applied and serving traffic while the
+		// secret syncs. Say that instead of warning about a missing secret.
+		if entry, present := fs.providers[p.ID]; present && strings.HasPrefix(entry.APIKey, model.PlaceholderPrefix) && entry.BaseURL == p.BaseURL {
+			view.Placeholder = entry.APIKey
+			view.Applied = true
+			return view
+		}
 		view.Warning = "selected secret is not on this gateway yet"
 		return view
 	}
@@ -387,12 +396,20 @@ func (s *Server) readSettingsDefault() (provider, model string, ok bool) {
 // with a warning rather than failing the write.
 func (s *Server) applyPiProviders() piProviderListView {
 	profiles := s.Store.PiProviderStack()
+	applied := s.readProfileFiles()
 	providers := make([]piprofile.Provider, 0, len(profiles))
 	warnings := []string{}
 	for i := range profiles {
 		p := &profiles[i]
 		rec, ok := s.secretForPiProvider(p.SecretID)
 		if !ok || !strings.HasPrefix(rec.Placeholder, model.PlaceholderPrefix) {
+			// Keep a provider that is already applied: models.json still
+			// carries a working placeholder, and dropping it here would break a
+			// provider that is serving traffic while its secret syncs.
+			if entry, present := applied.providers[p.ID]; present && strings.HasPrefix(entry.APIKey, model.PlaceholderPrefix) && entry.BaseURL == p.BaseURL {
+				providers = append(providers, piprofile.Provider{ID: p.ID, Name: p.Name, APIKey: entry.APIKey, BaseURL: p.BaseURL, API: p.APIType, Models: p.Models})
+				continue
+			}
 			warnings = append(warnings, fmt.Sprintf("%s: selected secret is not on this gateway yet", piProviderLabel(p)))
 			continue
 		}
@@ -565,14 +582,10 @@ func (s *Server) handleGetPiProviderModels(w http.ResponseWriter, r *http.Reques
 	if baseURL == "" && saved != nil {
 		baseURL = saved.BaseURL
 	}
-	// Only a saved record can say what kind a provider is. The add dialog
+	// Only a saved record can say whether the catalog is local. The add dialog
 	// never asks for a local one: it knows the catalog is unreachable and
 	// renders the explanation itself, so an unsaved request lands here as
 	// remote and simply fails to fetch.
-	kind := ""
-	if saved != nil {
-		kind = saved.Kind
-	}
 	if secretID == "" && saved != nil {
 		secretID = saved.SecretID
 	}
@@ -589,8 +602,9 @@ func (s *Server) handleGetPiProviderModels(w http.ResponseWriter, r *http.Reques
 	// only produce "connection refused" and a scary "catalog unavailable"
 	// badge for a provider that works: pi discovers /v1/models through its own
 	// proxy. Report the reason instead of failing, and leave the cached list
-	// untouched.
-	if kind == piProviderKindTinfoil {
+	// untouched. piProviderIsLocal also covers an older row saved before kind
+	// existed, which would otherwise look remote and fail here.
+	if piProviderIsLocal(saved) {
 		out := piProviderCatalog{Catalog: "local"}
 		if saved != nil && saved.BaseURL == baseURL {
 			out.Models = append([]string(nil), saved.Models...)
@@ -645,6 +659,17 @@ const (
 	piProviderKindRemote  = ""
 	piProviderKindTinfoil = "tinfoil"
 )
+
+// piProviderIsLocal reports whether a profile's catalog is served by a proxy
+// inside the worker rather than by this gateway. Kind is authoritative once
+// set; an older row saved before kind existed is recognized by the exact proxy
+// URL so it is not left stuck on "model list pending".
+func piProviderIsLocal(p *store.PiProviderRec) bool {
+	if p == nil {
+		return false
+	}
+	return p.Kind == piProviderKindTinfoil || (p.Kind == "" && p.BaseURL == tinfoilProxyBaseURL)
+}
 
 // tinfoilProxyBaseURL is the enclave proxy the worker starts on its own
 // loopback. pi reaches it because it runs in that same container; this gateway
