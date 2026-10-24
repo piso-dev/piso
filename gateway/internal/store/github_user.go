@@ -7,6 +7,10 @@ type GithubUserRec struct {
 	TokenSecretID  string `json:"tokenSecretId,omitempty"`
 	Login          string `json:"login,omitempty"`
 	AccountID      int64  `json:"accountId,omitempty"`
+	// Scopes is the space-separated scope list GitHub granted at sign-in.
+	// Empty means it was never recorded (an older connection); callers must
+	// treat that as unknown, not as "no scopes".
+	Scopes string `json:"scopes,omitempty"`
 }
 
 func (s *Store) GithubUser() GithubUserRec {

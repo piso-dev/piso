@@ -32,6 +32,18 @@ var errGithubUserSignIn = errors.New("sign in to GitHub first")
 // so a re-auth or a config re-save never leaves an orphan behind.
 const githubOAuthSecretKind = "github-oauth"
 
+// githubScopeGranted reports whether GitHub granted scope want. GitHub returns
+// the granted scopes as a space-separated list on the token exchange (and
+// comma-separated in some API responses), so accept either.
+func githubScopeGranted(granted, want string) bool {
+	for _, s := range strings.FieldsFunc(granted, func(r rune) bool { return r == ' ' || r == ',' }) {
+		if s == want {
+			return true
+		}
+	}
+	return false
+}
+
 func githubUserCallback() string { return githubAppPublicBase() + "/api/v1/github-user/callback" }
 
 func (s *Server) githubUserJSON(r *http.Request, path, token string, out any) error {
@@ -124,7 +136,14 @@ func (s *Server) registerGithubUser(mux *http.ServeMux) {
 		connected := identityErr == nil
 		secret, configured := s.Store.SecretByID(u.ClientSecretID)
 		configured = configured && secret.GatewayOnly && secret.Value != ""
-		writeJSON(w, 200, map[string]any{"configured": configured && u.ClientID != "", "connected": connected, "login": u.Login, "accountId": u.AccountID, "callbackUrl": githubUserCallback()})
+		// orgAccess is a tri-state: true/false once the granted scopes are
+		// known, null for an older connection that never recorded them. The
+		// dashboard must not warn about a missing scope it cannot see.
+		var orgAccess any
+		if strings.TrimSpace(u.Scopes) != "" {
+			orgAccess = githubScopeGranted(u.Scopes, "read:org")
+		}
+		writeJSON(w, 200, map[string]any{"configured": configured && u.ClientID != "", "connected": connected, "login": u.Login, "accountId": u.AccountID, "orgAccess": orgAccess, "callbackUrl": githubUserCallback()})
 	})
 	mux.HandleFunc("PUT /api/v1/github-user/config", func(w http.ResponseWriter, r *http.Request) {
 		var in struct {
@@ -280,11 +299,10 @@ func (s *Server) handleGithubUserCallback(w http.ResponseWriter, r *http.Request
 		http.Error(w, "GitHub token exchange failed", 502)
 		return
 	}
-	scopes := "," + strings.ReplaceAll(token.Scope, " ", ",") + ","
-	if !strings.Contains(scopes, ",read:org,") {
-		http.Error(w, "Organization discovery requires read:org; authorize again", 400)
-		return
-	}
+	// A missing read:org is not a failed sign-in. The token still identifies
+	// the person (read:user), and organization discovery is the only feature
+	// that needs read:org. Record the grant and let the dashboard explain how
+	// to widen it, instead of rejecting a valid login.
 	var identity githubIdentity
 	if s.githubUserJSON(r, "/user", token.AccessToken, &identity) != nil || identity.ID <= 0 || identity.Login == "" {
 		http.Error(w, "Could not verify GitHub identity", 502)
@@ -299,6 +317,7 @@ func (s *Server) handleGithubUserCallback(w http.ResponseWriter, r *http.Request
 	u.TokenSecretID = id
 	u.Login = identity.Login
 	u.AccountID = identity.ID
+	u.Scopes = token.Scope
 	if s.Store.SetGithubUser(u) != nil {
 		http.Error(w, "Could not save GitHub connection", 500)
 		return
@@ -324,6 +343,13 @@ func (s *Server) githubOwnedOrgs(r *http.Request) ([]githubIdentity, error) {
 	tok, ok := s.githubUserToken()
 	if !ok {
 		return nil, fmt.Errorf("sign in to GitHub first")
+	}
+	// If the recorded grant is known to lack read:org, say how to fix it
+	// rather than surfacing a bare 403 from the memberships API. An empty
+	// scope list means an older connection: fall through and let GitHub answer.
+	u := s.Store.GithubUser()
+	if strings.TrimSpace(u.Scopes) != "" && !githubScopeGranted(u.Scopes, "read:org") {
+		return nil, fmt.Errorf("organization discovery needs the read:org scope; re-authorize and grant organization access, and if an organization blocks third-party apps an owner must approve this OAuth App under Organization settings → Third-party access")
 	}
 	out := []githubIdentity{}
 	for page := 1; ; page++ {
