@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"piso/gateway/internal/githubapp"
+	"piso/gateway/internal/model"
 	"piso/gateway/internal/store"
 	tc "piso/internal/technocore"
 )
@@ -308,25 +310,97 @@ func syncSecrets(st *store.Store, dataDir string, id tc.Identity) error {
 // the deletion instead of inferring it from silence.
 const statusRevoked = "revoked"
 
+// appliedEnvelope reports what an envelope did to the vault, so the GitHub App
+// mirror can follow it: a github-app row carries the app bundle in its sealed
+// plaintext instead of a credential.
+type appliedEnvelope struct {
+	RowID   string
+	Kind    string
+	Plain   string
+	Applied bool
+}
+
+// applyEnvelope writes the vault row, then materialises any GitHub Apps the
+// envelope carried. App mirroring is best effort: a bundle this gateway cannot
+// parse must not block the secret row itself.
 func applyEnvelope(st *store.Store, id tc.Identity, obj envelope) (string, error) {
+	res, err := applySecretEnvelope(st, id, obj)
+	if err != nil {
+		return "", err
+	}
+	if res.Kind == model.SecretKindGithubApp {
+		applySharedGithubApps(st, obj, res)
+	}
+	return res.RowID, nil
+}
+
+// applySharedGithubApps rebuilds this gateway's copy of a peer's GitHub Apps.
+// Mirrored records are read-only and always follow the envelope; apps
+// configured here win, so a gateway that runs both never loses its own PEM to
+// an older peer.
+func applySharedGithubApps(st *store.Store, obj envelope, res appliedEnvelope) {
+	if obj.Status == statusRevoked {
+		for _, app := range st.GithubAppsBySecretID(res.RowID) {
+			if !app.Mirrored() {
+				continue
+			}
+			if err := st.DeleteGithubAppRecord(app.ID); err != nil {
+				log.Printf("technocore: drop mirrored app %s: %v", app.ID, err)
+			}
+		}
+		return
+	}
+	if !res.Applied {
+		return
+	}
+	bundle, err := githubapp.DecodeBundle(res.Plain)
+	if err != nil {
+		log.Printf("technocore: github app bundle for %s: %v", res.RowID, err)
+		return
+	}
+	wanted := make(map[int64]bool, len(bundle.Apps))
+	for _, rec := range bundle.Recs(res.RowID, obj.ResourceID, obj.ContentVersion) {
+		wanted[rec.AppID] = true
+		if existing, ok := st.GithubAppByAppID(rec.AppID); ok {
+			if existing.SecretID != res.RowID || !existing.Mirrored() {
+				// Connected on this gateway (or under another group): local wins.
+				continue
+			}
+			rec.ID = existing.ID
+			rec.CreatedAt = existing.CreatedAt
+		}
+		if _, err := st.UpsertGithubApp(rec); err != nil {
+			log.Printf("technocore: mirror app %d: %v", rec.AppID, err)
+		}
+	}
+	for _, app := range st.GithubAppsBySecretID(res.RowID) {
+		if app.Mirrored() && !wanted[app.AppID] {
+			if err := st.DeleteGithubAppRecord(app.ID); err != nil {
+				log.Printf("technocore: drop mirrored app %s: %v", app.ID, err)
+			}
+		}
+	}
+}
+
+func applySecretEnvelope(st *store.Store, id tc.Identity, obj envelope) (appliedEnvelope, error) {
 	if obj.Algorithm != "" && obj.Algorithm != tc.EnvelopeAlg {
-		return "", fmt.Errorf("unsupported algorithm %q", obj.Algorithm)
+		return appliedEnvelope{}, fmt.Errorf("unsupported algorithm %q", obj.Algorithm)
 	}
 	ct, err := base64.StdEncoding.DecodeString(obj.Ciphertext)
 	if err != nil {
-		return "", err
+		return appliedEnvelope{}, err
 	}
 	nonce, err := base64.StdEncoding.DecodeString(obj.Nonce)
 	if err != nil {
-		return "", err
+		return appliedEnvelope{}, err
 	}
 	wrap, err := base64.StdEncoding.DecodeString(obj.WrappedDataKey)
 	if err != nil {
-		return "", err
+		return appliedEnvelope{}, err
 	}
 	plaintext, err := tc.OpenEnvelope(id, wrap, nonce, ct)
 	if err != nil {
-		return "", err
+		return appliedEnvelope{}, err
 	}
 	gatewayOnly, _ := obj.Metadata["gatewayOnly"].(bool)
 	// The subtype ("telegram", ...) rides in metadata: the coordinator stores
@@ -350,6 +424,10 @@ func applyEnvelope(st *store.Store, id tc.Identity, obj envelope) (string, error
 	secretID := "tc_" + obj.ResourceID
 	plain := string(plaintext)
 	hash := plaintextHash(plain)
+	// A github-app envelope carries the app bundle, not a credential: the vault
+	// row stays empty so the PEM is never revealed by the secret UI, and the
+	// content_version alone decides which copy is authoritative.
+	sharesApps := kind == model.SecretKindGithubApp
 
 	local, found := matchLocalSecret(st, obj.ResourceID, secretID, placeholder, plain)
 	if found {
@@ -358,23 +436,27 @@ func applyEnvelope(st *store.Store, id tc.Identity, obj envelope) (string, error
 			// the local copy is strictly ahead, which means this envelope is
 			// stale.
 			if obj.ContentVersion >= local.ContentVersion {
-				return local.ID, st.RevokeSecret(local.ID, obj.ContentVersion)
+				return appliedEnvelope{RowID: local.ID, Kind: kind, Applied: true}, st.RevokeSecret(local.ID, obj.ContentVersion)
 			}
-			return local.ID, nil
+			return appliedEnvelope{RowID: local.ID, Kind: kind}, nil
 		}
 		if obj.ContentVersion < local.ContentVersion {
 			// Never roll a newer local copy back.
-			return local.ID, nil
+			return appliedEnvelope{RowID: local.ID, Kind: kind}, nil
 		}
-		if obj.ContentVersion == local.ContentVersion && (local.Value != plain || local.Revoked) {
+		if !sharesApps && obj.ContentVersion == local.ContentVersion && (local.Value != plain || local.Revoked) {
 			// Same version, different bytes: the coordinator has not seen a
 			// write at this version, so the local copy is an edit that has not
 			// been published yet. Keep it; publishAllSecrets resolves the race.
-			return local.ID, nil
+			return appliedEnvelope{RowID: local.ID, Kind: kind}, nil
 		}
 		// The coordinator's version is authoritative, so the plaintext and the
 		// worker-facing flags come from the envelope either way.
 		local.Value = plain
+		if sharesApps {
+			// The bundle lives in the app records below, not in the vault.
+			local.Value = ""
+		}
 		if len(hosts) > 0 || len(local.AllowedHosts) == 0 {
 			// An envelope with no host list must not erase a binding this
 			// gateway already knows: destination binding is now mandatory, and
@@ -404,9 +486,12 @@ func applyEnvelope(st *store.Store, id tc.Identity, obj envelope) (string, error
 		}
 		local.ContentVersion = obj.ContentVersion
 		if err := st.ReplaceSecret(local); err != nil {
-			return "", err
+			return appliedEnvelope{}, err
 		}
-		return local.ID, st.SyncRulesForSecret(local)
+		if err := st.SyncRulesForSecret(local); err != nil {
+			return appliedEnvelope{RowID: local.ID, Kind: kind, Plain: plain, Applied: true}, err
+		}
+		return appliedEnvelope{RowID: local.ID, Kind: kind, Plain: plain, Applied: true}, nil
 	}
 
 	rec := store.SecretRec{
@@ -427,10 +512,16 @@ func applyEnvelope(st *store.Store, id tc.Identity, obj envelope) (string, error
 		rec.Value = ""
 		rec.Revoked = true
 	}
-	if err := st.AddSecret(rec); err != nil {
-		return "", err
+	if rec.Kind == model.SecretKindGithubApp {
+		rec.Value = ""
 	}
-	return rec.ID, st.SyncRulesForSecret(rec)
+	if err := st.AddSecret(rec); err != nil {
+		return appliedEnvelope{}, err
+	}
+	if err := st.SyncRulesForSecret(rec); err != nil {
+		return appliedEnvelope{RowID: rec.ID, Kind: kind, Plain: plain, Applied: true}, err
+	}
+	return appliedEnvelope{RowID: rec.ID, Kind: kind, Plain: plain, Applied: true}, nil
 }
 
 // matchLocalSecret finds a vault row that is the same coordinator secret:

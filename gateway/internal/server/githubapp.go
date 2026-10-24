@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -12,6 +13,8 @@ import (
 	"piso/gateway/internal/githubapp"
 	"piso/gateway/internal/model"
 	"piso/gateway/internal/store"
+	"piso/gateway/internal/technocore"
+	tc "piso/internal/technocore"
 )
 
 const githubAppLabel = "github-app"
@@ -46,6 +49,24 @@ func githubAppHomepage() string {
 
 func (s *Server) githubClient() *githubapp.Client {
 	return githubapp.NewClient(s.httpClient())
+}
+
+// errGithubAppMirrored rejects edits to an app this gateway did not configure.
+// A mirror follows the origin gateway's envelope; editing it here would be
+// silently overwritten on the next sync.
+var errGithubAppMirrored = fmt.Errorf("this GitHub connection was configured on another gateway; manage it there")
+
+// publishGithubGroup pushes routing groups to the other enrolled gateways now
+// instead of waiting for the reconcile pass, so a freshly created or installed
+// app is usable everywhere within seconds. Best effort: an unenrolled gateway
+// and a coordinator hiccup must not fail the dashboard action.
+func (s *Server) publishGithubGroup() {
+	if id, err := tc.Load(tc.Path(s.dataDir())); err != nil || id.Status != tc.StatusActive {
+		return
+	}
+	if err := technocore.PublishNow(s.Store, s.dataDir()); err != nil {
+		log.Printf("github-app: publish: %v", err)
+	}
 }
 
 func (s *Server) registerGithubApp(mux *http.ServeMux) {
@@ -136,6 +157,7 @@ func (s *Server) handlePutGithubApp(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 500, map[string]string{"error": err.Error()})
 		return
 	}
+	s.publishGithubGroup()
 	s.replayGithub(r, saved)
 	writeJSON(w, 200, saved.ToSummary())
 }
@@ -172,8 +194,16 @@ func (s *Server) handleImportGithubApp(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 	}
+	if rec.ID != "" && rec.Mirrored() {
+		writeJSON(w, 409, map[string]string{"error": errGithubAppMirrored.Error()})
+		return
+	}
 	if rec.ID != "" && in.SecretID != "" && rec.SecretID != in.SecretID {
 		writeJSON(w, 409, map[string]string{"error": "this app is already connected under a different access secret"})
+		return
+	}
+	if in.SecretID != "" && s.Store.GithubGroupManagedByPeer(in.SecretID) {
+		writeJSON(w, 409, map[string]string{"error": errGithubAppMirrored.Error()})
 		return
 	}
 	createdSecret := false
@@ -211,6 +241,7 @@ func (s *Server) handleImportGithubApp(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 500, map[string]string{"error": err.Error()})
 		return
 	}
+	s.publishGithubGroup()
 	s.replayGithub(r, saved)
 	writeJSON(w, 200, saved.ToSummary())
 }
@@ -229,6 +260,16 @@ func (s *Server) handleGithubManifest(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeJSON(w, 401, map[string]string{"error": err.Error()})
 		return
+	}
+	if in.SecretID != "" && s.Store.GithubGroupManagedByPeer(in.SecretID) {
+		writeJSON(w, 409, map[string]string{"error": errGithubAppMirrored.Error()})
+		return
+	}
+	if in.ID != "" {
+		if app, ok := s.Store.GithubAppByID(in.ID); ok && app.Mirrored() {
+			writeJSON(w, 409, map[string]string{"error": errGithubAppMirrored.Error()})
+			return
+		}
 	}
 	owner := identity
 	if !strings.EqualFold(in.Account, identity.Login) {
@@ -332,6 +373,10 @@ func (s *Server) handleAddGithubInstallation(w http.ResponseWriter, r *http.Requ
 		writeJSON(w, 400, map[string]string{"error": "id and account required"})
 		return
 	}
+	if rec.Mirrored() {
+		writeJSON(w, 409, map[string]string{"error": errGithubAppMirrored.Error()})
+		return
+	}
 	rec = upsertInstallation(rec, store.GithubInstallation{
 		ID: in.ID, Account: strings.ToLower(strings.TrimSpace(in.Account)), AccountType: in.AccountType,
 	})
@@ -340,6 +385,7 @@ func (s *Server) handleAddGithubInstallation(w http.ResponseWriter, r *http.Requ
 		writeJSON(w, 500, map[string]string{"error": err.Error()})
 		return
 	}
+	s.publishGithubGroup()
 	s.replayGithub(r, saved)
 	writeJSON(w, 200, saved.ToSummary())
 }
@@ -353,6 +399,10 @@ func (s *Server) handleDeleteGithubInstallation(w http.ResponseWriter, r *http.R
 	iid, err := strconv.ParseInt(r.PathValue("iid"), 10, 64)
 	if err != nil {
 		writeJSON(w, 400, map[string]string{"error": "bad installation id"})
+		return
+	}
+	if rec.Mirrored() {
+		writeJSON(w, 409, map[string]string{"error": errGithubAppMirrored.Error()})
 		return
 	}
 	out := rec.Installations[:0]
@@ -380,6 +430,10 @@ func (s *Server) handleRefreshGithubApp(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, 400, map[string]string{"error": "app not registered"})
 		return
 	}
+	if rec.Mirrored() {
+		writeJSON(w, 409, map[string]string{"error": errGithubAppMirrored.Error()})
+		return
+	}
 	cli := s.githubClient()
 	fresh, err := cli.Discover(r.Context(), rec)
 	if err != nil {
@@ -403,13 +457,50 @@ func (s *Server) handleRefreshGithubApp(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, 500, map[string]string{"error": err.Error()})
 		return
 	}
+	s.publishGithubGroup()
 	writeJSON(w, 200, saved.ToSummary())
 }
 
+// revokeSharedGithubGroup tombstones a published routing group so the other
+// gateways drop their mirrors. Deleting only the local rows would leave every
+// peer minting against an app that no longer exists here until its first 401.
+func (s *Server) revokeSharedGithubGroup(sec store.SecretRec) {
+	if sec.TechnocoreID == "" {
+		return
+	}
+	if id, err := tc.Load(tc.Path(s.dataDir())); err != nil || id.Status != tc.StatusActive {
+		return
+	}
+	if _, err := technocore.Revoke(s.dataDir(), sec.TechnocoreID, sec.ContentVersion); err != nil {
+		log.Printf("github-app: revoke %s: %v", sec.TechnocoreID, err)
+	}
+}
+
 func (s *Server) handleDeleteGithubApp(w http.ResponseWriter, r *http.Request) {
-	if err := s.Store.DeleteGithubApp(r.PathValue("id")); err != nil {
+	rec, ok := s.Store.GithubAppByID(r.PathValue("id"))
+	if !ok {
+		writeJSON(w, 404, map[string]string{"error": "not found"})
+		return
+	}
+	if rec.Mirrored() {
+		writeJSON(w, 409, map[string]string{"error": errGithubAppMirrored.Error()})
+		return
+	}
+	// Removing the last app takes the routing group with it (see
+	// store.DeleteGithubApp), which is a revocation for every peer; removing one
+	// of several apps just republishes the smaller group.
+	sec, hasSec := s.Store.SecretByID(rec.SecretID)
+	lastInGroup := len(s.Store.GithubAppsBySecretID(rec.SecretID)) <= 1
+	if err := s.Store.DeleteGithubApp(rec.ID); err != nil {
 		writeJSON(w, 500, map[string]string{"error": err.Error()})
 		return
+	}
+	if lastInGroup {
+		if hasSec {
+			s.revokeSharedGithubGroup(sec)
+		}
+	} else {
+		s.publishGithubGroup()
 	}
 	w.WriteHeader(204)
 }
@@ -453,6 +544,7 @@ func (s *Server) handleGithubManifestCallback(w http.ResponseWriter, r *http.Req
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	s.publishGithubGroup()
 	next, err := s.githubInstallAddress(rec)
 	if err != nil {
 		http.Error(w, "could not start installation", http.StatusInternalServerError)
@@ -487,6 +579,7 @@ func (s *Server) handleGithubSetupCallback(w http.ResponseWriter, r *http.Reques
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	s.publishGithubGroup()
 	s.replayGithub(r, saved)
 	http.Redirect(w, r, githubAppHomepage()+"/#github", http.StatusFound)
 }
