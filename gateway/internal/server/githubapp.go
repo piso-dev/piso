@@ -56,16 +56,18 @@ func (s *Server) githubClient() *githubapp.Client {
 // silently overwritten on the next sync.
 var errGithubAppMirrored = fmt.Errorf("this GitHub connection was configured on another gateway; manage it there")
 
-// publishGithubGroup pushes routing groups to the other enrolled gateways now
-// instead of waiting for the reconcile pass, so a freshly created or installed
-// app is usable everywhere within seconds. Best effort: an unenrolled gateway
-// and a coordinator hiccup must not fail the dashboard action.
-func (s *Server) publishGithubGroup() {
+// publishShared pushes this gateway's shared material to the other enrolled
+// gateways now instead of waiting for the reconcile pass: routing groups, so a
+// freshly created or installed app is usable everywhere within seconds, and the
+// dashboard GitHub sign-in, so a person signs in once for the account. Best
+// effort: an unenrolled gateway and a coordinator hiccup must not fail the
+// dashboard action.
+func (s *Server) publishShared() {
 	if id, err := tc.Load(tc.Path(s.dataDir())); err != nil || id.Status != tc.StatusActive {
 		return
 	}
 	if err := technocore.PublishNow(s.Store, s.dataDir()); err != nil {
-		log.Printf("github-app: publish: %v", err)
+		log.Printf("shared: publish: %v", err)
 	}
 }
 
@@ -157,7 +159,7 @@ func (s *Server) handlePutGithubApp(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 500, map[string]string{"error": err.Error()})
 		return
 	}
-	s.publishGithubGroup()
+	s.publishShared()
 	s.replayGithub(r, saved)
 	writeJSON(w, 200, saved.ToSummary())
 }
@@ -241,7 +243,7 @@ func (s *Server) handleImportGithubApp(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 500, map[string]string{"error": err.Error()})
 		return
 	}
-	s.publishGithubGroup()
+	s.publishShared()
 	s.replayGithub(r, saved)
 	writeJSON(w, 200, saved.ToSummary())
 }
@@ -385,7 +387,7 @@ func (s *Server) handleAddGithubInstallation(w http.ResponseWriter, r *http.Requ
 		writeJSON(w, 500, map[string]string{"error": err.Error()})
 		return
 	}
-	s.publishGithubGroup()
+	s.publishShared()
 	s.replayGithub(r, saved)
 	writeJSON(w, 200, saved.ToSummary())
 }
@@ -457,7 +459,7 @@ func (s *Server) handleRefreshGithubApp(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, 500, map[string]string{"error": err.Error()})
 		return
 	}
-	s.publishGithubGroup()
+	s.publishShared()
 	writeJSON(w, 200, saved.ToSummary())
 }
 
@@ -500,7 +502,7 @@ func (s *Server) handleDeleteGithubApp(w http.ResponseWriter, r *http.Request) {
 			s.revokeSharedGithubGroup(sec)
 		}
 	} else {
-		s.publishGithubGroup()
+		s.publishShared()
 	}
 	w.WriteHeader(204)
 }
@@ -544,7 +546,7 @@ func (s *Server) handleGithubManifestCallback(w http.ResponseWriter, r *http.Req
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	s.publishGithubGroup()
+	s.publishShared()
 	next, err := s.githubInstallAddress(rec)
 	if err != nil {
 		http.Error(w, "could not start installation", http.StatusInternalServerError)
@@ -579,7 +581,7 @@ func (s *Server) handleGithubSetupCallback(w http.ResponseWriter, r *http.Reques
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	s.publishGithubGroup()
+	s.publishShared()
 	s.replayGithub(r, saved)
 	http.Redirect(w, r, githubAppHomepage()+"/#github", http.StatusFound)
 }

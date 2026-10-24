@@ -65,9 +65,12 @@ func TestGithubMirroredAppIsReadOnly(t *testing.T) {
 }
 
 // The mapping view tells the dashboard which apps it may not edit.
+// Deliberately signed out: a gateway holding a connection from a peer has no
+// local app and usually no local OAuth App either, and this view is what tells
+// the operator (and the dashboard's read-only rows) that the connection is
+// there. Signing in gates actions, not visibility.
 func TestGithubMappingsReportAppSource(t *testing.T) {
 	s := testServer(t)
-	signInGithubUser(t, s)
 	mirrorGroup(t, s)
 	if _, err := s.Store.UpsertGithubApp(store.GithubAppRec{
 		ID: "gha_local", SecretID: "tc_rid", Source: store.GithubAppSourceLocal,

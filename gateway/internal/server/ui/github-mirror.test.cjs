@@ -31,6 +31,12 @@ const mirrored = {
   }],
 };
 
+const localGroup = {
+  ...mirrored,
+  secretId: 'sec_local2',
+  apps: [{ id: 'gha_local2', appId: 44, name: 'piso-local', status: 'ok', source: 'local', installations: [{ id: 10, account: 'acme' }] }],
+};
+
 const local = {
   ...mirrored,
   secretId: 'sec_local',
@@ -73,4 +79,89 @@ test('local group shows no peer notice', () => {
   const context = harness();
   const html = vm.runInContext(`githubMapping(${JSON.stringify(local)})`, context);
   assert.equal(html.includes('another enrolled gateway'), false);
+});
+
+// A gateway whose only connection arrived from a peer must not be walked
+// through "configure sign-in → connect an app → install": none of that work
+// belongs to it. The read-only rows and their scope editor are the whole page.
+test('peer-only gateway shows no first-connection walkthrough', () => {
+  const context = harness();
+  vm.runInContext(slice('function githubSetup(', 'function setGithubRowExpanded('), context);
+  const signedOut = { configured: false, connected: false };
+  assert.equal(vm.runInContext(`githubSetup(${JSON.stringify(signedOut)}, ${JSON.stringify([mirrored])})`, context), '');
+  // A gateway with its own app still gets the walkthrough.
+  assert.notEqual(vm.runInContext(`githubSetup(${JSON.stringify(signedOut)}, ${JSON.stringify([local])})`, context), '');
+  // No connections at all keeps the empty walkthrough.
+  assert.notEqual(vm.runInContext(`githubSetup(${JSON.stringify(signedOut)}, [])`, context), '');
+});
+
+// The peer opens on "shared", not on "configure sign-in": the connection works
+// for its workers and no OAuth App is needed to use it.
+test('peer gateway without an OAuth app says the connection is shared', () => {
+  const document = new JSDOM('<div id="content"></div><span id="resultCount"></span>', { url: 'http://piso.local' }).window.document;
+  const context = {
+    document,
+    $: (s) => document.querySelector(s),
+    data: { githubUser: { configured: false, connected: false }, githubMappings: [mirrored] },
+    list: (key) => [mirrored],
+    matches: () => true,
+    count: () => {},
+    replaceContent: (html) => { document.querySelector('#content').innerHTML = html; },
+    esc: v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])),
+    empty: (t, d) => `<section class="empty"><h2>${t}</h2><p>${d}</p></section>`,
+    bindGithubRows: () => {},
+    button: (label, action, id) => `<button data-action="${action}" data-id="${id ?? ''}">${label}</button>`,
+    badge: (t) => `<span>${t}</span>`,
+    facts: () => '',
+    notify: () => {},
+  };
+  vm.createContext(context);
+  vm.runInContext(slice('function githubSetup(', 'function renderTelegram('), context);
+  vm.runInContext('renderGithub("")', context);
+  const html = document.querySelector('#content').innerHTML;
+  assert.match(html, /Shared from another gateway/);
+  assert.doesNotMatch(html, /Configure GitHub sign-in<\/h2>/);
+  assert.match(html, /its workers can use them now/);
+  // A gateway with nothing at all still gets the first-connection gate.
+  const fresh = { ...context, data: { githubUser: { configured: false, connected: false }, githubMappings: [] }, list: () => [] };
+  vm.createContext(fresh);
+  vm.runInContext(slice('function githubSetup(', 'function renderTelegram('), fresh);
+  vm.runInContext('renderGithub("")', fresh);
+  assert.match(fresh.document.querySelector('#content').innerHTML, /Configure GitHub sign-in<\/h2>/);
+});
+
+// The sign-in itself is shared too, and signing out is global. The page says
+// both instead of implying the session is local to this gateway.
+test('shared sign-in says where it came from and that sign-out is global', () => {
+  const document = new JSDOM('<div id="content"></div><span id="resultCount"></span>', { url: 'http://piso.local' }).window.document;
+  const context = {
+    document,
+    $: (s) => document.querySelector(s),
+    data: { githubUser: { configured: true, connected: true, login: 'octocat', source: 'technocore' }, githubMappings: [mirrored] },
+    list: (key) => (key === 'githubMappings' ? [mirrored] : []),
+    matches: () => true,
+    count: () => {},
+    replaceContent: (html) => { document.querySelector('#content').innerHTML = html; },
+    esc: v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])),
+    empty: (t, d) => `<section class="empty"><h2>${t}</h2><p>${d}</p></section>`,
+    bindGithubRows: () => {},
+    button: (label, action, id) => `<button data-action="${action}" data-id="${id ?? ''}">${label}</button>`,
+    badge: (t) => `<span>${t}</span>`,
+    facts: () => '',
+    notify: () => {},
+    confirmAction: () => {},
+  };
+  vm.createContext(context);
+  vm.runInContext(slice('function githubSetup(', 'function renderTelegram('), context);
+  vm.runInContext('renderGithub("")', context);
+  const html = document.querySelector('#content').innerHTML;
+  assert.match(html, /signed in on another gateway/);
+  assert.match(html, /Signing out here signs out every gateway/);
+  // A locally started session carries no "another gateway" annotation.
+  const local = { ...context, data: { githubUser: { configured: true, connected: true, login: 'octocat', source: 'local' }, githubMappings: [localGroup] }, list: () => [localGroup] };
+  vm.createContext(local);
+  vm.runInContext(slice('function githubSetup(', 'function renderTelegram('), local);
+  vm.runInContext('renderGithub("")', local);
+  const localHtml = local.document.querySelector('#content').innerHTML;
+  assert.equal(localHtml.includes('signed in on another gateway'), false);
 });

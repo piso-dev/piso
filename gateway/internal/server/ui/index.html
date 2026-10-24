@@ -4108,6 +4108,11 @@
       };
       function githubSetup(github, groups) {
         const apps = groups.flatMap((g) => g.apps || []);
+        // Every connection here arrived from another enrolled gateway, so the
+        // app, the install and the sign-in all belong to the origin. Walking
+        // this gateway through "configure sign-in" would point at work it does
+        // not own.
+        if (apps.length && apps.every((app) => app.source === "technocore")) return "";
         const registered = apps.some((app) => app.appId && app.status !== "needs-register");
         const installed = apps.some((app) => app.status === "ok" && app.installations?.length);
         // First-connection progress, not the health of every app. Do not use
@@ -4134,7 +4139,11 @@
       // An app mirrored from another enrolled gateway is read-only here: the
       // origin gateway republishes the group on every change, so an edit made
       // locally would be silently reverted. Worker scope stays local.
-      function githubAppRows(g) {
+      // canManage is false when this browser has no live GitHub session: the
+      // routes render so the operator can see what workers can reach, but every
+      // action is withheld — those endpoints need the signed-in identity, and
+      // offering a button that can only 401 is worse than saying why.
+      function githubAppRows(g, canManage = true) {
         return (g.apps || []).flatMap((app) => {
           const installations = app.installations?.length ? app.installations : [{ account: "Not installed", id: "—" }];
           return installations.map((inst) => {
@@ -4142,17 +4151,19 @@
             const needsRegister = app.status === "needs-register";
             const mirrored = app.source === "technocore";
             const key = [g.secretId, app.id, inst.id].map(value => encodeURIComponent(value)).join('-');
-            const next = mirrored ? "" : needsRegister
+            const next = mirrored || !canManage ? "" : needsRegister
               ? button("Create GitHub App", "github-connect", app.id, "small primary")
               : !app.installations?.length ? button("Install on an account", "github-install", app.id, "small primary") : "";
             const maintenance = mirrored
               ? `<div class="github-maintenance"><small>Managed on another gateway</small></div>`
+              : !canManage
+              ? `<div class="github-maintenance"><small>Sign in to manage</small></div>`
               : `<div class="github-maintenance"><button type="button" class="github-row-toggle small quiet" aria-expanded="false" aria-controls="github-repos-${key} github-actions-${key}" aria-label="Manage ${esc(app.name || app.slug || 'app')} on ${esc(inst.account)}">Manage app</button><div id="github-actions-${key}" class="actions" data-row-detail hidden>${!needsRegister && app.installations?.length ? button("Install on another account", "github-install", app.id, "small") : ""}${button("Replace credentials", "github-reconnect", app.id, "small")}${button("Refresh installations", "github-refresh", app.id, "small")}${button(conflict ? "Remove conflicting app" : "Remove app", "github-remove", app.id, "small danger")}</div></div>`;
             return `<tr class="github-app-row${conflict ? ' github-conflict' : ''}" data-key="github-row-${key}"><td>${esc(inst.account)}<div id="github-repos-${key}" class="github-repositories" data-row-detail hidden>${inst.repos?.length ? inst.repos.map(repo => `<div>${esc(repo)}</div>`).join('') : '<small>No repositories listed</small>'}</div></td><td>${esc(app.name || app.slug)}<br><small>App ${esc(app.appId || "not registered")}${mirrored ? " · from another gateway" : ""}</small></td><td>${esc(inst.id)}</td><td>${badge(conflict ? "Ambiguous — blocked" : app.status, conflict || app.status !== "ok" ? "warn" : "good")}</td><td><div class="github-row-actions">${next}${maintenance}</div></td></tr>`;
           });
         }).join("");
       }
-      function githubMapping(g) {
+      function githubMapping(g, canManage = true) {
         const scope = g.gatewayOnly ? "No workers" : !g.workers?.length || g.workers.includes("*") ? "All workers" : g.workers.join(", ");
         const mirrored = (g.apps || []).some((app) => app.source === "technocore");
         return `<section class="github-mapping">
@@ -4162,20 +4173,32 @@
           ${mirrored ? `<p class="notice" role="status">This connection was configured on another enrolled gateway. Its apps and installations are managed there; worker scope is set here.</p>` : ""}
           ${(g.conflicts || []).length ? `<div class="notice" role="status"><p>Routing blocked for ${esc(g.conflicts.join(", "))}. Highlighted rows map the same account more than once.</p><p>Remove a conflicting app, or change its installations on GitHub and refresh. Removing an app removes all of its routes from the gateway.</p></div>` : ""}
           ${(g.warnings || []).map((warning) => `<p class="notice" role="status">${esc(warning)}</p>`).join("")}
-          <div class="github-table-scroll"><table class="github-routing-table"><caption class="sr-label">Account routes for ${esc(g.name)}</caption><colgroup><col style="width:25%"><col style="width:22%"><col style="width:12%"><col style="width:15%"><col style="width:26%"></colgroup><thead><tr><th scope="col">Account</th><th scope="col">App</th><th scope="col">Installation</th><th scope="col">Status</th><th scope="col">Actions</th></tr></thead><tbody>${githubAppRows(g) || '<tr><td colspan="5">No apps connected. Import an existing app or create one using the actions at the top of this page.</td></tr>'}</tbody></table></div>
+          <div class="github-table-scroll"><table class="github-routing-table"><caption class="sr-label">Account routes for ${esc(g.name)}</caption><colgroup><col style="width:25%"><col style="width:22%"><col style="width:12%"><col style="width:15%"><col style="width:26%"></colgroup><thead><tr><th scope="col">Account</th><th scope="col">App</th><th scope="col">Installation</th><th scope="col">Status</th><th scope="col">Actions</th></tr></thead><tbody>${githubAppRows(g, canManage) || '<tr><td colspan="5">No apps connected. Import an existing app or create one using the actions at the top of this page.</td></tr>'}</tbody></table></div>
         </section>`;
       }
       function renderGithub(intro) {
         const github = data.githubUser || {};
         const groups = list("githubMappings");
         const setup = githubSetup(github, groups);
-        if (!github.connected) {
-          count(0);
-          const gate = !github.configured
-            ? `<section class="empty github-gate"><h2>Configure GitHub sign-in</h2><p>Add a GitHub OAuth App (client ID and secret) once to enable dashboard sign-in. This does not grant workers repository access.</p><div class="intro-actions">${button("Configure GitHub sign-in", "github-user-config", "", "primary")}</div></section>`
+        // Signed out is not a blank page. The routes below decide what workers
+        // can reach, so they stay visible read-only; the gate explains why no
+        // action is offered. A peer gateway fed by a shared connection has no
+        // local app at all, so hiding this behind a sign-in hid the feature.
+        const canManage = !!github.connected;
+        // A connection shared from another enrolled gateway already works for
+        // this gateway's workers, and no OAuth App is needed to use it. Say
+        // that instead of opening with "configure sign-in", which reads as
+        // "nothing is connected here yet" and sends the operator to set up an
+        // OAuth App they do not need.
+        const shared = groups.some((g) => (g.apps || []).some((app) => app.source === "technocore"));
+        const configureGate = shared
+          ? `<section class="github-gate"><h3>Shared from another gateway</h3><p>This gateway holds connections configured on another enrolled gateway, and its workers can use them now. GitHub sign-in is not set up here; add an OAuth App only if you want to manage apps from this gateway.</p><div class="intro-actions">${button("Configure GitHub sign-in", "github-user-config", "", "quiet")}</div></section>`
+          : `<section class="empty github-gate"><h2>Configure GitHub sign-in</h2><p>Add a GitHub OAuth App (client ID and secret) once to enable dashboard sign-in. This does not grant workers repository access.</p><div class="intro-actions">${button("Configure GitHub sign-in", "github-user-config", "", "primary")}</div></section>`;
+        const gate = canManage
+          ? ""
+          : !github.configured
+            ? configureGate
             : `<section class="github-gate"><h3>Sign in to GitHub</h3><p>Sign in to manage your apps and installations. Signing out here does not stop existing worker access.</p><div class="intro-actions">${button("Sign in with GitHub", "github-user-authorize", "", "primary")}${button("Change OAuth App", "github-user-config", "", "quiet")}</div></section>`;
-          return replaceContent(intro + setup + gate);
-        }
         const visible = groups.filter((g) => matches(JSON.stringify(g)));
         count(visible.length);
         // A token can be valid for personal use without read:org. Say so and
@@ -4185,11 +4208,19 @@
           github.connected && github.orgAccess === false
             ? `<p class="notice" role="status">GitHub did not grant <code>read:org</code>, so organization-owned apps are hidden. Re-authorize and accept the organization access prompt. If an organization blocks third-party apps, an owner must approve this OAuth App under Organization settings → Third-party access. ${button("Re-authorize with organization access", "github-user-authorize", "", "small")}</p>`
             : "";
-        const signedIn = `<div class="github-session"><p>Managing apps${github.login ? ` as <strong>${esc(github.login)}</strong>` : ""}</p>${button("Sign out", "github-user-signout", "", "small quiet")}</div>`;
+        // A session signed in on another enrolled gateway is the same account
+        // session everywhere: show where it came from, and say plainly that
+        // signing out ends it for every gateway.
+        const sharedSession = github.source === "technocore";
+        const signedIn = `<div class="github-session"><p>Managing apps${github.login ? ` as <strong>${esc(github.login)}</strong>` : ""}${sharedSession ? " <small>· signed in on another gateway</small>" : ""}</p>${button("Sign out", "github-user-signout", "", "small quiet")}</div>${
+          sharedSession
+            ? `<p class="notice" role="status">You signed in on another enrolled gateway; this gateway uses the same GitHub account session. Signing out here signs out every gateway, because it is one session.</p>`
+            : ""
+        }`;
         const emptyState = groups.length
           ? empty("No matching access groups", "Try another search to see your connected apps.")
           : empty("Connect your first app", "Create a GitHub App or import an existing one using the actions above. Each access group gives workers one placeholder that can route to multiple account installations.");
-        replaceContent(intro + setup + orgNotice + signedIn + (visible.map(githubMapping).join("") || emptyState));
+        replaceContent(intro + setup + gate + orgNotice + signedIn + (visible.map((g) => githubMapping(g, canManage)).join("") || emptyState));
         bindGithubRows();
       }
       // renderTelegram is the Access > Telegram tab. The gateway holds the bot
@@ -5024,14 +5055,22 @@
         openExternal(new URL("/api/v1/github-user/authorize", callback).href);
       }
 
-      async function githubUserStop() {
-        try {
-          await api("github-user", "DELETE");
-          await changed(["githubUser"]);
-          notify("Signed out of GitHub.");
-        } catch (error) {
-          notify(error.message, true);
-        }
+      function githubUserStop() {
+        // The session is shared with every enrolled gateway, so sign-out is
+        // global. Ask once, saying so, instead of surprising someone on the
+        // machine they were not using.
+        confirmAction(
+          "Sign out of GitHub?",
+          (data.githubUser?.source === "technocore"
+            ? "This is the session you started on another enrolled gateway. "
+            : "The session is shared with every enrolled gateway. ") +
+            "Signing out ends it everywhere; app installations keep working for workers either way.",
+          "Sign out",
+          async () => {
+            await api("github-user", "DELETE");
+            await changed(["githubUser"]);
+          },
+        );
       }
 
       function providerCard(p) {
