@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -25,6 +26,20 @@ type remoteGateway struct {
 	Status           string `json:"status"`
 	EncryptionPubKey string `json:"encryption_pubkey"`
 	Fingerprint      string `json:"fingerprint"`
+}
+
+// StaleError reports that the coordinator refused a write because another
+// gateway published a newer content_version first. It is not a failure: the
+// writer pulls the snapshot it missed and re-applies its change on top, so two
+// gateways editing different apps in one group never lose each other's work.
+type StaleError struct{ Detail string }
+
+func (e *StaleError) Error() string { return "stale content version: " + e.Detail }
+
+// Stale reports whether err is a lost version race.
+func Stale(err error) bool {
+	var stale *StaleError
+	return errors.As(err, &stale)
 }
 
 // ShareInput is a secret to wrap for enrolled gateways.
@@ -119,6 +134,12 @@ func shareWith(id tc.Identity, gateways []remoteGateway, in ShareInput, method, 
 	defer res.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
 	if res.StatusCode != 201 && res.StatusCode != 200 {
+		if res.StatusCode == http.StatusConflict {
+			// The coordinator already has a newer version: another gateway
+			// wrote first. Not a failure — the caller pulls and retries on top
+			// of what it published.
+			return nil, nil, &StaleError{Detail: string(raw)}
+		}
 		return nil, nil, fmt.Errorf("share HTTP %d: %s", res.StatusCode, raw)
 	}
 	var out map[string]any
@@ -164,13 +185,15 @@ func PublishNow(st *store.Store, dataDir string) error {
 
 // sharePlaintext is what actually travels in the envelope. A github-app
 // routing group has no vault value: the credential is the app record, so the
-// apps are serialized into a bundle and that JSON is sealed instead. Groups
-// mirrored from a peer are skipped — the origin gateway owns them, and
-// republishing a mirror would fight it for content_version.
+// apps are serialized into a bundle and that JSON is sealed instead.
+//
+// Every enrolled gateway may publish: whoever writes last wins, version-ordered
+// by the coordinator. A gateway publishing what it received re-encodes the same
+// bytes, so the content hash matches its stored one and reconcile skips it.
 func sharePlaintext(st *store.Store, rec store.SecretRec) (string, bool) {
 	if rec.Revoked {
 		// A tombstone stays a tombstone: republishing it would resurrect
-		// something the origin gateway deleted.
+		// something a gateway deleted.
 		return "", false
 	}
 	switch rec.Kind {
@@ -181,18 +204,10 @@ func sharePlaintext(st *store.Store, rec store.SecretRec) (string, bool) {
 		// coordinator for nothing.
 		return "", false
 	case model.SecretKindGithubUser:
-		// The sign-in that lets someone manage apps. Only the gateway where the
-		// person signed in publishes it, and only through the row it created:
-		// a mirror is skipped, exactly like a mirrored app group, so two
-		// gateways never fight over content_version. The check is per row
-		// because one gateway can hold both its own session and a peer's.
+		// The sign-in that lets someone manage apps, shared so a person signs
+		// in once for the account. Any gateway may publish it: signing in
+		// anywhere replaces the session everywhere.
 		u := st.GithubUser()
-		if u.SourceOrLocal() == store.GithubUserSourceTechnocore {
-			return "", false
-		}
-		if u.BundleID != "" && rec.ID != u.BundleID {
-			return "", false
-		}
 		token, ok := secretValue(st, u.TokenSecretID)
 		if !ok {
 			// Signed out, or a half-written session: nothing to share.
@@ -216,17 +231,10 @@ func sharePlaintext(st *store.Store, rec store.SecretRec) (string, bool) {
 		return rec.Value, rec.Value != ""
 	}
 	apps := st.GithubAppsBySecretID(rec.ID)
-	local := make([]store.GithubAppRec, 0, len(apps))
-	for _, app := range apps {
-		if app.Mirrored() {
-			return "", false
-		}
-		local = append(local, app)
-	}
-	if len(local) == 0 {
+	if len(apps) == 0 {
 		return "", false
 	}
-	bundle, err := githubapp.EncodeBundle(local)
+	bundle, err := githubapp.EncodeBundle(apps)
 	if err != nil {
 		// Unregistered apps (no PEM yet) have nothing to share; the next
 		// reconcile pass after registration publishes the bundle.
@@ -363,6 +371,9 @@ func Revoke(dataDir, resourceID string, baseVersion int) (int, error) {
 	defer res.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
 	if res.StatusCode != 200 {
+		if res.StatusCode == http.StatusConflict {
+			return 0, &StaleError{Detail: string(raw)}
+		}
 		return 0, fmt.Errorf("revoke HTTP %d: %s", res.StatusCode, raw)
 	}
 	var out struct {

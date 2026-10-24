@@ -44,8 +44,8 @@ func sharedApp(t *testing.T) string {
 }
 
 // A routing group arrives from a peer as a bundle: the vault row stays empty
-// (workers must never see the PEM) and the apps are materialised as read-only
-// mirrors that can mint.
+// (workers must never see the PEM) and the apps are materialised locally so
+// they can mint.
 func TestApplyEnvelopeMirrorsSharedGithubApp(t *testing.T) {
 	st := testStore(t)
 	seedAppGroup(t, st)
@@ -70,8 +70,8 @@ func TestApplyEnvelopeMirrorsSharedGithubApp(t *testing.T) {
 	if !ok {
 		t.Fatal("app not mirrored")
 	}
-	if !app.Mirrored() || app.SecretID != "tc_rid" || app.PrivateKey == "" {
-		t.Fatalf("mirror: %+v", app)
+	if app.Source != store.GithubAppSourceTechnocore || app.SecretID != "tc_rid" || app.PrivateKey == "" {
+		t.Fatalf("applied app: %+v", app)
 	}
 	if app.Status() != store.GithubAppStatusOK {
 		t.Fatalf("status: %s", app.Status())
@@ -84,9 +84,6 @@ func TestApplyEnvelopeMirrorsSharedGithubApp(t *testing.T) {
 	views := st.GithubAppViews()
 	if v, ok := views["piso_github_abc"]; !ok || !v.HasPEM {
 		t.Fatalf("policy view: %+v", views)
-	}
-	if !st.GithubGroupManagedByPeer("tc_rid") {
-		t.Fatal("group not marked peer-managed")
 	}
 }
 
@@ -113,8 +110,9 @@ func TestApplyEnvelopeUpdatesMirrorInPlace(t *testing.T) {
 	}
 }
 
-// An app configured on this gateway is never replaced by a peer's copy.
-func TestApplyEnvelopeKeepsLocalApp(t *testing.T) {
+// The envelope is authoritative: an app edited on another gateway replaces this
+// gateway's copy, and keeps this gateway's row id so links to it stay valid.
+func TestApplyEnvelopeOverwritesLocalAppInPlace(t *testing.T) {
 	st := testStore(t)
 	seedAppGroup(t, st)
 	if _, err := st.UpsertGithubApp(store.GithubAppRec{
@@ -129,14 +127,68 @@ func TestApplyEnvelopeKeepsLocalApp(t *testing.T) {
 	if _, err := applyEnvelope(st, id, appEnvelope(t, id, "rid", "piso_github_abc", sharedApp(t), 3)); err != nil {
 		t.Fatal(err)
 	}
-	app, _ := st.GithubAppByAppID(42)
-	if app.Mirrored() || app.PrivateKey != "local-pem" {
-		t.Fatalf("local app overwritten: %+v", app)
+	app, ok := st.GithubAppByAppID(42)
+	if !ok {
+		t.Fatal("app vanished")
+	}
+	if app.PrivateKey == "local-pem" {
+		t.Fatalf("peer edit did not apply: %+v", app)
+	}
+	if app.ID != "gha_local" {
+		t.Fatalf("row id churned: %s", app.ID)
+	}
+	if apps := st.GithubAppsBySecretID("tc_rid"); len(apps) != 1 {
+		t.Fatalf("duplicated rows: %+v", apps)
 	}
 }
 
-// A revoked group must drop its mirrors, or peers keep minting against a
-// deleted app until the first 401.
+// An app minted here and not yet published — including one still mid-manifest —
+// is not in the bundle yet, so a pull must not delete it.
+func TestApplyEnvelopeKeepsUnpublishedLocalApp(t *testing.T) {
+	st := testStore(t)
+	seedAppGroup(t, st)
+	if _, err := st.UpsertGithubApp(store.GithubAppRec{
+		ID: "gha_pending", SecretID: "tc_rid", Name: "piso-new", ManifestState: "nonce",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	id, err := tc.Generate("https://s", "gw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := applyEnvelope(st, id, appEnvelope(t, id, "rid", "piso_github_abc", sharedApp(t), 3)); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := st.GithubAppByID("gha_pending"); !ok {
+		t.Fatal("in-flight app dropped by a pull")
+	}
+}
+
+// An app removed on another gateway disappears here too: the bundle is the
+// whole group at that version.
+func TestApplyEnvelopeDropsAppRemovedElsewhere(t *testing.T) {
+	st := testStore(t)
+	seedAppGroup(t, st)
+	id, err := tc.Generate("https://s", "gw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.UpsertGithubApp(store.GithubAppRec{
+		ID: "gha_old", SecretID: "tc_rid", AppID: 43, Name: "gone", PrivateKey: "pem",
+		Source: store.GithubAppSourceTechnocore, ContentVersion: 2,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := applyEnvelope(st, id, appEnvelope(t, id, "rid", "piso_github_abc", sharedApp(t), 3)); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := st.GithubAppByAppID(43); ok {
+		t.Fatal("app removed elsewhere survived")
+	}
+}
+
+// A revoked group must drop its apps everywhere, or gateways keep minting
+// against a deleted app until the first 401.
 func TestApplyEnvelopeRevokedGithubAppDropsMirrors(t *testing.T) {
 	st := testStore(t)
 	seedAppGroup(t, st)
@@ -153,7 +205,7 @@ func TestApplyEnvelopeRevokedGithubAppDropsMirrors(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, ok := st.GithubAppByAppID(42); ok {
-		t.Fatal("mirror survived revocation")
+		t.Fatal("app survived revocation")
 	}
 }
 
@@ -177,8 +229,9 @@ func TestApplyEnvelopeIgnoresNonBundleGithubSecret(t *testing.T) {
 	}
 }
 
-// Peer groups are never republished: the origin gateway owns them.
-func TestSharePlaintextSkipsMirroredGroup(t *testing.T) {
+// A group that arrived from a peer is republished like any other: the envelope
+// is authoritative, not the gateway that happens to hold it.
+func TestSharePlaintextPublishesReceivedGroup(t *testing.T) {
 	st := testStore(t)
 	seedAppGroup(t, st)
 	id, err := tc.Generate("https://s", "gw")
@@ -189,8 +242,13 @@ func TestSharePlaintextSkipsMirroredGroup(t *testing.T) {
 		t.Fatal(err)
 	}
 	sec, _ := st.SecretByID("tc_rid")
-	if _, ok := sharePlaintext(st, sec); ok {
-		t.Fatal("republished a mirrored group")
+	plain, ok := sharePlaintext(st, sec)
+	if !ok {
+		t.Fatal("received group not republished")
+	}
+	b, err := githubapp.DecodeBundle(plain)
+	if err != nil || len(b.Apps) != 1 || b.Apps[0].AppID != 42 {
+		t.Fatalf("bundle: %+v %v", b, err)
 	}
 }
 
@@ -218,5 +276,30 @@ func TestSharePlaintextEncodesLocalGroup(t *testing.T) {
 	b, err := githubapp.DecodeBundle(plain)
 	if err != nil || len(b.Apps) != 1 || b.Apps[0].AppID != 42 {
 		t.Fatalf("bundle: %+v %v", b, err)
+	}
+}
+
+// An install flow started here is not part of the bundle, so a sync that lands
+// between the click and GitHub's callback must not drop its nonce.
+func TestApplyEnvelopeKeepsLocalInstallState(t *testing.T) {
+	st := testStore(t)
+	seedAppGroup(t, st)
+	expires := time.Now().Add(10 * time.Minute)
+	if _, err := st.UpsertGithubApp(store.GithubAppRec{
+		ID: "gha_local", SecretID: "tc_rid", AppID: 42, PrivateKey: "local-pem",
+		InstallState: "nonce-123", StateExpires: expires,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	id, err := tc.Generate("https://s", "gw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := applyEnvelope(st, id, appEnvelope(t, id, "rid", "piso_github_abc", sharedApp(t), 3)); err != nil {
+		t.Fatal(err)
+	}
+	app, _ := st.GithubAppByAppID(42)
+	if app.InstallState != "nonce-123" || !app.StateExpires.Equal(expires) {
+		t.Fatalf("install flow dropped: %+v", app)
 	}
 }
