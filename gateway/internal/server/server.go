@@ -220,6 +220,12 @@ func (s *Server) routes(mux *http.ServeMux) {
 		recs := s.Store.Secrets()
 		out := make([]model.SecretSummary, 0, len(recs))
 		for _, rc := range recs {
+			// The shared GitHub sign-in is a transport row: it carries the
+			// session between enrolled gateways and holds no value of its own,
+			// so it is not a vault entry anyone can edit or delete.
+			if rc.Kind == model.SecretKindGithubUser {
+				continue
+			}
 			out = append(out, storeRecToSummary(rc))
 		}
 		writeJSON(w, 200, out)

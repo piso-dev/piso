@@ -105,6 +105,16 @@ func DecodeBundle(plain string) (Bundle, error) {
 	if err := json.Unmarshal([]byte(trimmed), &b); err != nil {
 		return Bundle{}, fmt.Errorf("github app: bad bundle: %w", err)
 	}
+	// A github-user bundle (the dashboard sign-in) rides the same envelope
+	// channel. Reading one as a group with zero apps would prune every mirror,
+	// so the two shapes are kept apart on their discriminating fields.
+	var probe struct {
+		Token string `json:"token"`
+		Login string `json:"login"`
+	}
+	if json.Unmarshal([]byte(trimmed), &probe) == nil && (probe.Token != "" || probe.Login != "") {
+		return Bundle{}, fmt.Errorf("github app: not a bundle")
+	}
 	if b.V == 0 || b.V > BundleVersion {
 		return Bundle{}, fmt.Errorf("github app: unsupported bundle version %d", b.V)
 	}
