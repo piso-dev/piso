@@ -1,7 +1,9 @@
 package technocore
 
 import (
+	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -328,10 +330,136 @@ func applyEnvelope(st *store.Store, id tc.Identity, obj envelope) (string, error
 	if err != nil {
 		return "", err
 	}
-	if res.Kind == model.SecretKindGithubApp {
+	switch res.Kind {
+	case model.SecretKindGithubApp:
 		applySharedGithubApps(st, obj, res)
+	case model.SecretKindGithubUser:
+		// The dashboard sign-in that lets someone manage apps, shared so a
+		// person signs in once for the whole account instead of once per
+		// gateway.
+		if obj.Status == statusRevoked {
+			clearSharedGithubUser(st)
+		} else {
+			applySharedGithubUser(st, obj, res)
+		}
 	}
 	return res.RowID, nil
+}
+
+// applySharedGithubUser materializes a peer's GitHub sign-in as this gateway's
+// own gateway-only rows, so every existing reader (status, authorize,
+// verifiedGithubUser) works unchanged. A session signed in here wins: signing
+// in on this gateway must not be reverted by the peer that was shared first.
+func applySharedGithubUser(st *store.Store, obj envelope, res appliedEnvelope) {
+	if !res.Applied {
+		return
+	}
+	u := st.GithubUser()
+	if u.SourceOrLocal() != store.GithubUserSourceTechnocore && u.TokenSecretID != "" {
+		if _, ok := secretValue(st, u.TokenSecretID); ok {
+			return
+		}
+	}
+	if u.SourceOrLocal() == store.GithubUserSourceTechnocore && obj.ContentVersion < u.ContentVersion {
+		// Never roll a newer shared session back to an older one.
+		return
+	}
+	bundle, err := githubapp.DecodeUserBundle(res.Plain)
+	if err != nil {
+		log.Printf("technocore: github sign-in bundle for %s: %v", res.RowID, err)
+		return
+	}
+	// The token and client secret are stored as ordinary gateway-only rows on
+	// this gateway, reusing this gateway's existing rows so a resync updates
+	// them instead of accumulating copies.
+	clientSecretID := upsertGithubOAuthRow(st, u.ClientSecretID, "GitHub OAuth client secret", bundle.ClientSecret)
+	tokenID := upsertGithubOAuthRow(st, u.TokenSecretID, "GitHub user OAuth — gateway only", bundle.Token)
+	if tokenID == "" {
+		log.Printf("technocore: could not store shared GitHub sign-in %s", res.RowID)
+		return
+	}
+	next := store.GithubUserRec{
+		ClientID:       bundle.ClientID,
+		ClientSecretID: clientSecretID,
+		TokenSecretID:  tokenID,
+		Login:          bundle.Login,
+		AccountID:      bundle.AccountID,
+		Scopes:         bundle.Scopes,
+		Source:         store.GithubUserSourceTechnocore,
+		TechnocoreID:   obj.ResourceID,
+		ContentVersion: obj.ContentVersion,
+		BundleID:       res.RowID,
+	}
+	if err := st.SetGithubUser(next); err != nil {
+		log.Printf("technocore: store shared GitHub sign-in: %v", err)
+	}
+}
+
+// localID returns a short random suffix for a materialized row.
+func localID() string {
+	b := make([]byte, 6)
+	if _, err := rand.Read(b); err != nil {
+		return fmt.Sprintf("%d", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(b)
+}
+
+// upsertGithubOAuthRow writes one part of a shared sign-in, replacing the row
+// this gateway already used when it exists. An empty value (a bundle from a
+// gateway that never had the client secret) leaves the rows alone.
+func upsertGithubOAuthRow(st *store.Store, id, name, value string) string {
+	if value == "" {
+		return id
+	}
+	if rec, ok := st.SecretByID(id); ok && rec.Kind == model.SecretKindGithubOAuth && !rec.Revoked {
+		rec.Value = value
+		rec.GatewayOnly = true
+		if err := st.ReplaceSecret(rec); err == nil {
+			return rec.ID
+		}
+	}
+	rec := store.SecretRec{
+		ID:          "sec_" + localID(),
+		Name:        name,
+		Kind:        model.SecretKindGithubOAuth,
+		Placeholder: "piso_github_oauth_" + localID(),
+		Value:       value,
+		GatewayOnly: true,
+		CreatedAt:   time.Now().UTC(),
+	}
+	if err := st.AddSecret(rec); err != nil {
+		log.Printf("technocore: store github-oauth %s: %v", name, err)
+		return ""
+	}
+	return rec.ID
+}
+
+// clearSharedGithubUser drops a shared sign-in that the origin revoked, so
+// signing out on one gateway signs out everywhere.
+func clearSharedGithubUser(st *store.Store) {
+	u := st.GithubUser()
+	if u.SourceOrLocal() != store.GithubUserSourceTechnocore {
+		// Signed in here: the person still has their own session, and the
+		// tombstone only tells us the shared copy is gone.
+		return
+	}
+	if u.TokenSecretID != "" {
+		_ = st.DeleteSecret(u.TokenSecretID)
+	}
+	if u.ClientSecretID != "" && u.ClientSecretID != u.TokenSecretID {
+		_ = st.DeleteSecret(u.ClientSecretID)
+	}
+	// Drop the mirrored transport row as well: its coordinator resource is the
+	// tombstone this envelope carries, so keeping it would only hand the next
+	// sign-in a dead row to republish into.
+	for _, rec := range st.Secrets() {
+		if rec.Kind == model.SecretKindGithubUser && rec.TechnocoreID == u.TechnocoreID {
+			_ = st.DeleteSecret(rec.ID)
+		}
+	}
+	if err := st.SetGithubUser(store.GithubUserRec{}); err != nil {
+		log.Printf("technocore: clear shared GitHub sign-in: %v", err)
+	}
 }
 
 // applySharedGithubApps rebuilds this gateway's copy of a peer's GitHub Apps.
@@ -427,7 +555,10 @@ func applySecretEnvelope(st *store.Store, id tc.Identity, obj envelope) (applied
 	// A github-app envelope carries the app bundle, not a credential: the vault
 	// row stays empty so the PEM is never revealed by the secret UI, and the
 	// content_version alone decides which copy is authoritative.
-	sharesApps := kind == model.SecretKindGithubApp
+	// Kinds whose plaintext is a structured bundle rather than a credential:
+	// the vault row stays empty (the materialized records hold the material)
+	// and a same-version mismatch is not a local edit to preserve.
+	sharesApps := kind == model.SecretKindGithubApp || kind == model.SecretKindGithubUser
 
 	local, found := matchLocalSecret(st, obj.ResourceID, secretID, placeholder, plain)
 	if found {
@@ -512,7 +643,7 @@ func applySecretEnvelope(st *store.Store, id tc.Identity, obj envelope) (applied
 		rec.Value = ""
 		rec.Revoked = true
 	}
-	if rec.Kind == model.SecretKindGithubApp {
+	if rec.Kind == model.SecretKindGithubApp || rec.Kind == model.SecretKindGithubUser {
 		rec.Value = ""
 	}
 	if err := st.AddSecret(rec); err != nil {

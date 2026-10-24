@@ -169,9 +169,48 @@ func PublishNow(st *store.Store, dataDir string) error {
 // republishing a mirror would fight it for content_version.
 func sharePlaintext(st *store.Store, rec store.SecretRec) (string, bool) {
 	if rec.Revoked {
-		// A tombstone stays a tombstone: republishing its apps would resurrect
-		// a connection the origin gateway deleted.
+		// A tombstone stays a tombstone: republishing it would resurrect
+		// something the origin gateway deleted.
 		return "", false
+	}
+	switch rec.Kind {
+	case model.SecretKindGithubOAuth:
+		// One half of a sign-in. It reaches other gateways inside the
+		// github-user bundle, materialized there as a local row; publishing it
+		// here would put a second, unlinked copy of the token at the
+		// coordinator for nothing.
+		return "", false
+	case model.SecretKindGithubUser:
+		// The sign-in that lets someone manage apps. Only the gateway where the
+		// person signed in publishes it, and only through the row it created:
+		// a mirror is skipped, exactly like a mirrored app group, so two
+		// gateways never fight over content_version. The check is per row
+		// because one gateway can hold both its own session and a peer's.
+		u := st.GithubUser()
+		if u.SourceOrLocal() == store.GithubUserSourceTechnocore {
+			return "", false
+		}
+		if u.BundleID != "" && rec.ID != u.BundleID {
+			return "", false
+		}
+		token, ok := secretValue(st, u.TokenSecretID)
+		if !ok {
+			// Signed out, or a half-written session: nothing to share.
+			return "", false
+		}
+		clientSecret, _ := secretValue(st, u.ClientSecretID)
+		bundle, err := githubapp.EncodeUserBundle(githubapp.UserBundle{
+			ClientID:     u.ClientID,
+			ClientSecret: clientSecret,
+			Token:        token,
+			Login:        u.Login,
+			AccountID:    u.AccountID,
+			Scopes:       u.Scopes,
+		})
+		if err != nil {
+			return "", false
+		}
+		return bundle, true
 	}
 	if rec.Kind != model.SecretKindGithubApp {
 		return rec.Value, rec.Value != ""
@@ -194,6 +233,19 @@ func sharePlaintext(st *store.Store, rec store.SecretRec) (string, bool) {
 		return "", false
 	}
 	return bundle, true
+}
+
+// secretValue reads a gateway-only row's plaintext, reporting false when the
+// row is missing, empty, or revoked.
+func secretValue(st *store.Store, id string) (string, bool) {
+	if id == "" {
+		return "", false
+	}
+	rec, ok := st.SecretByID(id)
+	if !ok || rec.Revoked || rec.Value == "" {
+		return "", false
+	}
+	return rec.Value, true
 }
 
 // publishAllSecrets reconciles every local secret that has a value with
