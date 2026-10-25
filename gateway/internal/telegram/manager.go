@@ -535,6 +535,33 @@ func (m *Manager) SendText(ctx context.Context, chatID int64, text string) error
 	return NewClient(m.HTTP).SendMessage(ctx, rec.Value, chatID, text)
 }
 
+// SendStatus writes one chat's live activity line and returns the id to edit on
+// the next call. A status line follows a turn rather than narrating it: the
+// first call sends, every later call edits the same message, so a tool-heavy
+// turn does not flood the chat with one message per step. messageID 0 sends a
+// fresh message; an edit that Telegram refuses (the message was deleted, or it
+// is too old to edit) falls back to sending, so the line can never wedge.
+func (m *Manager) SendStatus(ctx context.Context, chatID int64, text string, messageID int64) (int64, error) {
+	rec, ok := m.bot()
+	if !ok {
+		return 0, errors.New("no telegram bot token is stored")
+	}
+	c := NewClient(m.HTTP)
+	if messageID > 0 {
+		err := c.EditMessageText(ctx, rec.Value, chatID, messageID, text)
+		if err == nil {
+			return messageID, nil
+		}
+		// Telegram rejects an edit that would not change the text. That is the
+		// normal outcome of a throttled flush, not a failure worth a new message.
+		var apiErr *APIError
+		if errors.As(err, &apiErr) && apiErr.Code == 400 && strings.Contains(apiErr.Description, "not modified") {
+			return messageID, nil
+		}
+	}
+	return c.SendMessageID(ctx, rec.Value, chatID, text)
+}
+
 // IssueClaim mints a claim code. One code is outstanding at a time: issuing a
 // new one invalidates the previous, so the dashboard only ever shows one. Once
 // the bot is published the coordinator owns the code, so any gateway's

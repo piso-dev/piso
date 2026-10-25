@@ -187,3 +187,55 @@ func (s *Server) handleWorkerReply(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, 200, map[string]bool{"ok": true})
 }
+
+// handleWorkerStatus writes the supervisor's live activity line into a chat: a
+// short "what pi is doing right now" message that is edited in place, so a
+// turn with twenty tool calls still reads like one line of progress rather
+// than twenty notifications. The gates are the reply route's, because a status
+// line is still the bot speaking: live supervisor, allowed chat, real token.
+func (s *Server) handleWorkerStatus(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Worker    string `json:"worker"`
+		ChatID    int64  `json:"chatId"`
+		Text      string `json:"text"`
+		MessageID int64  `json:"messageId"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeJSON(w, 400, map[string]string{"error": "bad json"})
+		return
+	}
+	in.Worker = strings.TrimSpace(in.Worker)
+	in.Text = strings.TrimSpace(in.Text)
+	if !workerNameRe.MatchString(in.Worker) {
+		writeJSON(w, 400, map[string]string{"error": "worker required"})
+		return
+	}
+	if in.Text == "" {
+		writeJSON(w, 400, map[string]string{"error": "text required"})
+		return
+	}
+	if !s.workerIdentityOK(w, r, in.Worker) {
+		return
+	}
+	if !s.liveSupervisor(in.Worker) {
+		writeJSON(w, 409, map[string]string{"error": "not the supervisor"})
+		return
+	}
+	if _, ok := s.Store.TelegramAllowed(in.ChatID); !ok {
+		writeJSON(w, 403, map[string]string{"error": "chat is not in the allow-list"})
+		return
+	}
+	if s.Telegram == nil {
+		writeJSON(w, 409, map[string]string{"error": "no telegram bot is connected"})
+		return
+	}
+	if len(in.Text) > telegramMessageMax {
+		in.Text = in.Text[:telegramMessageMax]
+	}
+	id, err := s.Telegram.SendStatus(r.Context(), in.ChatID, in.Text, in.MessageID)
+	if err != nil {
+		writeJSON(w, 502, map[string]string{"error": "telegram is unreachable right now"})
+		return
+	}
+	writeJSON(w, 200, map[string]any{"ok": true, "messageId": id})
+}
