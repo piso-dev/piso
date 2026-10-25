@@ -205,7 +205,12 @@ func (s *Server) registerGithubUser(mux *http.ServeMux) {
 		// source tells the dashboard whether this session was signed in here or
 		// arrived from another enrolled gateway. Either way it is one account
 		// session, and signing out is global.
-		writeJSON(w, 200, map[string]any{"configured": configured && u.ClientID != "", "connected": connected, "login": u.Login, "accountId": u.AccountID, "orgAccess": orgAccess, "source": u.SourceOrLocal(), "callbackUrl": githubUserCallback()})
+		//
+		// clientId is the OAuth App's public identifier (it is already visible in
+		// the authorize URL), returned so the configuration dialog can show which
+		// app is in use instead of opening blank. The client secret stays in the
+		// vault and is never returned.
+		writeJSON(w, 200, map[string]any{"configured": configured && u.ClientID != "", "connected": connected, "login": u.Login, "accountId": u.AccountID, "clientId": u.ClientID, "orgAccess": orgAccess, "source": u.SourceOrLocal(), "callbackUrl": githubUserCallback()})
 	})
 	mux.HandleFunc("PUT /api/v1/github-user/config", func(w http.ResponseWriter, r *http.Request) {
 		var in struct {
