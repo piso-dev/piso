@@ -11,7 +11,7 @@ function harness(t) {
  t.after(() => dom.window.close());
  const calls = [], opened = [];
  const context = { document:dom.window.document, window:dom.window, URL, FormData:dom.window.FormData,
-  $: s => dom.window.document.querySelector(s), data:{githubUser:{configured:true, connected:true, callbackUrl:'http://127.0.0.1:8080/api/v1/github-user/callback'}},
+  $: s => dom.window.document.querySelector(s), data:{githubUser:{configured:true, connected:true, clientId:'Iv1.abc', callbackUrl:'http://127.0.0.1:8080/api/v1/github-user/callback'}},
   dialogBusy:false, notify:()=>{}, closeDialog:()=>{}, changed:async()=>{},
   mountDialog: (title, body) => { dom.window.document.querySelector('#dialogBody').innerHTML = body; },
   openExternal: url => opened.push(url), safeURL: url => url || '',
@@ -72,6 +72,10 @@ test('OAuth setup shows exact callback and submits required gateway-only configu
  assert.equal(link.target, '_blank');
  assert.match(link.rel, /noopener/);
  const clientId = h.document.querySelector('[name="clientId"]');
+ // The dialog must show which OAuth App is in use: an unconfigured-looking
+ // blank field is indistinguishable from a broken connection.
+ assert.equal(clientId.value, 'Iv1.abc');
+ assert.equal(h.document.querySelector('[name="clientSecret"]').value, '', 'the secret is never echoed back');
  assert.ok(link.compareDocumentPosition(clientId) & h.window.Node.DOCUMENT_POSITION_FOLLOWING);
  assert.equal(clientId.type, 'text');
  assert.equal(clientId.autocomplete, 'off');
