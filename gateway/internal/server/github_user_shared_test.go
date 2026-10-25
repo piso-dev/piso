@@ -49,6 +49,14 @@ func TestGithubSignInStatusFollowsSharedSession(t *testing.T) {
 	if out["login"] != "octocat" || out["source"] != store.GithubUserSourceTechnocore {
 		t.Fatalf("identity: %v", out)
 	}
+	// The dashboard's OAuth App dialog shows which app is in use; without the
+	// id it opens blank, which looks like a broken connection.
+	if out["clientId"] != "Iv1.abc" {
+		t.Fatalf("client id for the config dialog: %v", out)
+	}
+	if _, ok := out["clientSecret"]; ok {
+		t.Fatalf("client secret must never be returned: %v", out)
+	}
 	if out["orgAccess"] != true {
 		t.Fatalf("scopes not shared: %v", out)
 	}
