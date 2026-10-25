@@ -1,8 +1,11 @@
 package technocore
 
 import (
+	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -11,6 +14,8 @@ import (
 	"strings"
 	"time"
 
+	"piso/gateway/internal/githubapp"
+	"piso/gateway/internal/model"
 	"piso/gateway/internal/store"
 	tc "piso/internal/technocore"
 )
@@ -71,10 +76,20 @@ func Run(st *store.Store, dataDir string) {
 		})
 		if err != nil {
 			log.Printf("technocore: websocket: %v", err)
-			setLive(func(s *Status) { s.LastError = err.Error() })
+			now := time.Now().UTC()
+			setLive(func(s *Status) {
+				s.LastError = err.Error()
+				if s.OfflineSince == nil {
+					s.OfflineSince = &now
+				}
+			})
 		}
 		if ready {
 			backoff = time.Second
+			setLive(func(s *Status) {
+				s.OfflineSince = nil
+				s.LastError = ""
+			})
 		} else {
 			time.Sleep(backoff)
 			if backoff < 30*time.Second {
@@ -86,46 +101,88 @@ func Run(st *store.Store, dataDir string) {
 	}
 }
 
+// tickPending advances the pairing state machine. The phone's approve only
+// moves the request to awaiting_gateway; this process never confirms on its
+// own, because the confirm is the gateway operator's consent. Each branch
+// writes only the pairing fields through tc.Update so a concurrent CLI write
+// (placement, public URL) is not clobbered by a stale copy.
 func tickPending(path string, id tc.Identity) error {
-	status, principal, err := poll(id)
+	state, err := tc.PollPairing(id)
 	if err != nil {
-		return err
-	}
-	if status == "approved" && principal != "" {
-		id.Status = tc.StatusActive
-		id.PrincipalID = principal
-		if err := tc.Save(path, id); err != nil {
+		if !errors.Is(err, tc.ErrPollToken) {
 			return err
 		}
-		log.Printf("technocore: pairing approved (%s)", principal)
+		if _, err := tc.Update(path, func(cur *tc.Identity) error {
+			if cur.PairingID != id.PairingID {
+				// A newer attempt replaced this one; leave it alone.
+				return nil
+			}
+			resetPairFields(cur)
+			return nil
+		}); err != nil {
+			return err
+		}
+		setLive(func(s *Status) {
+			s.LastError = "the pairing request is no longer recognised; show a new code"
+		})
+		log.Printf("technocore: pairing token rejected; attempt cleared")
+		return nil
 	}
-	return nil
+
+	_, err = tc.Update(path, func(cur *tc.Identity) error {
+		if cur.PairingID != id.PairingID {
+			return nil
+		}
+		switch state.Status {
+		case tc.PairStatusPending:
+			cur.PairPhase = tc.PairStatusPending
+			cur.PairExpiresAt = state.ExpiresAt
+			cur.PairApprover = ""
+			cur.PairAccount = ""
+		case tc.PairStatusAwaitingGateway:
+			if cur.PairPhase != tc.PairStatusAwaitingGateway {
+				log.Printf("technocore: phone approved; waiting for the dashboard confirm")
+			}
+			cur.PairPhase = tc.PairStatusAwaitingGateway
+			cur.PairApprover = state.ApprovedBy
+			cur.PairAccount = state.AccountName
+			cur.PairExpiresAt = state.ExpiresAt
+		case tc.PairStatusApproved:
+			// Confirmed from this dashboard (or from `piso gateway launch
+			// --yes`). The principal already exists on the coordinator.
+			cur.Status = tc.StatusActive
+			cur.PrincipalID = state.PrincipalID
+			cur.PairPhase = ""
+			cur.PairExpiresAt = ""
+			cur.PairApprover = ""
+			cur.PairAccount = ""
+			log.Printf("technocore: pairing confirmed (%s)", state.PrincipalID)
+		case tc.PairStatusRejected:
+			resetPairFields(cur)
+			setLive(func(s *Status) { s.LastError = "the pairing was declined" })
+		case tc.PairStatusExpired:
+			resetPairFields(cur)
+			setLive(func(s *Status) { s.LastError = "the pairing code expired" })
+		}
+		return nil
+	})
+	return err
 }
 
-func poll(id tc.Identity) (string, string, error) {
-	u := fmt.Sprintf("%s/api/v1/pairing-requests/%s", strings.TrimRight(id.ServerURL, "/"), id.PairingID)
-	req, err := http.NewRequest(http.MethodGet, u, nil)
-	if err != nil {
-		return "", "", err
+// resetPairFields returns an unenrolled identity to a clean slate while
+// keeping the keys and the coordinator URL, so the next attempt reuses the
+// same fingerprint.
+func resetPairFields(cur *tc.Identity) {
+	if cur.Status == tc.StatusActive {
+		return
 	}
-	req.Header.Set(tc.HeaderPollToken, id.PollToken)
-	res, err := serverHTTP.Do(req)
-	if err != nil {
-		return "", "", err
-	}
-	defer res.Body.Close()
-	raw, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
-	if res.StatusCode != 200 {
-		return "", "", fmt.Errorf("poll HTTP %d", res.StatusCode)
-	}
-	var out struct {
-		Status      string `json:"status"`
-		PrincipalID string `json:"principal_id"`
-	}
-	if err := json.Unmarshal(raw, &out); err != nil {
-		return "", "", err
-	}
-	return out.Status, out.PrincipalID, nil
+	cur.Status = tc.StatusNew
+	cur.PairingID = ""
+	cur.PollToken = ""
+	cur.PairPhase = ""
+	cur.PairExpiresAt = ""
+	cur.PairApprover = ""
+	cur.PairAccount = ""
 }
 
 func syncAssignedWorkers(st *store.Store, id tc.Identity) error {
@@ -180,6 +237,21 @@ func syncAssignedWorkers(st *store.Store, id tc.Identity) error {
 		})
 	}
 	return st.ReplaceRemoteWorkers(rows)
+}
+
+// Pull applies the coordinator's current envelopes now. A writer that lost a
+// version race uses it to rebase: the coordinator's snapshot is authoritative,
+// so the caller re-applies its change to what the other gateway published
+// instead of overwriting it.
+func Pull(st *store.Store, dataDir string) error {
+	id, err := tc.Load(tc.Path(dataDir))
+	if err != nil {
+		return fmt.Errorf("not enrolled: %w", err)
+	}
+	if id.Status != tc.StatusActive {
+		return fmt.Errorf("gateway is not enrolled")
+	}
+	return syncSecrets(st, dataDir, id)
 }
 
 // syncSecrets replaces the local tc_ snapshot with a complete coordinator
@@ -255,25 +327,274 @@ func syncSecrets(st *store.Store, dataDir string, id tc.Identity) error {
 // the deletion instead of inferring it from silence.
 const statusRevoked = "revoked"
 
+// appliedEnvelope reports what an envelope did to the vault, so the GitHub App
+// mirror can follow it: a github-app row carries the app bundle in its sealed
+// plaintext instead of a credential.
+type appliedEnvelope struct {
+	RowID   string
+	Kind    string
+	Plain   string
+	Applied bool
+}
+
+// applyEnvelope writes the vault row, then materialises any GitHub Apps the
+// envelope carried. App mirroring is best effort: a bundle this gateway cannot
+// parse must not block the secret row itself.
 func applyEnvelope(st *store.Store, id tc.Identity, obj envelope) (string, error) {
+	res, err := applySecretEnvelope(st, id, obj)
+	if err != nil {
+		return "", err
+	}
+	switch res.Kind {
+	case model.SecretKindGithubApp:
+		applySharedGithubApps(st, obj, res)
+	case model.SecretKindGithubUser:
+		// The dashboard sign-in that lets someone manage apps, shared so a
+		// person signs in once for the whole account instead of once per
+		// gateway.
+		if obj.Status == statusRevoked {
+			clearSharedGithubUser(st)
+		} else {
+			applySharedGithubUser(st, obj, res)
+		}
+	}
+	return res.RowID, nil
+}
+
+// applySharedGithubUser materializes the shared GitHub sign-in as this
+// gateway's own gateway-only rows, so every existing reader (status, authorize,
+// verifiedGithubUser) works unchanged. Any gateway may publish a session, so the
+// newest version wins and signing in anywhere replaces the session everywhere;
+// there is no per-gateway copy to protect.
+func applySharedGithubUser(st *store.Store, obj envelope, res appliedEnvelope) {
+	if !res.Applied {
+		return
+	}
+	u := st.GithubUser()
+	if obj.ContentVersion < u.ContentVersion {
+		// Never roll a newer session back to an older one.
+		return
+	}
+	bundle, err := githubapp.DecodeUserBundle(res.Plain)
+	if err != nil {
+		log.Printf("technocore: github sign-in bundle for %s: %v", res.RowID, err)
+		return
+	}
+	// The token and client secret are stored as ordinary gateway-only rows on
+	// this gateway, reusing this gateway's existing rows so a resync updates
+	// them instead of accumulating copies.
+	clientSecretID := upsertGithubOAuthRow(st, u.ClientSecretID, "GitHub OAuth client secret", bundle.ClientSecret)
+	tokenID := upsertGithubOAuthRow(st, u.TokenSecretID, "GitHub user OAuth — gateway only", bundle.Token)
+	if tokenID == "" {
+		log.Printf("technocore: could not store shared GitHub sign-in %s", res.RowID)
+		return
+	}
+	next := store.GithubUserRec{
+		ClientID:       bundle.ClientID,
+		ClientSecretID: clientSecretID,
+		TokenSecretID:  tokenID,
+		Login:          bundle.Login,
+		AccountID:      bundle.AccountID,
+		Scopes:         bundle.Scopes,
+		Source:         store.GithubUserSourceTechnocore,
+		TechnocoreID:   obj.ResourceID,
+		ContentVersion: obj.ContentVersion,
+		BundleID:       res.RowID,
+	}
+	if err := st.SetGithubUser(next); err != nil {
+		log.Printf("technocore: store shared GitHub sign-in: %v", err)
+	}
+}
+
+// adoptLocalGithubSignIn gives a session that was signed in before sign-ins
+// were shared the transport row it never had.
+//
+// Without one there is nothing for the reconcile pass to publish: an existing
+// sign-in would stay invisible to every other gateway until someone happened to
+// sign in again, which on an upgraded gateway can be never. Adopting it once
+// makes the session indistinguishable from one created at sign-in, and the row
+// is then published like any other secret.
+func adoptLocalGithubSignIn(st *store.Store) {
+	u := st.GithubUser()
+	// A mirrored session, or one with no token, already has a row or nothing to
+	// carry: never mint a rival copy that would publish a different session.
+	if u.SourceOrLocal() != store.GithubUserSourceLocal {
+		return
+	}
+	if _, ok := secretValue(st, u.TokenSecretID); !ok {
+		return
+	}
+	for _, rec := range st.Secrets() {
+		if rec.Kind != model.SecretKindGithubUser {
+			continue
+		}
+		if u.BundleID == "" {
+			// A row without a pointer is one this gateway could not attribute;
+			// claim the local session on it rather than adding a second.
+			u.BundleID = rec.ID
+			if err := st.SetGithubUser(u); err != nil {
+				log.Printf("technocore: adopt github sign-in: %v", err)
+			}
+		}
+		return
+	}
+	rec := store.SecretRec{
+		ID:          "sec_" + localID(),
+		Name:        "GitHub sign-in",
+		Kind:        model.SecretKindGithubUser,
+		Placeholder: "piso_github_user_" + localID(),
+		GatewayOnly: true,
+		CreatedAt:   time.Now().UTC(),
+	}
+	if err := st.AddSecret(rec); err != nil {
+		log.Printf("technocore: adopt github sign-in: %v", err)
+		return
+	}
+	u.BundleID = rec.ID
+	if err := st.SetGithubUser(u); err != nil {
+		log.Printf("technocore: adopt github sign-in: %v", err)
+	}
+}
+
+// localID returns a short random suffix for a materialized row.
+func localID() string {
+	b := make([]byte, 6)
+	if _, err := rand.Read(b); err != nil {
+		return fmt.Sprintf("%d", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(b)
+}
+
+// upsertGithubOAuthRow writes one part of a shared sign-in, replacing the row
+// this gateway already used when it exists. An empty value (a bundle from a
+// gateway that never had the client secret) leaves the rows alone.
+func upsertGithubOAuthRow(st *store.Store, id, name, value string) string {
+	if value == "" {
+		return id
+	}
+	if rec, ok := st.SecretByID(id); ok && rec.Kind == model.SecretKindGithubOAuth && !rec.Revoked {
+		rec.Value = value
+		rec.GatewayOnly = true
+		if err := st.ReplaceSecret(rec); err == nil {
+			return rec.ID
+		}
+	}
+	rec := store.SecretRec{
+		ID:          "sec_" + localID(),
+		Name:        name,
+		Kind:        model.SecretKindGithubOAuth,
+		Placeholder: "piso_github_oauth_" + localID(),
+		Value:       value,
+		GatewayOnly: true,
+		CreatedAt:   time.Now().UTC(),
+	}
+	if err := st.AddSecret(rec); err != nil {
+		log.Printf("technocore: store github-oauth %s: %v", name, err)
+		return ""
+	}
+	return rec.ID
+}
+
+// clearSharedGithubUser drops the session a gateway signed out of. Sign-out is
+// global — one account session — so it applies here whether this gateway signed
+// in itself or received the shared copy. The OAuth App configuration survives:
+// signing back in needs no re-setup.
+func clearSharedGithubUser(st *store.Store) {
+	u := st.GithubUser()
+	if u.TokenSecretID != "" {
+		_ = st.DeleteSecret(u.TokenSecretID)
+	}
+	// The OAuth App configuration stays — client id and client secret rows are
+	// what let the next sign-in skip re-setup on every gateway.
+	// Drop the transport row too: its coordinator resource is the tombstone this
+	// envelope carries, so keeping it would only hand the next sign-in a dead row
+	// to republish into.
+	for _, rec := range st.Secrets() {
+		if rec.Kind == model.SecretKindGithubUser {
+			_ = st.DeleteSecret(rec.ID)
+		}
+	}
+	if err := st.SetGithubUser(store.GithubUserRec{ClientID: u.ClientID, ClientSecretID: u.ClientSecretID}); err != nil {
+		log.Printf("technocore: clear shared GitHub sign-in: %v", err)
+	}
+}
+
+// applySharedGithubApps rebuilds this gateway's copy of a routing group from
+// the envelope. The envelope is authoritative: every gateway may publish, so a
+// row's provenance records where it was configured, not whether it may be
+// changed here. Apps are matched by GitHub App ID, so an app created on this
+// gateway and then edited on another converges instead of diverging.
+func applySharedGithubApps(st *store.Store, obj envelope, res appliedEnvelope) {
+	if obj.Status == statusRevoked {
+		for _, app := range st.GithubAppsBySecretID(res.RowID) {
+			if err := st.DeleteGithubAppRecord(app.ID); err != nil {
+				log.Printf("technocore: drop github app %s: %v", app.ID, err)
+			}
+		}
+		return
+	}
+	if !res.Applied {
+		return
+	}
+	bundle, err := githubapp.DecodeBundle(res.Plain)
+	if err != nil {
+		log.Printf("technocore: github app bundle for %s: %v", res.RowID, err)
+		return
+	}
+	wanted := make(map[int64]bool, len(bundle.Apps))
+	for _, rec := range bundle.Recs(res.RowID, obj.ResourceID, obj.ContentVersion) {
+		wanted[rec.AppID] = true
+		if existing, ok := st.GithubAppByAppID(rec.AppID); ok {
+			// Keep this gateway's row id so dashboard links and in-flight
+			// flows survive an update that originated elsewhere.
+			rec.ID = existing.ID
+			rec.CreatedAt = existing.CreatedAt
+			// These are not shared: an install or manifest started here must
+			// survive a sync that lands while the person is still at GitHub,
+			// and a discovery warning describes GitHub, not the bundle.
+			rec.InstallState = existing.InstallState
+			rec.StateExpires = existing.StateExpires
+			rec.ManifestState = existing.ManifestState
+			rec.RefreshError = existing.RefreshError
+		}
+		if _, err := st.UpsertGithubApp(rec); err != nil {
+			log.Printf("technocore: apply github app %d: %v", rec.AppID, err)
+		}
+	}
+	// The bundle at this version is the whole group, so an app it no longer
+	// lists was removed on whichever gateway published last. A record this
+	// gateway has never seen published (version 0) is an app minted here that
+	// has not reached the coordinator yet — including one still mid-manifest —
+	// so it is left for the reconcile pass to share rather than dropped.
+	for _, app := range st.GithubAppsBySecretID(res.RowID) {
+		if wanted[app.AppID] || app.ContentVersion == 0 {
+			continue
+		}
+		if err := st.DeleteGithubAppRecord(app.ID); err != nil {
+			log.Printf("technocore: drop github app %s: %v", app.ID, err)
+		}
+	}
+}
+
+func applySecretEnvelope(st *store.Store, id tc.Identity, obj envelope) (appliedEnvelope, error) {
 	if obj.Algorithm != "" && obj.Algorithm != tc.EnvelopeAlg {
-		return "", fmt.Errorf("unsupported algorithm %q", obj.Algorithm)
+		return appliedEnvelope{}, fmt.Errorf("unsupported algorithm %q", obj.Algorithm)
 	}
 	ct, err := base64.StdEncoding.DecodeString(obj.Ciphertext)
 	if err != nil {
-		return "", err
+		return appliedEnvelope{}, err
 	}
 	nonce, err := base64.StdEncoding.DecodeString(obj.Nonce)
 	if err != nil {
-		return "", err
+		return appliedEnvelope{}, err
 	}
 	wrap, err := base64.StdEncoding.DecodeString(obj.WrappedDataKey)
 	if err != nil {
-		return "", err
+		return appliedEnvelope{}, err
 	}
 	plaintext, err := tc.OpenEnvelope(id, wrap, nonce, ct)
 	if err != nil {
-		return "", err
+		return appliedEnvelope{}, err
 	}
 	gatewayOnly, _ := obj.Metadata["gatewayOnly"].(bool)
 	// The subtype ("telegram", ...) rides in metadata: the coordinator stores
@@ -297,6 +618,13 @@ func applyEnvelope(st *store.Store, id tc.Identity, obj envelope) (string, error
 	secretID := "tc_" + obj.ResourceID
 	plain := string(plaintext)
 	hash := plaintextHash(plain)
+	// A github-app envelope carries the app bundle, not a credential: the vault
+	// row stays empty so the PEM is never revealed by the secret UI, and the
+	// content_version alone decides which copy is authoritative.
+	// Kinds whose plaintext is a structured bundle rather than a credential:
+	// the vault row stays empty (the materialized records hold the material)
+	// and a same-version mismatch is not a local edit to preserve.
+	sharesApps := kind == model.SecretKindGithubApp || kind == model.SecretKindGithubUser
 
 	local, found := matchLocalSecret(st, obj.ResourceID, secretID, placeholder, plain)
 	if found {
@@ -305,23 +633,27 @@ func applyEnvelope(st *store.Store, id tc.Identity, obj envelope) (string, error
 			// the local copy is strictly ahead, which means this envelope is
 			// stale.
 			if obj.ContentVersion >= local.ContentVersion {
-				return local.ID, st.RevokeSecret(local.ID, obj.ContentVersion)
+				return appliedEnvelope{RowID: local.ID, Kind: kind, Applied: true}, st.RevokeSecret(local.ID, obj.ContentVersion)
 			}
-			return local.ID, nil
+			return appliedEnvelope{RowID: local.ID, Kind: kind}, nil
 		}
 		if obj.ContentVersion < local.ContentVersion {
 			// Never roll a newer local copy back.
-			return local.ID, nil
+			return appliedEnvelope{RowID: local.ID, Kind: kind}, nil
 		}
-		if obj.ContentVersion == local.ContentVersion && (local.Value != plain || local.Revoked) {
+		if !sharesApps && obj.ContentVersion == local.ContentVersion && (local.Value != plain || local.Revoked) {
 			// Same version, different bytes: the coordinator has not seen a
 			// write at this version, so the local copy is an edit that has not
 			// been published yet. Keep it; publishAllSecrets resolves the race.
-			return local.ID, nil
+			return appliedEnvelope{RowID: local.ID, Kind: kind}, nil
 		}
 		// The coordinator's version is authoritative, so the plaintext and the
 		// worker-facing flags come from the envelope either way.
 		local.Value = plain
+		if sharesApps {
+			// The bundle lives in the app records below, not in the vault.
+			local.Value = ""
+		}
 		if len(hosts) > 0 || len(local.AllowedHosts) == 0 {
 			// An envelope with no host list must not erase a binding this
 			// gateway already knows: destination binding is now mandatory, and
@@ -346,14 +678,18 @@ func applyEnvelope(st *store.Store, id tc.Identity, obj envelope) (string, error
 		if local.TechnocoreID == "" {
 			local.TechnocoreID = obj.ResourceID
 		}
-		if local.PublishedHash == "" {
-			local.PublishedHash = hash
-		}
+		// Any gateway may publish, so adopt the coordinator's hash: a gateway
+		// that received a bundle it did not change must not republish it and
+		// bounce content_version back and forth.
+		local.PublishedHash = hash
 		local.ContentVersion = obj.ContentVersion
 		if err := st.ReplaceSecret(local); err != nil {
-			return "", err
+			return appliedEnvelope{}, err
 		}
-		return local.ID, st.SyncRulesForSecret(local)
+		if err := st.SyncRulesForSecret(local); err != nil {
+			return appliedEnvelope{RowID: local.ID, Kind: kind, Plain: plain, Applied: true}, err
+		}
+		return appliedEnvelope{RowID: local.ID, Kind: kind, Plain: plain, Applied: true}, nil
 	}
 
 	rec := store.SecretRec{
@@ -374,10 +710,16 @@ func applyEnvelope(st *store.Store, id tc.Identity, obj envelope) (string, error
 		rec.Value = ""
 		rec.Revoked = true
 	}
-	if err := st.AddSecret(rec); err != nil {
-		return "", err
+	if rec.Kind == model.SecretKindGithubApp || rec.Kind == model.SecretKindGithubUser {
+		rec.Value = ""
 	}
-	return rec.ID, st.SyncRulesForSecret(rec)
+	if err := st.AddSecret(rec); err != nil {
+		return appliedEnvelope{}, err
+	}
+	if err := st.SyncRulesForSecret(rec); err != nil {
+		return appliedEnvelope{RowID: rec.ID, Kind: kind, Plain: plain, Applied: true}, err
+	}
+	return appliedEnvelope{RowID: rec.ID, Kind: kind, Plain: plain, Applied: true}, nil
 }
 
 // matchLocalSecret finds a vault row that is the same coordinator secret:

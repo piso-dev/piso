@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -13,6 +14,8 @@ import (
 	"slices"
 	"strings"
 
+	"piso/gateway/internal/githubapp"
+	"piso/gateway/internal/model"
 	"piso/gateway/internal/store"
 	tc "piso/internal/technocore"
 )
@@ -23,6 +26,20 @@ type remoteGateway struct {
 	Status           string `json:"status"`
 	EncryptionPubKey string `json:"encryption_pubkey"`
 	Fingerprint      string `json:"fingerprint"`
+}
+
+// StaleError reports that the coordinator refused a write because another
+// gateway published a newer content_version first. It is not a failure: the
+// writer pulls the snapshot it missed and re-applies its change on top, so two
+// gateways editing different apps in one group never lose each other's work.
+type StaleError struct{ Detail string }
+
+func (e *StaleError) Error() string { return "stale content version: " + e.Detail }
+
+// Stale reports whether err is a lost version race.
+func Stale(err error) bool {
+	var stale *StaleError
+	return errors.As(err, &stale)
 }
 
 // ShareInput is a secret to wrap for enrolled gateways.
@@ -117,6 +134,12 @@ func shareWith(id tc.Identity, gateways []remoteGateway, in ShareInput, method, 
 	defer res.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
 	if res.StatusCode != 201 && res.StatusCode != 200 {
+		if res.StatusCode == http.StatusConflict {
+			// The coordinator already has a newer version: another gateway
+			// wrote first. Not a failure — the caller pulls and retries on top
+			// of what it published.
+			return nil, nil, &StaleError{Detail: string(raw)}
+		}
 		return nil, nil, fmt.Errorf("share HTTP %d: %s", res.StatusCode, raw)
 	}
 	var out map[string]any
@@ -160,6 +183,83 @@ func PublishNow(st *store.Store, dataDir string) error {
 	return publishAllSecrets(st, dataDir)
 }
 
+// sharePlaintext is what actually travels in the envelope. A github-app
+// routing group has no vault value: the credential is the app record, so the
+// apps are serialized into a bundle and that JSON is sealed instead.
+//
+// Every enrolled gateway may publish: whoever writes last wins, version-ordered
+// by the coordinator. A gateway publishing what it received re-encodes the same
+// bytes, so the content hash matches its stored one and reconcile skips it.
+func sharePlaintext(st *store.Store, rec store.SecretRec) (string, bool) {
+	if rec.Revoked {
+		// A tombstone stays a tombstone: republishing it would resurrect
+		// something a gateway deleted.
+		return "", false
+	}
+	switch rec.Kind {
+	case model.SecretKindGithubOAuth:
+		// One half of a sign-in. It reaches other gateways inside the
+		// github-user bundle, materialized there as a local row; publishing it
+		// here would put a second, unlinked copy of the token at the
+		// coordinator for nothing.
+		return "", false
+	case model.SecretKindGithubUser:
+		// The sign-in that lets someone manage apps, shared so a person signs
+		// in once for the account. Any gateway may publish it: signing in
+		// anywhere replaces the session everywhere.
+		u := st.GithubUser()
+		token, ok := secretValue(st, u.TokenSecretID)
+		if !ok {
+			// Signed out, or a half-written session: nothing to share.
+			return "", false
+		}
+		clientSecret, _ := secretValue(st, u.ClientSecretID)
+		bundle, err := githubapp.EncodeUserBundle(githubapp.UserBundle{
+			ClientID:     u.ClientID,
+			ClientSecret: clientSecret,
+			Token:        token,
+			Login:        u.Login,
+			AccountID:    u.AccountID,
+			Scopes:       u.Scopes,
+		})
+		if err != nil {
+			// A token with no identity cannot be shared. Say so once per pass:
+			// silently returning "nothing to share" is how a peer ends up signed
+			// out with no explanation anywhere.
+			log.Printf("technocore: share github sign-in: %v", err)
+			return "", false
+		}
+		return bundle, true
+	}
+	if rec.Kind != model.SecretKindGithubApp {
+		return rec.Value, rec.Value != ""
+	}
+	apps := st.GithubAppsBySecretID(rec.ID)
+	if len(apps) == 0 {
+		return "", false
+	}
+	bundle, err := githubapp.EncodeBundle(apps)
+	if err != nil {
+		// Unregistered apps (no PEM yet) have nothing to share; the next
+		// reconcile pass after registration publishes the bundle.
+		return "", false
+	}
+	return bundle, true
+}
+
+// secretValue reads a gateway-only row's plaintext, reporting false when the
+// row is missing, empty, or revoked.
+func secretValue(st *store.Store, id string) (string, bool) {
+	if id == "" {
+		return "", false
+	}
+	rec, ok := st.SecretByID(id)
+	if !ok || rec.Revoked || rec.Value == "" {
+		return "", false
+	}
+	return rec.Value, true
+}
+
 // publishAllSecrets reconciles every local secret that has a value with
 // Technocore. Synced tc_ rows are included so a newly enrolled gateway can
 // still get wraps. Unchanged secrets (same coordinator id, content hash, and
@@ -178,12 +278,17 @@ func publishAllSecrets(st *store.Store, dataDir string) error {
 		return err
 	}
 	recipients := wrapRecipientIDs(gateways, nil)
+	// A sign-in that predates sharing has no envelope to publish. Adopt it here so
+	// the session reaches the other gateways on the next pass instead of waiting
+	// for someone to sign in again.
+	adoptLocalGithubSignIn(st)
 	var first error
 	for _, rec := range st.Secrets() {
-		if rec.Value == "" {
+		plain, ok := sharePlaintext(st, rec)
+		if !ok {
 			continue
 		}
-		hash := plaintextHash(rec.Value)
+		hash := plaintextHash(plain)
 		if rec.TechnocoreID != "" && rec.PublishedHash == hash && sameRecipients(rec.PublishedRecipients, recipients) {
 			continue
 		}
@@ -201,7 +306,7 @@ func publishAllSecrets(st *store.Store, dataDir string) error {
 			Placeholder:  rec.Placeholder,
 			EnvKey:       rec.EnvKey,
 			AllowedHosts: rec.AllowedHosts,
-			Plaintext:    rec.Value,
+			Plaintext:    plain,
 			GatewayOnly:  rec.GatewayOnly,
 			BaseVersion:  rec.ContentVersion,
 		}
@@ -225,7 +330,8 @@ func PublishPlaceholder(st *store.Store, dataDir, placeholder string, recipients
 	if !ok {
 		return nil, fmt.Errorf("unknown placeholder %s", placeholder)
 	}
-	if rec.Value == "" {
+	plain, ok := sharePlaintext(st, rec)
+	if !ok {
 		return nil, fmt.Errorf("secret has no local value")
 	}
 	return Share(st, dataDir, ShareInput{
@@ -234,7 +340,7 @@ func PublishPlaceholder(st *store.Store, dataDir, placeholder string, recipients
 		Placeholder:  rec.Placeholder,
 		EnvKey:       rec.EnvKey,
 		AllowedHosts: rec.AllowedHosts,
-		Plaintext:    rec.Value,
+		Plaintext:    plain,
 		Recipients:   recipients,
 		GatewayOnly:  rec.GatewayOnly,
 		BaseVersion:  rec.ContentVersion,
@@ -273,6 +379,9 @@ func Revoke(dataDir, resourceID string, baseVersion int) (int, error) {
 	defer res.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
 	if res.StatusCode != 200 {
+		if res.StatusCode == http.StatusConflict {
+			return 0, &StaleError{Detail: string(raw)}
+		}
 		return 0, fmt.Errorf("revoke HTTP %d: %s", res.StatusCode, raw)
 	}
 	var out struct {

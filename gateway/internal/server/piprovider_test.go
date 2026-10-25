@@ -811,3 +811,66 @@ func TestProviderViewCatalogForLocalKind(t *testing.T) {
 		})
 	}
 }
+
+// A provider whose secret is not resolvable on this gateway but is already
+// written into the shared profile is applied and serving traffic. It must not
+// be reported as "not on this gateway yet", and a re-apply must not drop it
+// from models.json.
+func TestPiProviderKeepsAppliedProviderWhenSecretMissing(t *testing.T) {
+	dir := t.TempDir()
+	profile := filepath.Join(dir, "pi-profile")
+	t.Setenv("PISO_PI_PROFILE", profile)
+	st, err := store.New(filepath.Join(dir, "state.json"), filepath.Join(dir, "log.jsonl"), filepath.Join(dir, "patterns.json"), filepath.Join(dir, "activities.db"), 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AddSecret(store.SecretRec{ID: "sec_local", Name: "AIML", Placeholder: "piso_aimlapi", Value: "sk-test-FAKE", TechnocoreID: "11111111-1111-1111-1111-111111111111"}); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{Store: st, DataDir: dir}
+	if err := st.SetPiProvider(&store.PiProviderRec{ID: "piso-one", Name: "AIML", SecretID: "11111111-1111-1111-1111-111111111111", BaseURL: "https://api.example.test/v1"}); err != nil {
+		t.Fatal(err)
+	}
+	if list := s.applyPiProviders(); list.Warning != "" {
+		t.Fatalf("unexpected warning on first apply: %q", list.Warning)
+	}
+	// The secret vanishes on this gateway (e.g. it is still syncing) while the
+	// profile file keeps the placeholder that already works.
+	if err := st.DeleteSecret("sec_local"); err != nil {
+		t.Fatal(err)
+	}
+	view := s.piProviderViewByID("piso-one")
+	if view == nil || !view.Applied || view.Warning != "" || view.Placeholder != "piso_aimlapi" {
+		t.Fatalf("applied provider reported as missing: %+v", view)
+	}
+	if list := s.applyPiProviders(); list.Warning != "" {
+		t.Fatalf("re-apply dropped a working provider: %q", list.Warning)
+	}
+	raw, err := os.ReadFile(filepath.Join(profile, "models.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), "piso_aimlapi") {
+		t.Fatalf("working placeholder dropped from models.json: %s", raw)
+	}
+}
+
+// A row saved before kind existed still points at the worker-side proxy. It
+// must render as local, not "pending" or "unavailable", and the models
+// endpoint must refuse to probe loopback for it.
+func TestPiProviderLegacyTinfoilURLIsLocal(t *testing.T) {
+	s, _ := providerTestServer(t, httptest.NewServer(http.NotFoundHandler()))
+	legacy := &store.PiProviderRec{ID: "piso-legacy", SecretID: "sec_local", BaseURL: tinfoilProxyBaseURL}
+	view := s.providerViewFor(legacy, profileFileState{})
+	if view.Catalog != "local" {
+		t.Fatalf("legacy tinfoil catalog = %q, want local", view.Catalog)
+	}
+	if err := s.Store.SetPiProvider(legacy); err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	s.handleGetPiProviderModels(rec, httptest.NewRequest(http.MethodGet, "/api/v1/pi-provider/models?id=piso-legacy", nil))
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"catalog":"local"`) {
+		t.Fatalf("legacy tinfoil models probe: %d %s", rec.Code, rec.Body.String())
+	}
+}

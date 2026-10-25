@@ -16,6 +16,14 @@ const (
 	SecretKindOpaque    = ""
 	SecretKindGithubApp = "github-app"
 	SecretKindTelegram  = "telegram"
+	// SecretKindGithubUser carries a dashboard GitHub sign-in between enrolled
+	// gateways: the token, the OAuth client that minted it, and the identity it
+	// resolves to. Never substituted into worker traffic.
+	SecretKindGithubUser = "github-user"
+	// SecretKindGithubOAuth is one part of a GitHub sign-in (the OAuth client
+	// secret or the user token). These rows are materialized locally on each
+	// gateway from the github-user bundle, so they are never published alone.
+	SecretKindGithubOAuth = "github-oauth"
 )
 
 // Secret is a real credential plus its placeholder. Real values live ONLY in
@@ -218,18 +226,18 @@ const (
 type Reason string
 
 const (
-	ReasonNoSecretRule              Reason = "no-secret-rule"               // placeholder present, no substitution rule
-	ReasonMcpAuthRequired           Reason = "mcp-auth-required"            // MCP placeholder present, vault empty until dashboard login
-	ReasonGithubAppRegisterRequired Reason = "github-app-register-required" // github-app placeholder, no PEM yet
-	ReasonGithubAppInstallRequired  Reason = "github-app-install-required"  // github-app placeholder, no install for owner
-	ReasonRealSecret                Reason = "real-secret-detected"         // exact known credential found
-	ReasonSecretPattern             Reason = "credential-pattern"           // looks like a credential (regex hit)
-	ReasonDeniedDomain              Reason = "denied-domain"                // host on deny list
-	ReasonInternalTarget            Reason = "internal-target"              // internal/link-local target blocked
-	ReasonAllowedException          Reason = "allowed-exception"            // user exception; informational, not a block
-	ReasonAllowedDomain             Reason = "allowed-domain"               // informational
+	ReasonNoSecretRule              Reason = "no-secret-rule"                // placeholder present, no substitution rule
+	ReasonMcpAuthRequired           Reason = "mcp-auth-required"             // MCP placeholder present, vault empty until dashboard login
+	ReasonGithubAppRegisterRequired Reason = "github-app-register-required"  // github-app placeholder, no PEM yet
+	ReasonGithubAppInstallRequired  Reason = "github-app-install-required"   // github-app placeholder, no install for owner
+	ReasonRealSecret                Reason = "real-secret-detected"          // exact known credential found
+	ReasonSecretPattern             Reason = "credential-pattern"            // looks like a credential (regex hit)
+	ReasonDeniedDomain              Reason = "denied-domain"                 // host on deny list
+	ReasonInternalTarget            Reason = "internal-target"               // internal/link-local target blocked
+	ReasonAllowedException          Reason = "allowed-exception"             // user exception; informational, not a block
+	ReasonAllowedDomain             Reason = "allowed-domain"                // informational
 	ReasonUnsupportedSite           Reason = "unsupported-substitution-site" // placeholder in a body the gateway cannot rewrite field-safely
-	ReasonResponseSecretLeak        Reason = "response-secret-leak"        // upstream response contained a real secret; it was redacted
+	ReasonResponseSecretLeak        Reason = "response-secret-leak"          // upstream response contained a real secret; it was redacted
 )
 
 // MCP server status values (gateway-brokered OAuth).
@@ -242,16 +250,19 @@ const (
 
 // GithubApp is the log-safe view of a gateway-owned GitHub App.
 type GithubApp struct {
-	OwnerID       int64                    `json:"ownerId,omitempty"`
-	Owner         string                   `json:"owner,omitempty"`
-	OwnerType     string                   `json:"ownerType,omitempty"`
-	ID            string                   `json:"id"`
-	SecretID      string                   `json:"secretId,omitempty"`
-	Name          string                   `json:"name"`
-	Placeholder   string                   `json:"placeholder"`
-	AppID         int64                    `json:"appId,omitempty"`
-	Slug          string                   `json:"slug,omitempty"`
-	Status        string                   `json:"status"`
+	OwnerID     int64  `json:"ownerId,omitempty"`
+	Owner       string `json:"owner,omitempty"`
+	OwnerType   string `json:"ownerType,omitempty"`
+	ID          string `json:"id"`
+	SecretID    string `json:"secretId,omitempty"`
+	Name        string `json:"name"`
+	Placeholder string `json:"placeholder"`
+	AppID       int64  `json:"appId,omitempty"`
+	Slug        string `json:"slug,omitempty"`
+	Status      string `json:"status"`
+	// Source is "local" or "technocore". A technocore app was configured on
+	// another enrolled gateway and is read-only here.
+	Source        string                   `json:"source,omitempty"`
 	Installations []GithubInstallationView `json:"installations,omitempty"`
 	CreatedAt     time.Time                `json:"createdAt"`
 	UpdatedAt     time.Time                `json:"updatedAt"`

@@ -175,13 +175,42 @@ for (const [label, user, action] of [
   ["unconfigured", {}, "github-user-config"],
   ["signed out or revoked", { configured: true, connected: false }, "github-user-authorize"],
 ]) {
-  test(`GitHub ${label} gate hides cached mappings and management actions`, (t) => {
-    const document = settingsHarness(t, "github", [{ name: "Hidden group", secretId: "secret", apps: [] }], user);
-    assert.ok(document.querySelector(`[data-action="${action}"]`));
-    assert.equal(document.querySelector(".github-mapping"), null);
-    assert.equal(document.querySelector('[data-action="github-connect"]'), null);
-    assert.equal(document.querySelector('[data-action="github-import"]'), null);
-    assert.doesNotMatch(document.body.textContent, /Hidden group/);
+  // Signed out is not a blank page: the routes say what workers can reach, so
+  // they stay visible while every action that needs the signed-in identity is
+  // withheld. A peer gateway fed by a shared connection has no local app and no
+  // local OAuth App, and hiding the routes behind a sign-in hid the feature.
+  test(`GitHub ${label} gate keeps routes visible but offers no management actions`, (t) => {
+    const document = settingsHarness(t, "github", [{
+      name: "Visible group", secretId: "secret", workers: ["alpha"], placeholder: "piso_peer",
+      apps: [{ id: "app", appId: 42, name: "shared", status: "ok", installations: [{ id: 7, account: "octocat", repos: ["octocat/only"] }] }],
+    }], user);
+    assert.ok(document.querySelector(`[data-action="${action}"]`), "gate still explains how to sign in");
+    assert.equal(document.querySelectorAll(".github-mapping").length, 1);
+    assert.match(document.body.textContent, /Visible group/);
+    assert.match(document.body.textContent, /octocat\/only/, "repository details are read-only data, not credentials");
+    assert.match(document.body.textContent, /Sign in to manage/);
+    for (const action of ["github-connect", "github-import", "github-install", "github-reconnect", "github-refresh", "github-remove"]) {
+      assert.equal(document.querySelector(`[data-action="${action}"]`), null, `${action} needs a signed-in identity`);
+    }
+    // Worker scope is a local property of the group, so it stays editable.
+    assert.equal(document.querySelector('[data-action="secret-edit"]').dataset.id, "secret");
+    // Signed out means there is no session at all, so nothing may claim one:
+    // the strip that says "Managing apps" and offers Sign out is not shown.
+    assert.equal(document.querySelector(".github-session"), null, "no session strip without a session");
+    assert.equal(document.querySelector('[data-action="github-user-signout"]'), null);
+    // Reading a route is not managing it: installations and repositories open
+    // without a session, which is the only way to see what workers can reach.
+    const row = document.querySelector(".github-app-row");
+    const toggle = row.querySelector(".github-row-toggle");
+    assert.ok(toggle, "a read-only route row still has a disclosure control");
+    assert.equal(toggle.getAttribute("aria-expanded"), "false");
+    for (const id of toggle.getAttribute("aria-controls").split(" ")) assert.ok(document.getElementById(id));
+    row.cells[1].click();
+    assert.equal(toggle.getAttribute("aria-expanded"), "true", "a signed-out row expands");
+    assert.ok([...row.querySelectorAll('[data-row-detail]')].every((el) => !el.hidden));
+    assert.match(row.textContent, /octocat\/only/);
+    row.cells[1].click();
+    assert.equal(toggle.getAttribute("aria-expanded"), "false", "and collapses again");
   });
 }
 

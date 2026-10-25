@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -12,6 +13,8 @@ import (
 	"piso/gateway/internal/githubapp"
 	"piso/gateway/internal/model"
 	"piso/gateway/internal/store"
+	"piso/gateway/internal/technocore"
+	tc "piso/internal/technocore"
 )
 
 const githubAppLabel = "github-app"
@@ -46,6 +49,137 @@ func githubAppHomepage() string {
 
 func (s *Server) githubClient() *githubapp.Client {
 	return githubapp.NewClient(s.httpClient())
+}
+
+// githubWriteAttempts bounds the publish-retry loop. A retry only happens when
+// another gateway published between this gateway's read and its write, so more
+// than a couple in a row means something is badly out of step.
+const githubWriteAttempts = 3
+
+// githubSyncHooks replaces the transport for one test: publishing a routing
+// group and pulling the coordinator's snapshot after a lost version race.
+type githubSyncHooks struct {
+	Publish func(secretID string) error
+	Pull    func() error
+}
+
+// githubGroupEdit rewrites a routing group's app records. The snapshot it
+// receives is re-read from the coordinator on a lost version race, so an edit
+// must be expressible against whatever apps are there — "add this app", "drop
+// installation 42" — rather than as a whole-group overwrite.
+type githubGroupEdit func(apps []store.GithubAppRec) ([]store.GithubAppRec, error)
+
+// editGithubGroup applies an edit to a group and publishes it, rebasing when
+// another gateway got there first. Every mutating route goes through here: any
+// gateway may change any connection, and two gateways editing different apps in
+// one group do not lose each other's work.
+//
+// A publish that fails for any other reason is logged, not surfaced: the change
+// is already applied locally and the reconcile pass retries it. Only a lost
+// version race blocks the response, because then the local change has been
+// discarded by the pull and the caller must not report success.
+func (s *Server) editGithubGroup(secretID string, edit githubGroupEdit) ([]store.GithubAppRec, error) {
+	var last error
+	for attempt := 0; attempt < githubWriteAttempts; attempt++ {
+		before := s.Store.GithubAppsBySecretID(secretID)
+		after, err := edit(append([]store.GithubAppRec(nil), before...))
+		if err != nil {
+			return nil, err
+		}
+		if err := s.writeGithubGroup(before, after); err != nil {
+			return nil, err
+		}
+		last = s.publishGroup(secretID)
+		if last == nil {
+			return after, nil
+		}
+		if !technocore.Stale(last) {
+			return after, nil
+		}
+		// Another gateway published first. Adopt its snapshot, then re-run the
+		// edit on top of it so both changes survive.
+		if err := s.pullGithubSnapshot(); err != nil {
+			log.Printf("github-app: rebase pull: %v", err)
+			return nil, last
+		}
+	}
+	log.Printf("github-app: gave up rebasing %s: %v", secretID, last)
+	return nil, fmt.Errorf("another gateway kept changing this connection; reload and try again")
+}
+
+// publishGroup publishes one routing group, through the test seam when set.
+func (s *Server) publishGroup(secretID string) error {
+	if s.githubSync != nil && s.githubSync.Publish != nil {
+		return s.githubSync.Publish(secretID)
+	}
+	return s.publishGroupNow(secretID)
+}
+
+// pullGithubSnapshot pulls the coordinator's envelopes so a rebase can work on
+// the winner's state, through the test seam when set.
+func (s *Server) pullGithubSnapshot() error {
+	if s.githubSync != nil && s.githubSync.Pull != nil {
+		return s.githubSync.Pull()
+	}
+	return technocore.Pull(s.Store, s.dataDir())
+}
+
+// writeGithubGroup stores the edited records and drops the ones the edit
+// removed. The routing-group secret is left alone: it is deleted only when the
+// last app goes, which is a revocation, not an edit.
+func (s *Server) writeGithubGroup(before, after []store.GithubAppRec) error {
+	keep := make(map[string]bool, len(after))
+	for _, rec := range after {
+		keep[rec.ID] = true
+		if _, err := s.Store.UpsertGithubApp(rec); err != nil {
+			return err
+		}
+	}
+	for _, rec := range before {
+		if keep[rec.ID] {
+			continue
+		}
+		if err := s.Store.DeleteGithubAppRecord(rec.ID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// publishGroupNow publishes one routing group and reports a lost version race.
+// An unenrolled gateway, or any other transport failure, is not an error here:
+// the local change stands and the reconcile pass republishes it.
+func (s *Server) publishGroupNow(secretID string) error {
+	id, err := tc.Load(tc.Path(s.dataDir()))
+	if err != nil || id.Status != tc.StatusActive {
+		return nil
+	}
+	sec, ok := s.Store.SecretByID(secretID)
+	if !ok || sec.Placeholder == "" {
+		return nil
+	}
+	if _, err := technocore.PublishPlaceholder(s.Store, s.dataDir(), sec.Placeholder, nil); err != nil {
+		if technocore.Stale(err) {
+			return err
+		}
+		log.Printf("shared: publish %s: %v", sec.Placeholder, err)
+	}
+	return nil
+}
+
+// publishShared pushes this gateway's shared material to the other enrolled
+// gateways now instead of waiting for the reconcile pass: routing groups, so a
+// freshly created or installed app is usable everywhere within seconds, and the
+// dashboard GitHub sign-in, so a person signs in once for the account. Best
+// effort: an unenrolled gateway and a coordinator hiccup must not fail the
+// dashboard action.
+func (s *Server) publishShared() {
+	if id, err := tc.Load(tc.Path(s.dataDir())); err != nil || id.Status != tc.StatusActive {
+		return
+	}
+	if err := technocore.PublishNow(s.Store, s.dataDir()); err != nil {
+		log.Printf("shared: publish: %v", err)
+	}
 }
 
 func (s *Server) registerGithubApp(mux *http.ServeMux) {
@@ -136,6 +270,7 @@ func (s *Server) handlePutGithubApp(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 500, map[string]string{"error": err.Error()})
 		return
 	}
+	s.publishShared()
 	s.replayGithub(r, saved)
 	writeJSON(w, 200, saved.ToSummary())
 }
@@ -206,10 +341,33 @@ func (s *Server) handleImportGithubApp(w http.ResponseWriter, r *http.Request) {
 	rec.PrivateKey = in.PrivateKey
 	rec.ManifestState = ""
 	rec.Installations = verified.Installations
-	saved, err := s.Store.UpsertGithubApp(rec)
+	group, err := s.editGithubGroup(rec.SecretID, func(apps []store.GithubAppRec) ([]store.GithubAppRec, error) {
+		for i, app := range apps {
+			if app.AppID == rec.AppID {
+				// Reconnect in place, keeping this gateway's row id so any
+				// dashboard link to it stays valid.
+				rec.ID = app.ID
+				rec.CreatedAt = app.CreatedAt
+				apps[i] = rec
+				return apps, nil
+			}
+		}
+		return append(apps, rec), nil
+	})
 	if err != nil {
-		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		if createdSecret {
+			// Leave nothing behind for a group this request created and failed
+			// to publish into.
+			s.Store.DeleteSecret(rec.SecretID)
+		}
+		writeJSON(w, 502, map[string]string{"error": err.Error()})
 		return
+	}
+	saved := rec
+	for _, app := range group {
+		if app.AppID == rec.AppID {
+			saved = app
+		}
 	}
 	s.replayGithub(r, saved)
 	writeJSON(w, 200, saved.ToSummary())
@@ -332,13 +490,27 @@ func (s *Server) handleAddGithubInstallation(w http.ResponseWriter, r *http.Requ
 		writeJSON(w, 400, map[string]string{"error": "id and account required"})
 		return
 	}
-	rec = upsertInstallation(rec, store.GithubInstallation{
+	inst := store.GithubInstallation{
 		ID: in.ID, Account: strings.ToLower(strings.TrimSpace(in.Account)), AccountType: in.AccountType,
+	}
+	group, err := s.editGithubGroup(rec.SecretID, func(apps []store.GithubAppRec) ([]store.GithubAppRec, error) {
+		for i, app := range apps {
+			if app.ID == rec.ID {
+				apps[i] = upsertInstallation(app, inst)
+				return apps, nil
+			}
+		}
+		return nil, fmt.Errorf("app is no longer in this access group")
 	})
-	saved, err := s.Store.UpsertGithubApp(rec)
 	if err != nil {
-		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		writeJSON(w, 502, map[string]string{"error": err.Error()})
 		return
+	}
+	saved := rec
+	for _, app := range group {
+		if app.ID == rec.ID {
+			saved = app
+		}
 	}
 	s.replayGithub(r, saved)
 	writeJSON(w, 200, saved.ToSummary())
@@ -355,17 +527,32 @@ func (s *Server) handleDeleteGithubInstallation(w http.ResponseWriter, r *http.R
 		writeJSON(w, 400, map[string]string{"error": "bad installation id"})
 		return
 	}
-	out := rec.Installations[:0]
-	for _, i := range rec.Installations {
-		if i.ID != iid {
-			out = append(out, i)
+	group, err := s.editGithubGroup(rec.SecretID, func(apps []store.GithubAppRec) ([]store.GithubAppRec, error) {
+		for i, app := range apps {
+			if app.ID != rec.ID {
+				continue
+			}
+			out := app.Installations[:0]
+			for _, inst := range app.Installations {
+				if inst.ID != iid {
+					out = append(out, inst)
+				}
+			}
+			app.Installations = out
+			apps[i] = app
+			return apps, nil
 		}
-	}
-	rec.Installations = out
-	saved, err := s.Store.UpsertGithubApp(rec)
+		return nil, fmt.Errorf("app is no longer in this access group")
+	})
 	if err != nil {
-		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		writeJSON(w, 502, map[string]string{"error": err.Error()})
 		return
+	}
+	saved := rec
+	for _, app := range group {
+		if app.ID == rec.ID {
+			saved = app
+		}
 	}
 	writeJSON(w, 200, saved.ToSummary())
 }
@@ -383,32 +570,106 @@ func (s *Server) handleRefreshGithubApp(w http.ResponseWriter, r *http.Request) 
 	cli := s.githubClient()
 	fresh, err := cli.Discover(r.Context(), rec)
 	if err != nil {
+		// Local-only note: the error is not part of the shared bundle.
 		rec.RefreshError = "Installation discovery failed; showing last known routes."
-		s.Store.UpsertGithubApp(rec)
+		if _, err := s.Store.UpsertGithubApp(rec); err != nil {
+			writeJSON(w, 500, map[string]string{"error": err.Error()})
+			return
+		}
 		writeJSON(w, 502, map[string]string{"error": rec.RefreshError})
 		return
 	}
-	rec = fresh
-	rec.RefreshError = ""
-	for i, inst := range rec.Installations {
-		repos, err := cli.ListRepos(rec, inst.Account)
+	fresh.RefreshError = ""
+	for i, inst := range fresh.Installations {
+		repos, err := cli.ListRepos(fresh, inst.Account)
 		if err == nil {
-			rec.Installations[i].Repos = repos
+			fresh.Installations[i].Repos = repos
 		} else {
-			rec.RefreshError = "Installations refreshed; repository listing is incomplete."
+			fresh.RefreshError = "Installations refreshed; repository listing is incomplete."
 		}
 	}
-	saved, err := s.Store.UpsertGithubApp(rec)
+	// GitHub is the source of truth, so the refreshed snapshot replaces the
+	// record wholesale — from any gateway, whichever app it belongs to.
+	group, err := s.editGithubGroup(rec.SecretID, func(apps []store.GithubAppRec) ([]store.GithubAppRec, error) {
+		for i, app := range apps {
+			if app.ID != rec.ID {
+				continue
+			}
+			fresh.ID = app.ID
+			fresh.CreatedAt = app.CreatedAt
+			apps[i] = fresh
+			return apps, nil
+		}
+		return nil, fmt.Errorf("app is no longer in this access group")
+	})
 	if err != nil {
-		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		writeJSON(w, 502, map[string]string{"error": err.Error()})
 		return
+	}
+	saved := fresh
+	for _, app := range group {
+		if app.ID == rec.ID {
+			saved = app
+		}
 	}
 	writeJSON(w, 200, saved.ToSummary())
 }
 
+// revokeSharedGithubGroup tombstones a published routing group so the other
+// gateways drop their copy. Deleting only the local rows would leave every peer
+// minting against an app that no longer exists until its first 401.
+//
+// A stale base is success: another gateway already tombstoned this group, which
+// is the state we were asking for.
+func (s *Server) revokeSharedGithubGroup(sec store.SecretRec) {
+	if sec.TechnocoreID == "" {
+		return
+	}
+	if id, err := tc.Load(tc.Path(s.dataDir())); err != nil || id.Status != tc.StatusActive {
+		return
+	}
+	if _, err := technocore.Revoke(s.dataDir(), sec.TechnocoreID, sec.ContentVersion); err != nil {
+		if technocore.Stale(err) {
+			return
+		}
+		log.Printf("github-app: revoke %s: %v", sec.TechnocoreID, err)
+	}
+}
+
 func (s *Server) handleDeleteGithubApp(w http.ResponseWriter, r *http.Request) {
-	if err := s.Store.DeleteGithubApp(r.PathValue("id")); err != nil {
-		writeJSON(w, 500, map[string]string{"error": err.Error()})
+	rec, ok := s.Store.GithubAppByID(r.PathValue("id"))
+	if !ok {
+		writeJSON(w, 404, map[string]string{"error": "not found"})
+		return
+	}
+	// Removing the last app takes the routing group with it (see
+	// store.DeleteGithubApp), which is a revocation for every gateway; removing
+	// one of several apps just republishes the smaller group. The tombstone is
+	// published before the local rows go, so a failed revoke does not leave
+	// peers minting against an app that is gone here.
+	sec, hasSec := s.Store.SecretByID(rec.SecretID)
+	lastInGroup := len(s.Store.GithubAppsBySecretID(rec.SecretID)) <= 1
+	if lastInGroup {
+		if hasSec {
+			s.revokeSharedGithubGroup(sec)
+		}
+		if err := s.Store.DeleteGithubApp(rec.ID); err != nil {
+			writeJSON(w, 500, map[string]string{"error": err.Error()})
+			return
+		}
+		w.WriteHeader(204)
+		return
+	}
+	if _, err := s.editGithubGroup(rec.SecretID, func(apps []store.GithubAppRec) ([]store.GithubAppRec, error) {
+		out := apps[:0]
+		for _, app := range apps {
+			if app.ID != rec.ID {
+				out = append(out, app)
+			}
+		}
+		return out, nil
+	}); err != nil {
+		writeJSON(w, 502, map[string]string{"error": err.Error()})
 		return
 	}
 	w.WriteHeader(204)
@@ -449,9 +710,18 @@ func (s *Server) handleGithubManifestCallback(w http.ResponseWriter, r *http.Req
 	rec.ClientSecret = clientSecret
 	rec.WebhookSecret = hookSecret
 	rec.ManifestState = ""
-	if _, err := s.Store.UpsertGithubApp(rec); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+	// A freshly registered app joins its group like any other change, so a
+	// concurrent edit on another gateway is rebased rather than clobbered.
+	if _, err := s.editGithubGroup(rec.SecretID, func(apps []store.GithubAppRec) ([]store.GithubAppRec, error) {
+		for i, app := range apps {
+			if app.ID == rec.ID {
+				apps[i] = rec
+				return apps, nil
+			}
+		}
+		return append(apps, rec), nil
+	}); err != nil {
+		log.Printf("github-app: publish registered app: %v", err)
 	}
 	next, err := s.githubInstallAddress(rec)
 	if err != nil {
@@ -477,15 +747,27 @@ func (s *Server) handleGithubSetupCallback(w http.ResponseWriter, r *http.Reques
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
-	rec = upsertInstallation(rec, inst)
 	if repos, err := s.githubClient().ListRepos(rec, inst.Account); err == nil {
 		inst.Repos = repos
-		rec = upsertInstallation(rec, inst)
 	}
-	saved, err := s.Store.UpsertGithubApp(rec)
+	rec = upsertInstallation(rec, inst)
+	group, err := s.editGithubGroup(rec.SecretID, func(apps []store.GithubAppRec) ([]store.GithubAppRec, error) {
+		for i, app := range apps {
+			if app.ID == rec.ID {
+				apps[i] = upsertInstallation(app, inst)
+				return apps, nil
+			}
+		}
+		return nil, fmt.Errorf("app is no longer in this access group")
+	})
+	saved := rec
+	for _, app := range group {
+		if app.ID == rec.ID {
+			saved = app
+		}
+	}
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+		log.Printf("github-app: publish installation: %v", err)
 	}
 	s.replayGithub(r, saved)
 	http.Redirect(w, r, githubAppHomepage()+"/#github", http.StatusFound)
