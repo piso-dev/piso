@@ -223,6 +223,10 @@ func sharePlaintext(st *store.Store, rec store.SecretRec) (string, bool) {
 			Scopes:       u.Scopes,
 		})
 		if err != nil {
+			// A token with no identity cannot be shared. Say so once per pass:
+			// silently returning "nothing to share" is how a peer ends up signed
+			// out with no explanation anywhere.
+			log.Printf("technocore: share github sign-in: %v", err)
 			return "", false
 		}
 		return bundle, true
@@ -274,6 +278,10 @@ func publishAllSecrets(st *store.Store, dataDir string) error {
 		return err
 	}
 	recipients := wrapRecipientIDs(gateways, nil)
+	// A sign-in that predates sharing has no envelope to publish. Adopt it here so
+	// the session reaches the other gateways on the next pass instead of waiting
+	// for someone to sign in again.
+	adoptLocalGithubSignIn(st)
 	var first error
 	for _, rec := range st.Secrets() {
 		plain, ok := sharePlaintext(st, rec)

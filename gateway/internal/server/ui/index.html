@@ -1732,6 +1732,7 @@
       .github-route-details > p { color: var(--muted); font-size: 13px; }
       .github-row-actions { display: flex; flex-direction: column; align-items: flex-end; gap: 12px; }
       .github-maintenance { width: 100%; text-align: right; }
+      .github-maintenance > small { display: block; margin-top: 8px; }
       .github-maintenance .actions { margin-top: 12px; flex-direction: column; align-items: flex-end; gap: 8px; }
       .github-maintenance .actions[hidden] { display: none; }
       .github-maintenance button { max-width: 100%; white-space: normal; }
@@ -4117,7 +4118,9 @@
         return `<nav class="github-setup" aria-label="First GitHub connection"><ol>${steps.map((label, i) => `<li${i < current ? ' class="complete"' : i === current ? ' aria-current="step"' : ""}><span>${i + 1}. ${label}</span><small>${i < current ? "Complete" : i === current ? "Next step" : "Not started"}</small></li>`).join("")}</ol></nav>`;
       }
       function setGithubRowExpanded(row, expanded) {
-        row.querySelector('.github-row-toggle').setAttribute('aria-expanded', String(expanded));
+        // Details, not management: a read-only row has a disclosure control and
+        // no action list, so nothing here may assume either exists.
+        row.querySelector('.github-row-toggle')?.setAttribute('aria-expanded', String(expanded));
         row.querySelectorAll('[data-row-detail]').forEach(detail => { detail.hidden = !expanded; });
       }
       function bindGithubRows() {
@@ -4127,7 +4130,7 @@
             // supplies Enter/Space support without making the table row a button.
             if (event.target.closest('button, a, input, select, textarea, summary') &&
                 !event.target.closest('.github-row-toggle')) return;
-            setGithubRowExpanded(row, row.querySelector('.github-row-toggle').getAttribute('aria-expanded') !== 'true');
+            setGithubRowExpanded(row, row.querySelector('.github-row-toggle')?.getAttribute('aria-expanded') !== 'true');
           });
         });
       }
@@ -4148,8 +4151,11 @@
             const next = !canManage ? "" : needsRegister
               ? button("Create GitHub App", "github-connect", app.id, "small primary")
               : !app.installations?.length ? button("Install on an account", "github-install", app.id, "small primary") : "";
+            // Signed out withholds management, not information. The row keeps a
+            // disclosure control so the installations and repositories that
+            // decide worker access stay readable; only the action list is gone.
             const maintenance = !canManage
-              ? `<div class="github-maintenance"><small>Sign in to manage</small></div>`
+              ? `<div class="github-maintenance"><button type="button" class="github-row-toggle small quiet" aria-expanded="false" aria-controls="github-repos-${key}" aria-label="Show details for ${esc(app.name || app.slug || 'app')} on ${esc(inst.account)}">Details</button><small>Sign in to manage</small></div>`
               : `<div class="github-maintenance"><button type="button" class="github-row-toggle small quiet" aria-expanded="false" aria-controls="github-repos-${key} github-actions-${key}" aria-label="Manage ${esc(app.name || app.slug || 'app')} on ${esc(inst.account)}">Manage app</button><div id="github-actions-${key}" class="actions" data-row-detail hidden>${!needsRegister && app.installations?.length ? button("Install on another account", "github-install", app.id, "small") : ""}${button("Replace credentials", "github-reconnect", app.id, "small")}${button("Refresh installations", "github-refresh", app.id, "small")}${button(conflict ? "Remove conflicting app" : "Remove app", "github-remove", app.id, "small danger")}</div></div>`;
             return `<tr class="github-app-row${conflict ? ' github-conflict' : ''}" data-key="github-row-${key}"><td>${esc(inst.account)}<div id="github-repos-${key}" class="github-repositories" data-row-detail hidden>${inst.repos?.length ? inst.repos.map(repo => `<div>${esc(repo)}</div>`).join('') : '<small>No repositories listed</small>'}</div></td><td>${esc(app.name || app.slug)}<br><small>App ${esc(app.appId || "not registered")}</small></td><td>${esc(inst.id)}</td><td>${badge(conflict ? "Ambiguous — blocked" : app.status, conflict || app.status !== "ok" ? "warn" : "good")}</td><td><div class="github-row-actions">${next}${maintenance}</div></td></tr>`;
           });

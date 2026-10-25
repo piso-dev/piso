@@ -297,3 +297,92 @@ func TestRevokedSharedSignInDropsTransportRow(t *testing.T) {
 		t.Fatalf("sign-out dropped the OAuth App configuration: %+v", u)
 	}
 }
+
+// A gateway that signed in before sign-ins were shared holds a session and no
+// transport row, so there was nothing to publish and every peer stayed signed
+// out. Reconciling adopts the session once; after that it travels like any other
+// secret and a second pass must not mint a rival row.
+func TestReconcileAdoptsUnsharedGithubSignIn(t *testing.T) {
+	st := testStore(t)
+	for _, rec := range []store.SecretRec{
+		{ID: "cs_1", Name: "GitHub OAuth client secret", Kind: model.SecretKindGithubOAuth, Placeholder: "piso_github_oauth_cs", Value: "client-secret-value", GatewayOnly: true, CreatedAt: time.Now().UTC()},
+		{ID: "tk_1", Name: "GitHub user OAuth — gateway only", Kind: model.SecretKindGithubOAuth, Placeholder: "piso_github_oauth_tk", Value: "gho_token_value", GatewayOnly: true, CreatedAt: time.Now().UTC()},
+	} {
+		if err := st.AddSecret(rec); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := st.SetGithubUser(store.GithubUserRec{
+		ClientID: "Iv1.abc", ClientSecretID: "cs_1", TokenSecretID: "tk_1",
+		Login: "octocat", AccountID: 583231, Scopes: "read:user read:org",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	adoptLocalGithubSignIn(st)
+	u := st.GithubUser()
+	if u.BundleID == "" {
+		t.Fatal("session was not adopted")
+	}
+	if u.SourceOrLocal() != store.GithubUserSourceLocal {
+		t.Fatalf("adoption is not a mirrored session: %q", u.Source)
+	}
+	rec, ok := st.SecretByID(u.BundleID)
+	if !ok || rec.Kind != model.SecretKindGithubUser || rec.Value != "" || !rec.GatewayOnly {
+		t.Fatalf("transport row: %+v", rec)
+	}
+	// The adopted row carries the session, so reconcile has something to publish.
+	plain, ok := sharePlaintext(st, rec)
+	if !ok {
+		t.Fatal("adopted session is not shareable")
+	}
+	bundle, err := githubapp.DecodeUserBundle(plain)
+	if err != nil || bundle.Login != "octocat" || bundle.Token != "gho_token_value" || bundle.ClientID != "Iv1.abc" {
+		t.Fatalf("bundle: %+v %v", bundle, err)
+	}
+	// Idempotent: a second pass reuses the row instead of publishing a rival.
+	adoptLocalGithubSignIn(st)
+	if again := st.GithubUser(); again.BundleID != u.BundleID {
+		t.Fatalf("second adoption moved the row: %s -> %s", u.BundleID, again.BundleID)
+	}
+	n := 0
+	for _, r := range st.Secrets() {
+		if r.Kind == model.SecretKindGithubUser {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("transport rows: %d, want 1", n)
+	}
+}
+
+// A gateway that received a session must not adopt a second one: the peer's row
+// already exists, and minting another would publish a session it does not own.
+func TestAdoptLeavesMirroredAndEmptySessionsAlone(t *testing.T) {
+	st := testStore(t)
+	// Signed out: no token, nothing to share.
+	if err := st.SetGithubUser(store.GithubUserRec{ClientID: "Iv1.abc", ClientSecretID: "cs_1"}); err != nil {
+		t.Fatal(err)
+	}
+	adoptLocalGithubSignIn(st)
+	for _, rec := range st.Secrets() {
+		if rec.Kind == model.SecretKindGithubUser {
+			t.Fatalf("adopted a signed-out session: %+v", rec)
+		}
+	}
+	// Mirrored: the envelope already arrived in a row of its own.
+	if err := st.AddSecret(store.SecretRec{ID: "tk_1", Name: "GitHub user OAuth — gateway only", Kind: model.SecretKindGithubOAuth, Placeholder: "piso_tk", Value: "gho_peer", GatewayOnly: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetGithubUser(store.GithubUserRec{
+		ClientID: "Iv1.abc", ClientSecretID: "cs_1", TokenSecretID: "tk_1",
+		Login: "someone-else", AccountID: 99, Source: store.GithubUserSourceTechnocore, TechnocoreID: "rid", ContentVersion: 3,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	adoptLocalGithubSignIn(st)
+	for _, rec := range st.Secrets() {
+		if rec.Kind == model.SecretKindGithubUser {
+			t.Fatalf("adopted a mirrored session: %+v", rec)
+		}
+	}
+}

@@ -406,6 +406,56 @@ func applySharedGithubUser(st *store.Store, obj envelope, res appliedEnvelope) {
 	}
 }
 
+// adoptLocalGithubSignIn gives a session that was signed in before sign-ins
+// were shared the transport row it never had.
+//
+// Without one there is nothing for the reconcile pass to publish: an existing
+// sign-in would stay invisible to every other gateway until someone happened to
+// sign in again, which on an upgraded gateway can be never. Adopting it once
+// makes the session indistinguishable from one created at sign-in, and the row
+// is then published like any other secret.
+func adoptLocalGithubSignIn(st *store.Store) {
+	u := st.GithubUser()
+	// A mirrored session, or one with no token, already has a row or nothing to
+	// carry: never mint a rival copy that would publish a different session.
+	if u.SourceOrLocal() != store.GithubUserSourceLocal {
+		return
+	}
+	if _, ok := secretValue(st, u.TokenSecretID); !ok {
+		return
+	}
+	for _, rec := range st.Secrets() {
+		if rec.Kind != model.SecretKindGithubUser {
+			continue
+		}
+		if u.BundleID == "" {
+			// A row without a pointer is one this gateway could not attribute;
+			// claim the local session on it rather than adding a second.
+			u.BundleID = rec.ID
+			if err := st.SetGithubUser(u); err != nil {
+				log.Printf("technocore: adopt github sign-in: %v", err)
+			}
+		}
+		return
+	}
+	rec := store.SecretRec{
+		ID:          "sec_" + localID(),
+		Name:        "GitHub sign-in",
+		Kind:        model.SecretKindGithubUser,
+		Placeholder: "piso_github_user_" + localID(),
+		GatewayOnly: true,
+		CreatedAt:   time.Now().UTC(),
+	}
+	if err := st.AddSecret(rec); err != nil {
+		log.Printf("technocore: adopt github sign-in: %v", err)
+		return
+	}
+	u.BundleID = rec.ID
+	if err := st.SetGithubUser(u); err != nil {
+		log.Printf("technocore: adopt github sign-in: %v", err)
+	}
+}
+
 // localID returns a short random suffix for a materialized row.
 func localID() string {
 	b := make([]byte, 6)

@@ -194,6 +194,23 @@ for (const [label, user, action] of [
     }
     // Worker scope is a local property of the group, so it stays editable.
     assert.equal(document.querySelector('[data-action="secret-edit"]').dataset.id, "secret");
+    // Signed out means there is no session at all, so nothing may claim one:
+    // the strip that says "Managing apps" and offers Sign out is not shown.
+    assert.equal(document.querySelector(".github-session"), null, "no session strip without a session");
+    assert.equal(document.querySelector('[data-action="github-user-signout"]'), null);
+    // Reading a route is not managing it: installations and repositories open
+    // without a session, which is the only way to see what workers can reach.
+    const row = document.querySelector(".github-app-row");
+    const toggle = row.querySelector(".github-row-toggle");
+    assert.ok(toggle, "a read-only route row still has a disclosure control");
+    assert.equal(toggle.getAttribute("aria-expanded"), "false");
+    for (const id of toggle.getAttribute("aria-controls").split(" ")) assert.ok(document.getElementById(id));
+    row.cells[1].click();
+    assert.equal(toggle.getAttribute("aria-expanded"), "true", "a signed-out row expands");
+    assert.ok([...row.querySelectorAll('[data-row-detail]')].every((el) => !el.hidden));
+    assert.match(row.textContent, /octocat\/only/);
+    row.cells[1].click();
+    assert.equal(toggle.getAttribute("aria-expanded"), "false", "and collapses again");
   });
 }
 
