@@ -43,3 +43,44 @@ func TestGithubAppCRUD(t *testing.T) {
 		t.Fatal("secret should be deleted with app")
 	}
 }
+
+// A mirrored app belongs to a routing group the coordinator owns: removing it
+// must not take the group secret (and with it every other app in the group)
+// down on this gateway.
+func TestDeleteGithubAppRecordKeepsGroupSecret(t *testing.T) {
+	dir := t.TempDir()
+	st, err := New(filepath.Join(dir, "state.json"), filepath.Join(dir, "log.jsonl"), filepath.Join(dir, "patterns.json"), filepath.Join(dir, "activities.db"), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AddSecret(SecretRec{
+		ID: "tc_rid", Name: "GitHub", Placeholder: "piso_github_peer",
+		Kind: "github-app", EnvKey: "GH_TOKEN", CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.UpsertGithubApp(GithubAppRec{
+		ID: "gha_tc_42", SecretID: "tc_rid", Source: GithubAppSourceTechnocore,
+		AppID: 42, PrivateKey: "pem",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.DeleteGithubAppRecord("gha_tc_42"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := st.SecretByID("tc_rid"); !ok {
+		t.Fatal("group secret removed with the shared app")
+	}
+	// Removing the group itself is still a full delete.
+	if _, err := st.UpsertGithubApp(GithubAppRec{
+		ID: "gha_local", SecretID: "tc_rid", AppID: 43, PrivateKey: "pem",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.DeleteGithubApp("gha_local"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := st.SecretByID("tc_rid"); ok {
+		t.Fatal("local delete left the group behind")
+	}
+}

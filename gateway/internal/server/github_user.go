@@ -7,11 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
 
+	"piso/gateway/internal/model"
 	"piso/gateway/internal/store"
 )
 
@@ -26,6 +28,25 @@ type githubIdentity struct {
 }
 
 var errGithubUserSignIn = errors.New("sign in to GitHub first")
+
+// githubOAuthSecretKind marks the gateway-only rows this file owns (the OAuth
+// client secret and the user token). They are looked up and replaced by name
+// so a re-auth or a config re-save never leaves an orphan behind. The value is
+// shared with technocore, which materializes the same kind on a peer, so both
+// sides must use one constant.
+const githubOAuthSecretKind = model.SecretKindGithubOAuth
+
+// githubScopeGranted reports whether GitHub granted scope want. GitHub returns
+// the granted scopes as a space-separated list on the token exchange (and
+// comma-separated in some API responses), so accept either.
+func githubScopeGranted(granted, want string) bool {
+	for _, s := range strings.FieldsFunc(granted, func(r rune) bool { return r == ' ' || r == ',' }) {
+		if s == want {
+			return true
+		}
+	}
+	return false
+}
 
 func githubUserCallback() string { return githubAppPublicBase() + "/api/v1/github-user/callback" }
 
@@ -49,6 +70,61 @@ func (s *Server) githubUserJSON(r *http.Request, path, token string, out any) er
 	}
 	return json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(out)
 }
+
+// githubUserBundleRow finds the transport row for the shared sign-in. The row
+// carries no value of its own: technocore encodes the bundle from the
+// GithubUserRec and its gateway-only rows at share time, the same way it
+// encodes a GitHub App group from its app records.
+//
+// A gateway can briefly hold more than one such row after a rebase; the one the
+// session points at is the one to republish into, so the others are not
+// resurrected as separate resources.
+func (s *Server) githubUserBundleRow() (store.SecretRec, bool) {
+	u := s.Store.GithubUser()
+	var fallback store.SecretRec
+	found := false
+	for _, rec := range s.Store.Secrets() {
+		if rec.Kind != model.SecretKindGithubUser {
+			continue
+		}
+		if u.BundleID != "" && rec.ID == u.BundleID {
+			return rec, true
+		}
+		if !found {
+			fallback, found = rec, true
+		}
+	}
+	return fallback, found
+}
+
+// ensureGithubUserBundle creates the shared-sign-in row if this gateway has
+// none. It is created on sign-in, not at startup, so a gateway that never signs
+// in never publishes an empty session.
+//
+// An existing row is reused rather than a second one minted: it already has a
+// coordinator resource id, so the republish updates that session in place
+// instead of publishing a rival copy.
+func (s *Server) ensureGithubUserBundle() error {
+	rec, ok := s.githubUserBundleRow()
+	if !ok {
+		rec = store.SecretRec{
+			ID:          "sec_" + randID(),
+			Name:        "GitHub sign-in",
+			Kind:        model.SecretKindGithubUser,
+			Placeholder: "piso_github_user_" + randID(),
+			GatewayOnly: true,
+			CreatedAt:   time.Now().UTC(),
+		}
+		if err := s.Store.AddSecret(rec); err != nil {
+			return err
+		}
+	}
+	u := s.Store.GithubUser()
+	u.BundleID = rec.ID
+	u.Source = store.GithubUserSourceLocal
+	return s.Store.SetGithubUser(u)
+}
+
 func (s *Server) githubUserToken() (string, bool) {
 	u := s.Store.GithubUser()
 	sec, ok := s.Store.SecretByID(u.TokenSecretID)
@@ -72,9 +148,38 @@ func (s *Server) verifiedGithubUser(r *http.Request) (githubIdentity, error) {
 	return identity, nil
 }
 
+// saveGithubUserSecret stores one gateway-only OAuth credential. It replaces
+// the existing secret with the same name and kind on this gateway instead of
+// inserting a new row: a re-auth or a config re-save would otherwise leave an
+// orphaned "GitHub user OAuth — gateway only" secret behind, and the id the
+// GithubUser record points at has to keep resolving. Any other duplicate with
+// the same name is removed.
 func (s *Server) saveGithubUserSecret(name, value string) (string, error) {
+	keep := ""
+	for _, rec := range s.Store.Secrets() {
+		if rec.Kind != githubOAuthSecretKind || rec.Name != name {
+			continue
+		}
+		if keep == "" {
+			rec.Value = value
+			rec.GatewayOnly = true
+			if !strings.HasPrefix(rec.Placeholder, "piso_") {
+				rec.Placeholder = "piso_github_oauth_" + randID()
+			}
+			if err := s.Store.ReplaceSecret(rec); err != nil {
+				return "", err
+			}
+			keep = rec.ID
+			continue
+		}
+		// A duplicate from an older insert: the one we kept now owns the name.
+		_ = s.Store.DeleteSecret(rec.ID)
+	}
+	if keep != "" {
+		return keep, nil
+	}
 	id := "sec_" + randID()
-	err := s.storeSecret(store.SecretRec{ID: id, Name: name, Kind: "github-oauth", Placeholder: "piso_github_oauth_" + randID(), Value: value, GatewayOnly: true, CreatedAt: time.Now().UTC()})
+	err := s.storeSecret(store.SecretRec{ID: id, Name: name, Kind: githubOAuthSecretKind, Placeholder: "piso_github_oauth_" + randID(), Value: value, GatewayOnly: true, CreatedAt: time.Now().UTC()})
 	return id, err
 }
 func (s *Server) registerGithubUser(mux *http.ServeMux) {
@@ -90,7 +195,22 @@ func (s *Server) registerGithubUser(mux *http.ServeMux) {
 		connected := identityErr == nil
 		secret, configured := s.Store.SecretByID(u.ClientSecretID)
 		configured = configured && secret.GatewayOnly && secret.Value != ""
-		writeJSON(w, 200, map[string]any{"configured": configured && u.ClientID != "", "connected": connected, "login": u.Login, "accountId": u.AccountID, "callbackUrl": githubUserCallback()})
+		// orgAccess is a tri-state: true/false once the granted scopes are
+		// known, null for an older connection that never recorded them. The
+		// dashboard must not warn about a missing scope it cannot see.
+		var orgAccess any
+		if strings.TrimSpace(u.Scopes) != "" {
+			orgAccess = githubScopeGranted(u.Scopes, "read:org")
+		}
+		// source tells the dashboard whether this session was signed in here or
+		// arrived from another enrolled gateway. Either way it is one account
+		// session, and signing out is global.
+		//
+		// clientId is the OAuth App's public identifier (it is already visible in
+		// the authorize URL), returned so the configuration dialog can show which
+		// app is in use instead of opening blank. The client secret stays in the
+		// vault and is never returned.
+		writeJSON(w, 200, map[string]any{"configured": configured && u.ClientID != "", "connected": connected, "login": u.Login, "accountId": u.AccountID, "clientId": u.ClientID, "orgAccess": orgAccess, "source": u.SourceOrLocal(), "callbackUrl": githubUserCallback()})
 	})
 	mux.HandleFunc("PUT /api/v1/github-user/config", func(w http.ResponseWriter, r *http.Request) {
 		var in struct {
@@ -101,37 +221,62 @@ func (s *Server) registerGithubUser(mux *http.ServeMux) {
 			writeJSON(w, 400, map[string]string{"error": "clientId and clientSecret required"})
 			return
 		}
+		clientID := strings.TrimSpace(in.ClientID)
+		old := s.Store.GithubUser()
 		id, err := s.saveGithubUserSecret("GitHub OAuth client secret", strings.TrimSpace(in.ClientSecret))
 		if err != nil {
 			writeJSON(w, 500, map[string]string{"error": "could not save client secret"})
 			return
 		}
-		old := s.Store.GithubUser()
-		u := store.GithubUserRec{ClientID: strings.TrimSpace(in.ClientID), ClientSecretID: id}
+		// Replacing the client secret must not sign the user out: the token
+		// minted by the same OAuth App is still valid. Only a different client
+		// ID invalidates it, because the token belongs to the old app.
+		u := old
+		u.ClientID = clientID
+		u.ClientSecretID = id
+		changedApp := old.ClientID != "" && old.ClientID != clientID
+		if changedApp {
+			u.TokenSecretID = ""
+			u.Login = ""
+			u.AccountID = 0
+		}
 		if s.Store.SetGithubUser(u) != nil {
 			writeJSON(w, 500, map[string]string{"error": "could not save configuration"})
 			return
 		}
-		if old.ClientSecretID != "" {
+		if old.ClientSecretID != "" && old.ClientSecretID != id {
 			s.Store.DeleteSecret(old.ClientSecretID)
 		}
-		if old.TokenSecretID != "" {
+		if changedApp && old.TokenSecretID != "" {
 			s.Store.DeleteSecret(old.TokenSecretID)
 		}
+		s.publishShared()
 		w.WriteHeader(204)
 	})
 	// Top-level navigation sets the browser-binding cookie on the loopback callback origin.
 	mux.HandleFunc("GET /api/v1/github-user/authorize", s.handleGithubUserAuthorize)
 	mux.HandleFunc("GET /api/v1/github-user/callback", s.handleGithubUserCallback)
+	// Signing out is global: the session is one account session, shared with
+	// every enrolled gateway, so the tombstone is published and each peer drops
+	// its copy. The OAuth App configuration stays, so signing back in needs no
+	// re-setup.
 	mux.HandleFunc("DELETE /api/v1/github-user", func(w http.ResponseWriter, r *http.Request) {
 		u := s.Store.GithubUser()
 		id := u.TokenSecretID
 		u.TokenSecretID = ""
 		u.Login = ""
 		u.AccountID = 0
+		u.Scopes = ""
+		u.Source = ""
+		u.BundleID = ""
 		if s.Store.SetGithubUser(u) != nil {
 			writeJSON(w, 500, map[string]string{"error": "could not disconnect"})
 			return
+		}
+		if rec, ok := s.githubUserBundleRow(); ok {
+			// Revoking the transport row stops reconcile from republishing the
+			// session and tells every peer to forget it.
+			s.revokeOrDelete(rec)
 		}
 		if id != "" {
 			s.Store.DeleteSecret(id)
@@ -234,11 +379,10 @@ func (s *Server) handleGithubUserCallback(w http.ResponseWriter, r *http.Request
 		http.Error(w, "GitHub token exchange failed", 502)
 		return
 	}
-	scopes := "," + strings.ReplaceAll(token.Scope, " ", ",") + ","
-	if !strings.Contains(scopes, ",read:org,") {
-		http.Error(w, "Organization discovery requires read:org; authorize again", 400)
-		return
-	}
+	// A missing read:org is not a failed sign-in. The token still identifies
+	// the person (read:user), and organization discovery is the only feature
+	// that needs read:org. Record the grant and let the dashboard explain how
+	// to widen it, instead of rejecting a valid login.
 	var identity githubIdentity
 	if s.githubUserJSON(r, "/user", token.AccessToken, &identity) != nil || identity.ID <= 0 || identity.Login == "" {
 		http.Error(w, "Could not verify GitHub identity", 502)
@@ -253,12 +397,20 @@ func (s *Server) handleGithubUserCallback(w http.ResponseWriter, r *http.Request
 	u.TokenSecretID = id
 	u.Login = identity.Login
 	u.AccountID = identity.ID
+	u.Scopes = token.Scope
 	if s.Store.SetGithubUser(u) != nil {
 		http.Error(w, "Could not save GitHub connection", 500)
 		return
 	}
-	if old != "" {
+	if old != "" && old != id {
 		s.Store.DeleteSecret(old)
+	}
+	// Share the session with the other enrolled gateways: sign in once here and
+	// every gateway's dashboard is signed in with the same account.
+	if err := s.ensureGithubUserBundle(); err == nil {
+		s.publishShared()
+	} else {
+		log.Printf("github-user: share sign-in: %v", err)
 	}
 	http.SetCookie(w, &http.Cookie{Name: "piso_github_oauth", Value: "", Path: "/api/v1/github-user", HttpOnly: true, MaxAge: -1})
 	http.Redirect(w, r, githubAppHomepage()+"/#github", 302)
@@ -278,6 +430,13 @@ func (s *Server) githubOwnedOrgs(r *http.Request) ([]githubIdentity, error) {
 	tok, ok := s.githubUserToken()
 	if !ok {
 		return nil, fmt.Errorf("sign in to GitHub first")
+	}
+	// If the recorded grant is known to lack read:org, say how to fix it
+	// rather than surfacing a bare 403 from the memberships API. An empty
+	// scope list means an older connection: fall through and let GitHub answer.
+	u := s.Store.GithubUser()
+	if strings.TrimSpace(u.Scopes) != "" && !githubScopeGranted(u.Scopes, "read:org") {
+		return nil, fmt.Errorf("organization discovery needs the read:org scope; re-authorize and grant organization access, and if an organization blocks third-party apps an owner must approve this OAuth App under Organization settings → Third-party access")
 	}
 	out := []githubIdentity{}
 	for page := 1; ; page++ {

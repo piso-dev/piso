@@ -34,7 +34,8 @@ A grid of status cards and giant counters would be a generic monitoring dashboar
 - Existing API capabilities remain: asks, MCP authorization/revocation, GitHub app setup/install/remove, secret CRUD, provider configuration, rules/patterns/exceptions/domains, routes, worker egress controls, block resolution and replay.
 - Pausing traffic pauses presentation only. Keep receiving bounded updates and label that distinction.
 - SSE status is distinct from API health and Technocore pairing. Polls backstop stream events; partial failures are visible and retryable.
-- The pairing line names the enrollment state in words (not connected / awaiting approval / paired / error) and shows a sync age only once paired. An unpaired gateway has never synced, so it must never report an age; a missing timestamp is not "a very long time ago".
+- Coordinator-owned views (Tasks, Directives) are gated on an active pairing, not on a failed request. The page renders one info banner naming the enrollment state and turns its create actions off before asking the API; a `503 technocore_unpaired` refusal is a state, never a refresh error. The nav keeps those destinations reachable and only mutes them, because the banner that explains them lives on the page. That banner links into the same `#/live` panel the rail button opens when the request is waiting for approval.
+- The pairing line names the enrollment state in words (not connected / awaiting approval / approved · confirm / paired / error) and shows a sync age only once paired. An unpaired gateway has never synced, so it must never report an age; a missing timestamp is not "a very long time ago". The gated nav links describe themselves with that same line, via `aria-describedby="live"`.
 - Native dialogs supply focus trapping and Escape behavior. Error feedback stays alongside the action; no browser alerts. Destructive actions require confirmation.
 - No runtime dependencies or frontend build step; the existing Go-embedded single HTML asset remains deployable.
 
@@ -51,6 +52,37 @@ system typography. No worker selection: creation uses the shared Tasks queue.
 Drafts remain in memory only. An ambiguous submission freezes the original
 UUID and payload for retry; validation errors remain editable. Dismissal of a
 nonempty draft requires confirmation. No new dependencies or build step.
+
+## Live connection
+
+One rail button carries the API/stream dot, the enrollment words, and a
+tooltip with name, placement, fingerprint, and last error. It opens `#/live`
+instead of linking out, so the whole enrollment lives on the console: the panel
+shows *Show pairing code* (coordinator URL + name), then the QR with a
+countdown, then **approved from a phone → Connect <gateway> to <account>?**, then
+a read-only summary of the paired gateway. The terminal equivalent stays one
+`<details>` away.
+
+- The QR is a server-rendered SVG (`/api/v1/technocore/pair/qr.svg`), never a
+  remote image service, and sits black-on-white on a light card so a dark
+  console theme cannot invert it into an unscannable code. The pairing URL is
+  also printed as a link, because a phone on the same network as the browser
+  can simply open it.
+- The panel polls every 1.5s **only** while `#/live` is open and the tab is
+  visible; the ten-second global refresh is the backstop, and hidden tabs stop
+  both. Re-rendering is gated on a state key so a poll cannot rebuild the panel
+  under a finger; only the countdown text is patched each second.
+- The phone page signs in first: `/pair/<id>/` sends a stranger through
+  `/login/?next=/pair/<id>/` and returns them to the same request, so the
+  approval always names the person who gave it. Login is also what lets the
+  phone finish the enrollment itself.
+- Nothing connects on the phone tap. The connect button is the only thing that
+  mints the membership, and it names the account it will join. A request
+  approved without a session (an older client writing to the API) still cannot
+  be finished here: the API answers 409 and the panel swaps in a link to the
+  signed-in coordinator page instead of a dead end.
+- A paired gateway is read-only here: re-enrolling or switching coordinators is
+  a terminal action, because it changes who can decrypt the vault.
 
 ## Validation and limits
 

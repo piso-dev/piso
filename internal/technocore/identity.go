@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"piso/internal/ownfile"
@@ -31,20 +32,26 @@ const (
 // Identity is the gateway (or future worker) device identity stored on disk.
 // Signing and encryption keys are distinct. Private keys never leave this file.
 type Identity struct {
-	Version               int    `json:"version"`
-	ServerURL             string `json:"serverUrl"`
-	Name                  string `json:"name"`
-	SigningPublicKey      string `json:"signingPublicKey"`
-	SigningPrivateKey     string `json:"signingPrivateKey"`
-	EncryptionPublicKey   string `json:"encryptionPublicKey"`
-	EncryptionPrivateKey  string `json:"encryptionPrivateKey"`
-	PairingID             string `json:"pairingId,omitempty"`
-	PollToken             string `json:"pollToken,omitempty"`
-	PrincipalID           string `json:"principalId,omitempty"`
-	Status                string `json:"status"`
-	Placement             string `json:"placement,omitempty"`
-	PublicURL             string `json:"publicUrl,omitempty"`
-	CreatedAt             string `json:"createdAt,omitempty"`
+	Version              int    `json:"version"`
+	ServerURL            string `json:"serverUrl"`
+	Name                 string `json:"name"`
+	SigningPublicKey     string `json:"signingPublicKey"`
+	SigningPrivateKey    string `json:"signingPrivateKey"`
+	EncryptionPublicKey  string `json:"encryptionPublicKey"`
+	EncryptionPrivateKey string `json:"encryptionPrivateKey"`
+	PairingID            string `json:"pairingId,omitempty"`
+	PollToken            string `json:"pollToken,omitempty"`
+	PrincipalID          string `json:"principalId,omitempty"`
+	Status               string `json:"status"`
+	Placement            string `json:"placement,omitempty"`
+	PublicURL            string `json:"publicUrl,omitempty"`
+	CreatedAt            string `json:"createdAt,omitempty"`
+	// Pairing phase, as reported by the coordinator. Kept here so a dashboard
+	// GET never has to round-trip to the coordinator to render state.
+	PairPhase     string `json:"pairPhase,omitempty"`
+	PairExpiresAt string `json:"pairExpiresAt,omitempty"`
+	PairApprover  string `json:"pairApprover,omitempty"`
+	PairAccount   string `json:"pairAccount,omitempty"`
 }
 
 // NormalizePlacement accepts local|standalone. Empty becomes local.
@@ -141,6 +148,10 @@ type identityFile struct {
 	Placement            string `json:"placement,omitempty"`
 	PublicURL            string `json:"publicUrl,omitempty"`
 	CreatedAt            string `json:"createdAt,omitempty"`
+	PairPhase            string `json:"pairPhase,omitempty"`
+	PairExpiresAt        string `json:"pairExpiresAt,omitempty"`
+	PairApprover         string `json:"pairApprover,omitempty"`
+	PairAccount          string `json:"pairAccount,omitempty"`
 	// Legacy field names from the first pairing slice.
 	PublicKey  string `json:"publicKey,omitempty"`
 	PrivateKey string `json:"privateKey,omitempty"`
@@ -166,6 +177,10 @@ func parseIdentity(raw []byte) (Identity, error) {
 		Placement:            f.Placement,
 		PublicURL:            strings.TrimRight(f.PublicURL, "/"),
 		CreatedAt:            f.CreatedAt,
+		PairPhase:            f.PairPhase,
+		PairExpiresAt:        f.PairExpiresAt,
+		PairApprover:         f.PairApprover,
+		PairAccount:          f.PairAccount,
 	}
 	if p, err := NormalizePlacement(id.Placement); err == nil {
 		id.Placement = p
@@ -271,6 +286,29 @@ func Save(path string, id Identity) error {
 	// The gateway runs as root and writes into a bind-mounted data dir. Match
 	// the directory owner so the host CLI can still read the file.
 	return ownfile.MatchDir(path)
+}
+
+var identityMu sync.Mutex
+
+// Update applies fn to the identity on disk and saves the result. Use this
+// instead of Save whenever only a few fields are owned: the CLI and the
+// gateway process both write identity.json, and saving a whole stale struct
+// silently drops the other writer's change (a placement flip, a new public
+// URL, a freshly minted pairing token).
+func Update(path string, fn func(*Identity) error) (Identity, error) {
+	identityMu.Lock()
+	defer identityMu.Unlock()
+	id, err := Load(path)
+	if err != nil {
+		return Identity{}, err
+	}
+	if err := fn(&id); err != nil {
+		return Identity{}, err
+	}
+	if err := Save(path, id); err != nil {
+		return Identity{}, err
+	}
+	return id, nil
 }
 
 // LoadOrCreate loads path or generates and saves a new identity.

@@ -25,14 +25,14 @@ type GithubMapping struct {
 
 func (s *Server) handleGithubMappings(w http.ResponseWriter, r *http.Request) {
 	out := []GithubMapping{}
-	// The dashboard gates this section on a live GitHub sign-in; the API
-	// enforces the same boundary rather than trusting the UI. A revoked or
-	// missing token lists nothing (HTTP 200, empty list) so a stale browser
-	// cannot scrape mapping data.
-	if _, err := s.verifiedGithubUser(r); err != nil {
-		writeJSON(w, 200, out)
-		return
-	}
+	// No GitHub sign-in gate: this view is derived from local gateway state only
+	// (routing groups, app records, and the repository snapshot that arrived in
+	// a shared bundle), never from a live GitHub call. A peer gateway that
+	// received a connection from another enrolled gateway has no local app and
+	// often no local OAuth App either, so requiring a sign-in here would hide
+	// exactly the credentials workers are using. Signing in gates the
+	// *management* routes (create, import, install, refresh), not visibility.
+	// Nothing credential-bearing is served: no PEM, no token, no client secret.
 	apps := s.Store.GithubApps()
 	for _, sec := range s.Store.Secrets() {
 		if sec.Kind != model.SecretKindGithubApp {

@@ -217,6 +217,15 @@
         color: var(--text);
         background: #29323e;
       }
+      /* Coordinator-owned destinations stay reachable: the page they open says
+         why it is empty. Only the tone says they need a paired gateway. */
+      nav a.is-gated {
+        color: var(--muted);
+        opacity: 0.62;
+      }
+      nav a.is-gated .nav-icon {
+        color: var(--muted);
+      }
       .nav-icon {
         width: 19px;
         font-size: 17px;
@@ -251,10 +260,168 @@
       .dot.ok {
         background: var(--green);
       }
-      #pairing {
+      #live {
         margin-top: 9px;
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        width: 100%;
+        padding: 6px 8px;
+        border: 1px solid transparent;
+        border-radius: 5px;
+        background: transparent;
         color: var(--muted);
-        line-height: 1.6;
+        font-size: 12px;
+        line-height: 1.5;
+        text-align: left;
+      }
+      #live:hover:not(:disabled) {
+        background: var(--panel);
+        border-color: var(--line);
+        color: var(--text);
+      }
+      #live[aria-current="page"] {
+        background: var(--panel);
+        border-color: var(--line);
+        color: var(--text);
+      }
+      #live .live-chev {
+        margin-left: auto;
+        color: var(--muted);
+      }
+      #liveText {
+        overflow-wrap: anywhere;
+      }
+      .dot.bad {
+        background: var(--red);
+      }
+      /* Live connection panel. The QR needs true black-on-white, so it sits on
+         an unthemed card inside the graphite console rather than being tinted. */
+      .live-wrap {
+        max-width: 780px;
+        display: grid;
+        gap: 18px;
+      }
+      .live-lead {
+        color: var(--muted);
+        margin: 0;
+        max-width: 62ch;
+      }
+      .live-card {
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: var(--panel);
+        padding: 22px;
+      }
+      .live-card h2 {
+        margin: 0 0 6px;
+        font-size: 15px;
+      }
+      .live-card p {
+        margin: 10px 0 0;
+      }
+      .live-scan {
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr);
+        gap: 24px;
+        align-items: start;
+      }
+      .live-qr {
+        background: #fff;
+        border-radius: 6px;
+        padding: 12px;
+        line-height: 0;
+      }
+      .live-qr img {
+        width: 208px;
+        height: 208px;
+        display: block;
+      }
+      .live-meta {
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr);
+        gap: 7px 18px;
+        margin: 18px 0 0;
+        font-size: 13px;
+      }
+      .live-meta dt {
+        color: var(--muted);
+      }
+      .live-meta dd {
+        margin: 0;
+        font-family: Consolas, ui-monospace, monospace;
+        overflow-wrap: anywhere;
+      }
+      .live-countdown {
+        font-variant-numeric: tabular-nums;
+      }
+      .live-form {
+        display: grid;
+        gap: 14px;
+        margin-top: 18px;
+        max-width: 460px;
+      }
+      .live-form label {
+        display: grid;
+        gap: 6px;
+        font-size: 12px;
+        color: var(--muted);
+      }
+      .live-form input {
+        padding: 9px 10px;
+        border-radius: 5px;
+        border: 1px solid var(--line);
+        background: var(--inset);
+        color: var(--text);
+      }
+      .live-form input:focus-visible {
+        outline: 2px solid var(--blue);
+        outline-offset: 1px;
+      }
+      .live-hint {
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .live-cli {
+        border-top: 1px solid var(--line);
+        padding-top: 14px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .live-cli pre {
+        margin: 10px 0 0;
+        padding: 12px;
+        background: var(--inset);
+        border-radius: 5px;
+        overflow-x: auto;
+      }
+      .live-state {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        color: var(--muted);
+        font-size: 13px;
+      }
+      .live-state .dot {
+        animation: live-pulse 1.8s ease-in-out infinite;
+      }
+      @keyframes live-pulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.35; }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .live-state .dot { animation: none; }
+      }
+      @media (max-width: 720px) {
+        .live-scan {
+          grid-template-columns: minmax(0, 1fr);
+        }
+        .live-qr {
+          justify-self: center;
+        }
+        .live-card {
+          padding: 18px;
+        }
       }
       .trust {
         margin-top: 20px;
@@ -411,6 +578,23 @@
         background: #2c2226;
         border-color: #66464b;
         color: var(--red);
+      }
+      /* Info is the "unavailable for now" tone: quieter than the amber default,
+         so a gated view does not read as a fault. */
+      .notice.info {
+        background: #1e252f;
+        border-color: #3a4a5c;
+        color: var(--text);
+      }
+      .notice.info p + p {
+        color: var(--muted);
+      }
+      .notice.info .actions a {
+        color: var(--blue);
+      }
+      /* A gated control is not waiting on a request, so it does not spin. */
+      button:disabled.is-gated {
+        cursor: not-allowed;
       }
       .notice p + p {
         margin-top: 5px;
@@ -1382,8 +1566,12 @@
           flex-wrap: wrap;
           font-size: 11px;
         }
-        #pairing {
+        #live {
           margin: 0;
+          width: auto;
+          padding: 5px 7px;
+          min-height: 34px;
+          color: var(--muted);
         }
         .trust {
           display: none;
@@ -1544,6 +1732,7 @@
       .github-route-details > p { color: var(--muted); font-size: 13px; }
       .github-row-actions { display: flex; flex-direction: column; align-items: flex-end; gap: 12px; }
       .github-maintenance { width: 100%; text-align: right; }
+      .github-maintenance > small { display: block; margin-top: 8px; }
       .github-maintenance .actions { margin-top: 12px; flex-direction: column; align-items: flex-end; gap: 8px; }
       .github-maintenance .actions[hidden] { display: none; }
       .github-maintenance button { max-width: 100%; white-space: normal; }
@@ -1674,11 +1863,11 @@
         </div>
       </nav>
       <div class="rail-foot">
-        <div class="connection">
-          <span class="dot" id="connectionDot"></span
-          ><span id="connectionText">Connecting…</span>
-        </div>
-        <div id="pairing">Checking gateway pairing…</div>
+        <button type="button" id="live" data-action="go-live">
+          <span class="dot" id="liveDot" aria-hidden="true"></span>
+          <span id="liveText">Checking gateway pairing…</span>
+          <span class="live-chev" aria-hidden="true">›</span>
+        </button>
         <p class="trust">
           Real credentials stay at the gateway.<br />Workers use placeholders.
         </p>
@@ -1760,6 +1949,11 @@
       const loaded = new Set(),
         failures = new Map(),
         pending = new Map();
+      // Tasks and directives are coordinator-owned: they live on the Technocore
+      // server, not in this gateway's local store. Everything else (projects,
+      // workers, traffic, policy) works without one, so only these wait for a
+      // paired gateway instead of asking for data that can only be refused.
+      const coordinatorKeys = new Set(["directives"]);
       // Provider ids whose catalog has been fetched for the card view this
       // page. Keeps the card list from refetching on every render.
       const providerCatalogs = new Set();
@@ -1804,6 +1998,10 @@
           "Policy",
           "Decide when credentials are substituted, detected, or blocked.",
         ],
+        live: [
+          "Live connection",
+          "Pair this gateway with your Technocore coordinator, or check what it is syncing.",
+        ],
       };
       const sections = {
         access: [
@@ -1834,12 +2032,20 @@
           signal: AbortSignal.timeout(timeout),
         });
         if (!r.ok) {
-          let message = await r.text();
+          let text = await r.text();
+          let body = {};
           try {
-            message = JSON.parse(message).error || message;
+            body = JSON.parse(text);
+            text = body.error || text;
           } catch {}
-          const error = new Error(message || "Request failed (" + r.status + ")");
+          const error = new Error(text || "Request failed (" + r.status + ")");
           error.status = r.status;
+          // The parsed body is kept for callers that branch on a machine-
+          // readable field (a needs-login confirm), and "no coordinator yet"
+          // is promoted to an access state the views explain with a banner
+          // rather than a refresh failure.
+          error.body = body;
+          error.gated = body.code === "technocore_unpaired";
           throw error;
         }
         return r.status === 204 ? null : r.json();
@@ -1863,49 +2069,408 @@
         if (n < 86400000) return Math.floor(n / 3600000) + "h ago";
         return Math.floor(n / 86400000) + "d ago";
       }
-      // pairingLine turns the raw enrollment snapshot into one rail line. Sync
-      // age is only meaningful once paired, so an unpaired gateway says what it
-      // is instead of "unpaired / synced 739905d ago".
+      // pairingLine names the enrollment state in one rail line. Sync age only
+      // exists once paired: an unpaired gateway has never synced, so it must
+      // not report an age, and a missing timestamp is not "a very long time
+      // ago". The rail line is a button into the Live connection view, which
+      // owns the QR, the countdown, and the confirm.
       function pairingLine(tc) {
         const status = tc.status || "unpaired";
+        const title = [tc.name, tc.placement, tc.fingerprint, tc.lastError]
+          .filter(Boolean)
+          .join("\n");
         if (status === "active")
           return {
+            phase: "active",
+            tone: "ok",
             text:
               "Technocore: paired" +
               (tc.lastSync
                 ? " · synced " + age(tc.lastSync)
                 : " · awaiting first sync"),
-            title: [tc.name, tc.placement, tc.fingerprint, tc.lastError]
-              .filter(Boolean)
-              .join("\n"),
-            href: "",
+            title,
+          };
+        if (tc.awaitingConfirm)
+          return {
+            phase: "awaiting",
+            tone: "",
+            text: "Technocore: approved · confirm",
+            title:
+              (tc.pairApprover
+                ? "Approved by " + tc.pairApprover
+                : "Approved from a phone") +
+              ". Open Live connection to finish.",
           };
         if (status === "pending")
           return {
+            phase: "scan",
+            tone: "",
             text: "Technocore: awaiting approval",
             title: tc.pairUrl
               ? "Approve this gateway at " + tc.pairUrl
-              : "Approve this gateway on the Technocore server.",
-            href: tc.pairUrl || "",
+              : "Approve this gateway on your phone.",
           };
         if (status === "error")
           return {
+            phase: "error",
+            tone: "bad",
             text: "Technocore: error",
             title: tc.lastError || "The Technocore identity could not be read.",
-            href: "",
           };
         return {
+          phase: "form",
+          tone: "",
           text: "Technocore: not connected",
           title:
-            "No Technocore server is paired. Projects, tasks, and workers run locally without one.",
-          href: "",
+            "No Technocore coordinator is paired. Projects, tasks, and workers run locally without one.",
         };
+      }
+      // Live connection state. `key` gates re-rendering so the 1.5s poll does
+      // not rebuild the panel under a finger or a keyboard; only the countdown
+      // is patched in place every second.
+      const liveUI = {
+        key: "",
+        timer: 0,
+        ticker: 0,
+        error: "",
+        needsLogin: "",
+      };
+      function livePhase(tc) {
+        if ((tc.status || "unpaired") === "active") return "active";
+        if (tc.awaitingConfirm) return "awaiting";
+        if (tc.status === "pending" && tc.pairUrl) return "scan";
+        if (tc.status === "error") return "error";
+        return "form";
+      }
+      // remaining renders the pairing deadline as m:ss. An unparseable or
+      // zero timestamp (older gateways serialize Go's zero time) is blank, not
+      // "expired 739905 days ago".
+      function remaining(ts) {
+        const at = new Date(ts).getTime();
+        if (!Number.isFinite(at) || at < Date.UTC(2000, 0, 1)) return "";
+        const left = at - Date.now();
+        if (left <= 0) return "expired";
+        const m = Math.floor(left / 60000);
+        const sec = Math.floor((left % 60000) / 1000);
+        return m + ":" + String(sec).padStart(2, "0");
+      }
+      function stopLiveClock() {
+        clearInterval(liveUI.timer);
+        clearInterval(liveUI.ticker);
+        liveUI.timer = 0;
+        liveUI.ticker = 0;
+      }
+      function startLiveClock() {
+        if (liveUI.timer) return;
+        liveUI.timer = setInterval(pollLive, 1500);
+        liveUI.ticker = setInterval(tickLive, 1000);
+      }
+      function tickLive() {
+        const tc = data.technocore || {};
+        const text = remaining(tc.pairExpiresAt);
+        document.querySelectorAll("[data-live-countdown]").forEach((el) => {
+          el.textContent = text || "—";
+        });
+      }
+      async function pollLive() {
+        if (view !== "live" || document.hidden) return;
+        try {
+          data.technocore = await api("technocore");
+          loaded.add("technocore");
+          failures.delete("technocore");
+        } catch (e) {
+          failures.set("technocore", e.message);
+        }
+        renderGlobal();
+        if (view === "live") renderLive();
+        else stopLiveClock();
+      }
+      function renderLive() {
+        if (!$("#content")) return;
+        if (!loaded.has("technocore"))
+          return replaceContent(
+            '<p class="loading">Loading the connection state…</p>',
+          );
+        const tc = data.technocore || {};
+        const phase = livePhase(tc);
+        // Poll fast only while this panel is on screen and the tab is visible.
+        if (view !== "live" || (phase !== "scan" && phase !== "awaiting"))
+          stopLiveClock();
+        else if (!document.hidden) startLiveClock();
+        const key = [
+          phase,
+          tc.pairUrl,
+          tc.fingerprint,
+          tc.pairApprover,
+          tc.pairAccount,
+          tc.lastError,
+          liveUI.error,
+          liveUI.needsLogin,
+        ].join("|");
+        if (key !== liveUI.key) {
+          liveUI.key = key;
+          replaceContent(liveMarkup(tc, phase));
+          bindLiveForm();
+        }
+        tickLive();
+      }
+      function liveMarkup(tc, phase) {
+        const notice = liveUI.error
+          ? `<div class="notice error" role="alert"><p>${esc(liveUI.error)}</p></div>`
+          : "";
+        const cli = `<details class="live-cli">
+          <summary>Connect from the terminal instead</summary>
+          <pre><code>piso gateway launch</code></pre>
+          <p>Interactive, it prints the pairing page and waits here for the confirm. Add <code>--yes</code> to confirm from the terminal once your phone approves.</p>
+        </details>`;
+        if (phase === "active")
+          return `<div class="live-wrap">${liveActive(tc)}${cli}</div>`;
+        if (phase === "error")
+          return `<div class="live-wrap"><div class="live-card">
+            <h2>The gateway identity could not be read</h2>
+            <p class="live-lead">${esc(tc.lastError || "Unknown error")}</p>
+            <div class="actions">${button("Retry", "pair-refresh")}</div>
+          </div>${cli}</div>`;
+        if (phase === "awaiting")
+          return `<div class="live-wrap">${liveAwaiting(tc)}${cli}</div>`;
+        if (phase === "scan")
+          return `<div class="live-wrap">${liveScan(tc)}${cli}</div>`;
+        return `<div class="live-wrap">${notice}${liveForm(tc)}${cli}</div>`;
+      }
+      function liveForm(tc) {
+        const expired = /expired/i.test(tc.lastError || "");
+        const declined = /declined/i.test(tc.lastError || "");
+        const lead = expired
+          ? "Code expired. Show a new one."
+          : declined
+            ? "Pairing declined. Nothing was shared."
+            : "Pairing gives this gateway the credentials your workers need. The coordinator stores only public keys and ciphertext.";
+        const server =
+          tc.serverUrl && tc.serverUrl !== "https://server.com"
+            ? tc.serverUrl
+            : "";
+        return `<section class="live-card">
+          <h2>Connect this gateway</h2>
+          <p class="live-lead">${esc(lead)}</p>
+          ${tc.lastError && !expired && !declined ? `<p class="live-hint">${esc(tc.lastError)}</p>` : ""}
+          <form class="live-form" id="liveForm">
+            <label for="pairServer">Coordinator URL
+              <input id="pairServer" name="serverUrl" type="url" inputmode="url" autocomplete="off" spellcheck="false" placeholder="https://piso.dev" value="${esc(server)}" required>
+            </label>
+            <label for="pairName">Name this gateway
+              <input id="pairName" name="name" autocomplete="off" spellcheck="false" maxlength="80" placeholder="${esc(tc.name || "gateway")}" value="${esc(tc.name || "")}">
+            </label>
+            <div class="actions"><button class="primary" id="liveStart" type="submit">Show pairing code</button></div>
+          </form>
+          <p class="live-hint">The coordinator URL is the one you opened in a browser during setup, for example <code>https://piso.dev</code>.</p>
+        </section>`;
+      }
+      function liveScan(tc) {
+        const href = safeURL(tc.pairUrl || "");
+        const link = href
+          ? `<a href="${esc(href)}" target="_blank" rel="noreferrer">${esc(tc.pairUrl)}</a>`
+          : esc(tc.pairUrl || "");
+        return `<section class="live-card live-scan">
+          <div class="live-qr"><img src="/api/v1/technocore/pair/qr.svg?v=${enc(tc.pairUrl || "")}" alt="QR code for the pairing page" width="208" height="208"></div>
+          <div>
+            <h2>Scan this with your phone</h2>
+            <p class="live-lead">Any phone will do: no app to install. Sign in on the coordinator, check this gateway's fingerprint, and tap approve.</p>
+            <p class="live-hint">${link}</p>
+            <dl class="live-meta">
+              <dt>Fingerprint</dt><dd>${esc(tc.fingerprint || "—")}</dd>
+              <dt>Code expires in</dt><dd class="live-countdown" data-live-countdown>${esc(remaining(tc.pairExpiresAt) || "—")}</dd>
+            </dl>
+            <p class="live-state"><span class="dot" aria-hidden="true"></span>Waiting for your phone…</p>
+            <p class="live-hint">Approve on the phone first; nothing connects until you confirm on this machine. A screenshot of this code is not enough on its own.</p>
+            <div class="actions">${button("Cancel", "pair-cancel", "", "quiet")}</div>
+          </div>
+        </section>`;
+      }
+      function liveAwaiting(tc) {
+        const who = tc.pairApprover || "";
+        const account = tc.pairAccount || "";
+        const heading = account
+          ? `Connect ${tc.name || "this gateway"} to ${account}?`
+          : `Connect ${tc.name || "this gateway"}?`;
+        const login = liveUI.needsLogin
+          ? `<div class="notice" role="status">
+              <p>Your phone approved without signing in. Finish in the coordinator: open Technocore, review this gateway, and choose Confirm connection.</p>
+              <div class="actions"><button type="button" class="primary" data-action="pair-login">Open Technocore to confirm</button></div>
+            </div>`
+          : "";
+        return `${login}<section class="live-card">
+          <h2>${esc(heading)}</h2>
+          <p class="live-lead">${who ? "Approved by " + esc(who) : "Approved from a phone"}. Connecting makes this gateway a member of the account, and the other gateways wrap their stored credentials for it.</p>
+          <dl class="live-meta">
+            <dt>Gateway</dt><dd>${esc(tc.name || "—")}</dd>
+            <dt>Fingerprint</dt><dd>${esc(tc.fingerprint || "—")}</dd>
+            <dt>Approved by</dt><dd>${esc(who || "a phone")}</dd>
+            ${account ? `<dt>Account</dt><dd>${esc(account)}</dd>` : ""}
+            <dt>Approval expires in</dt><dd class="live-countdown" data-live-countdown>${esc(remaining(tc.pairExpiresAt) || "—")}</dd>
+          </dl>
+          <div class="actions">
+            <button type="button" class="primary" data-action="pair-confirm">Connect this gateway</button>
+            <button type="button" class="quiet" data-action="pair-decline">Decline</button>
+          </div>
+          <p class="live-hint">Nothing has been shared yet. Declining leaves this gateway unpaired.</p>
+        </section>`;
+      }
+      function liveActive(tc) {
+        const c = tc.secrets || {};
+        const total = c.total || 0;
+        const vault =
+          total + " credential" + (total === 1 ? "" : "s") + " synced" +
+          (c.pending ? " · " + c.pending + " waiting to publish" : "");
+        return `<section class="live-card">
+          <h2>Paired</h2>
+          <p class="live-lead">This gateway syncs from ${esc(tc.serverUrl || "the coordinator")}. Workers only ever see placeholders; real values stay here.</p>
+          <dl class="live-meta">
+            <dt>Gateway</dt><dd>${esc(tc.name || "—")}</dd>
+            <dt>Fingerprint</dt><dd>${esc(tc.fingerprint || "—")}</dd>
+            <dt>Placement</dt><dd>${esc(tc.placement || "local")}</dd>
+            <dt>Last sync</dt><dd>${esc(tc.lastSync ? age(tc.lastSync) : "awaiting first sync")}</dd>
+            <dt>Vault</dt><dd>${esc(vault)}</dd>
+          </dl>
+          <p class="live-hint">This panel is read-only. Re-enrolling or switching coordinators is a terminal action: <code>piso gateway launch</code>.</p>
+        </section>`;
+      }
+      function bindLiveForm() {
+        const form = $("#liveForm");
+        if (!form) return;
+        form.onsubmit = (e) => {
+          e.preventDefault();
+          pairStart($("#pairServer").value.trim(), $("#pairName").value.trim());
+        };
+      }
+      function appliedTechnocore(tc) {
+        const wasReady = coordinatorState().ready;
+        data.technocore = tc;
+        loaded.add("technocore");
+        failures.delete("technocore");
+        liveUI.key = "";
+        // Connecting from this panel unlocks the coordinator-owned views the
+        // way a refresh would: drop what the gate had emptied, refill the
+        // collections, and reload Tasks if that is the page on screen.
+        if (!wasReady && coordinatorState().ready) {
+          Object.assign(taskUI, {
+            rows: [],
+            detail: null,
+            cursor: "",
+            previous: [],
+            next: null,
+            error: "",
+          });
+          refresh(["technocore", ...coordinatorKeys]);
+          if (view === "tasks" && !taskUI.loading) loadTasks();
+          return;
+        }
+        renderGlobal();
+        if (view === "live") renderLive();
+      }
+      function liveFailed(error) {
+        liveUI.error = error.message;
+        liveUI.key = "";
+        if (view === "live") renderLive();
+      }
+      async function pairStart(serverUrl, name) {
+        liveUI.error = "";
+        liveUI.needsLogin = "";
+        try {
+          appliedTechnocore(
+            await api("technocore/pair", "POST", { serverUrl, name }),
+          );
+          notify("Pairing code ready. Scan it with your phone.");
+        } catch (e) {
+          liveFailed(e);
+        }
+      }
+      async function pairConfirm() {
+        liveUI.error = "";
+        liveUI.needsLogin = "";
+        try {
+          appliedTechnocore(await api("technocore/pair/confirm", "POST", {}));
+          notify("Gateway paired.");
+        } catch (e) {
+          if (e.status === 409 && e.body?.needsLogin) {
+            liveUI.needsLogin = safeURL(e.body.confirmUrl || "");
+            liveUI.key = "";
+            if (view === "live") renderLive();
+            return;
+          }
+          liveFailed(e);
+        }
+      }
+      async function pairDecline() {
+        liveUI.error = "";
+        liveUI.needsLogin = "";
+        try {
+          appliedTechnocore(await api("technocore/pair/decline", "POST", {}));
+          notify("Pairing declined. Nothing was shared.");
+        } catch (e) {
+          liveFailed(e);
+        }
+      }
+      async function pairCancel() {
+        liveUI.error = "";
+        liveUI.needsLogin = "";
+        try {
+          appliedTechnocore(await api("technocore/pair/cancel", "POST", {}));
+        } catch (e) {
+          liveFailed(e);
+        }
+      }
+      // coordinatorState reads the same enrollment snapshot the rail renders.
+      // "Not loaded yet" is not "unpaired": the banner waits for the first
+      // snapshot so it does not flash on every page load.
+      function coordinatorState() {
+        const tc =
+          data.technocore && !Array.isArray(data.technocore)
+            ? data.technocore
+            : {};
+        const known = loaded.has("technocore");
+        const status = known ? tc.status || "unpaired" : "";
+        return { tc, known, status, ready: status === "active" };
+      }
+      // coordinatorNotice explains an access-restricted view. The statuses and
+      // wording track pairingLine so the rail and the page never disagree.
+      function coordinatorNotice(subject) {
+        const { status, tc } = coordinatorState();
+        if (!status || status === "active") return "";
+        // A phone approval is not enrollment: the dashboard still has to
+        // confirm, so this is a step to finish rather than a wait to sit out.
+        const awaiting = Boolean(tc.awaitingConfirm);
+        const title = awaiting
+          ? `${subject} unlock once you connect this gateway`
+          : status === "pending"
+            ? `${subject} load once this gateway is approved`
+            : status === "error"
+              ? `${subject} cannot load: this gateway's Technocore identity is unreadable`
+              : `${subject} need a paired gateway`;
+        let body;
+        if (awaiting)
+          body =
+            "Your phone approved the pairing and nothing has been shared yet. Open Live connection and choose Connect this gateway to finish.";
+        else if (status === "pending")
+          body =
+            "The pairing request is waiting for approval on the Technocore server. Tasks and directives stay unavailable here until it is approved.";
+        else if (status === "error")
+          body = esc(tc.lastError || "No detail was reported.");
+        else
+          body =
+            "Tasks and directives are kept on the Technocore server, and this gateway is not connected to one. Projects, workers, traffic, and policy work without it.";
+        const href = status === "pending" ? safeURL(tc.pairUrl || "") : "";
+        const actions = awaiting
+          ? `<div class="actions"><a href="#/live">Open Live connection</a></div>`
+          : href
+            ? `<div class="actions"><a href="${esc(href)}" target="_blank" rel="noreferrer">Open pairing page</a></div>`
+            : "";
+        return `<div class="notice info" role="status"><p><strong>${esc(title)}</strong></p><p>${body}</p>${actions}</div>`;
       }
       function badge(text, tone = "") {
         return `<span class="status ${esc(tone)}">${esc(text)}</span>`;
       }
-      function button(text, action, id = "", cls = "", label = "") {
-        return `<button type="button" class="${esc(cls)}" data-action="${esc(action)}" data-id="${esc(id)}"${label ? ` aria-label="${esc(label)}" title="${esc(label)}"` : ""}>${esc(text)}</button>`;
+      function button(text, action, id = "", cls = "", label = "", gated = false) {
+        return `<button type="button" class="${esc((cls + (gated ? " is-gated" : "")).trim())}" data-action="${esc(action)}" data-id="${esc(id)}"${label ? ` aria-label="${esc(label)}" title="${esc(label)}"` : ""}${gated ? " disabled" : ""}>${esc(text)}</button>`;
       }
       function facts(entries) {
         return `<dl class="facts">${entries
@@ -2084,32 +2649,77 @@
           `<p>${esc(error.message || error)}</p><div class="actions">${button("Close", "close")}</div>`,
         );
       }
+      // fetchKey runs one endpoint and folds the result into `data`. Gated keys
+      // land here only when the gateway is paired.
+      function fetchKey(key) {
+        if (pending.has(key)) return pending.get(key);
+        const job = api(endpoints[key])
+          .then((value) => {
+            data[key] =
+              key === "asks"
+                ? value?.asks || []
+                : key === "directives"
+                  ? value?.directives || []
+                  : value;
+            loaded.add(key);
+            failures.delete(key);
+          })
+          .catch((e) => {
+            // A coordinator-owned surface refusing because this gateway has no
+            // coordinator is a state, not a broken refresh: the view's banner
+            // says so, and the pairing line is re-read below.
+            if (e.gated) {
+              loaded.delete(key);
+              failures.delete(key);
+              return refresh(["technocore"]);
+            }
+            failures.set(key, e.message);
+            // Keep the last known GitHub session on verification/network errors.
+            // Only a successful status response may change connected state.
+            if (key === "githubMappings") data.githubMappings = [];
+          })
+          .finally(() => pending.delete(key));
+        pending.set(key, job);
+        return job;
+      }
       async function refresh(keys = Object.keys(endpoints)) {
+        const wanted = [...new Set(keys)];
+        const wasReady = coordinatorState().ready;
+        // Learn the pairing state first, so an unpaired gateway never sends a
+        // request for a coordinator-owned view that can only be refused.
+        if (!loaded.has("technocore") && wanted.some((k) => coordinatorKeys.has(k)))
+          await fetchKey("technocore");
+        const ready = coordinatorState().ready;
         await Promise.allSettled(
-          keys.map((key) => {
-            if (pending.has(key)) return pending.get(key);
-            const job = api(endpoints[key])
-              .then((value) => {
-                data[key] =
-                  key === "asks"
-                    ? value?.asks || []
-                    : key === "directives"
-                      ? value?.directives || []
-                      : value;
-                loaded.add(key);
-                failures.delete(key);
-              })
-              .catch((e) => {
-                failures.set(key, e.message);
-                // Keep the last known GitHub session on verification/network errors.
-                // Only a successful status response may change connected state.
-                if (key === "githubMappings") data.githubMappings = [];
-              })
-              .finally(() => pending.delete(key));
-            pending.set(key, job);
-            return job;
-          }),
+          wanted
+            .filter((k) => k === "technocore" || ready || !coordinatorKeys.has(k))
+            .map(fetchKey),
         );
+        // A pairing that lands mid-session unlocks the gated views without a
+        // reload; one that drops clears their rows instead of leaving them
+        // looking current.
+        if (ready !== wasReady && loaded.has("technocore")) {
+          for (const k of coordinatorKeys) {
+            if (ready) await fetchKey(k);
+            else {
+              data[k] = [];
+              loaded.delete(k);
+              failures.delete(k);
+            }
+          }
+          if (!ready) {
+            taskUI.rows = [];
+            taskUI.detail = null;
+            taskUI.cursor = "";
+            taskUI.previous = [];
+            taskUI.next = null;
+            taskUI.error = "";
+          }
+          // The Tasks view may have been drawn before the first snapshot
+          // arrived, or unlocked by this one: (re)load it now rather than
+          // waiting for the next poll.
+          if (ready && view === "tasks" && !taskUI.loading) loadTasks();
+        }
         lastRefresh = Date.now();
         renderGlobal();
         renderContent();
@@ -2135,33 +2745,75 @@
         $("#attentionCount").textContent = n || "";
         $("#blockedCount").textContent =
           list("requests").filter((r) => r.action === "block").length || "";
-        $("#connectionDot").className =
-          "dot" + (healthOK && streamOK ? " ok" : "");
-        $("#connectionText").textContent = !healthOK
-          ? "API unavailable"
-          : streamOK
-            ? "Live connection"
-            : "Polling · stream reconnecting";
+        // One rail button carries both signals: the API/stream state wins,
+        // because a dead API makes every pairing claim stale.
         const tc = data.technocore || {};
-        if (!loaded.has("technocore")) {
-          $("#pairing").textContent = "Pairing status unavailable";
-          $("#pairing").title = "";
-        } else {
-          const pair = pairingLine(tc);
-          const href = pair.href ? safeURL(pair.href) : "";
-          $("#pairing").innerHTML =
-            esc(pair.text) +
-            (href
-              ? `<br><a href="${esc(href)}" target="_blank" rel="noreferrer">Open pairing page</a>`
-              : "");
-          $("#pairing").title = pair.title;
+        const pair = loaded.has("technocore") ? pairingLine(tc) : null;
+        const tone = !healthOK || !pair ? "bad" : pair.tone;
+        $("#liveDot").className = "dot" + (tone ? " " + tone : "");
+        $("#liveText").textContent = !healthOK
+          ? "Gateway API unavailable"
+          : pair
+            ? pair.text
+            : "Technocore: status unavailable";
+        $("#live").title = [
+          !healthOK
+            ? "The gateway API is not answering. Check that the piso gateway process is running."
+            : "",
+          pair?.title || "",
+          "Open Live connection",
+        ]
+          .filter(Boolean)
+          .join("\n");
+        // Coordinator-owned destinations lose their emphasis while unpaired.
+        // They stay reachable: the view they open carries the banner that says
+        // why it is empty, which a disabled link could not do.
+        const gate = coordinatorState();
+        document
+          .querySelectorAll('nav a[data-view="tasks"], nav a[data-view="directives"]')
+          .forEach((a) => {
+            const off = gate.known && !gate.ready;
+            a.classList.toggle("is-gated", off);
+            if (off) {
+              a.title = pairingLine(gate.tc).text;
+              a.setAttribute("aria-describedby", "live");
+            } else {
+              a.removeAttribute("title");
+              a.removeAttribute("aria-describedby");
+            }
+          });
+        const head = document.querySelector(".page-actions");
+        if (head) {
+          const html = pageActions();
+          if (head.innerHTML !== html) head.innerHTML = html;
         }
         $("#updated").textContent = lastRefresh
           ? "Updated " + time(lastRefresh)
           : "Waiting for data";
-        $("#errors").innerHTML = failures.size
-          ? `<div class="notice error"><p>Some data could not be refreshed. Previously loaded records may be out of date.</p><details><summary>Connection details</summary>${[...failures].map(([k, v]) => `<p>${esc(k)}: ${esc(v)}</p>`).join("")}</details><div class="actions">${button("Retry", "retry")}</div></div>`
+        const shownFailures = [...failures].filter(
+          ([key]) => !(coordinatorKeys.has(key) && gate.known && !gate.ready),
+        );
+        $("#errors").innerHTML = shownFailures.length
+          ? `<div class="notice error"><p>Some data could not be refreshed. Previously loaded records may be out of date.</p><details><summary>Connection details</summary>${shownFailures.map(([k, v]) => `<p>${esc(k)}: ${esc(v)}</p>`).join("")}</details><div class="actions">${button("Retry", "retry")}</div></div>`
           : "";
+      }
+      // pageActions is a function because renderGlobal redraws it: the page
+      // header is drawn before the first Technocore snapshot arrives, so a
+      // coordinator-owned action has to be able to switch itself off later.
+      function pageActions() {
+        const ready = coordinatorState().ready;
+        if (view === "tasks")
+          return button("New task", "task-new", "", "primary", "", !ready);
+        if (view === "directives")
+          return button("New directive", "directive-new", "", "primary", "", !ready);
+        if (view === "projects")
+          return (
+            button("New task", "task-new", "", "", "", !ready) +
+            button("Review requests", "go-attention", "", "quiet")
+          );
+        if (view === "traffic")
+          return button(paused ? "Resume feed" : "Pause feed", "pause", "", "quiet");
+        return "";
       }
       function navigate() {
         hideTimelineTip();
@@ -2175,10 +2827,13 @@
           if (a.dataset.view === view) a.setAttribute("aria-current", "page");
           else a.removeAttribute("aria-current");
         });
+        if (view === "live") $("#live").setAttribute("aria-current", "page");
+        else $("#live").removeAttribute("aria-current");
+        if (view !== "live") stopLiveClock();
         const [title, description] = titles[view];
         document.title = title + " / piso";
         $("#page").innerHTML =
-          `<header class="page-head"><div><h1>${title}</h1><p>${description}</p></div><div class="page-actions">${view === "tasks" ? button("New task", "task-new", "", "primary") : view === "directives" ? button("New directive", "directive-new", "", "primary") : view === "projects" ? button("New task", "task-new") + button("Review requests", "go-attention", "", "quiet") : view === "traffic" ? button(paused ? "Resume feed" : "Pause feed", "pause", "", "quiet") : ""}</div></header>${sections[view] ? `<div class="subnav" aria-label="${title} sections">${sections[view].map(([k, t]) => `<button data-action="section" data-id="${k}" aria-pressed="${sub === k}">${t}</button>`).join("")}</div>` : ""}${["attention", "tasks"].includes(view) ? "" : `<div class="toolbar"><label class="search"><span class="sr-label" hidden>Search</span><input id="search" type="search" aria-label="Search ${esc(title)}" placeholder="${view === "projects" ? "Find a project…" : view === "traffic" ? "Find a worker, address, or request…" : "Filter records…"}"></label>${view === "projects" ? '<label>Show <select id="projectFilter"><option value="all">Visible projects</option><option value="needs">Needs attention</option><option value="hidden">Hidden projects</option></select></label>' : view === "traffic" ? '<label>Verdict <select id="verdictFilter"><option value="all">All requests</option><option value="block">Blocked</option><option value="substitute">Substituted</option><option value="allow">Allowed</option></select></label>' : ""}<span class="count" id="resultCount"></span></div>`}<div id="content"></div>`;
+          `<header class="page-head"><div><h1>${title}</h1><p>${description}</p></div><div class="page-actions">${pageActions()}</div></header>${sections[view] ? `<div class="subnav" aria-label="${title} sections">${sections[view].map(([k, t]) => `<button data-action="section" data-id="${k}" aria-pressed="${sub === k}">${t}</button>`).join("")}</div>` : ""}${["attention", "tasks", "live"].includes(view) ? "" : `<div class="toolbar"><label class="search"><span class="sr-label" hidden>Search</span><input id="search" type="search" aria-label="Search ${esc(title)}" placeholder="${view === "projects" ? "Find a project…" : view === "traffic" ? "Find a worker, address, or request…" : "Filter records…"}"></label>${view === "projects" ? '<label>Show <select id="projectFilter"><option value="all">Visible projects</option><option value="needs">Needs attention</option><option value="hidden">Hidden projects</option></select></label>' : view === "traffic" ? '<label>Verdict <select id="verdictFilter"><option value="all">All requests</option><option value="block">Blocked</option><option value="substitute">Substituted</option><option value="allow">Allowed</option></select></label>' : ""}<span class="count" id="resultCount"></span></div>`}<div id="content"></div>`;
         $("#search")?.addEventListener("input", (e) => {
           query = e.target.value.toLowerCase();
           renderContent();
@@ -2254,6 +2909,7 @@
         else if (view === "directives") renderDirectives();
         else if (view === "attention") renderAttention();
         else if (view === "traffic") renderTraffic();
+        else if (view === "live") renderLive();
         else renderSettings();
       }
       // Task state is separate from global refresh: only the visible page is polled.
@@ -2267,6 +2923,15 @@
       const taskTone = (t) =>
         t.status === "proposed" ? "info" : t.status === "failed" ? "bad" : t.status === "done" ? "good" : "";
       async function loadTasks() {
+        // Tasks are coordinator-owned. Do not ask for a list this gateway will
+        // refuse: the view shows the pairing banner instead of an error.
+        if (!coordinatorState().ready) {
+          taskUI.sequence++;
+          Object.assign(taskUI, {loading: false, rows: [], detail: null, cursor: "",
+            previous: [], next: null, error: ""});
+          if (view === "tasks") renderTasks();
+          return;
+        }
         const sequence = ++taskUI.sequence;
         taskUI.loading = true;
         if (view === "tasks") renderTasks();
@@ -2279,7 +2944,14 @@
           else { taskUI.rows = result.tasks; taskUI.next = result.nextCursor; }
           taskUI.error = "";
         } catch (e) {
-          if (sequence === taskUI.sequence) taskUI.error = e.message;
+          if (sequence === taskUI.sequence)
+            // A refusal for lack of a coordinator is not a refresh error: the
+            // pairing banner is the explanation, so re-read the snapshot that
+            // drives it instead of reporting a failure.
+            if (e.gated) {
+              taskUI.error = "";
+              refresh(["technocore"]);
+            } else taskUI.error = e.message;
         } finally {
           if (sequence === taskUI.sequence) {
             taskUI.loading = false;
@@ -2288,6 +2960,11 @@
         }
       }
       function renderTasks() {
+        const gate = coordinatorNotice("Tasks");
+        if (gate) return replaceContent(gate);
+        // Before the first pairing snapshot, "no tasks" would be a lie.
+        if (!coordinatorState().known)
+          return replaceContent('<p role="status">Loading tasks…</p>');
         const focusedHref = $("#content")?.contains(document.activeElement) ? document.activeElement.getAttribute("href") : null;
         const restoreLinkFocus = () => {
           if (focusedHref) [...$("#content").querySelectorAll("a")].find(a => a.getAttribute("href") === focusedHref)?.focus({preventScroll: true});
@@ -3234,6 +3911,15 @@
         return labels;
       }
       function renderDirectives() {
+        const gate = coordinatorNotice("Directives");
+        if (gate) {
+          count(0, "directives");
+          return replaceContent(gate);
+        }
+        if (!coordinatorState().known) {
+          count(0, "directives");
+          return replaceContent('<p role="status">Loading directives…</p>');
+        }
         const rows = list("directives").filter((r) =>
           matches(
             r.code,
@@ -3432,7 +4118,9 @@
         return `<nav class="github-setup" aria-label="First GitHub connection"><ol>${steps.map((label, i) => `<li${i < current ? ' class="complete"' : i === current ? ' aria-current="step"' : ""}><span>${i + 1}. ${label}</span><small>${i < current ? "Complete" : i === current ? "Next step" : "Not started"}</small></li>`).join("")}</ol></nav>`;
       }
       function setGithubRowExpanded(row, expanded) {
-        row.querySelector('.github-row-toggle').setAttribute('aria-expanded', String(expanded));
+        // Details, not management: a read-only row has a disclosure control and
+        // no action list, so nothing here may assume either exists.
+        row.querySelector('.github-row-toggle')?.setAttribute('aria-expanded', String(expanded));
         row.querySelectorAll('[data-row-detail]').forEach(detail => { detail.hidden = !expanded; });
       }
       function bindGithubRows() {
@@ -3442,26 +4130,38 @@
             // supplies Enter/Space support without making the table row a button.
             if (event.target.closest('button, a, input, select, textarea, summary') &&
                 !event.target.closest('.github-row-toggle')) return;
-            setGithubRowExpanded(row, row.querySelector('.github-row-toggle').getAttribute('aria-expanded') !== 'true');
+            setGithubRowExpanded(row, row.querySelector('.github-row-toggle')?.getAttribute('aria-expanded') !== 'true');
           });
         });
       }
-      function githubAppRows(g) {
+      // Every gateway holding a connection can change it: the sealed bundle is
+      // authoritative, so an edit made here is published and the other gateways
+      // adopt it. A row's origin is not a permission.
+      // canManage is false when the fleet has no live GitHub session: the routes
+      // render so the operator can see what workers can reach, but every action
+      // is withheld — those endpoints act as the signed-in identity, and
+      // offering a button that can only 401 is worse than saying why.
+      function githubAppRows(g, canManage = true) {
         return (g.apps || []).flatMap((app) => {
           const installations = app.installations?.length ? app.installations : [{ account: "Not installed", id: "—" }];
           return installations.map((inst) => {
             const conflict = (g.conflicts || []).some((account) => account.toLowerCase() === inst.account.toLowerCase());
             const needsRegister = app.status === "needs-register";
             const key = [g.secretId, app.id, inst.id].map(value => encodeURIComponent(value)).join('-');
-            const next = needsRegister
+            const next = !canManage ? "" : needsRegister
               ? button("Create GitHub App", "github-connect", app.id, "small primary")
               : !app.installations?.length ? button("Install on an account", "github-install", app.id, "small primary") : "";
-            const maintenance = `<div class="github-maintenance"><button type="button" class="github-row-toggle small quiet" aria-expanded="false" aria-controls="github-repos-${key} github-actions-${key}" aria-label="Manage ${esc(app.name || app.slug || 'app')} on ${esc(inst.account)}">Manage app</button><div id="github-actions-${key}" class="actions" data-row-detail hidden>${!needsRegister && app.installations?.length ? button("Install on another account", "github-install", app.id, "small") : ""}${button("Replace credentials", "github-reconnect", app.id, "small")}${button("Refresh installations", "github-refresh", app.id, "small")}${button(conflict ? "Remove conflicting app" : "Remove app", "github-remove", app.id, "small danger")}</div></div>`;
+            // Signed out withholds management, not information. The row keeps a
+            // disclosure control so the installations and repositories that
+            // decide worker access stay readable; only the action list is gone.
+            const maintenance = !canManage
+              ? `<div class="github-maintenance"><button type="button" class="github-row-toggle small quiet" aria-expanded="false" aria-controls="github-repos-${key}" aria-label="Show details for ${esc(app.name || app.slug || 'app')} on ${esc(inst.account)}">Details</button><small>Sign in to manage</small></div>`
+              : `<div class="github-maintenance"><button type="button" class="github-row-toggle small quiet" aria-expanded="false" aria-controls="github-repos-${key} github-actions-${key}" aria-label="Manage ${esc(app.name || app.slug || 'app')} on ${esc(inst.account)}">Manage app</button><div id="github-actions-${key}" class="actions" data-row-detail hidden>${!needsRegister && app.installations?.length ? button("Install on another account", "github-install", app.id, "small") : ""}${button("Replace credentials", "github-reconnect", app.id, "small")}${button("Refresh installations", "github-refresh", app.id, "small")}${button(conflict ? "Remove conflicting app" : "Remove app", "github-remove", app.id, "small danger")}</div></div>`;
             return `<tr class="github-app-row${conflict ? ' github-conflict' : ''}" data-key="github-row-${key}"><td>${esc(inst.account)}<div id="github-repos-${key}" class="github-repositories" data-row-detail hidden>${inst.repos?.length ? inst.repos.map(repo => `<div>${esc(repo)}</div>`).join('') : '<small>No repositories listed</small>'}</div></td><td>${esc(app.name || app.slug)}<br><small>App ${esc(app.appId || "not registered")}</small></td><td>${esc(inst.id)}</td><td>${badge(conflict ? "Ambiguous — blocked" : app.status, conflict || app.status !== "ok" ? "warn" : "good")}</td><td><div class="github-row-actions">${next}${maintenance}</div></td></tr>`;
           });
         }).join("");
       }
-      function githubMapping(g) {
+      function githubMapping(g, canManage = true) {
         const scope = g.gatewayOnly ? "No workers" : !g.workers?.length || g.workers.includes("*") ? "All workers" : g.workers.join(", ");
         return `<section class="github-mapping">
           <h3>${esc(g.name)}</h3>
@@ -3469,27 +4169,47 @@
           <details class="github-route-details" data-key="github-route-${esc(g.secretId)}"><summary>Routing details</summary>${facts([["Environment key", g.envKey], ["Placeholder", g.placeholder], ["Allowed hosts", g.allowedHosts]])}<p>Workers use the placeholder, not a real token. The gateway reads the account from the request URL or GraphQL variables and selects exactly one installation. Requests without an identifiable account require exactly one installation in this group. Missing or ambiguous routes are blocked; there is no default account.</p></details>
           ${(g.conflicts || []).length ? `<div class="notice" role="status"><p>Routing blocked for ${esc(g.conflicts.join(", "))}. Highlighted rows map the same account more than once.</p><p>Remove a conflicting app, or change its installations on GitHub and refresh. Removing an app removes all of its routes from the gateway.</p></div>` : ""}
           ${(g.warnings || []).map((warning) => `<p class="notice" role="status">${esc(warning)}</p>`).join("")}
-          <div class="github-table-scroll"><table class="github-routing-table"><caption class="sr-label">Account routes for ${esc(g.name)}</caption><colgroup><col style="width:25%"><col style="width:22%"><col style="width:12%"><col style="width:15%"><col style="width:26%"></colgroup><thead><tr><th scope="col">Account</th><th scope="col">App</th><th scope="col">Installation</th><th scope="col">Status</th><th scope="col">Actions</th></tr></thead><tbody>${githubAppRows(g) || '<tr><td colspan="5">No apps connected. Import an existing app or create one using the actions at the top of this page.</td></tr>'}</tbody></table></div>
+          <div class="github-table-scroll"><table class="github-routing-table"><caption class="sr-label">Account routes for ${esc(g.name)}</caption><colgroup><col style="width:25%"><col style="width:22%"><col style="width:12%"><col style="width:15%"><col style="width:26%"></colgroup><thead><tr><th scope="col">Account</th><th scope="col">App</th><th scope="col">Installation</th><th scope="col">Status</th><th scope="col">Actions</th></tr></thead><tbody>${githubAppRows(g, canManage) || '<tr><td colspan="5">No apps connected. Import an existing app or create one using the actions at the top of this page.</td></tr>'}</tbody></table></div>
         </section>`;
       }
       function renderGithub(intro) {
         const github = data.githubUser || {};
         const groups = list("githubMappings");
         const setup = githubSetup(github, groups);
-        if (!github.connected) {
-          count(0);
-          const gate = !github.configured
+        // The session is one session for the whole fleet now, so every gateway
+        // shows the same thing. Signed out is not a blank page: the routes below
+        // decide what workers can reach, so they stay visible read-only and the
+        // gate explains why no action is offered.
+        const canManage = !!github.connected;
+        const gate = canManage
+          ? ""
+          : !github.configured
             ? `<section class="empty github-gate"><h2>Configure GitHub sign-in</h2><p>Add a GitHub OAuth App (client ID and secret) once to enable dashboard sign-in. This does not grant workers repository access.</p><div class="intro-actions">${button("Configure GitHub sign-in", "github-user-config", "", "primary")}</div></section>`
             : `<section class="github-gate"><h3>Sign in to GitHub</h3><p>Sign in to manage your apps and installations. Signing out here does not stop existing worker access.</p><div class="intro-actions">${button("Sign in with GitHub", "github-user-authorize", "", "primary")}${button("Change OAuth App", "github-user-config", "", "quiet")}</div></section>`;
-          return replaceContent(intro + setup + gate);
-        }
         const visible = groups.filter((g) => matches(JSON.stringify(g)));
         count(visible.length);
-        const signedIn = `<div class="github-session"><p>Managing apps${github.login ? ` as <strong>${esc(github.login)}</strong>` : ""}</p>${button("Sign out", "github-user-signout", "", "small quiet")}</div>`;
+        // A token can be valid for personal use without read:org. Say so and
+        // offer the re-auth instead of hiding every organization-owned app
+        // with no explanation.
+        const orgNotice =
+          github.connected && github.orgAccess === false
+            ? `<p class="notice" role="status">GitHub did not grant <code>read:org</code>, so organization-owned apps are hidden. Re-authorize and accept the organization access prompt. If an organization blocks third-party apps, an owner must approve this OAuth App under Organization settings → Third-party access. ${button("Re-authorize with organization access", "github-user-authorize", "", "small")}</p>`
+            : "";
+        // A session signed in on another enrolled gateway is the same account
+        // session everywhere: show where it came from, and say plainly that
+        // signing out ends it for every gateway. Without a live session there is
+        // nothing to manage and nothing to sign out of, so the gate above is the
+        // whole story — do not render a session strip that claims otherwise.
+        const sharedSession = github.source === "technocore";
+        const signedIn = !canManage ? "" : `<div class="github-session"><p>Managing apps${github.login ? ` as <strong>${esc(github.login)}</strong>` : ""}${sharedSession ? " <small>· signed in on another gateway</small>" : ""}</p>${button("Sign out", "github-user-signout", "", "small quiet")}</div>${
+          sharedSession
+            ? `<p class="notice" role="status">You signed in on another enrolled gateway; this gateway uses the same GitHub account session. Signing out here signs out every gateway, because it is one session.</p>`
+            : ""
+        }`;
         const emptyState = groups.length
           ? empty("No matching access groups", "Try another search to see your connected apps.")
           : empty("Connect your first app", "Create a GitHub App or import an existing one using the actions above. Each access group gives workers one placeholder that can route to multiple account installations.");
-        replaceContent(intro + setup + signedIn + (visible.map(githubMapping).join("") || emptyState));
+        replaceContent(intro + setup + gate + orgNotice + signedIn + (visible.map((g) => githubMapping(g, canManage)).join("") || emptyState));
         bindGithubRows();
       }
       // renderTelegram is the Access > Telegram tab. The gateway holds the bot
@@ -4324,14 +5044,22 @@
         openExternal(new URL("/api/v1/github-user/authorize", callback).href);
       }
 
-      async function githubUserStop() {
-        try {
-          await api("github-user", "DELETE");
-          await changed(["githubUser"]);
-          notify("Signed out of GitHub.");
-        } catch (error) {
-          notify(error.message, true);
-        }
+      function githubUserStop() {
+        // The session is shared with every enrolled gateway, so sign-out is
+        // global. Ask once, saying so, instead of surprising someone on the
+        // machine they were not using.
+        confirmAction(
+          "Sign out of GitHub?",
+          (data.githubUser?.source === "technocore"
+            ? "This is the session you started on another enrolled gateway. "
+            : "The session is shared with every enrolled gateway. ") +
+            "Signing out ends it everywhere; app installations keep working for workers either way.",
+          "Sign out",
+          async () => {
+            await api("github-user", "DELETE");
+            await changed(["githubUser"]);
+          },
+        );
       }
 
       function providerCard(p) {
@@ -4976,9 +5704,21 @@
           ? data.provider.providers
           : [];
         for (const provider of providers) {
-          if (!provider.id || providerCatalogs.has(provider.id)) continue;
+          if (!provider.id) continue;
+          // Memoize on the fields the catalog describes, not the id alone: a
+          // provider whose endpoint or secret changed has a new catalog to
+          // load, and one whose stored catalog was dropped (e.g. by an edit)
+          // must be asked again instead of staying stuck on "model list
+          // pending".
+          const fingerprint =
+            provider.id +
+            "|" +
+            (provider.baseUrl || "") +
+            "|" +
+            (provider.secretId || "");
+          if (providerCatalogs.has(fingerprint)) continue;
           if (Array.isArray(provider.models) && provider.models.length) continue;
-          providerCatalogs.add(provider.id);
+          providerCatalogs.add(fingerprint);
           // A local provider's catalog is served by a proxy inside the worker
           // and is unreachable from here, so there is nothing to ask for. Skip
           // the round trip and say so directly.
@@ -5384,6 +6124,12 @@
         }
       }
       async function action(name, id, source) {
+        if (name === "task-new" || name === "directive-new" || name === "directive-edit") {
+          // The controls are disabled, so this is only reachable from a stale
+          // render. Say why instead of opening a form that cannot save.
+          if (!coordinatorState().ready)
+            return notify("Tasks and directives need a paired gateway.");
+        }
         if (name === "task-new") return newTask();
         if (name === "directive-new") return directiveForm("");
         if (name === "directive-edit") return directiveForm(id);
@@ -5408,6 +6154,18 @@
         }
         if (name === "go-attention") {
           location.hash = "#/attention";
+          return;
+        }
+        if (name === "go-live") {
+          location.hash = "#/live";
+          return;
+        }
+        if (name === "pair-refresh") return refresh(["technocore"]);
+        if (name === "pair-confirm") return pairConfirm();
+        if (name === "pair-decline") return pairDecline();
+        if (name === "pair-cancel") return pairCancel();
+        if (name === "pair-login") {
+          if (liveUI.needsLogin) openExternal(liveUI.needsLogin);
           return;
         }
         if (name === "go-github") {
@@ -5716,6 +6474,10 @@
         $("#main").focus();
       });
       window.addEventListener("hashchange", navigate);
+      document.addEventListener("visibilitychange", () => {
+        if (document.hidden) stopLiveClock();
+        else if (view === "live") renderLive();
+      });
       let streamTimer;
       function stream() {
         const es = new EventSource("/api/v1/requests/stream");
