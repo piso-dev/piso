@@ -4197,8 +4197,10 @@
             : "";
         // One session, one page. Provenance (which gateway minted the session)
         // is not rendered: every gateway shows the same session card, so the
-        // operator never has to read a dashboard differently by machine.
-        const signedIn = `<div class="github-session"><p>Managing apps${github.login ? ` as <strong>${esc(github.login)}</strong>` : ""}</p>${button("Sign out", "github-user-signout", "", "small quiet")}</div>`;
+        // operator never has to read a dashboard differently by machine. A
+        // signed-out gateway has no session to describe, so the gate above is
+        // the whole story — a strip offering "Sign out" would claim one.
+        const signedIn = !canManage ? "" : `<div class="github-session"><p>Managing apps${github.login ? ` as <strong>${esc(github.login)}</strong>` : ""}</p>${button("Sign out", "github-user-signout", "", "small quiet")}</div>`;
         const emptyState = groups.length
           ? empty("No matching access groups", "Try another search to see your connected apps.")
           : empty("Connect your first app", "Create a GitHub App or import an existing one using the actions above. Each access group gives workers one placeholder that can route to multiple account installations.");
