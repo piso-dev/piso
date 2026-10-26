@@ -20,18 +20,21 @@ AS_USER :=
 endif
 # sudo resets PATH; keep the places go / docker usually live on macOS.
 USER_PATH := $(REAL_HOME)/.orbstack/bin:/usr/local/go/bin:/usr/local/bin:/opt/homebrew/bin:$(PATH)
+# A go binary, or a shim that builds in the golang image when the host has none
+# (containers, CI). scripts/go.sh prefers a real toolchain when one appears.
+GO := $(shell command -v go 2>/dev/null || echo sh $(CURDIR)/scripts/go.sh)
 
 build:
 	# First run after adding an external module (e.g. modernc.org/sqlite):
 	# resolve the graph + write go.sum on the host (this repo has no Go
 	# toolchain inside the container). Idempotent when clean.
-	$(AS_USER) env HOME="$(REAL_HOME)" PATH="$(USER_PATH)" go mod tidy
-	$(AS_USER) env HOME="$(REAL_HOME)" PATH="$(USER_PATH)" go build -o $(BIN)/piso ./cli/cmd/piso
-	$(AS_USER) env HOME="$(REAL_HOME)" PATH="$(USER_PATH)" go build -o $(BIN)/gateway ./gateway/cmd/gateway
+	$(AS_USER) env HOME="$(REAL_HOME)" PATH="$(USER_PATH)" $(GO) mod tidy
+	$(AS_USER) env HOME="$(REAL_HOME)" PATH="$(USER_PATH)" $(GO) build -o $(BIN)/piso ./cli/cmd/piso
+	$(AS_USER) env HOME="$(REAL_HOME)" PATH="$(USER_PATH)" $(GO) build -o $(BIN)/gateway ./gateway/cmd/gateway
 
 # Cross-compile the Windows CLI. The gateway stays a Linux image.
 windows:
-	GOOS=windows GOARCH=amd64 go build -o $(BIN)/piso.exe ./cli/cmd/piso
+	GOOS=windows GOARCH=amd64 $(GO) build -o $(BIN)/piso.exe ./cli/cmd/piso
 
 # Install (or replace) a global `piso` and the Docker build context it needs:
 #   $(PREFIX)/bin/piso
