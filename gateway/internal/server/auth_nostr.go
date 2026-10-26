@@ -12,6 +12,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"piso/gateway/internal/store"
+	"piso/internal/nostrkey"
 )
 
 // Nostr signer login.
@@ -219,6 +220,54 @@ func (s *Server) handleNostrEnroll(w http.ResponseWriter, r *http.Request) {
 		"id":         rec.ID,
 		"kind":       rec.Kind,
 		"pubkey":     rec.Pubkey,
+	})
+}
+
+// handleAddNostrKey registers a nostr public key without a browser ceremony.
+//
+// Enrollment through a link proves two things at once: root on this host (the
+// link is signed by the identity key) and possession of the key (the browser
+// signs a challenge). This endpoint deliberately proves only the first. That is
+// the right trade for a fleet: an operator with root on a gateway can already
+// replace the binary, read state.json and mint links, so requiring the signer to
+// be present adds no security — it only adds a browser window per host, which is
+// exactly the thing that leads to one shared key pasted everywhere, or to a
+// gateway nobody can log in to.
+//
+// The request is host-signed (hostauth) and its body is bound into that
+// signature, so the pubkey that lands cannot differ from the one signed for.
+func (s *Server) handleAddNostrKey(w http.ResponseWriter, r *http.Request) {
+	if !s.requireHost(w, r) {
+		return
+	}
+	var body struct {
+		Pubkey string `json:"pubkey"`
+		Label  string `json:"label"`
+	}
+	if err := jsonBody(r, &body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	pub, err := nostrkey.Normalize(body.Pubkey)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	rec, err := s.Store.AddCredential(store.CredentialRec{
+		Kind:   store.CredentialNostr,
+		Label:  strings.TrimSpace(body.Label),
+		Pubkey: pub,
+	})
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"added":  true,
+		"id":     rec.ID,
+		"kind":   rec.Kind,
+		"pubkey": rec.Pubkey,
+		"label":  rec.Label,
 	})
 }
 

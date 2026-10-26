@@ -536,6 +536,10 @@ func (s *Server) requireHost(w http.ResponseWriter, r *http.Request) bool {
 func (s *Server) authRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/auth/state", s.handleAuthState)
 	mux.HandleFunc("POST /api/v1/auth/logout-all", s.handleAuthLogoutAll)
+	// A fleet path: add a nostr key from the host, no browser. A passkey cannot
+	// be added this way — its key material is generated inside the authenticator
+	// and never leaves it.
+	mux.HandleFunc("POST /api/v1/auth/nostr-keys", s.handleAddNostrKey)
 	mux.HandleFunc("DELETE /api/v1/auth/credentials/{id}", s.handleAuthDeleteCredential)
 }
 
