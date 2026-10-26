@@ -73,6 +73,17 @@ sudo make install-worker     # CLI + share tree; no gateway image, no gateway or
 piso worker launch --server https://gateway.example.com
 ```
 
+That second command is the whole flow: it pairs, then the ship pulls tasks on
+its own. A gateway signs its own certificate with the private piso CA, which a
+fresh machine cannot verify, so `worker launch` fetches that CA from the
+gateway's public `/ca.crt` (or `/api/v1/ca.pem` on a dashboard-hosted gateway),
+prints its sha256, and pins it at
+`~/.piso/technocore/workers/<slug>/gateway-ca.crt`. Compare that fingerprint
+with `piso gateway status` on the gateway host before approving the pairing. If
+the gateway has a publicly trusted certificate (Caddy with ACME), nothing is
+fetched and nothing changes. `--ca <file>` supplies the CA yourself and skips
+the fetch; `--no-ca-fetch` restores the fail-with-instructions behaviour.
+
 It copies the same share tree as `make install` (so `piso up` still works if
 the box is later promoted) but builds **only the CLI** — `bin/gateway` is a
 gateway-host artifact, and its `modernc.org/sqlite` compile is the ~3GB step
