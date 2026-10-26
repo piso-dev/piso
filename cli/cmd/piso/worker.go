@@ -38,8 +38,10 @@ func cmdWorkerLaunch(args []string) error {
 	name := fs.String("name", "", "worker slug")
 	server := fs.String("server", strings.TrimSpace(os.Getenv("PISO_SERVER_URL")), "technocore server URL")
 	noQR := fs.Bool("no-qr", false, "print the approve URL without a terminal QR")
+	caFile := fs.String("ca", "", "trust this gateway CA bundle (PEM) instead of fetching /ca.crt")
+	noCAFetch := fs.Bool("no-ca-fetch", false, "do not fetch an untrusted gateway CA; fail with instructions")
 	if err := fs.Parse(args); err != nil {
-		return errors.New("usage: piso worker launch [workspace-dir] [--name n] [--server url] [--no-qr]")
+		return errors.New("usage: piso worker launch [workspace-dir] [--name n] [--server url] [--ca file] [--no-ca-fetch] [--no-qr]")
 	}
 	// A ship is not a project. With no directory given, mount a scratch
 	// workspace that tasks clone repositories into, and let the hostname (or
@@ -99,14 +101,38 @@ func cmdWorkerLaunch(args []string) error {
 		return err
 	}
 
+	// A gateway signs its own certificate with the private piso CA, so a fresh
+	// machine cannot verify the first call. Fetch and pin that CA now (or use
+	// --ca), before any state-changing request, and use the resulting client for
+	// every pair-time call.
+	mode := caFetchAuto
+	if *noCAFetch && *caFile == "" {
+		mode = caFetchOff
+	}
+	setPairClient(nil)
+	defer setPairClient(nil)
+
 	var asg workerAssignment
 	if wid.Status != technocore.StatusActive || wid.PrincipalID == "" {
+		// Enrolling: trust must be settled before the pairing POST, which is
+		// state-changing and unauthenticated.
+		ca, err := gatewayCAClient(*server, slug, *caFile, mode)
+		if err != nil {
+			return err
+		}
+		setPairClient(ca)
 		asg, err = pairWorker(&wid, wpath, technocore.Identity{}, *noQR)
 		if err != nil {
 			return err
 		}
 	} else {
 		fmt.Printf("piso: worker already enrolled as %s (%s)\n", wid.Name, wid.PrincipalID)
+		// Relaunching must not depend on the gateway being up: this box may
+		// only need to bring its container back after a reboot. Use a pinned
+		// CA when there is one; never fetch and never fail.
+		if ca, err := gatewayCAClient(*server, slug, *caFile, caFetchOff); err == nil {
+			setPairClient(ca)
+		}
 		asg, _ = loadWorkerAssignment(slug)
 		if asg.Endpoint == "" {
 			asg, _ = pollWorkerAssignment(wid)
@@ -331,7 +357,7 @@ func pollWorkerAssignment(id technocore.Identity) (workerAssignment, error) {
 		return zero, err
 	}
 	req.Header.Set(technocore.HeaderPollToken, id.PollToken)
-	res, err := http.DefaultClient.Do(req)
+	res, err := pairHTTP().Do(req)
 	if err != nil {
 		return zero, err
 	}
@@ -438,7 +464,7 @@ func startWorkerPairing(id *technocore.Identity, path, gatewayPrincipalID string
 		bodyMap["gateway_id"] = gatewayPrincipalID
 	}
 	body, _ := json.Marshal(bodyMap)
-	res, err := http.Post(id.ServerURL+"/api/v1/pairing-requests", "application/json", bytes.NewReader(body))
+	res, err := pairHTTPPost(id.ServerURL+"/api/v1/pairing-requests", "application/json", bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("pairing: %w", err)
 	}
