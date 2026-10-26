@@ -1,4 +1,4 @@
-.PHONY: build gw-run smoke isolation install setup-install uninstall windows
+.PHONY: build gw-run smoke isolation install install-share install-worker setup-install uninstall windows
 
 BIN ?= bin
 # Default matches /usr/local/bin on PATH. Use PREFIX=$$HOME/.local to avoid sudo,
@@ -43,14 +43,7 @@ windows:
 # overwritten, then `piso setup --rebuild` recreates the gateway so the new
 # image loads ~/.piso/state.json and migrates it. When invoked via sudo,
 # setup runs as $(SUDO_USER) so data stays in that user's ~/.piso.
-install: build
-	install -d $(PREFIX)/bin $(SHARE)
-	install -m 755 $(BIN)/piso $(PREFIX)/bin/piso
-	rm -rf $(SHARE)/compose $(SHARE)/worker $(SHARE)/gateway $(SHARE)/internal $(SHARE)/cmd $(SHARE)/third_party
-	cp -R compose worker gateway internal cmd $(SHARE)/
-	install -m 644 go.mod $(SHARE)/go.mod
-	install -m 644 go.sum $(SHARE)/go.sum
-	if [ -f .dockerignore ]; then install -m 644 .dockerignore $(SHARE)/.dockerignore; fi
+install: install-share
 	@echo "installed $(PREFIX)/bin/piso"
 	@echo "share     $(SHARE)"
 	@echo "data      $(REAL_HOME)/.piso"
@@ -61,6 +54,38 @@ install: build
 
 # Uninstall: stop the global hosts-sync daemon first, then remove binaries and
 # the share tree. User data (~/.piso: secrets, CA, state) is intentionally kept.
+# The file copy both install flavors share: binary + the whole share tree.
+# `piso` finds this tree via Home() (compose/gateway.yaml must exist) and
+# `piso worker launch` stages a build context from worker/, internal/ and
+# cmd/, so the tree is copied whole even on a cloud ship — only the
+# POST-install differs.
+install-share: build
+	install -d $(PREFIX)/bin $(SHARE)
+	install -m 755 $(BIN)/piso $(PREFIX)/bin/piso
+	rm -rf $(SHARE)/compose $(SHARE)/worker $(SHARE)/gateway $(SHARE)/internal $(SHARE)/cmd $(SHARE)/third_party
+	cp -R compose worker gateway internal cmd $(SHARE)/
+	install -m 644 go.mod $(SHARE)/go.mod
+	install -m 644 go.sum $(SHARE)/go.sum
+	if [ -f .dockerignore ]; then install -m 644 .dockerignore $(SHARE)/.dockerignore; fi
+
+# Cloud-ship install: a worker-only box (its own machine, never the standalone
+# gateway host), so skip every gateway-host side effect of `make install`:
+#   - no `piso setup --rebuild` (that builds the gateway image and runs a
+#     piso-gateway + project-manager monitor container on this box)
+#   - no hosts-sync daemon (nobody browses *.piso.local from the ship; ingress
+#     is reached from the laptop through the assigned gateway)
+# It still persists PISO_MONITOR=false, so a later gateway build here cannot
+# resurrect a monitor worker. The worker image bake (apt/bun/pi/npm, minutes)
+# is unchanged: only prebuilt images from CI remove that.
+install-worker: install-share
+	@echo "installed $(PREFIX)/bin/piso (cloud ship: no gateway, no monitor, no hosts daemon)"
+	@echo "share     $(SHARE)"
+	@echo "data      $(REAL_HOME)/.piso"
+	$(AS_USER) env HOME="$(REAL_HOME)" PATH="$(USER_PATH)" \
+		PISO_DATA="$(REAL_HOME)/.piso" \
+		$(PREFIX)/bin/piso setup --no-monitor
+	@echo "next: piso worker launch --name <slug> --server https://<gateway>   (approve the pairing in the dashboard)"
+
 uninstall:
 	@echo "stopping hosts sync daemon"
 	-PISO_DATA="$(REAL_HOME)/.piso" $(PREFIX)/bin/piso sync daemon-uninstall || true
