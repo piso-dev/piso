@@ -74,3 +74,21 @@ func TestGatewayStatusUnenrolled(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// A bare hostname parses as a URL path, so net/http fails with
+// `unsupported protocol scheme ""` and the value is then stuck in
+// identity.json (LoadOrCreate only fills an empty serverUrl).
+func TestNormalizeServerURL(t *testing.T) {
+	for raw, want := range map[string]string{
+		"":                              "",
+		"api.armortron9000.com":         "https://api.armortron9000.com",
+		"api.armortron9000.com/":        "https://api.armortron9000.com",
+		" https://api.example.com/ ":    "https://api.example.com",
+		"http://127.0.0.1:8000":         "http://127.0.0.1:8000",
+		"https://workers.example.com/x": "https://workers.example.com/x",
+	} {
+		if got := normalizeServerURL(raw); got != want {
+			t.Errorf("normalizeServerURL(%q) = %q, want %q", raw, got, want)
+		}
+	}
+}

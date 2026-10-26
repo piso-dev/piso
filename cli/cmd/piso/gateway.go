@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -16,6 +17,21 @@ import (
 )
 
 const defaultTechnocoreServer = "https://server.com"
+
+// normalizeServerURL makes a coordinator URL usable by net/http. A bare
+// hostname ("api.example.com") parses as a path, so every request would fail
+// with `unsupported protocol scheme` — and because LoadOrCreate only fills an
+// EMPTY serverUrl, the bad value then sticks in identity.json forever.
+func normalizeServerURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if !strings.Contains(raw, "://") {
+		raw = "https://" + raw
+	}
+	return strings.TrimRight(raw, "/")
+}
 
 func cmdGateway(args []string) error {
 	if len(args) == 0 {
@@ -49,6 +65,44 @@ func resolvePlacementFlag(standalone bool, placement string) (string, bool, erro
 	return norm, true, nil
 }
 
+// enforceNoMonitorOnStandalone brings the host in line with the rule that a
+// standalone gateway runs no worker: the monitor is a worker, so it must not
+// live next to the vault. Nothing is persisted — MonitorEnabled() derives "off"
+// from placement, which keeps the demotion symmetric (`--placement local` gets
+// its monitor back). Only a container left over from a previous local
+// placement needs acting on.
+func enforceNoMonitorOnStandalone() {
+	if pisoconfig.MonitorEnabled() {
+		// PISO_MONITOR=1 is the explicit operator override.
+		fmt.Printf("piso: warning: %s=%s keeps the project-manager monitor on a standalone gateway host\n",
+			pisoconfig.MonitorEnvEnv, os.Getenv(pisoconfig.MonitorEnvEnv))
+		return
+	}
+	fmt.Println("piso: project-manager monitor: off (standalone gateway host)")
+
+	// compose only skips CREATING a profiled service; it never removes a
+	// running container. A host promoted from local still has one.
+	if !monitorContainerExists() {
+		return
+	}
+	if err := removeMonitor(); err != nil {
+		fmt.Fprintf(os.Stderr, "piso: warning: could not remove the monitor container: %v\n", err)
+	}
+}
+
+// monitorContainerExists is a plain docker lookup, so the compose project does
+// not have to exist for `gateway launch` to succeed on a fresh host.
+func monitorContainerExists() bool {
+	if _, err := exec.LookPath("docker"); err != nil {
+		return false
+	}
+	out, err := exec.Command("docker", "ps", "-aq", "--filter", "name="+monitorWorkerName).Output()
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(string(out)) != ""
+}
+
 func cmdGatewayLaunch(args []string) error {
 	fs := flag.NewFlagSet("gateway launch", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -64,8 +118,10 @@ func cmdGatewayLaunch(args []string) error {
 	}
 	*publicURL = strings.TrimRight(strings.TrimSpace(*publicURL), "/")
 	if *publicURL != "" {
+		*publicURL = normalizeServerURL(*publicURL)
 		*standalone = true
 	}
+	*server = normalizeServerURL(*server)
 	wantPlacement, placementSet, err := resolvePlacementFlag(*standalone, *placement)
 	if err != nil {
 		return err
@@ -86,6 +142,15 @@ func cmdGatewayLaunch(args []string) error {
 	if err != nil {
 		return err
 	}
+	// A failed first attempt can leave a wrong serverUrl behind (LoadOrCreate
+	// only fills an empty one). Nothing is enrolled yet, so let --server fix it
+	// instead of trapping the host on the old value forever.
+	if id.Status != technocore.StatusActive && strings.TrimRight(id.ServerURL, "/") != *server {
+		id.ServerURL = *server
+		if err := technocore.Save(path, id); err != nil {
+			return err
+		}
+	}
 	if placementSet {
 		id.Placement = wantPlacement
 	}
@@ -98,6 +163,14 @@ func cmdGatewayLaunch(args []string) error {
 		if err := technocore.Save(path, id); err != nil {
 			return err
 		}
+	}
+	// A standalone gateway host must not run a worker, monitor included
+	// (docs/technocore-setup.md). Do it here, at the moment placement flips,
+	// so `piso gateway launch --standalone` alone is enough and nobody has to
+	// remember --no-monitor. Must run after the save above: the check reads the
+	// file we just wrote.
+	if id.PlacementOrLocal() == technocore.PlacementStandalone {
+		enforceNoMonitorOnStandalone()
 	}
 	if id.Status == technocore.StatusActive && id.PrincipalID != "" {
 		fmt.Printf("piso: gateway already enrolled as %s (%s)\n", id.Name, id.PrincipalID)

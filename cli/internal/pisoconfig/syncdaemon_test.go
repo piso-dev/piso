@@ -93,6 +93,7 @@ func TestSyncDaemonPlistLabelAppearsOnce(t *testing.T) {
 		t.Fatalf("label should appear exactly once\n%s", plist)
 	}
 }
+
 // Regression guard: launchctl target for a LaunchDaemon must be domain-
 // qualified (system/<label>). Without it, kickstart/bootout resolve in the
 // user domain and exit 64 (the original failure). We assert the string the

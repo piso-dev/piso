@@ -87,7 +87,16 @@ services:
   # API treats it as the project-manager lens for GET /activities (full
   # board); everything else is an ordinary sandboxed worker whose LLM key
   # is a scoped secret (Workers: [monitor]).
+  #
+  # Behind a profile so a host can leave it out. It is a WORKER: on a
+  # standalone gateway colocated with the coordinator, a worker must not share
+  # the host with the vault, so that deploy runs with PISO_MONITOR=0 (see
+  # docs/technocore-setup.md). The CLI passes COMPOSE_PROFILES from
+  # ~/.piso/host.json on every compose call; naming the service explicitly
+  # (`docker compose up monitor`) still starts it, which is what
+  # `piso update` relies on.
   monitor:
+    profiles: ["monitor"]
     image: piso-worker
     container_name: piso-worker-monitor
     restart: unless-stopped

@@ -108,8 +108,13 @@ func monitorSessions(sessions []activePiSession) []activePiSession {
 }
 
 // ensureMonitorRec appends the monitor registry entry if the gateway has not
-// checkin'd it yet, so the session scan still sees a running monitor.
+// checkin'd it yet, so the session scan still sees a running monitor. A host
+// with PISO_MONITOR=0 has no such container: inventing a record would make
+// `piso update` wait on a worker that never checks in.
 func ensureMonitorRec(recs []pisoconfig.WorkerRec) []pisoconfig.WorkerRec {
+	if !pisoconfig.MonitorEnabled() {
+		return recs
+	}
 	for _, w := range recs {
 		if isMonitorWorker(w.Name, w.Slug) {
 			return recs
