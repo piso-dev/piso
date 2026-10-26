@@ -74,9 +74,11 @@ piso worker launch --server https://gateway.example.com
 ```
 
 It copies the same share tree as `make install` (so `piso up` still works if
-the box is later promoted) but stops after `piso setup --no-monitor`, which
-records the opt-out in `~/.piso/host.json`. The first `piso worker launch` still
-bakes the `piso-worker` image on this host; nothing else is built.
+the box is later promoted) but builds **only the CLI** — `bin/gateway` is a
+gateway-host artifact, and its `modernc.org/sqlite` compile is the ~3GB step
+that gets OOM-killed on a small VM — then stops after `piso setup --no-monitor`,
+which records the opt-out in `~/.piso/host.json`. The first `piso worker launch`
+still bakes the `piso-worker` image on this host; nothing else is built.
 
 A ship is **not tied to one project**. With no directory argument, `worker
 launch` creates `~/piso-work` and mounts it at `/workspace`; each task names the
