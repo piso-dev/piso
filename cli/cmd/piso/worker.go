@@ -420,6 +420,14 @@ func startRemoteWorker(proj pisoconfig.Project, asg workerAssignment) error {
 	if err := pisoconfig.EnsureWorkerPlaceholdersEnv(proj.Slug); err != nil {
 		return err
 	}
+	// Stage the worker build context before rendering the compose file: the
+	// template embeds the context hash and points `build:` at the staged dir, and
+	// on a fresh ship nothing has been staged yet (no prior `piso up`).
+	if n, err := prepareWorkerBuild(); err != nil {
+		return err
+	} else if n > 0 {
+		fmt.Printf("piso: baking %d host extensions into the worker image\n", n)
+	}
 	file, err := pisoconfig.WriteRemoteWorkerCompose(proj, asg.Endpoint, asg.Token)
 	if err != nil {
 		return err
@@ -427,11 +435,6 @@ func startRemoteWorker(proj pisoconfig.Project, asg workerAssignment) error {
 	env, err := dockerComposeEnv()
 	if err != nil {
 		return err
-	}
-	if n, err := prepareWorkerBuild(); err != nil {
-		return err
-	} else if n > 0 {
-		fmt.Printf("piso: baking %d host extensions into the worker image\n", n)
 	}
 	if workerNeedsBuild() {
 		fmt.Println("piso: building shared worker image")
