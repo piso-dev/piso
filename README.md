@@ -61,6 +61,23 @@ piso expose 5173 --name preview   # reverse-proxy a worker dev server
 
 `make install` (including `sudo make install` over an existing copy) replaces `$(PREFIX)/bin/piso` and `$(PREFIX)/share/piso`, then runs `piso setup --rebuild` as the login user. That imports any leftover repo `.piso` files that `~/.piso` does not already have, rebuilds the gateway image, recreates the container, and migrates `state.json` on startup. Live secrets in `~/.piso` are kept. Gateway secrets/CA/logs live in `~/.piso` (`PISO_DATA` overrides). Override the share tree with `PISO_HOME`. Secrets filled in the dashboard **Blocked secrets** modal are stored in the gateway; the next `piso attach` exports placeholders only (`ANTHROPIC_API_KEY=piso_…`) from `~/.piso/placeholders.env`. Existing workers need one `piso up` to mount that file.
 
+### Cloud-ship install (worker only)
+
+On a machine that will only run a launched worker — its own box, never the
+gateway host — use `make install-worker` instead:
+
+```bash
+sudo make install-worker     # CLI + share tree; no gateway image, no gateway or
+                             # monitor container, no hosts-sync daemon
+piso worker launch --name proj --server https://gateway.example.com
+piso attach
+```
+
+It copies the same share tree as `make install` (so `piso up` still works if
+the box is later promoted) but stops after `piso setup --no-monitor`, which
+records the opt-out in `~/.piso/host.json`. The first `piso worker launch` still
+bakes the `piso-worker` image on this host; nothing else is built.
+
 ### Piso model providers
 
 The dashboard manages a stack of model providers. Each profile pairs a
