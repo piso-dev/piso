@@ -51,13 +51,38 @@ if [ -f /piso-ca.pem ]; then
   fi
 fi
 
-# Host pi-profile is a directory mount at /opt/piso/pi-profile. Do not bind-mount
-# settings.json / models.json as files: if they are missing, Docker creates host
-# directories, then later "mount a directory onto a file" fails against the
-# agent volume. Symlink from the dir mount into the volume.
+# Pi profile: two sources, one shape.
+#
+# The gateway owns the profile (dashboard providers as piso_ placeholders, plus
+# the active default model). On a single host it rewrites
+# ${PISO_DATA}/pi-profile in place and every worker mounts that directory
+# read-only, so nothing has to be pushed. A cloud ship has no local gateway:
+# its /opt/piso/pi-profile is an empty directory Docker created for the mount,
+# and without a copy pi would start with no provider -- visible only later, as
+# a model call that cannot resolve a key. piso-profile-sync pulls the same two
+# files over the worker API and keeps them fresh on the agent volume.
+#
+# Fetched copy wins; the mount is the fallback (and the only source on a local
+# hull). Either way pi reads /root/.pi/agent, which is a symlink to a file that
+# is rewritten in place, so a dashboard change reaches the next session without
+# recreating the container.
+#
+# Do not bind-mount settings.json / models.json as files: if they are missing,
+# Docker creates host directories, then later "mount a directory onto a file"
+# fails against the agent volume.
+mkdir -p /root/.pi/agent
+if [ "${PISO_HULL:-}" = "cloud_ship" ] && [ -x /usr/local/bin/piso-profile-sync ]; then
+  # Bounded: a gateway that is down at boot must not hold up pi. The respawned
+  # loop below keeps trying, and links the profile as soon as it succeeds.
+  if ! timeout 20 /usr/local/bin/piso-profile-sync --once >>"$PISO_LOG_DIR/pi-profile-sync.log" 2>&1; then
+    echo "piso: no pi profile from the gateway yet; pi starts without providers (see $PISO_LOG_DIR/pi-profile-sync.log)" >&2
+  fi
+fi
 if [ -d /opt/piso/pi-profile ]; then
-  mkdir -p /root/.pi/agent
   for f in settings.json models.json; do
+    if [ -s "/root/.pi/agent/pi-profile/$f" ]; then
+      continue
+    fi
     if [ -e "/opt/piso/pi-profile/$f" ]; then
       rm -rf "/root/.pi/agent/$f"
       ln -sfn "/opt/piso/pi-profile/$f" "/root/.pi/agent/$f"
@@ -284,6 +309,12 @@ fi
 # model) so the dashboard request log can label each row. Advisory only.
 if [ -n "${GATEWAY_URL:-}" ] && [ -n "${PISO_WORKER_NAME:-}" ] && [ -n "${PISO_WORKER_SLUG:-}" ] && [ -x /usr/local/bin/piso-context-watch ]; then
   respawn /usr/local/bin/piso-context-watch "$PISO_LOG_DIR/context-watch.log"
+fi
+
+# Keep the fetched pi profile in step with the dashboard (cloud ships only: a
+# local hull's profile is rewritten in place by the gateway on this host).
+if [ "${PISO_HULL:-}" = "cloud_ship" ] && [ -x /usr/local/bin/piso-profile-sync ]; then
+  respawn /usr/local/bin/piso-profile-sync "$PISO_LOG_DIR/pi-profile-sync.log"
 fi
 
 # Unattended inbox loop: peek every ≤5 min when pi is down, one session per
