@@ -125,6 +125,10 @@ Usage:
                          print a single-use link that registers a passkey or a
                          nostr signer for the dashboard. Root on the gateway host
                          is what authorises it; nothing is emailed or logged.
+  piso gateway auth add-nostr [--label L] <pubkey|npub>...
+                         add a nostr key from the host, no browser. Run it on
+                         each gateway the key should work on: the key is
+                         portable, the authorisation is per-gateway.
   piso gateway auth status        who may sign in (host-signed)
   piso gateway auth logout-all    revoke every dashboard session at once
   piso gateway auth remove <id>   delete one credential

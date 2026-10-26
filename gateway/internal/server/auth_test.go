@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -1001,4 +1002,215 @@ func postAuth(t *testing.T, s *Server, host, path string, body any) *httptest.Re
 	w := httptest.NewRecorder()
 	s.authPublicRoutesForTest().ServeHTTP(w, r)
 	return w
+}
+
+// Adding a nostr key from the host is the fleet path: no browser, no ceremony,
+// because root on the gateway already implies the ability to do worse.
+func TestAddNostrKeyFromHost(t *testing.T) {
+	s := testAuthServer(t)
+	id := s.testIdentity(t)
+
+	priv, err := btcec.NewPrivateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pubHex := hex.EncodeToString(schnorr.SerializePubKey(priv.PubKey()))
+
+	post := func(signed bool, body any) *httptest.ResponseRecorder {
+		raw, err := json.Marshal(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:8080/api/v1/auth/nostr-keys", bytes.NewReader(raw))
+		r.RemoteAddr = "127.0.0.1:5555"
+		r.Header.Set("Content-Type", "application/json")
+		if signed {
+			if err := hostauth.Apply(r, id.SigningPrivateKey, time.Now()); err != nil {
+				t.Fatal(err)
+			}
+		}
+		w := httptest.NewRecorder()
+		s.WebHandler().ServeHTTP(w, r)
+		return w
+	}
+
+	t.Run("unsigned is refused", func(t *testing.T) {
+		if w := post(false, map[string]string{"pubkey": pubHex}); w.Code != http.StatusUnauthorized {
+			t.Fatalf("want 401, got %d: %s", w.Code, w.Body)
+		}
+	})
+
+	t.Run("a typo is refused, not stored", func(t *testing.T) {
+		for _, bad := range []string{"", "7e7e", strings.Repeat("f", 64), "not-a-key"} {
+			if w := post(true, map[string]string{"pubkey": bad}); w.Code != http.StatusBadRequest {
+				t.Fatalf("%q: want 400, got %d: %s", bad, w.Code, w.Body)
+			}
+		}
+		if len(s.Store.CredentialRecs()) != 0 {
+			t.Fatal("a rejected key must not be stored")
+		}
+	})
+
+	t.Run("an npub works and is normalised", func(t *testing.T) {
+		npub, err := npubFor(pubHex)
+		if err != nil {
+			t.Fatal(err)
+		}
+		w := post(true, map[string]string{"pubkey": npub, "label": "fleet"})
+		if w.Code != http.StatusOK {
+			t.Fatalf("want 200, got %d: %s", w.Code, w.Body)
+		}
+		var out struct {
+			Pubkey string `json:"pubkey"`
+			ID     string `json:"id"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+			t.Fatal(err)
+		}
+		if out.Pubkey != pubHex {
+			t.Fatalf("stored %q, want the hex form %q", out.Pubkey, pubHex)
+		}
+		rec, ok := s.Store.CredentialByPubkey(pubHex)
+		if !ok {
+			t.Fatal("the key must be in the store")
+		}
+		if rec.Label != "fleet" {
+			t.Fatalf("label lost: %q", rec.Label)
+		}
+	})
+
+	t.Run("the added key can sign in", func(t *testing.T) {
+		ch := challengeFor(t, s, "gw.example", "login")
+		ev := signNostr(t, priv, time.Now().Unix(), nostrKindAuth, [][]string{
+			{"challenge", ch}, {"domain", "gw.example"},
+		}, "")
+		w := postAuth(t, s, "gw.example", "/auth/nostr/verify", map[string]any{"event": ev})
+		if w.Code != http.StatusOK {
+			t.Fatalf("added key must authenticate: %d %s", w.Code, w.Body)
+		}
+	})
+
+	t.Run("re-adding the same key replaces the row", func(t *testing.T) {
+		before, ok := s.Store.CredentialByPubkey(pubHex)
+		if !ok {
+			t.Fatal("missing key")
+		}
+		w := post(true, map[string]string{"pubkey": pubHex, "label": "renamed"})
+		if w.Code != http.StatusOK {
+			t.Fatalf("want 200, got %d: %s", w.Code, w.Body)
+		}
+		after, ok := s.Store.CredentialByPubkey(pubHex)
+		if !ok {
+			t.Fatal("missing key after re-add")
+		}
+		if after.ID != before.ID {
+			t.Fatalf("re-adding must keep the row id (%s became %s), or the operator is silently signed out", before.ID, after.ID)
+		}
+		if after.Label != "renamed" {
+			t.Fatalf("label not updated: %q", after.Label)
+		}
+		if n := len(s.Store.CredentialRecs()); n != 1 {
+			t.Fatalf("want 1 credential, got %d", n)
+		}
+	})
+}
+
+// A signed request must not be reusable with a different body: the whole point
+// of adding a key from the host is that the key that lands is the key that was
+// signed for.
+func TestHostSignatureCoversTheBody(t *testing.T) {
+	s := testAuthServer(t)
+	id := s.testIdentity(t)
+
+	mine, err := btcec.NewPrivateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	theirs, err := btcec.NewPrivateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	mineHex := hex.EncodeToString(schnorr.SerializePubKey(mine.PubKey()))
+	theirsHex := hex.EncodeToString(schnorr.SerializePubKey(theirs.PubKey()))
+
+	// Sign a request that names my key …
+	signedBody, _ := json.Marshal(map[string]string{"pubkey": mineHex})
+	r := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:8080/api/v1/auth/nostr-keys", bytes.NewReader(signedBody))
+	r.RemoteAddr = "127.0.0.1:5555"
+	if err := hostauth.Apply(r, id.SigningPrivateKey, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	// … then swap the payload for someone else's, keeping the signature.
+	swapped, _ := json.Marshal(map[string]string{"pubkey": theirsHex})
+	r.Body = io.NopCloser(bytes.NewReader(swapped))
+	r.ContentLength = int64(len(swapped))
+
+	w := httptest.NewRecorder()
+	s.WebHandler().ServeHTTP(w, r)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("a swapped body must break the signature, got %d: %s", w.Code, w.Body)
+	}
+	if _, ok := s.Store.CredentialByPubkey(theirsHex); ok {
+		t.Fatal("the substitute key must not have been added")
+	}
+}
+
+// npubFor encodes a hex pubkey as npub, using the same charset as nostrkey's
+// decoder. Kept in the test so the production package has no encoder.
+func npubFor(pubHex string) (string, error) {
+	raw, err := hex.DecodeString(pubHex)
+	if err != nil {
+		return "", err
+	}
+	const charset = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
+	var five []byte
+	acc, bits := 0, 0
+	for _, b := range raw {
+		acc = acc<<8 | int(b)
+		bits += 8
+		for bits >= 5 {
+			bits -= 5
+			five = append(five, byte(acc>>bits&31))
+		}
+	}
+	if bits > 0 {
+		five = append(five, byte(acc<<(5-bits)&31))
+	}
+	expand := func(hrp string) []byte {
+		out := make([]byte, 0, len(hrp)*2+1)
+		for i := 0; i < len(hrp); i++ {
+			out = append(out, hrp[i]>>5)
+		}
+		out = append(out, 0)
+		for i := 0; i < len(hrp); i++ {
+			out = append(out, hrp[i]&31)
+		}
+		return out
+	}
+	gen := [5]uint32{0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3}
+	polymod := func(v []byte) uint32 {
+		var chk uint32 = 1
+		for _, x := range v {
+			top := chk >> 25
+			chk = (chk&0x1ffffff)<<5 ^ uint32(x)
+			for i := 0; i < 5; i++ {
+				if (top>>uint(i))&1 == 1 {
+					chk ^= gen[i]
+				}
+			}
+		}
+		return chk
+	}
+	const hrp = "npub"
+	pm := polymod(append(expand(hrp), append(five, 0, 0, 0, 0, 0, 0)...)) ^ 1
+	var out []byte
+	out = append(out, hrp...)
+	out = append(out, '1')
+	for _, x := range five {
+		out = append(out, charset[x])
+	}
+	for i := 0; i < 6; i++ {
+		out = append(out, charset[pm>>uint(5*(5-i))&31])
+	}
+	return string(out), nil
 }

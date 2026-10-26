@@ -12,11 +12,14 @@
 package hostauth
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -25,7 +28,12 @@ import (
 
 // Version prefixes the signed message, so a host signature can never be
 // replayed as an enrollment link (both are signed with the identity key).
-const Version = "piso-host-auth.v1"
+//
+// v2 binds the request body into the signature. Without it a request that
+// carries authority in its payload — "add this nostr pubkey as an operator" —
+// could have that payload swapped in flight by anyone who can see the request,
+// leaving the signature valid. The path alone does not pin a pubkey.
+const Version = "piso-host-auth.v2"
 
 // MaxSkew is how far the request clock may differ from the gateway's.
 const MaxSkew = 60 * time.Second
@@ -40,36 +48,54 @@ const (
 // ErrInvalid is returned for a request that does not verify.
 var ErrInvalid = errors.New("invalid host authentication")
 
+// maxBody is the largest body a signed request may carry. The CLI sends small
+// JSON documents; anything bigger is not one of ours.
+const maxBody = 1 << 20
+
 // Message is the canonical string signed by the CLI: method and path bind the
-// signature to this one call, the timestamp bounds it in time, and the nonce
-// makes it single-use.
-func Message(method, path string, ts int64, nonce string) string {
+// signature to this one call, the body digest binds the payload, the timestamp
+// bounds it in time, and the nonce makes it single-use.
+func Message(method, path string, ts int64, nonce, bodyDigest string) string {
 	return strings.Join([]string{
 		Version,
 		strings.ToUpper(strings.TrimSpace(method)),
 		path,
+		bodyDigest,
 		strconv.FormatInt(ts, 10),
 		nonce,
 	}, "\n")
 }
 
+// BodyDigest is the hash of the request body that goes into the signature. An
+// empty body has a digest too, so a bodyless request and a request with an empty
+// object are distinct.
+func BodyDigest(body []byte) string {
+	sum := sha256.Sum256(body)
+	return hex.EncodeToString(sum[:])
+}
+
 // Sign returns the hex signature for one host-authenticated request.
-func Sign(privHex, method, path string, ts int64, nonce string) (string, error) {
+func Sign(privHex, method, path string, ts int64, nonce, bodyDigest string) (string, error) {
 	key, err := privateKey(privHex)
 	if err != nil {
 		return "", err
 	}
-	return hex.EncodeToString(ed25519.Sign(key, []byte(Message(method, path, ts, nonce)))), nil
+	return hex.EncodeToString(ed25519.Sign(key, []byte(Message(method, path, ts, nonce, bodyDigest)))), nil
 }
 
-// Apply signs an outgoing request and adds the three headers.
+// Apply signs an outgoing request and adds the three headers. It reads and
+// replaces the body, so the caller may still send it.
 func Apply(req *http.Request, privHex string, now time.Time) error {
+	body, err := drainBody(req)
+	if err != nil {
+		return err
+	}
 	nonce, err := nonce()
 	if err != nil {
 		return err
 	}
 	ts := now.Unix()
-	sig, err := Sign(privHex, req.Method, req.URL.RequestURI(), ts, nonce)
+	sig, err := Sign(privHex, req.Method, req.URL.RequestURI(), ts, nonce, BodyDigest(body))
 	if err != nil {
 		return err
 	}
@@ -103,7 +129,11 @@ func Verify(pubHex string, r *http.Request, path string, now time.Time) error {
 	if err != nil || len(sig) != ed25519.SignatureSize {
 		return fmt.Errorf("%w: bad signature encoding", ErrInvalid)
 	}
-	msg := Message(r.Method, path, ts, nonce)
+	body, err := drainBody(r)
+	if err != nil {
+		return fmt.Errorf("%w: %w", ErrInvalid, err)
+	}
+	msg := Message(r.Method, path, ts, nonce, BodyDigest(body))
 	if !ed25519.Verify(ed25519.PublicKey(pub), []byte(msg), sig) {
 		return fmt.Errorf("%w: signature mismatch", ErrInvalid)
 	}
@@ -111,6 +141,24 @@ func Verify(pubHex string, r *http.Request, path string, now time.Time) error {
 		return fmt.Errorf("%w: empty nonce", ErrInvalid)
 	}
 	return nil
+}
+
+// drainBody returns the request body and puts it back for the handler. Verify
+// runs before the handler, so a request body must survive the check.
+func drainBody(r *http.Request) ([]byte, error) {
+	if r.Body == nil || r.Body == http.NoBody {
+		return nil, nil
+	}
+	b, err := io.ReadAll(io.LimitReader(r.Body, maxBody+1))
+	if err != nil {
+		return nil, fmt.Errorf("read body: %w", err)
+	}
+	_ = r.Body.Close()
+	if len(b) > maxBody {
+		return nil, fmt.Errorf("body too large")
+	}
+	r.Body = io.NopCloser(bytes.NewReader(b))
+	return b, nil
 }
 
 // NonceKey is the replay-cache key for a verified request.

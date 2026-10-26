@@ -316,7 +316,7 @@ func cmdGatewayStatus() error {
 	// Dashboard login state, when the gateway answers. Best-effort on purpose:
 	// status must still work while the gateway is stopped.
 	var st authStateOut
-	if err := gatewayAuthCall(http.MethodGet, "/api/v1/auth/state", &st); err == nil {
+	if err := gatewayAuthCall(http.MethodGet, "/api/v1/auth/state", nil, &st); err == nil {
 		switch {
 		case !st.Required:
 			fmt.Println("dashboard:   no login required (control plane is not reachable off-host)")
