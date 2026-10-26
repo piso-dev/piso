@@ -39,15 +39,30 @@ func cmdWorkerLaunch(args []string) error {
 	server := fs.String("server", strings.TrimSpace(os.Getenv("PISO_SERVER_URL")), "technocore server URL")
 	noQR := fs.Bool("no-qr", false, "print the approve URL without a terminal QR")
 	if err := fs.Parse(args); err != nil {
-		return errors.New("usage: piso worker launch [dir] [--name n] [--server url] [--no-qr]")
+		return errors.New("usage: piso worker launch [workspace-dir] [--name n] [--server url] [--no-qr]")
 	}
-	dir := "."
+	// A ship is not a project. With no directory given, mount a scratch
+	// workspace that tasks clone repositories into, and let the hostname (or
+	// --name) identify the worker. An explicit directory still wins, so
+	// launching against one checkout keeps working.
+	dir, makeDir := "", false
 	if rest := fs.Args(); len(rest) > 0 {
 		dir = rest[0]
+	} else {
+		ws, err := pisoconfig.ShipWorkspace()
+		if err != nil {
+			return err
+		}
+		dir, makeDir = ws, true
 	}
 	abs, err := filepath.Abs(dir)
 	if err != nil {
 		return err
+	}
+	if makeDir {
+		if err := os.MkdirAll(abs, 0o755); err != nil {
+			return fmt.Errorf("create ship workspace %s: %w", abs, err)
+		}
 	}
 	local, localErr := loadLocalGatewayIdentity()
 	if err := errIfStandaloneGatewayHost(local, localErr); err != nil {
@@ -69,7 +84,7 @@ func cmdWorkerLaunch(args []string) error {
 	if err != nil {
 		return err
 	}
-	slug, err := chooseWorkerSlug(proj.Dir, *name)
+	slug, err := chooseWorkerSlug(proj.Dir, *name, shipSlug())
 	if err != nil {
 		return err
 	}
@@ -405,7 +420,9 @@ func startRemoteWorker(proj pisoconfig.Project, asg workerAssignment) error {
 	if err := waitWorkerReady(proj.WorkerName()); err != nil {
 		return err
 	}
-	fmt.Printf("piso: remote worker %s ready via %s (%s). Run `piso attach`.\n", proj.WorkerName(), asg.Mode, asg.Endpoint)
+	fmt.Printf("piso: remote worker %s ready via %s (%s).\n", proj.WorkerName(), asg.Mode, asg.Endpoint)
+	fmt.Printf("piso: it works in %s and clones each task's repository underneath it.\n", proj.Dir)
+	fmt.Printf("piso: no attach needed — it pulls tasks on its own. `piso attach %s` opens a shell there.\n", proj.Dir)
 	return nil
 }
 

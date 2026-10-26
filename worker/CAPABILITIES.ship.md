@@ -33,9 +33,11 @@ Read the rest for *how*, not for permission.
   no-new-privileges. `apt-get install`, `pip`, `npm -g` all work inside the
   container; they are wiped on recreate, which is why durable state belongs on
   `/host` or on the agent volume.
-- `/workspace` is the project checkout (rw, shared with `piso attach`), and
-  `/root/.pi/agent` is the persistent agent volume (sessions, skills,
-  extensions, logs) — the one exec-allowed writable dir that is *not* the host.
+- `/workspace` is a scratch workspace on the host (rw, shared with
+  `piso attach`), **not** one project: tasks clone their repository to
+  `/workspace/<owner>/<repo>` and work there. `/root/.pi/agent` is the
+  persistent agent volume (sessions, skills, extensions, logs) — the one
+  exec-allowed writable dir that is *not* the host.
 - **Model/API egress goes through the gateway**, and you hold only `piso_…`
   placeholders. Keep it that way: the gateway is how the operator sees what
   left the machine and how real credentials stay out of your hands. Do not
@@ -55,9 +57,10 @@ Two destinations, pick deliberately:
   Lives on the agent volume; `workbench status` / `workbench clean --caches`
   keep disk pressure down.
 
-Never install into `/workspace` (that is the user's repo) and never leave
-builds in `/tmp` or `/dev/shm` (tmpfs, mounted **noexec** — a binary unpacked
-there dies with exit 126 and looks broken).
+Never install into a checkout under `/workspace` (a repository does not want a
+random toolchain in it) and never leave builds in `/tmp` or `/dev/shm` (tmpfs,
+mounted **noexec** — a binary unpacked there dies with exit 126 and looks
+broken).
 
 ## Boundaries that remain (and why)
 
@@ -86,8 +89,16 @@ host request is a stall, not a handoff. Do the work, then report it in your
 Use `kind=host` / `host_request` only when the machine genuinely cannot do it
 itself — e.g. something that must happen on the *gateway* box.
 
-## GitHub clone fallback
+## Interactive sessions suppress the task loop
 
+This worker pulls tasks by itself (`piso-task-watch`), and it claims nothing
+while any live pi session exists — including an attached one sitting idle at a
+prompt. So `piso attach` is break-glass, not the operating mode. Whoever
+attaches lands in `/workspace`, the scratch root; the work is one level down,
+under `<owner>/<repo>`. Use `--shell` for poking at the box rather than a full
+session, and exit when done so the queue drains again.
+
+## GitHub clone fallback
 Still worth knowing, since the proxy can deny a clone: prepare a fallback with
 `gh repo clone` and the parsed `OWNER/REPO` (strip a trailing `/` and `.git`),
 preserving the requested destination:

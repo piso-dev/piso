@@ -114,7 +114,11 @@ func slugTaken(slug, dir string) bool {
 	return !pathsEqual(ws, dir)
 }
 
-func chooseWorkerSlug(dir, nameFlag string) (string, error) {
+// chooseWorkerSlug names the worker for dir. proposed is the name to offer when
+// nothing is locked yet: a project passes "" (the directory decides), while a
+// cloud ship passes shipSlug() because the machine, not the workdir, is the
+// ship's identity.
+func chooseWorkerSlug(dir, nameFlag, proposed string) (string, error) {
 	existing := existingSlugForDir(dir)
 	if existing != "" {
 		if err := rejectNameFlag(nameFlag, existing); err != nil {
@@ -125,8 +129,9 @@ func chooseWorkerSlug(dir, nameFlag string) (string, error) {
 		return existing, nil
 	}
 
-	saved, _ := pisoconfig.LoadProjectSlug(dir)
-	proposed := saved
+	if saved, ok := pisoconfig.LoadProjectSlugUp(dir); ok {
+		proposed = saved
+	}
 	if proposed == "" {
 		proposed = pisoconfig.DefaultSlug(dir)
 	}
@@ -152,6 +157,22 @@ func chooseWorkerSlug(dir, nameFlag string) (string, error) {
 		return "", err
 	}
 	return slug, nil
+}
+
+// shipSlug is the name a cloud ship proposes for itself: its hostname. A ship
+// serves whatever project the queue hands it, so naming it after the directory
+// it happens to be launched from would pin it to one. Empty means "let the
+// directory decide", which is what a project wants.
+func shipSlug() string {
+	host, err := os.Hostname()
+	if err != nil {
+		return ""
+	}
+	slug := pisoconfig.SanitizeSlug(host)
+	if slug == "" || pisoconfig.ReservedSlug(slug) {
+		return ""
+	}
+	return slug
 }
 
 func rejectNameFlag(nameFlag, locked string) error {
