@@ -2,8 +2,11 @@ package main
 
 import (
 	"os"
+	"strings"
 	"testing"
+	"time"
 
+	"piso/internal/authlink"
 	"piso/internal/technocore"
 )
 
@@ -90,5 +93,75 @@ func TestNormalizeServerURL(t *testing.T) {
 		if got := normalizeServerURL(raw); got != want {
 			t.Errorf("normalizeServerURL(%q) = %q, want %q", raw, got, want)
 		}
+	}
+}
+
+// An enrollment link is signed by the local identity, so it can only be redeemed
+// by the gateway that holds the matching key — not by "any gateway".
+func TestEnrollLinkIsBoundToThisGateway(t *testing.T) {
+	mint := func(t *testing.T) (technocore.Identity, string, string, int64) {
+		t.Helper()
+		dir := t.TempDir()
+		t.Setenv("PISO_DATA", dir)
+		path, err := identityPath()
+		if err != nil {
+			t.Fatal(err)
+		}
+		id, err := technocore.LoadOrCreate(path, "https://server.example", "gw")
+		if err != nil {
+			t.Fatal(err)
+		}
+		nonce, err := authlink.NewNonce()
+		if err != nil {
+			t.Fatal(err)
+		}
+		exp := time.Now().Add(authlink.TTL).Unix()
+		sig, err := authlink.Sign(id.SigningPrivateKey, nonce, exp)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return id, nonce, sig, exp
+	}
+
+	mine, nonce, sig, exp := mint(t)
+	other, _, _, _ := mint(t)
+
+	if authlink.Verify(mine.SigningPublicKey, nonce, sig, exp, time.Now()) != nil {
+		t.Fatal("the minting gateway must accept its own link")
+	}
+	// The whole point: a different gateway's identity rejects it.
+	if err := authlink.Verify(other.SigningPublicKey, nonce, sig, exp, time.Now()); err == nil {
+		t.Fatal("an enrollment link must not be redeemable on another gateway")
+	}
+	if mine.SigningPublicKey == other.SigningPublicKey {
+		t.Fatal("two gateways must not share an identity key")
+	}
+}
+
+// The link points at the dashboard, never at the control API or a worker URL.
+func TestEnrollLinkTargetsDashboardOrigin(t *testing.T) {
+	id := technocore.Identity{
+		Status:    technocore.StatusActive,
+		PublicURL: "https://gateway.example.com", // worker-facing mux, different name
+	}
+	base, err := dashboardBase(id, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if base != "https://gateway.example.com" {
+		t.Fatalf("base = %q", base)
+	}
+	// The link itself is rooted there, not at the control API.
+	link := authlink.URL(base, "abc", "sig", 1700000000)
+	if !strings.HasPrefix(link, "https://gateway.example.com/auth/link?") {
+		t.Fatalf("link = %q", link)
+	}
+	// An explicit dashboard host wins over the public worker URL.
+	base, err = dashboardBase(id, "dashboard.example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if base != "https://dashboard.example.com" {
+		t.Fatalf("explicit --host must win, got %q", base)
 	}
 }
