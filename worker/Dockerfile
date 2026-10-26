@@ -209,6 +209,7 @@ COPY ports-watch.sh /usr/local/bin/piso-ports-watch
 COPY activity-watch.sh /usr/local/bin/piso-activity-watch
 COPY activity-state.py /usr/local/lib/piso-activity-state.py
 COPY mcp-add.sh /usr/local/bin/piso-mcp-add
+COPY workbench.sh /usr/local/bin/piso-workbench
 COPY mcp-merge.py /usr/local/lib/piso-mcp-merge.py
 COPY --from=relay /out/piso-mcp /usr/local/bin/piso-mcp
 COPY checkin-watch.sh /usr/local/bin/piso-checkin-watch
@@ -226,7 +227,9 @@ COPY monitor-loop.sh /usr/local/bin/piso-monitor-loop
 RUN chmod +x /usr/local/bin/piso-monitor-loop
 # make the monitor loop invocable as a plain name (and pi can call it too)
 RUN ln -sf /usr/local/bin/piso-monitor-loop /usr/local/bin/piso-monitor
-RUN chmod +x /usr/local/bin/piso-entrypoint /usr/local/bin/piso-planning-watch /usr/local/bin/piso-loopback-forward /usr/local/bin/piso-context-watch /usr/local/bin/piso-ports-watch /usr/local/bin/piso-activity-watch /usr/local/bin/piso-mcp-add /usr/local/bin/piso-mcp /usr/local/bin/piso-checkin-watch /usr/local/bin/piso-egress-forward /usr/local/bin/piso-task-watch /usr/local/bin/piso-supervisor-session /usr/local/lib/piso-gateway-post.sh /usr/local/lib/piso-activity-state.py /usr/local/lib/piso-task-pick.py
+# `workbench` is the name the prompt tells the model to call (see CAPABILITIES.md)
+RUN ln -sf /usr/local/bin/piso-workbench /usr/local/bin/workbench
+RUN chmod +x /usr/local/bin/piso-entrypoint /usr/local/bin/piso-workbench /usr/local/bin/piso-planning-watch /usr/local/bin/piso-loopback-forward /usr/local/bin/piso-context-watch /usr/local/bin/piso-ports-watch /usr/local/bin/piso-activity-watch /usr/local/bin/piso-mcp-add /usr/local/bin/piso-mcp /usr/local/bin/piso-checkin-watch /usr/local/bin/piso-egress-forward /usr/local/bin/piso-task-watch /usr/local/bin/piso-supervisor-session /usr/local/lib/piso-gateway-post.sh /usr/local/lib/piso-activity-state.py /usr/local/lib/piso-task-pick.py
 ENV PATH=/usr/local/bin:$PATH
 
 # Declared last so changing the hash only rewrites this label layer.

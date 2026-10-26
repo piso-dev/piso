@@ -30,7 +30,45 @@ everything below is simple:
 - Gateway tools are the `piso` MCP server (`piso-mcp` on stdio). That relay
   seals every call; do not POST plaintext JSON-RPC to `$GATEWAY_URL/mcp`.
 - `/root/.pi/agent` (and `/var` equivalents) persist: sessions, skills,
-  extensions, logs.
+  extensions, logs — and it is also the only writable, **exec-allowed** place
+  outside the repo (see *Where to install things*).
+
+## Where to install things (never the repo, never /tmp)
+
+`/workspace` is the host's checkout: a toolchain downloaded there is one more
+`.gitignore` entry the repo should not need. The obvious fallback fails too —
+`/tmp` and `/dev/shm` are tmpfs mounted **noexec**, so a binary unpacked there
+dies with `Permission denied` (126) and looks like a broken tool; `/var/tmp`
+and bare `/root` are read-only. The agent volume is real disk, exec-allowed and
+persistent, so it is the only place to put something you intend to *run*.
+
+Use `workbench` (root `$HOME/.pi/agent/workbench`, override `PISO_WORKBENCH`):
+
+```bash
+eval "$(workbench env)"      # PATH/GOPATH/GOCACHE/GOBIN/npm/cargo/pip → workbench
+workbench install go@1.25.0  # → versions/go1.25.0, linked into bin/go
+workbench go install golang.org/x/tools/cmd/stringer@latest   # exe dependency
+workbench scratch            # throwaway build dir (exec-allowed; /tmp is not)
+workbench run <cmd...>       # any command with the env above applied
+workbench status             # sizes + free space; run this under disk pressure
+workbench clean --caches     # prune GOCACHE/downloads; keeps module cache + bin/
+```
+
+Layout: `bin/ gopath/ gocache/ versions/ tmp/ downloads/`. The script refuses a
+root inside `/workspace` or on `/tmp`/`/dev/shm`, so a wrong `PISO_WORKBENCH`
+fails loudly instead of scattering artifacts.
+
+What downloads and what does not: `proxy.golang.org`, `dl.google.com`,
+`pypi.org` and `registry.npmjs.org` are proxied and work, so **Go executables
+come from the module proxy** (`go install pkg/cmd/tool@version`), never from a
+release tarball. GitHub release assets (`releases/download/...`) return **504**
+and `api.github.com` returns **407**, so other prebuilt binaries are a
+`host_request` to `/workspace/.tools/...` or `$PISO_WORKBENCH/bin`, not a retry
+loop.
+
+Clean up after yourself: build outputs belong in `workbench scratch` (prune with
+`workbench clean --scratch`), and a filled agent volume breaks sessions for
+every later task on this host.
 
 ## What NEVER works here (do not attempt)
 
