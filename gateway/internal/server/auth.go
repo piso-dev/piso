@@ -499,10 +499,8 @@ func (c *nonceCache) add(key string, until time.Time) bool {
 	return true
 }
 
-var dashboardNonces nonceCache
-
 func (s *Server) consumeNonce(key string, until time.Time) bool {
-	return dashboardNonces.add(key, until)
+	return s.authNonces.add(key, until)
 }
 
 // --- host authentication ----------------------------------------------------

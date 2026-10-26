@@ -61,6 +61,15 @@ type Server struct {
 	// before it drops the relay pool.
 	directMu     sync.Mutex
 	directSwitch map[string]bool // worker name → reached publicUrl
+
+	// Dashboard auth state, per server. Both hold mutexes, so Server must never
+	// be copied by value. They are per-Server rather than package-level for a
+	// reason: a challenge or a host-auth nonce minted by one gateway must never
+	// be redeemable at another. In production each gateway is its own process, so
+	// a global would look correct — and be silently wrong the moment two servers
+	// share a process (tests, or any future multi-gateway mode).
+	nostrChallenges nostrChallenges
+	authNonces      nonceCache
 }
 
 // New assembles the server.

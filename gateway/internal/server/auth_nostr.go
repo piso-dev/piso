@@ -93,9 +93,8 @@ func (c *nostrChallenges) take(challenge string) (nostrChallenge, bool) {
 	return v, true
 }
 
-// dashboardNostr holds outstanding challenges. In memory on purpose: they live
-// for minutes and are worthless after use.
-var dashboardNostr nostrChallenges
+// The outstanding challenges live on the Server (s.nostrChallenges). In memory on
+// purpose: they live for minutes and are worthless after use.
 
 // GET /auth/nostr/challenge?purpose=login|enroll
 func (s *Server) handleNostrChallenge(w http.ResponseWriter, r *http.Request) {
@@ -113,7 +112,7 @@ func (s *Server) handleNostrChallenge(w http.ResponseWriter, r *http.Request) {
 		host = h
 	}
 	exp := time.Now().Add(nostrChallengeTTL).Unix()
-	dashboardNostr.put(challenge, nostrChallenge{Host: host, Purpose: purpose, Exp: exp})
+	s.nostrChallenges.put(challenge, nostrChallenge{Host: host, Purpose: purpose, Exp: exp})
 	writeJSON(w, http.StatusOK, map[string]any{
 		"challenge": challenge,
 		"domain":    host,
@@ -139,7 +138,7 @@ func (s *Server) handleNostrVerify(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "event carries no challenge tag"})
 		return
 	}
-	ch, ok := dashboardNostr.take(challenge)
+	ch, ok := s.nostrChallenges.take(challenge)
 	if !ok || ch.Purpose != "login" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "unknown or expired challenge; start again"})
 		return
@@ -196,7 +195,7 @@ func (s *Server) handleNostrEnroll(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "event carries no challenge tag"})
 		return
 	}
-	ch, ok := dashboardNostr.take(challenge)
+	ch, ok := s.nostrChallenges.take(challenge)
 	if !ok {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "unknown or expired challenge; start again"})
 		return
