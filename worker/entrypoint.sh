@@ -1,8 +1,22 @@
+#!/bin/bash
 # piso worker entrypoint
 # Starts background watchers, then execs the requested command (default: keep
 # alive for `piso attach`). MITM CA trust is compose/image ENV pointing at
 # /piso-ca.pem — the rootfs is read-only, so update-ca-certificates cannot run.
+#
+# The shebang is load-bearing, not decoration: the Dockerfile uses exec-form
+# ENTRYPOINT, so the kernel runs this file directly. Without a shebang the exec
+# fails with ENOEXEC and Docker reports only
+#   exec /usr/local/bin/piso-entrypoint: exec format error
+# in a restart loop, because the script never gets far enough to log anything.
+# Every other script in this directory has one; this file is also bash-only
+# (`local`, `[[`), so /bin/sh would not do.
 set -e
+
+# `set -e` alone is how a crash loop stays unexplainable: the container exits
+# and `docker logs` shows only whatever the failing command chose to print. Say
+# which line died, so the next occurrence is one log line instead of a hunt.
+trap 'rc=$?; echo "piso-entrypoint: exited $rc at line $LINENO: $BASH_COMMAND" >&2' ERR
 
 # Persistent dirs on the agent volume. /var/log sits on the read-only
 # rootfs and /tmp is tmpfs (RAM-backed, wiped on restart). First `pi` start
@@ -71,13 +85,10 @@ fi
 # Docker creates host directories, then later "mount a directory onto a file"
 # fails against the agent volume.
 mkdir -p /root/.pi/agent
-if [ "${PISO_HULL:-}" = "cloud_ship" ] && [ -x /usr/local/bin/piso-profile-sync ]; then
-  # Bounded: a gateway that is down at boot must not hold up pi. The respawned
-  # loop below keeps trying, and links the profile as soon as it succeeds.
-  if ! timeout 20 /usr/local/bin/piso-profile-sync --once >>"$PISO_LOG_DIR/pi-profile-sync.log" 2>&1; then
-    echo "piso: no pi profile from the gateway yet; pi starts without providers (see $PISO_LOG_DIR/pi-profile-sync.log)" >&2
-  fi
-fi
+# The boot fetch happens further down, once the local egress forwarder is
+# listening: on a ship HTTP(S)_PROXY is the only route out, so fetching here
+# would just be a fast ECONNREFUSED. The mount fallback below still runs first,
+# because a local hull has nothing to fetch.
 if [ -d /opt/piso/pi-profile ]; then
   for f in settings.json models.json; do
     if [ -s "/root/.pi/agent/pi-profile/$f" ]; then
@@ -311,8 +322,18 @@ if [ -n "${GATEWAY_URL:-}" ] && [ -n "${PISO_WORKER_NAME:-}" ] && [ -n "${PISO_W
   respawn /usr/local/bin/piso-context-watch "$PISO_LOG_DIR/context-watch.log"
 fi
 
-# Keep the fetched pi profile in step with the dashboard (cloud ships only: a
-# local hull's profile is rewritten in place by the gateway on this host).
+# Pi profile, part two: fetch it now that there is a route out. This is a
+# cloud ship only -- a local hull's profile is the gateway's own file, mounted.
+#
+# Must not be able to kill the boot: `set -e` is in force and a coordinator that
+# is down, slow, or too old to serve the endpoint is a "start without a profile
+# and tell the log", never a crash loop. The respawned loop below keeps trying
+# and links the profile in as soon as it can, so a late gateway is survivable.
+if [ "${PISO_HULL:-}" = "cloud_ship" ] && [ -x /usr/local/bin/piso-profile-sync ]; then
+  if ! timeout 20 /usr/local/bin/piso-profile-sync --once >>"$PISO_LOG_DIR/pi-profile-sync.log" 2>&1; then
+    echo "piso: no pi profile from the gateway yet; pi starts without providers (see $PISO_LOG_DIR/pi-profile-sync.log)" >&2
+  fi
+fi
 if [ "${PISO_HULL:-}" = "cloud_ship" ] && [ -x /usr/local/bin/piso-profile-sync ]; then
   respawn /usr/local/bin/piso-profile-sync "$PISO_LOG_DIR/pi-profile-sync.log"
 fi
