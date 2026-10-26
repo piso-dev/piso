@@ -133,7 +133,8 @@ Usage:
   piso gateway auth status        who may sign in (host-signed)
   piso gateway auth logout-all    revoke every dashboard session at once
   piso gateway auth remove <id>   delete one credential
-  piso worker launch [workspace-dir] [--name n] [--server url] [--no-qr]
+  piso worker launch [workspace-dir] [--name n] [--server url] [--ca file]
+                         [--no-ca-fetch] [--no-qr]
                          enroll a cloud-ship worker on THIS machine and attach it
                          to an available standalone gateway (never this host).
                          Refuses if this machine is already a standalone gateway.

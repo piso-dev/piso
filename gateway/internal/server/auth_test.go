@@ -336,6 +336,13 @@ func TestDashboardAuthGate(t *testing.T) {
 		if w := render(s, "/health", "dash.example", proxyPeer); w.Code == http.StatusUnauthorized {
 			t.Fatal("/health must not be gated")
 		}
+		// The gateway CA is public by design, and a worker bootstrapping on a
+		// fresh machine must be able to fetch it before it has any credential.
+		for _, p := range []string{"/ca.crt", "/api/v1/ca.pem"} {
+			if w := render(s, p, "dash.example", proxyPeer); w.Code == http.StatusUnauthorized {
+				t.Fatalf("%s must not be gated (a fresh worker cannot pair otherwise)", p)
+			}
+		}
 	})
 
 	t.Run("env can force it off", func(t *testing.T) {

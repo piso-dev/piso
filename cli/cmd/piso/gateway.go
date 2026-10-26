@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -285,6 +286,15 @@ func enrollLocal(path string, id technocore.Identity, principal string) error {
 }
 
 func cmdGatewayStatus() error {
+	// Print the MITM CA first: a worker prints the CA it decided to trust while
+	// pairing, and this is the value the operator compares it against. It must
+	// be visible even on a gateway host that has not finished enrolling.
+	gatewayCALine := ""
+	if dataDir, err := pisoconfig.DataDir(); err == nil {
+		if sum := caFingerprintFile(filepath.Join(dataDir, "ca.crt")); sum != "" {
+			gatewayCALine = fmt.Sprintf("gateway CA:  sha256:%s", sum)
+		}
+	}
 	path, err := identityPath()
 	if err != nil {
 		return err
@@ -292,6 +302,9 @@ func cmdGatewayStatus() error {
 	id, err := technocore.Load(path)
 	if err != nil {
 		if os.IsNotExist(err) {
+			if gatewayCALine != "" {
+				fmt.Println(gatewayCALine)
+			}
 			fmt.Println("technocore: not enrolled (run `piso gateway launch`)")
 			return nil
 		}
@@ -310,6 +323,9 @@ func cmdGatewayStatus() error {
 		fmt.Printf("public url:  %s\n", id.PublicURL)
 	}
 	fmt.Printf("fingerprint: %s\n", id.Fingerprint())
+	if gatewayCALine != "" {
+		fmt.Println(gatewayCALine)
+	}
 	if id.PrincipalID != "" {
 		fmt.Printf("principal:   %s\n", id.PrincipalID)
 	}
