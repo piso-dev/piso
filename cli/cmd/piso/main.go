@@ -120,7 +120,14 @@ Usage:
                          front proxy (Caddy on 443) forwards to the gateway.
                          Without --url, remote workers reverse-tunnel through
                          the coordinator.
-  piso gateway status    show technocore enrollment
+  piso gateway status    show technocore enrollment and dashboard login state
+  piso gateway auth enroll [--host h] [--ttl 10m]
+                         print a single-use link that registers a passkey or a
+                         nostr signer for the dashboard. Root on the gateway host
+                         is what authorises it; nothing is emailed or logged.
+  piso gateway auth status        who may sign in (host-signed)
+  piso gateway auth logout-all    revoke every dashboard session at once
+  piso gateway auth remove <id>   delete one credential
   piso worker launch [dir] [--name n] [--server url] [--no-qr]
                          enroll a cloud-ship worker on THIS machine and attach it
                          to an available standalone gateway (never this host).
@@ -2022,6 +2029,13 @@ func dockerComposeEnv() (map[string]string, error) {
 		// profile, so `compose up` leaves the project-manager worker out
 		// (~/.piso/host.json, PISO_MONITOR).
 		"COMPOSE_PROFILES": pisoconfig.ComposeProfiles(),
+		// Dashboard authentication is derived from where the request arrived,
+		// so both of these are usually empty. They exist for the operator:
+		// PISO_DASHBOARD_AUTH forces the gate on (or, deliberately, off) and
+		// PISO_DASHBOARD_HOST names the public dashboard origin, which is what
+		// makes a request addressed to it count as off-host.
+		"PISO_DASHBOARD_AUTH": envOrEmpty("PISO_DASHBOARD_AUTH"),
+		"PISO_DASHBOARD_HOST": envOrEmpty("PISO_DASHBOARD_HOST"),
 	}, nil
 }
 
@@ -2160,4 +2174,9 @@ func envPairs(m map[string]string) []string {
 		out = append(out, k+"="+v)
 	}
 	return out
+}
+
+// envOrEmpty returns a trimmed environment value, or "".
+func envOrEmpty(key string) string {
+	return strings.TrimSpace(os.Getenv(key))
 }

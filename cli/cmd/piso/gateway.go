@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"strings"
@@ -35,15 +36,17 @@ func normalizeServerURL(raw string) string {
 
 func cmdGateway(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: piso gateway launch|status")
+		return errors.New("usage: piso gateway launch|status|auth")
 	}
 	switch args[0] {
 	case "launch":
 		return cmdGatewayLaunch(args[1:])
 	case "status":
 		return cmdGatewayStatus()
+	case "auth":
+		return cmdGatewayAuth(args[1:])
 	default:
-		return errors.New("usage: piso gateway launch|status")
+		return errors.New("usage: piso gateway launch|status|auth")
 	}
 }
 
@@ -309,6 +312,20 @@ func cmdGatewayStatus() error {
 	fmt.Printf("fingerprint: %s\n", id.Fingerprint())
 	if id.PrincipalID != "" {
 		fmt.Printf("principal:   %s\n", id.PrincipalID)
+	}
+	// Dashboard login state, when the gateway answers. Best-effort on purpose:
+	// status must still work while the gateway is stopped.
+	var st authStateOut
+	if err := gatewayAuthCall(http.MethodGet, "/api/v1/auth/state", &st); err == nil {
+		switch {
+		case !st.Required:
+			fmt.Println("dashboard:   no login required (control plane is not reachable off-host)")
+		case len(st.Credentials) == 0:
+			fmt.Println("dashboard:   login required but NO credential registered")
+			fmt.Println("             run `piso gateway auth enroll` before exposing it")
+		default:
+			fmt.Printf("dashboard:   login required (%d credential(s), epoch %d)\n", len(st.Credentials), st.Epoch)
+		}
 	}
 	return nil
 }

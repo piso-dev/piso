@@ -6551,5 +6551,36 @@
         }, 10000);
       })();
     </script>
+    <script>
+      // Dashboard sign-out. Only shown when this gateway actually requires a
+      // login; a local gateway never asks, so the button stays out of the way.
+      (async () => {
+        let st;
+        try {
+          const res = await fetch('/auth/session', { credentials: 'same-origin' });
+          if (!res.ok) return;
+          st = await res.json();
+        } catch (e) {
+          return;
+        }
+        if (!st || !st.required || !st.authenticated) return;
+        const b = document.createElement('button');
+        b.textContent = 'Sign out';
+        b.title = st.kind ? 'signed in with ' + st.kind : 'sign out';
+        b.style.cssText = 'position:fixed;right:14px;bottom:12px;z-index:9999;' +
+          'padding:7px 12px;border-radius:8px;border:1px solid #2c3742;' +
+          'background:#11161dcc;color:#9aa7b4;font:12px/1.2 ui-sans-serif,system-ui,sans-serif;' +
+          'cursor:pointer;opacity:.55;transition:opacity .15s';
+        b.onmouseenter = () => { b.style.opacity = '1'; };
+        b.onmouseleave = () => { b.style.opacity = '.55'; };
+        b.onclick = async () => {
+          b.disabled = true;
+          b.textContent = 'Signing out…';
+          try { await fetch('/auth/logout', { method: 'POST', credentials: 'same-origin' }); } catch (e) {}
+          location.reload();
+        };
+        document.body.appendChild(b);
+      })();
+    </script>
   </body>
 </html>
