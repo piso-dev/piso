@@ -5,6 +5,7 @@ import (
 	"net"
 	"os"
 	"strings"
+	"sync"
 )
 
 // DenyPeer, when set, overrides vpc detection (tests).
@@ -35,6 +36,12 @@ type vpcNet struct {
 // peerOnWorkerVPC reports a peer that lives on the gateway's non-NAT
 // (internal) interface. Those are workers. The bridge gateway and the
 // gateway's own address are left through so host port-publish still works.
+//
+// A TLS front proxy joined on a dedicated bridge (the coordinator host's Caddy
+// on piso_public) is on a non-default interface too, so it would be taken for a
+// worker. PISO_TRUSTED_PEER_CIDRS cancels that verdict — and only that: a
+// trusted address is never let in unless it would otherwise be denied here, so
+// the list can shrink this check but cannot grant anyone new access.
 func peerOnWorkerVPC(remoteAddr string) bool {
 	ip := parseRemoteIP(remoteAddr)
 	if ip == nil || ip.IsLoopback() {
@@ -50,7 +57,7 @@ func peerOnWorkerVPC(remoteAddr string) bool {
 		if n.gw != nil && ip.Equal(n.gw) {
 			return false
 		}
-		return true
+		return !peerTrusted(ip)
 	}
 	return false
 }
@@ -131,4 +138,48 @@ func networkPlusOne(n *net.IPNet) net.IP {
 		return nil
 	}
 	return out
+}
+
+// trustedPeerCIDRs is PISO_TRUSTED_PEER_CIDRS, re-parsed only when the value
+// changes. It exists for one deployment shape: the gateway behind a TLS front
+// proxy that joins a dedicated bridge network — the coordinator host's Caddy on
+// piso_public — which is a non-default interface and would otherwise be
+// classified as a worker VPC. The subnet must contain only the proxy: workers
+// stay on the internal piso_vpc and are never in this list.
+//
+// Only control-plane requests pay for this; proxied worker traffic does not.
+var (
+	trustedPeerMu   sync.Mutex
+	trustedPeerRaw  string
+	trustedPeerNets []*net.IPNet
+)
+
+func trustedPeerCIDRs() []*net.IPNet {
+	raw := os.Getenv("PISO_TRUSTED_PEER_CIDRS")
+	trustedPeerMu.Lock()
+	defer trustedPeerMu.Unlock()
+	if raw == trustedPeerRaw && (raw == "" || trustedPeerNets != nil) {
+		return trustedPeerNets
+	}
+	var nets []*net.IPNet
+	for _, item := range strings.Split(raw, ",") {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		if _, ipn, err := net.ParseCIDR(item); err == nil {
+			nets = append(nets, ipn)
+		}
+	}
+	trustedPeerRaw, trustedPeerNets = raw, nets
+	return nets
+}
+
+func peerTrusted(ip net.IP) bool {
+	for _, n := range trustedPeerCIDRs() {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }

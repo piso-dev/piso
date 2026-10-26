@@ -5,11 +5,11 @@
 // /etc/hosts needs root to edit. So a privileged background service keeps
 // /etc/hosts in step with the gateway's routes:
 //
-//   piso sync daemon            run the watch loop (as root, forever)
-//   piso sync daemon-status     pidfile + ps probe (NO privileges needed)
-//   piso sync daemon-restart    privileged: reload the managed service
-//   piso sync daemon-stop       privileged: stop it
-//   piso sync daemon-uninstall  privileged: stop + remove managed config
+//	piso sync daemon            run the watch loop (as root, forever)
+//	piso sync daemon-status     pidfile + ps probe (NO privileges needed)
+//	piso sync daemon-restart    privileged: reload the managed service
+//	piso sync daemon-stop       privileged: stop it
+//	piso sync daemon-uninstall  privileged: stop + remove managed config
 //
 // The service body is `piso sync daemon` — the same SSE watch loop as
 // `piso sync --watch`, which reconciles /etc/hosts whenever a route event
@@ -45,8 +45,8 @@ func SyncDaemonSupported() bool {
 }
 
 const syncDaemonLabel = "com.piso.sync"
-const syncPidFile    = "sync.pid"
-const syncLogFile    = "sync.log"
+const syncPidFile = "sync.pid"
+const syncLogFile = "sync.log"
 
 // SyncDaemonState is the daemon status answer.
 type SyncDaemonState struct {
