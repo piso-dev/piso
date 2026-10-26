@@ -72,6 +72,13 @@ services:
       # Defaults to the pinned subnet so a colocated deploy needs no extra
       # config; override only if you change PISO_PUBLIC_SUBNET.
       PISO_TRUSTED_PEER_CIDRS: ${PISO_TRUSTED_PEER_CIDRS:-172.30.99.0/24}
+      # Dashboard authentication. Both defaults are empty on purpose: the gate
+      # turns itself on when a request arrives through the trusted front proxy
+      # or addressed to PISO_DASHBOARD_HOST, so a local gateway never asks for a
+      # login. PISO_DASHBOARD_AUTH=on forces it even over loopback (do that if
+      # you publish the control port directly instead of through a proxy).
+      PISO_DASHBOARD_AUTH: ${PISO_DASHBOARD_AUTH:-}
+      PISO_DASHBOARD_HOST: ${PISO_DASHBOARD_HOST:-}
     networks:
       - vpc
       - egress

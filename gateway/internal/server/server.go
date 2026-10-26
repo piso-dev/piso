@@ -120,6 +120,9 @@ func (s *Server) WebHandler() http.Handler {
 	mux := http.NewServeMux()
 	api := http.NewServeMux()
 	s.routes(api)
+	// Authentication endpoints live on the dashboard mux, and authExemptPath lets
+	// them through the gate; each one verifies its own proof of possession.
+	s.authPublicRoutes(mux)
 	mux.Handle("/api/", api)
 	mux.HandleFunc("/", s.ui)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -143,7 +146,12 @@ func (s *Server) WebHandler() http.Handler {
 			s.ingress(w, r)
 			return
 		}
-		mux.ServeHTTP(w, r)
+		// Everything below is the human plane: the dashboard HTML and /api/v1.
+		// The branches above are machines (the worker mux, ingress) and
+		// third-party OAuth callbacks, which authenticate by their own means and
+		// must never be gated here. dashboardAuth is an allowlist, so a route
+		// added later is protected by default.
+		s.dashboardAuth(mux).ServeHTTP(w, r)
 	})
 }
 
@@ -193,6 +201,9 @@ func (s *Server) favicon(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) routes(mux *http.ServeMux) {
+	// dashboard authentication: administrative endpoints, host-signed only
+	s.authRoutes(mux)
+
 	// health
 	mux.HandleFunc("GET /api/v1/health", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]any{
