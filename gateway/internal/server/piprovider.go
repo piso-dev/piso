@@ -456,6 +456,74 @@ func (s *Server) applyPiProviders() piProviderListView {
 	return view
 }
 
+// workerPiProfileView is the profile as a worker consumes it: the two files
+// verbatim, so a remote worker can materialize exactly what a colocated one
+// finds in its bind mount. Every apiKey in models.json is a piso_ placeholder.
+type workerPiProfileView struct {
+	Settings        string `json:"settings"`
+	Models          string `json:"models"`
+	DefaultProvider string `json:"defaultProvider,omitempty"`
+	DefaultModel    string `json:"defaultModel,omitempty"`
+	Applied         bool   `json:"applied"`
+	Warning         string `json:"warning,omitempty"`
+}
+
+// handleWorkerGetPiProfile serves the dashboard-managed pi profile to a worker
+// that cannot read it off this host's disk.
+//
+// Locally the gateway rewrites $PISO_DATA/pi-profile in place and every worker
+// mounts that directory read-only, so nothing has to be pushed. A cloud ship is
+// a different machine: its mount is an empty directory it created itself, and
+// without this endpoint pi would start there with no provider and no default
+// model. The answer is the mounted file content, not a second rendering of the
+// store, so a ship cannot drift from a colocated worker.
+//
+// A read is the normal path: the dashboard and the technocore reconcile already
+// wrote the profile when something changed, and ships poll this endpoint every
+// minute. Only a profile that was never written is reconciled here.
+func (s *Server) handleWorkerGetPiProfile(w http.ResponseWriter, r *http.Request) {
+	if worker := strings.TrimSpace(r.URL.Query().Get("worker")); worker != "" {
+		if !workerNameRe.MatchString(worker) {
+			writeJSON(w, 400, map[string]string{"error": "invalid worker"})
+			return
+		}
+		if !s.workerIdentityOK(w, r, worker) {
+			return
+		}
+	}
+	settings, models, err := s.readPiProfileFiles()
+	if err != nil {
+		// No profile yet (a gateway that has never applied one): build it once
+		// from the store, then serve the result.
+		s.applyPiProviders()
+		if settings, models, err = s.readPiProfileFiles(); err != nil {
+			writeJSON(w, 500, map[string]string{"error": err.Error()})
+			return
+		}
+	}
+	view := s.piProviderListView()
+	writeJSON(w, 200, workerPiProfileView{
+		Settings:        string(settings),
+		Models:          string(models),
+		DefaultProvider: view.DefaultProvider,
+		DefaultModel:    view.DefaultModel,
+		Applied:         view.Applied,
+		Warning:         view.Warning,
+	})
+}
+
+// readPiProfileFiles returns both profile files as a worker mounts them.
+func (s *Server) readPiProfileFiles() (settings, models []byte, err error) {
+	dir := s.piProfileDir()
+	if settings, err = os.ReadFile(filepath.Join(dir, "settings.json")); err != nil {
+		return nil, nil, fmt.Errorf("profile settings: %w", err)
+	}
+	if models, err = os.ReadFile(filepath.Join(dir, "models.json")); err != nil {
+		return nil, nil, fmt.Errorf("profile models: %w", err)
+	}
+	return settings, models, nil
+}
+
 // publishPiProvider pushes the active pointer to any enrolled coordinator and
 // returns a non-fatal warning when the publish did not go through.
 func (s *Server) publishPiProvider() string {
