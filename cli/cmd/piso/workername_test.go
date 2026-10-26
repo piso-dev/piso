@@ -2,8 +2,12 @@ package main
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"piso/cli/internal/pisoconfig"
 )
 
 func TestParseUpArgsNameAndDir(t *testing.T) {
@@ -60,5 +64,54 @@ func TestPromptWorkerName(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "piso-worker-from-git") {
 		t.Fatalf("prompt should show container name, got %q", out.String())
+	}
+}
+
+// A cloud ship is named after the machine, not the directory it happens to be
+// launched from: the same workspace mounts whatever repository a task asks for.
+func TestChooseWorkerSlugUsesShipName(t *testing.T) {
+	t.Setenv("PISO_DATA", t.TempDir())
+	dir := t.TempDir()
+	got, err := chooseWorkerSlug(dir, "", "ship-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "ship-1" {
+		t.Fatalf("slug = %q, want ship-1", got)
+	}
+	// The lock lives on the workspace root, so a checkout underneath resolves
+	// back to the ship instead of to its own repository name.
+	sub := filepath.Join(dir, "owner", "repo")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if slug, ok := pisoconfig.LoadProjectSlugUp(sub); !ok || slug != "ship-1" {
+		t.Fatalf("LoadProjectSlugUp = %q %v, want ship-1", slug, ok)
+	}
+}
+
+// No proposed name keeps the project behavior: the directory decides.
+func TestChooseWorkerSlugFallsBackToDir(t *testing.T) {
+	t.Setenv("PISO_DATA", t.TempDir())
+	dir := filepath.Join(t.TempDir(), "myproj")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got, err := chooseWorkerSlug(dir, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "myproj" {
+		t.Fatalf("slug = %q, want myproj", got)
+	}
+}
+
+func TestShipSlugIsUsable(t *testing.T) {
+	slug := shipSlug()
+	if slug == "" {
+		t.Skip("hostname sanitizes to nothing")
+	}
+	if slug != pisoconfig.SanitizeSlug(slug) || pisoconfig.ReservedSlug(slug) {
+		t.Fatalf("shipSlug = %q is not a valid slug", slug)
 	}
 }
