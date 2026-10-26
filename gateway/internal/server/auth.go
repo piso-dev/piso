@@ -178,7 +178,12 @@ func authExemptPath(path string) bool {
 		// Health is how the host, the front proxy and the CLI decide the
 		// gateway is up; it exposes no configuration and must not need a login.
 		return true
-	case path == "/ca.crt":
+	case path == "/ca.crt" || path == "/api/v1/ca.pem":
+		// The gateway's CA is public by design: every client needs it to
+		// verify this server, so a worker enrolling on a fresh machine must be
+		// able to fetch it before it has any credential. The worker mux serves
+		// /ca.crt and the dashboard mux serves /api/v1/ca.pem; both must work
+		// unauthenticated or the bootstrap deadlocks.
 		return true
 	case path == "/favicon.ico":
 		return true
