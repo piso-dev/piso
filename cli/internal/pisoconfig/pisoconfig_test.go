@@ -211,7 +211,10 @@ func TestWriteWorkerComposeRendersPerWorkerEnv(t *testing.T) {
 	}
 }
 
-func TestCopyWorkerSkeletonStagesRelay(t *testing.T) {
+// writeSkeletonTree builds a fake PISO_HOME with the worker skeleton and the
+// relay source packages stageRelaySources copies.
+func writeSkeletonTree(t *testing.T) string {
+	t.Helper()
 	root := t.TempDir()
 	writeTree(t, root)
 	for _, name := range workerhash.Files {
@@ -238,8 +241,24 @@ func TestCopyWorkerSkeletonStagesRelay(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	return root
+}
+
+func TestCopyWorkerSkeletonStagesRelay(t *testing.T) {
+	root := writeSkeletonTree(t)
+	// The repo's go.mod selects x/crypto v0.52.0; v0.41.0 survives only as a
+	// /go.mod line (pruned content hash), exactly the state `go mod tidy`
+	// leaves behind after a bump. The staged relay module must follow go.mod.
+	gomod := "module piso\n\ngo 1.25.0\n\nrequire (\n" +
+		"\tgithub.com/cloudflare/circl v1.6.1\n" +
+		"\tgolang.org/x/crypto v0.52.0\n" +
+		")\n\nrequire golang.org/x/sys v0.46.0 // indirect\n"
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte(gomod), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	sum := "github.com/cloudflare/circl v1.6.1 h1:abc=\ngithub.com/cloudflare/circl v1.6.1/go.mod h1:def=\n" +
-		"golang.org/x/crypto v0.41.0 h1:abc=\ngolang.org/x/crypto v0.41.0/go.mod h1:def=\n" +
+		"golang.org/x/crypto v0.41.0/go.mod h1:old=\n" +
+		"golang.org/x/crypto v0.52.0 h1:abc=\ngolang.org/x/crypto v0.52.0/go.mod h1:def=\n" +
 		"golang.org/x/sys v0.46.0 h1:abc=\ngolang.org/x/sys v0.46.0/go.mod h1:def=\n" +
 		"modernc.org/sqlite v1.55.0 h1:nope=\n"
 	if err := os.WriteFile(filepath.Join(root, "go.sum"), []byte(sum), 0o600); err != nil {
@@ -263,12 +282,42 @@ func TestCopyWorkerSkeletonStagesRelay(t *testing.T) {
 	if strings.Contains(string(mod), "sqlite") {
 		t.Fatalf("relay module pulled sqlite:\n%s", mod)
 	}
+	if !strings.Contains(string(mod), "golang.org/x/crypto v0.52.0") || strings.Contains(string(mod), "v0.41.0") {
+		t.Fatalf("relay module must track the repo go.mod:\n%s", mod)
+	}
 	gotSum, err := os.ReadFile(filepath.Join(dest, "relay-src", "go.sum"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(string(gotSum), "sqlite") || !strings.Contains(string(gotSum), "circl v1.6.1 ") || !strings.Contains(string(gotSum), "circl v1.6.1/go.mod") {
 		t.Fatalf("sum filter:\n%s", gotSum)
+	}
+	if !strings.Contains(string(gotSum), "golang.org/x/crypto v0.52.0 h1:") {
+		t.Fatalf("staged sum lost the selected module hash:\n%s", gotSum)
+	}
+}
+
+func TestCopyWorkerSkeletonRefusesRelaySumWithoutContentHash(t *testing.T) {
+	root := writeSkeletonTree(t)
+	gomod := "module piso\n\ngo 1.25.0\n\nrequire (\n" +
+		"\tgithub.com/cloudflare/circl v1.6.1\n" +
+		"\tgolang.org/x/crypto v0.52.0\n" +
+		")\n\nrequire golang.org/x/sys v0.46.0 // indirect\n"
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte(gomod), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Every module hash except the selected x/crypto content hash: the build
+	// would fail on "missing go.sum entry", so staging must say so first.
+	sum := "github.com/cloudflare/circl v1.6.1 h1:abc=\ngithub.com/cloudflare/circl v1.6.1/go.mod h1:def=\n" +
+		"golang.org/x/crypto v0.52.0/go.mod h1:def=\n" +
+		"golang.org/x/sys v0.46.0 h1:abc=\ngolang.org/x/sys v0.46.0/go.mod h1:def=\n"
+	if err := os.WriteFile(filepath.Join(root, "go.sum"), []byte(sum), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PISO_HOME", root)
+	err := CopyWorkerSkeleton(t.TempDir())
+	if err == nil || !strings.Contains(err.Error(), "golang.org/x/crypto v0.52.0") {
+		t.Fatalf("want a staging error naming the missing hash, got %v", err)
 	}
 }
 

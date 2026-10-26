@@ -325,59 +325,134 @@ func stageRelaySources(home, dest string) error {
 	return writeRelayModule(home, root)
 }
 
+// relayModules are the modules the relay imports. Their versions are copied
+// from the repo go.mod rather than written here: pinning them by hand drifted
+// once (the relay stayed on golang.org/x/crypto v0.41.0 after go.mod moved to
+// v0.52.0), and `go mod tidy` had then pruned the v0.41.0 module hash from
+// go.sum, so the worker image failed with "missing go.sum entry for module
+// providing package golang.org/x/crypto/cryptobyte".
+var relayModules = []struct {
+	path     string
+	indirect bool
+}{
+	{path: "github.com/cloudflare/circl"},
+	{path: "golang.org/x/crypto"},
+	{path: "golang.org/x/sys", indirect: true},
+}
+
 // writeRelayModule writes a go.mod that contains only what piso-mcp imports.
 // The worker image must not download the gateway's sqlite module.
 func writeRelayModule(home, root string) error {
-	const mod = `module piso
-
-go 1.25.0
-
-require (
-	github.com/cloudflare/circl v1.6.1
-	golang.org/x/crypto v0.41.0
-)
-
-require golang.org/x/sys v0.46.0 // indirect
-`
-	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte(mod), 0o644); err != nil {
+	versions, goVersion, err := relayRequirements(home)
+	if err != nil {
 		return err
 	}
-	sum, err := relaySum(home)
+	var mod strings.Builder
+	fmt.Fprintf(&mod, "module piso\n\ngo %s\n\nrequire (\n", goVersion)
+	for _, m := range relayModules {
+		if !m.indirect {
+			fmt.Fprintf(&mod, "\t%s %s\n", m.path, versions[m.path])
+		}
+	}
+	mod.WriteString(")\n")
+	for _, m := range relayModules {
+		if m.indirect {
+			fmt.Fprintf(&mod, "\nrequire %s %s // indirect\n", m.path, versions[m.path])
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte(mod.String()), 0o644); err != nil {
+		return err
+	}
+	sum, err := relaySum(home, versions)
 	if err != nil {
 		return err
 	}
 	return os.WriteFile(filepath.Join(root, "go.sum"), sum, 0o644)
 }
 
+// relayRequirements reads the selected versions of the relay's modules (and the
+// go directive) out of the repo go.mod, so staged sources always match the
+// checksums the repo go.sum actually carries.
+func relayRequirements(home string) (map[string]string, string, error) {
+	raw, err := os.ReadFile(filepath.Join(home, "go.mod"))
+	if err != nil {
+		return nil, "", fmt.Errorf("relay go.mod: %w", err)
+	}
+	versions := make(map[string]string)
+	goVersion := "1.25.0"
+	inBlock := false
+	block := ""
+	for _, line := range strings.Split(string(raw), "\n") {
+		if i := strings.Index(line, "//"); i >= 0 {
+			line = line[:i]
+		}
+		line = strings.TrimSpace(line)
+		switch {
+		case line == "":
+			continue
+		case inBlock && line == ")":
+			inBlock = false
+		case inBlock && block == "require":
+			if f := strings.Fields(line); len(f) >= 2 {
+				versions[f[0]] = f[1]
+			}
+		case strings.HasSuffix(line, "("):
+			inBlock = true
+			block = strings.TrimSpace(strings.TrimSuffix(line, "("))
+		case strings.HasPrefix(line, "require "):
+			if f := strings.Fields(strings.TrimPrefix(line, "require ")); len(f) >= 2 {
+				versions[f[0]] = f[1]
+			}
+		case strings.HasPrefix(line, "go "):
+			goVersion = strings.TrimSpace(strings.TrimPrefix(line, "go "))
+		}
+	}
+	for _, m := range relayModules {
+		if versions[m.path] == "" {
+			return nil, "", fmt.Errorf("relay: %s is not required by %s/go.mod", m.path, home)
+		}
+	}
+	return versions, goVersion, nil
+}
+
 // relaySum copies the checksum lines the relay require block needs from the
 // repo go.sum, so the image build verifies the same modules.
-func relaySum(home string) ([]byte, error) {
+//
+// Every line for a relay module is kept, not just the selected versions: the
+// module graph still needs older /go.mod hashes, and a hash this filter drops
+// cannot be recovered by the build (the relay stage has no network-free way to
+// re-resolve it). The selected versions must include their content hash; a
+// go.sum without one is exactly the state that broke the build, so fail here
+// with a readable message instead of in `go build`.
+func relaySum(home string, versions map[string]string) ([]byte, error) {
 	raw, err := os.ReadFile(filepath.Join(home, "go.sum"))
 	if err != nil {
 		return nil, fmt.Errorf("relay go.sum: %w", err)
 	}
-	want := map[string]bool{
-		"github.com/cloudflare/circl v1.6.1": true,
-		"golang.org/x/crypto v0.41.0":        true,
-		"golang.org/x/sys v0.46.0":           true,
+	wanted := make(map[string]bool, len(relayModules))
+	haveContent := make(map[string]bool, len(relayModules))
+	for _, m := range relayModules {
+		wanted[m.path] = true
 	}
 	var b strings.Builder
 	for _, line := range strings.Split(string(raw), "\n") {
 		fields := strings.Fields(line)
-		if len(fields) < 2 {
+		if len(fields) < 2 || !wanted[fields[0]] {
 			continue
 		}
-		key := fields[0] + " " + fields[1]
-		if strings.HasSuffix(fields[1], "/go.mod") {
-			key = fields[0] + " " + strings.TrimSuffix(fields[1], "/go.mod")
+		if fields[1] == versions[fields[0]] {
+			haveContent[fields[0]] = true
 		}
-		if want[key] {
-			b.WriteString(line)
-			b.WriteByte('\n')
-		}
+		b.WriteString(line)
+		b.WriteByte('\n')
 	}
 	if b.Len() == 0 {
 		return nil, fmt.Errorf("relay go.sum: no matching lines")
+	}
+	for _, m := range relayModules {
+		if !haveContent[m.path] {
+			return nil, fmt.Errorf("relay go.sum: no content hash for %s %s; run `go mod tidy` in the piso repo and reinstall", m.path, versions[m.path])
+		}
 	}
 	return []byte(b.String()), nil
 }
