@@ -1771,12 +1771,21 @@ func dockerComposeEnv() (map[string]string, error) {
 			publicBind = "0.0.0.0"
 		}
 	}
+	// PISO_WEB_PORT is the port the gateway advertises in generated URLs
+	// (PISO_INGRESS_PORT inside the container). It defaults to the dashboard
+	// host port so piso.local stays portless; a TLS front proxy serving the
+	// gateway on 443 sets it to 80.
+	webPort := os.Getenv("PISO_WEB_PORT")
+	if strings.TrimSpace(webPort) == "" {
+		webPort = fmt.Sprintf("%d", p.Control)
+	}
 	return map[string]string{
 		"DOCKER_BUILDKIT":   "1",
 		"PISO_DATA":         pisoconfig.ComposeHostPath(data),
 		"PISO_PROXY_PORT":   fmt.Sprintf("%d", p.Proxy),
 		"PISO_CTRL_PORT":    fmt.Sprintf("%d", p.Control),
 		"PISO_INGRESS_PORT": fmt.Sprintf("%d", p.Ingress),
+		"PISO_WEB_PORT":     webPort,
 		"PISO_PUBLIC_BIND":  publicBind,
 		"PISO_PUBLIC_PORT":  "8443",
 	}, nil
