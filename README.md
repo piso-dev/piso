@@ -53,6 +53,7 @@ cd /path/to/your/project
 piso up          # ensure gateway + worker for the current dir
                  # (name = git origin repo, else folder; --name to override)
 piso attach      # enter the worker, run pi (waits for extension seeding)
+piso attach <dir>  # same, for the worker mounted on that directory
 piso attach --new  # start a fresh session instead of restoring
 piso attach --session <id>  # open a specific session
 piso dashboard   # open http://piso.local
@@ -69,14 +70,21 @@ gateway host — use `make install-worker` instead:
 ```bash
 sudo make install-worker     # CLI + share tree; no gateway image, no gateway or
                              # monitor container, no hosts-sync daemon
-piso worker launch --name proj --server https://gateway.example.com
-piso attach
+piso worker launch --server https://gateway.example.com
 ```
 
 It copies the same share tree as `make install` (so `piso up` still works if
 the box is later promoted) but stops after `piso setup --no-monitor`, which
 records the opt-out in `~/.piso/host.json`. The first `piso worker launch` still
 bakes the `piso-worker` image on this host; nothing else is built.
+
+A ship is **not tied to one project**. With no directory argument, `worker
+launch` creates `~/piso-work` and mounts it at `/workspace`; each task names the
+repository it wants, and the worker clones it to `/workspace/<owner>/<repo>` and
+works there. The worker is named after the machine (or `--name`), not the
+directory, and it pulls tasks from the queue by itself — there is nothing to
+attach to. `piso worker launch <dir>` still mounts an explicit directory if you
+want one checkout instead.
 
 A launched worker is **root on its own machine**: `compose/worker-remote.yaml.tmpl`
 runs it privileged with the host's `pid`/`ipc`/`uts`/`cgroup` namespaces, the

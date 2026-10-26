@@ -200,3 +200,48 @@ func runGit(t *testing.T, dir string, args ...string) {
 		t.Fatalf("git %v: %v\n%s", args, err, out)
 	}
 }
+
+// A ship's slug is locked at the workspace root, and tasks work one level down
+// (or deeper), so resolution must walk up to it.
+func TestLoadProjectSlugUp(t *testing.T) {
+	t.Setenv("PISO_DATA", t.TempDir())
+	root := t.TempDir()
+	if err := SaveProjectSlug(root, "ship-1"); err != nil {
+		t.Fatal(err)
+	}
+	deep := filepath.Join(root, "owner", "repo", "pkg")
+	if err := os.MkdirAll(deep, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, dir := range []string{root, filepath.Join(root, "owner"), deep} {
+		if slug, ok := LoadProjectSlugUp(dir); !ok || slug != "ship-1" {
+			t.Fatalf("LoadProjectSlugUp(%s) = %q %v", dir, slug, ok)
+		}
+	}
+	if _, ok := LoadProjectSlugUp(t.TempDir()); ok {
+		t.Fatal("an unrelated dir must not inherit a slug")
+	}
+}
+
+// Resolve uses the walk-up, so `piso attach` inside a checkout finds the ship.
+func TestResolveUsesAncestorSlug(t *testing.T) {
+	t.Setenv("PISO_DATA", t.TempDir())
+	root := t.TempDir()
+	if err := SaveProjectSlug(root, "ship-1"); err != nil {
+		t.Fatal(err)
+	}
+	sub := filepath.Join(root, "owner", "repo")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	proj, err := Resolve(sub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if proj.Slug != "ship-1" {
+		t.Fatalf("Resolve slug = %q, want ship-1", proj.Slug)
+	}
+	if proj.Dir != sub {
+		t.Fatalf("Resolve dir = %q, want %q", proj.Dir, sub)
+	}
+}

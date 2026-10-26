@@ -94,10 +94,11 @@ Usage:
                          --reset-worker-key deletes the channel key on the agent
                          volume before recreate; the next boot generates a new one.
   piso down              stop this project's worker (gateway stays up)
-  piso attach [--shell] [--new] [--session <id|path>]
+  piso attach [dir] [--shell] [--new] [--session <id|path>]
                          enter the worker and run pi (new session if none exist;
-                         --new forces a fresh one, --session opens a specific
-                         one, --shell drops into bash)
+                         dir picks the worker mounted on that directory, --new
+                         forces a fresh one, --session opens a specific one,
+                         --shell drops into bash)
   piso status            show gateway + worker state
   piso secrets list|add|rm|share|publish
                          manage gateway secrets (real values never leave it;
@@ -132,10 +133,13 @@ Usage:
   piso gateway auth status        who may sign in (host-signed)
   piso gateway auth logout-all    revoke every dashboard session at once
   piso gateway auth remove <id>   delete one credential
-  piso worker launch [dir] [--name n] [--server url] [--no-qr]
+  piso worker launch [workspace-dir] [--name n] [--server url] [--no-qr]
                          enroll a cloud-ship worker on THIS machine and attach it
                          to an available standalone gateway (never this host).
                          Refuses if this machine is already a standalone gateway.
+                         Defaults to ~/piso-work: a scratch root that tasks clone
+                         repositories into, named after the machine (or --name),
+                         not after a project.
   piso worker status [dir] [--name n]
                          show this project's worker enrollment
   piso setup [--rebuild] [--no-monitor|--monitor]
@@ -178,7 +182,7 @@ func cmdUp(args []string) error {
 	if err != nil {
 		return err
 	}
-	slug, err := chooseWorkerSlug(proj.Dir, opts.Name)
+	slug, err := chooseWorkerSlug(proj.Dir, opts.Name, "")
 	if err != nil {
 		return err
 	}
@@ -668,32 +672,40 @@ func cmdDown(args []string) error {
 }
 
 func cmdAttach(args []string) error {
-	proj, err := pisoconfig.ProjectFromCWD()
-	if err != nil {
-		return err
-	}
 	// --shell drops into bash instead of pi; --new always starts a fresh pi
 	// session instead of the restore picker; --session <id|path> opens a
 	// specific session (id or .jsonl path, resolved by pi). --shell wins if
-	// combined with anything else; --new conflicts with --session.
+	// combined with anything else; --new conflicts with --session. A positional
+	// directory picks which workspace to open: a ship serves many repositories,
+	// so attaching from the workspace root must not depend on the cwd.
 	var shell bool
 	var fresh bool
 	var sess string
+	var dir string
 	for i := 0; i < len(args); i++ {
-		switch args[i] {
+		switch a := args[i]; a {
 		case "--shell":
 			shell = true
 		case "--new":
 			fresh = true
 		case "--session":
 			if i+1 >= len(args) || strings.HasPrefix(args[i+1], "-") {
-				return fmt.Errorf("usage: piso attach [--shell] [--new] [--session <id|path>]")
+				return fmt.Errorf("usage: piso attach [dir] [--shell] [--new] [--session <id|path>]")
 			}
 			sess, i = args[i+1], i+1
+		default:
+			if strings.HasPrefix(a, "-") {
+				return fmt.Errorf("usage: piso attach [dir] [--shell] [--new] [--session <id|path>]")
+			}
+			dir = a
 		}
 	}
 	if sess != "" && fresh {
 		return fmt.Errorf("--new and --session are mutually exclusive")
+	}
+	proj, err := pisoconfig.ProjectFromDir(dir)
+	if err != nil {
+		return err
 	}
 	inner := "set -a; if [ -f /etc/piso/placeholders.env ]; then . /etc/piso/placeholders.env; fi; set +a; "
 	if shell {
