@@ -38,7 +38,17 @@ func (c CredentialRec) KeyID() string {
 	if c.Kind == CredentialNostr {
 		return strings.ToLower(c.Pubkey)
 	}
-	return c.ID
+	// A passkey's stable identifier is its WebAuthn credential id, not this
+	// row's id: re-registering the same authenticator must replace the row
+	// instead of leaving a second, dead copy of the same key. Fall back to the
+	// row id only for a row whose key material does not decode.
+	var pk struct {
+		ID []byte `json:"id"`
+	}
+	if len(c.Passkey) > 0 && json.Unmarshal(c.Passkey, &pk) == nil && len(pk.ID) > 0 {
+		return "passkey:" + hex.EncodeToString(pk.ID)
+	}
+	return "row:" + c.ID
 }
 
 // CredentialRecs returns a copy of the registered dashboard credentials.
