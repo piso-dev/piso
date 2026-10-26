@@ -61,6 +61,15 @@ type Server struct {
 	// before it drops the relay pool.
 	directMu     sync.Mutex
 	directSwitch map[string]bool // worker name → reached publicUrl
+
+	// Dashboard auth state, per server. Both hold mutexes, so Server must never
+	// be copied by value. They are per-Server rather than package-level for a
+	// reason: a challenge or a host-auth nonce minted by one gateway must never
+	// be redeemable at another. In production each gateway is its own process, so
+	// a global would look correct — and be silently wrong the moment two servers
+	// share a process (tests, or any future multi-gateway mode).
+	nostrChallenges nostrChallenges
+	authNonces      nonceCache
 }
 
 // New assembles the server.
@@ -120,6 +129,9 @@ func (s *Server) WebHandler() http.Handler {
 	mux := http.NewServeMux()
 	api := http.NewServeMux()
 	s.routes(api)
+	// Authentication endpoints live on the dashboard mux, and authExemptPath lets
+	// them through the gate; each one verifies its own proof of possession.
+	s.authPublicRoutes(mux)
 	mux.Handle("/api/", api)
 	mux.HandleFunc("/", s.ui)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -143,7 +155,12 @@ func (s *Server) WebHandler() http.Handler {
 			s.ingress(w, r)
 			return
 		}
-		mux.ServeHTTP(w, r)
+		// Everything below is the human plane: the dashboard HTML and /api/v1.
+		// The branches above are machines (the worker mux, ingress) and
+		// third-party OAuth callbacks, which authenticate by their own means and
+		// must never be gated here. dashboardAuth is an allowlist, so a route
+		// added later is protected by default.
+		s.dashboardAuth(mux).ServeHTTP(w, r)
 	})
 }
 
@@ -193,6 +210,9 @@ func (s *Server) favicon(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) routes(mux *http.ServeMux) {
+	// dashboard authentication: administrative endpoints, host-signed only
+	s.authRoutes(mux)
+
 	// health
 	mux.HandleFunc("GET /api/v1/health", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]any{

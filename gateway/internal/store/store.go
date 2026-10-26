@@ -61,6 +61,12 @@ type State struct {
 	// The stack and its active entry stay account-wide; an override only
 	// changes which provider that one worker starts on.
 	ModelOverrides []ModelOverrideRec `json:"modelOverrides,omitempty"`
+	// Credentials are the dashboard's authentication factors: passkeys and
+	// nostr signers. SessionEpoch is stamped into every dashboard session, so
+	// bumping it revokes all of them at once (logout-all) without a session
+	// table. Both are owned by the auth surface, not by the proxy.
+	Credentials  []CredentialRec `json:"credentials,omitempty"`
+	SessionEpoch int             `json:"sessionEpoch,omitempty"`
 }
 
 // PiProviderRec is not a secret. SecretID is a technocore resource UUID so

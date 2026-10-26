@@ -61,6 +61,9 @@ func cmdWorkerLaunch(args []string) error {
 			*server = defaultTechnocoreServer
 		}
 	}
+	// Same normalization as `piso gateway launch`: a bare hostname has no
+	// scheme and every pairing request would fail.
+	*server = normalizeServerURL(*server)
 
 	proj, err := pisoconfig.Resolve(abs)
 	if err != nil {

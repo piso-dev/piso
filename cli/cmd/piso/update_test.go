@@ -153,6 +153,8 @@ func TestUserAndTaskSessionsBlock(t *testing.T) {
 }
 
 func TestEnsureMonitorRec(t *testing.T) {
+	t.Setenv("PISO_DATA", t.TempDir())
+	t.Setenv(pisoconfig.MonitorEnvEnv, "")
 	got := ensureMonitorRec(nil)
 	if len(got) != 1 || got[0].Name != monitorWorkerName || got[0].Slug != monitorSlug {
 		t.Fatalf("empty → %+v", got)
@@ -165,5 +167,16 @@ func TestEnsureMonitorRec(t *testing.T) {
 	mixed := ensureMonitorRec(proj)
 	if len(mixed) != 2 || !isMonitorWorker(mixed[1].Name, mixed[1].Slug) {
 		t.Fatalf("append → %+v", mixed)
+	}
+}
+
+// A host that opted out of the monitor has no such container; inventing a
+// registry record would make `piso update` block on a worker that never
+// checks in.
+func TestEnsureMonitorRecDisabled(t *testing.T) {
+	t.Setenv("PISO_DATA", t.TempDir())
+	t.Setenv(pisoconfig.MonitorEnvEnv, "0")
+	if got := ensureMonitorRec(nil); len(got) != 0 {
+		t.Fatalf("disabled host must not add a monitor record, got %+v", got)
 	}
 }

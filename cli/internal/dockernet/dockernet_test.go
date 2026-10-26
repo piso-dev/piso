@@ -77,4 +77,3 @@ func TestParseContainerIPs(t *testing.T) {
 		t.Fatal("hostnames should be rejected")
 	}
 }
-
