@@ -396,3 +396,71 @@ func TestFindTreeRootWalksParents(t *testing.T) {
 		t.Fatalf("findTreeRoot = %q, want %q", got, root)
 	}
 }
+
+// A fresh ship has never staged a worker build context, and the remote compose
+// template embeds that context's hash. WriteRemoteWorkerCompose must therefore
+// be called after CopyWorkerSkeleton — otherwise the first `piso worker launch`
+// on a new box died with "worker context hash: open
+// /root/.piso/worker-build/Dockerfile: no such file or directory".
+func TestWriteRemoteWorkerComposeNeedsStagedContext(t *testing.T) {
+	root := writeSkeletonTree(t)
+	tmpl := []byte("build: WORKER_BUILD_CONTEXT\nPISO_WORKER_HASH: __WORKER_HASH__\nEGRESS_UPSTREAM GATEWAY_API WORKER_TOKEN CA_DIR PROJ-SLUG\n")
+	if err := os.WriteFile(filepath.Join(root, "compose", "worker-remote.yaml.tmpl"), tmpl, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PISO_HOME", root)
+	t.Setenv("PISO_DATA", t.TempDir())
+	proj := Project{Dir: t.TempDir(), Slug: "worker-1"}
+
+	// Unstaged: the error must be recognisable, and must not be a nil deref or
+	// a confusing message from somewhere else.
+	_, err := WriteRemoteWorkerCompose(proj, "https://gateway.example.com", "tok")
+	if err == nil {
+		t.Fatal("expected an error before the build context is staged")
+	}
+	if !strings.Contains(err.Error(), "worker context hash") || !strings.Contains(err.Error(), "Dockerfile") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Staged (what prepareWorkerBuild does): it works, and the template is filled.
+	buildDir, err := WorkerBuildDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	gomod := "module piso\n\ngo 1.25.0\n\nrequire (\n\tgithub.com/cloudflare/circl v1.6.1\n\tgolang.org/x/crypto v0.52.0\n)\n\nrequire golang.org/x/sys v0.46.0 // indirect\n"
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte(gomod), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sum := "github.com/cloudflare/circl v1.6.1 h1:abc=\n" +
+		"golang.org/x/crypto v0.52.0 h1:abc=\ngolang.org/x/crypto v0.52.0/go.mod h1:def=\n" +
+		"golang.org/x/sys v0.46.0 h1:abc=\ngolang.org/x/sys v0.46.0/go.mod h1:def=\n"
+	if err := os.WriteFile(filepath.Join(root, "go.sum"), []byte(sum), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := CopyWorkerSkeleton(buildDir); err != nil {
+		t.Fatal(err)
+	}
+	// CopyWorkerSkeleton skips package.json; prepareWorkerBuild writes it from
+	// the host's pi extension set, so staging alone is not a complete context.
+	if err := os.WriteFile(filepath.Join(buildDir, "package.json"), []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	path, err := WriteRemoteWorkerCompose(proj, "https://gateway.example.com", "tok")
+	if err != nil {
+		t.Fatalf("staged context: %v", err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(raw)
+	if strings.Contains(got, "__WORKER_HASH__") {
+		t.Fatalf("hash placeholder not replaced:\n%s", got)
+	}
+	if !strings.Contains(got, "build: "+buildDir) {
+		t.Fatalf("compose must build from the staged context (%s):\n%s", buildDir, got)
+	}
+	if !strings.Contains(got, "https://gateway.example.com") {
+		t.Fatalf("egress endpoint missing:\n%s", got)
+	}
+}
