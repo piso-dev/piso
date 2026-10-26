@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
@@ -864,4 +865,140 @@ func addTestCred(t *testing.T, s *Server, label string) store.CredentialRec {
 		t.Fatal(err)
 	}
 	return rec
+}
+
+// A nostr key is 32 public bytes with no counter and no origin binding, so the
+// same key can be an operator on several gateways. Sharing the *key* must not
+// share an *authentication event*, though: each gateway mints its own
+// single-use challenge and requires the event's domain tag to name it.
+func TestNostrKeyAcrossGateways(t *testing.T) {
+	t.Setenv("PISO_DASHBOARD_HOST", "") // per-request Host decides the binding
+
+	a := testAuthServer(t)
+	b := testAuthServer(t)
+	priv, err := btcec.NewPrivateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub := hex.EncodeToString(schnorr.SerializePubKey(priv.PubKey()))
+
+	// The same key is enrolled on both gateways, each with its own host-signed
+	// link: the key is shareable, the authorisation is not.
+	enrollOn := func(s *Server, host string) {
+		t.Helper()
+		id, err := technocore.Load(technocore.Path(s.DataDir))
+		if err != nil {
+			t.Fatal(err)
+		}
+		nonce, err := authlink.NewNonce()
+		if err != nil {
+			t.Fatal(err)
+		}
+		exp := time.Now().Add(authlink.TTL).Unix()
+		sig, err := authlink.Sign(id.SigningPrivateKey, nonce, exp)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ch := challengeFor(t, s, host, "enroll")
+		ev := signNostr(t, priv, time.Now().Unix(), nostrKindAuth, [][]string{
+			{"challenge", ch}, {"domain", host},
+		}, "")
+		w := postAuth(t, s, host, "/auth/nostr/enroll", map[string]any{
+			"event": ev, "n": nonce, "e": exp, "s": sig, "label": "fleet",
+		})
+		if w.Code != http.StatusOK {
+			t.Fatalf("%s: enroll: %d %s", host, w.Code, w.Body)
+		}
+	}
+	enrollOn(a, "a.example")
+	enrollOn(b, "b.example")
+
+	if _, ok := a.Store.CredentialByPubkey(pub); !ok {
+		t.Fatal("gateway A must know the key")
+	}
+	if _, ok := b.Store.CredentialByPubkey(pub); !ok {
+		t.Fatal("gateway B must know the same key")
+	}
+
+	// It signs in on either one, without any sync between them.
+	for _, s := range []*Server{a, b} {
+		host := "a.example"
+		if s == b {
+			host = "b.example"
+		}
+		ch := challengeFor(t, s, host, "login")
+		ev := signNostr(t, priv, time.Now().Unix(), nostrKindAuth, [][]string{
+			{"challenge", ch}, {"domain", host},
+		}, "")
+		w := postAuth(t, s, host, "/auth/nostr/verify", map[string]any{"event": ev})
+		if w.Code != http.StatusOK {
+			t.Fatalf("%s: login: %d %s", host, w.Code, w.Body)
+		}
+	}
+
+	t.Run("an event signed for one gateway is not valid at another", func(t *testing.T) {
+		// A mints a challenge; the user signs it for A's host.
+		ch := challengeFor(t, a, "a.example", "login")
+		ev := signNostr(t, priv, time.Now().Unix(), nostrKindAuth, [][]string{
+			{"challenge", ch}, {"domain", "a.example"},
+		}, "")
+		// Replayed at B: B never minted that challenge.
+		if w := postAuth(t, b, "b.example", "/auth/nostr/verify", map[string]any{"event": ev}); w.Code != http.StatusBadRequest {
+			t.Fatalf("cross-gateway replay must fail, got %d: %s", w.Code, w.Body)
+		}
+		// And even if both gateways share a hostname, the challenge is not one B
+		// minted, so the event still cannot be reused.
+		if w := postAuth(t, b, "a.example", "/auth/nostr/verify", map[string]any{"event": ev}); w.Code != http.StatusBadRequest {
+			t.Fatalf("replay under a shared hostname must fail, got %d: %s", w.Code, w.Body)
+		}
+		// The genuine gateway still accepts it (it was never consumed by B).
+		if w := postAuth(t, a, "a.example", "/auth/nostr/verify", map[string]any{"event": ev}); w.Code != http.StatusOK {
+			t.Fatalf("the minting gateway must accept its own event: %d %s", w.Code, w.Body)
+		}
+	})
+
+	t.Run("a different key is still refused", func(t *testing.T) {
+		other, err := btcec.NewPrivateKey()
+		if err != nil {
+			t.Fatal(err)
+		}
+		ch := challengeFor(t, b, "b.example", "login")
+		ev := signNostr(t, other, time.Now().Unix(), nostrKindAuth, [][]string{
+			{"challenge", ch}, {"domain", "b.example"},
+		}, "")
+		if w := postAuth(t, b, "b.example", "/auth/nostr/verify", map[string]any{"event": ev}); w.Code != http.StatusUnauthorized {
+			t.Fatalf("an unknown key must be refused, got %d", w.Code)
+		}
+	})
+}
+
+// challengeFor mints a challenge for one gateway and host pair.
+func challengeFor(t *testing.T, s *Server, host, purpose string) string {
+	t.Helper()
+	r := httptest.NewRequest(http.MethodGet, "https://"+host+"/auth/nostr/challenge?purpose="+purpose, nil)
+	r.Host = host
+	w := httptest.NewRecorder()
+	s.handleNostrChallenge(w, r)
+	var out struct {
+		Challenge string `json:"challenge"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+		t.Fatalf("challenge: %v (%s)", err, w.Body)
+	}
+	return out.Challenge
+}
+
+// postAuth posts to one gateway's public auth surface as a given host.
+func postAuth(t *testing.T, s *Server, host, path string, body any) *httptest.ResponseRecorder {
+	t.Helper()
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := httptest.NewRequest(http.MethodPost, "https://"+host+path, bytes.NewReader(raw))
+	r.Host = host
+	r.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	s.authPublicRoutesForTest().ServeHTTP(w, r)
+	return w
 }
