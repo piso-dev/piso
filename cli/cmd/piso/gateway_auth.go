@@ -75,7 +75,26 @@ func cmdGatewayAuthEnroll(args []string) error {
 		return err
 	}
 	link := authlink.URL(base, nonce, sig, exp)
+	// The link is signed by *this* host's identity key, and a gateway verifies it
+	// against its own — so the link only ever works on the gateway that holds the
+	// matching key. Say which one that is: a worker host has a different identity
+	// in ~/.piso, and a link minted there is refused by every gateway.
+	name := id.Name
+	if name == "" {
+		name = "(unnamed)"
+	}
 	fmt.Printf("enrollment link (single use, %s):\n\n  %s\n\n", *ttl, link)
+	fmt.Printf("for gateway %s (%s)\n\n", name, id.Fingerprint())
+	if id.Status != technocore.StatusActive {
+		status := id.Status
+		if status == "" {
+			status = "new"
+		}
+		fmt.Fprintf(os.Stderr, "warning: this identity is %q, not an active gateway.\n", status)
+		fmt.Fprintln(os.Stderr, "         The link is signed by this host, so only a gateway holding this")
+		fmt.Fprintln(os.Stderr, "         identity accepts it. Run this on the gateway host, or with its PISO_DATA.")
+		fmt.Fprintln(os.Stderr)
+	}
 	fmt.Println("Open it in a browser on the dashboard host's network and register a")
 	fmt.Println("passkey or a nostr signer. Root on this host is what authorises it.")
 	return nil
