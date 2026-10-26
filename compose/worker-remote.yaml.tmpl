@@ -1,7 +1,24 @@
 # Cloud-ship worker: its own machine, never the standalone gateway host.
-# The agent may be root here. HTTP_PROXY is convenience; the worker machine's
-# network must be forced through the assigned gateway (VPC route / no other
-# default route). Do not put this compose on piso_vpc.
+# The agent is root here — the machine exists to run it, so hand it the machine
+# rather than a slice of it. What that buys: /host (the whole host filesystem,
+# rw), the host's namespaces (pid/ipc/uts/cgroup + privileged, so
+# `nsenter -t 1 -a` is the literal handoff), and the docker socket for sibling
+# containers. worker/CAPABILITIES.ship.md is the matching contract; the local
+# hull keeps the hardened template (compose/worker.yaml.tmpl) and the guest
+# contract, because there the host holds the vault.
+#
+# What is deliberately NOT widened: model/API egress still goes through the
+# assigned gateway, and this box must stay a pure ship — `piso worker launch`
+# refuses to run one on a standalone gateway host. Do not put this compose on
+# piso_vpc.
+#
+# THAT EGRESS RULE IS A HOST-LEVEL SETUP STEP, NOT A CONTAINER ONE. HTTP_PROXY
+# here is only convenience: it points clients at the local forwarder, and a
+# privileged container can ignore or undo it. Containment comes from the
+# machine's routing — force all traffic through the assigned gateway (VPC route
+# / no other default route on the worker host). With PRIVILEGED + the docker
+# socket, a NET_ADMIN-capable worker could add its own route or run a
+# `--network host` sibling, so the routing must be enforced off-box.
 name: piso-PROJ-SLUG
 
 services:
@@ -19,8 +36,15 @@ services:
     restart: unless-stopped
     stdin_open: true
     tty: true
-    privileged: true
+    privileged: true            # all capabilities, all devices
+    pid: host                   # host processes visible; nsenter -t 1 works
+    ipc: host
+    uts: host
+    cgroup: host                # host cgroup view (systemd, resource scripts)
+    userns_mode: host           # container root IS host root under userns-remap
     volumes:
+      - "/:/host"                                       # whole host filesystem, rw
+      - "/var/run/docker.sock:/var/run/docker.sock"     # drive host containers
       - "PROJECT_DIR:/workspace"
       - piso-agent-PROJ-SLUG:/root/.pi/agent
       - "CA_DIR/workers/PROJ-SLUG/ca.crt:/piso-ca.pem:ro"

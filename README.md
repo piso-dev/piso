@@ -78,6 +78,16 @@ the box is later promoted) but stops after `piso setup --no-monitor`, which
 records the opt-out in `~/.piso/host.json`. The first `piso worker launch` still
 bakes the `piso-worker` image on this host; nothing else is built.
 
+A launched worker is **root on its own machine**: `compose/worker-remote.yaml.tmpl`
+runs it privileged with the host's `pid`/`ipc`/`uts`/`cgroup` namespaces, the
+whole host filesystem at `/host`, and the host Docker socket — so it can install
+packages, manage host services, and run sibling containers. Its boundary
+contract is `worker/CAPABILITIES.ship.md` (selected by `PISO_HULL=cloud_ship`),
+not the guest contract `worker/CAPABILITIES.md` that a local worker gets. The
+one thing it still does not do is route model/API egress around the assigned
+gateway: that is a property of the machine's routing, and it is what keeps the
+vault — which lives on the gateway, not here — out of reach.
+
 ### Piso model providers
 
 The dashboard manages a stack of model providers. Each profile pairs a

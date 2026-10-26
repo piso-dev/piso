@@ -218,6 +218,7 @@ COPY gateway-post.sh /usr/local/lib/piso-gateway-post.sh
 COPY WORKLOOP.md /opt/piso/WORKLOOP.md
 COPY INFORMANT.md /opt/piso/INFORMANT.md
 COPY CAPABILITIES.md /opt/piso/CAPABILITIES.md
+COPY CAPABILITIES.ship.md /opt/piso/CAPABILITIES.ship.md
 COPY MONITOR.md /opt/piso/MONITOR.md
 COPY TASKLOOP.md /opt/piso/TASKLOOP.md
 COPY task-pick.py /usr/local/lib/piso-task-pick.py

@@ -212,7 +212,16 @@ if [ "${PISO_ROLE:-}" != "monitor" ] && [ -f /opt/piso/INFORMANT.md ]; then
   cat /opt/piso/INFORMANT.md >>"$ctx"
   printf '\n' >>"$ctx"
 fi
-if [ -f /opt/piso/CAPABILITIES.md ]; then
+# The hull decides which boundary contract the model sees. A cloud ship is
+# root on its own machine (CAPABILITIES.ship.md: /host, nsenter, the docker
+# socket), so handing it CAPABILITIES.md — which forbids all three and routes
+# privileged work through a Host Action Request — makes it refuse its own
+# privileges and stall. PISO_HULL is set by compose (cloud_ship only).
+# Fall back to the guest contract when the ship file is missing (older image).
+hull=$(printf '%s' "${PISO_HULL:-}" | tr 'A-Z' 'a-z')
+if [ "$hull" = "cloud_ship" ] && [ -f /opt/piso/CAPABILITIES.ship.md ]; then
+  cat /opt/piso/CAPABILITIES.ship.md >>"$ctx"
+elif [ -f /opt/piso/CAPABILITIES.md ]; then
   cat /opt/piso/CAPABILITIES.md >>"$ctx"
 fi
 if [ "${PISO_TASK_LOOP:-}" = "1" ] && [ "${PISO_ROLE:-}" != "monitor" ] && [ -f /opt/piso/TASKLOOP.md ]; then
