@@ -45,7 +45,7 @@ services:
     volumes:
       - "/:/host"                                       # whole host filesystem, rw
       - "/var/run/docker.sock:/var/run/docker.sock"     # drive host containers
-      - "PROJECT_DIR:/workspace"
+      - "PROJECT_DIR:/workspace"                         # scratch root; tasks clone to <owner>/<repo>
       - piso-agent-PROJ-SLUG:/root/.pi/agent
       - "CA_DIR/workers/PROJ-SLUG/ca.crt:/piso-ca.pem:ro"
       - "CA_DIR/workers/PROJ-SLUG:/etc/piso"

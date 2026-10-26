@@ -33,7 +33,7 @@ func Resolve(dir string) (Project, error) {
 		return Project{}, fmt.Errorf("%s is not a directory", abs)
 	}
 	slug := SlugFromDir(abs)
-	if saved, ok := LoadProjectSlug(abs); ok {
+	if saved, ok := LoadProjectSlugUp(abs); ok {
 		slug = saved
 	}
 	return Project{Dir: abs, Slug: slug}, nil
@@ -46,6 +46,25 @@ func ProjectFromCWD() (Project, error) {
 		return Project{}, err
 	}
 	return Resolve(cwd)
+}
+
+// ProjectFromDir resolves a project from an explicit directory; empty means cwd.
+func ProjectFromDir(dir string) (Project, error) {
+	if strings.TrimSpace(dir) == "" {
+		return ProjectFromCWD()
+	}
+	return Resolve(dir)
+}
+
+// ShipWorkspace is the default launch directory for a cloud ship. A ship is not
+// a project: this is a scratch root the tasks clone into
+// (<root>/<owner>/<repo>), and the worker is named after the machine instead.
+func ShipWorkspace() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("ship workspace: %w", err)
+	}
+	return filepath.Join(home, "piso-work"), nil
 }
 
 // WorkerName is the deterministic container name (must match the compose

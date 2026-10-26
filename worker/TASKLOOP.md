@@ -27,14 +27,36 @@ chat. When it is unset, these unattended-only rules do not apply.
   effects and exit. A stale attempt cannot write task state even if its old
   local process is still up.
 
+## Find the repository
+
+This machine is not tied to one project. The task names its repository, and a
+new task starts in `/workspace` with whatever earlier tasks left there.
+
+- Resolve the repository from the task body, checkpoint, or a previous handoff.
+  `github_repositories` lists the HTTPS URLs this worker can reach; a URL in the
+  task beats guessing from the title.
+- Put checkouts at `/workspace/<owner>/<repo>` — two path segments, so `foo/api`
+  and `bar/api` cannot collide — and make that directory your cwd. Do not work
+  in `/workspace` itself, and do not reuse another repository's checkout.
+- Existing checkout: `git -C /workspace/<owner>/<repo> fetch --all --prune`,
+  then branch from the default branch. New one:
+  `gh repo clone <owner>/<repo> /workspace/<owner>/<repo>`. HTTPS only; never
+  rewrite a remote to SSH.
+- No repository named, or not in `github_repositories`? Ask with
+  `task_wait(reason="needs_input")` and say what you need. Do not guess.
+- Leave the checkout in place for the next task so a follow-up does not
+  re-clone. Delete it only when disk is tight, and never while it holds
+  committed-but-unpushed work.
+
 ## Work and handoff
 
 - Persist findings and a handoff with `task_update`. Include repository URL,
   branch, commit, PR, completed work, failed approaches, and concrete next
   steps. Another eligible worker must be able to continue without this session.
-- Project/repo labels describe context; they do not grant access. Use existing
-  `/workspace` work or an explicitly supplied HTTPS repository URL. If missing
-  or inaccessible, ask; never infer credentials or fall back to SSH.
+- Project/repo labels describe context; they do not grant access. Use the
+  checkout described in *Find the repository* or an explicitly supplied HTTPS
+  repository URL. If missing or inaccessible, ask; never infer credentials or
+  fall back to SSH.
 - An unsuccessful approach is an update, not necessarily a failed task.
 - Do not push to the default branch. A PR normally means `task_wait` with
   reason `review`, its URL/branch/SHA as artifacts, and a checkpoint—not

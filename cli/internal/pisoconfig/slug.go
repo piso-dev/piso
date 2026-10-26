@@ -264,6 +264,27 @@ func LoadProjectSlug(dir string) (string, bool) {
 	return slug, true
 }
 
+// LoadProjectSlugUp returns the slug locked for dir or its nearest ancestor.
+// A cloud ship has no single project: tasks clone into <workspace>/<owner>/<repo>
+// under the workspace root, so the ship's own slug is the one locked at that
+// root, not one derived from the checkout's name.
+func LoadProjectSlugUp(dir string) (string, bool) {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return "", false
+	}
+	for {
+		if slug, ok := LoadProjectSlug(abs); ok {
+			return slug, true
+		}
+		parent := filepath.Dir(abs)
+		if parent == abs {
+			return "", false
+		}
+		abs = parent
+	}
+}
+
 // SaveProjectSlug locks dir to slug for later attach/down/up.
 func SaveProjectSlug(dir, slug string) error {
 	dir = canonDir(dir)
