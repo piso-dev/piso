@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -109,12 +110,16 @@ Usage:
                            piso up; run restart manually after a sudo make install)
   piso logs [--follow]   tail the gateway request log (SSE when --follow)
   piso dashboard         open the gateway web UI (http://piso.local)
-  piso gateway launch [--name n] [--server url] [--no-qr] [--standalone] [--url https://host:8443]
+  piso gateway launch [--name n] [--server url] [--no-qr] [--standalone] [--url https://host]
                          pair this machine (QR + fingerprint; phone approves).
                          --standalone marks an always-on host that can run
-                         launched workers; --url is a public worker-facing HTTPS
-                         endpoint (implies --standalone). Without --url, remote
-                         workers reverse-tunnel through the coordinator.
+                         launched workers, and turns the project-manager monitor
+                         off (the monitor is a worker; it must not share a host
+                         with the vault). --url is a public worker-facing HTTPS
+                         endpoint (implies --standalone). Omit the port when a
+                         front proxy (Caddy on 443) forwards to the gateway.
+                         Without --url, remote workers reverse-tunnel through
+                         the coordinator.
   piso gateway status    show technocore enrollment
   piso worker launch [dir] [--name n] [--server url] [--no-qr]
                          enroll a cloud-ship worker on THIS machine and attach it
@@ -122,11 +127,18 @@ Usage:
                          Refuses if this machine is already a standalone gateway.
   piso worker status [dir] [--name n]
                          show this project's worker enrollment
-  piso setup [--rebuild] import leftover data and (with --rebuild) recreate the gateway
+  piso setup [--rebuild] [--no-monitor|--monitor]
+                         import leftover data and (with --rebuild) recreate the
+                         gateway. --no-monitor leaves out the project-manager
+                         worker (persisted in host.json; PISO_MONITOR=0 does the
+                         same for one run). A standalone gateway host never runs
+                         it: the monitor is a worker, so placement standalone
+                         forces it off and --monitor only warns there.
   piso update [version] [--dry-run] [--force]  refresh host extensions, pin a pi version,
                          rebuild the shared worker image once, and recreate every worker
-                         including the monitor (its in-flight pi is killed; user attaches
-                         still block). Confirm before applying.
+                         that is enabled on this host (including the monitor unless
+                         PISO_MONITOR=0; its in-flight pi is killed). Confirm before
+                         applying.
 
 Host ports default to 8080 (proxy) and 80 (single web port: dashboard at
 http://piso.local AND every route at http://<label>.piso.local, dispatched by
@@ -165,6 +177,13 @@ func cmdUp(args []string) error {
 	}
 	fmt.Printf("piso: project %q (slug %s)\n", proj.Dir, proj.Slug)
 
+	// A standalone gateway host never runs a worker: it may be root elsewhere,
+	// and a worker must not share a host with the vault. So `piso up` there
+	// means "bring the gateway up" — the same thing `piso setup --rebuild`
+	// does — and the per-project worker is skipped with a pointer at the
+	// supported path (a different machine, `piso worker launch`).
+	standaloneGatewayHost := pisoconfig.IsStandaloneGatewayHost()
+
 	if err := dockernet.AssertLinuxEngine(); err != nil {
 		return err
 	}
@@ -176,14 +195,18 @@ func cmdUp(args []string) error {
 		fmt.Fprintf(os.Stderr, "piso: warning: %v\n", err)
 		fmt.Fprintf(os.Stderr, "piso: dashboard loopback: %s\n", pisoconfig.ControlAPIURL())
 	}
-	if err := pisoconfig.EnsureWorkerPlaceholdersEnv(proj.Slug); err != nil {
-		return err
+	// Both files exist only for containers this host will actually run: a
+	// placeholders.env written for one that never starts is how a stale
+	// piso_<slug>_… placeholder ends up in the secrets vault.
+	if !standaloneGatewayHost {
+		if err := pisoconfig.EnsureWorkerPlaceholdersEnv(proj.Slug); err != nil {
+			return err
+		}
 	}
-	// The monitor also gets a placeholders.env (its scoped model key is in the
-	// secrets vault; this exports piso_monitor_… so the monitor's pi can call
-	// the model through the MITM).
-	if err := pisoconfig.EnsureWorkerPlaceholdersEnv("monitor"); err != nil {
-		return err
+	if pisoconfig.MonitorEnabled() {
+		if err := pisoconfig.EnsureWorkerPlaceholdersEnv("monitor"); err != nil {
+			return err
+		}
 	}
 	if err := pisoconfig.EnsurePiProfileFiles(); err != nil {
 		return err
@@ -203,15 +226,17 @@ func cmdUp(args []string) error {
 	// includes a monitor service that runs `image: piso-worker`, so the image
 	// must exist before `docker compose up -f gateway.yaml` creates it. On a
 	// fresh machine this is the first build; otherwise it's a cheap no-op.
-	if n, err := prepareWorkerBuild(); err != nil {
-		return err
-	} else if n > 0 {
-		fmt.Printf("piso: baking %d host extensions into the worker image\n", n)
-	}
-	if workerNeedsBuild() {
-		fmt.Println("piso: building shared worker image")
-		if err := buildSharedWorker(); err != nil {
+	if upNeedsWorkerImage(standaloneGatewayHost, pisoconfig.MonitorEnabled()) {
+		if n, err := prepareWorkerBuild(); err != nil {
 			return err
+		} else if n > 0 {
+			fmt.Printf("piso: baking %d host extensions into the worker image\n", n)
+		}
+		if workerNeedsBuild() {
+			fmt.Println("piso: building shared worker image")
+			if err := buildSharedWorker(); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -228,6 +253,12 @@ func cmdUp(args []string) error {
 	}
 	if err := syncPiProfile(); err != nil {
 		return err
+	}
+	if standaloneGatewayHost {
+		fmt.Println("piso: gateway up; no worker on this host (standalone gateway — " +
+			"run `piso worker launch` on another machine)")
+		printTrustCAHint()
+		return nil
 	}
 	// 2. worker (per-project). The image is already built (step 0); just render
 	// the project's compose and create the container. After buildSharedWorker
@@ -262,6 +293,14 @@ func cmdUp(args []string) error {
 	}
 	fmt.Printf("piso: worker %s ready. Run `piso attach`.\n", proj.WorkerName())
 	return nil
+}
+
+// upNeedsWorkerImage decides whether `piso up` pays for the shared worker image
+// build. It is needed exactly when this host will run a piso-worker container:
+// the project's own worker (never on a standalone gateway host), or the monitor
+// (only where placement does not forbid it).
+func upNeedsWorkerImage(standaloneGatewayHost, monitorEnabled bool) bool {
+	return !standaloneGatewayHost || monitorEnabled
 }
 
 type upOpts struct {
@@ -1132,8 +1171,13 @@ func cmdSetup(args []string) error {
 	fs := flag.NewFlagSet("setup", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	rebuild := fs.Bool("rebuild", false, "rebuild and recreate the gateway container")
+	noMonitor := fs.Bool("no-monitor", false, "do not run the project-manager worker on this host")
+	withMonitor := fs.Bool("monitor", false, "run the project-manager worker on this host (default)")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if *noMonitor && *withMonitor {
+		return errors.New("--monitor conflicts with --no-monitor")
 	}
 
 	dst, err := pisoconfig.DataDir()
@@ -1165,6 +1209,59 @@ func cmdSetup(args []string) error {
 		fmt.Fprintf(os.Stderr, "piso: warning: %v\n", err)
 	}
 
+	// Persist the monitor choice before any compose call so COMPOSE_PROFILES
+	// below is already correct.
+	//
+	// PISO_MONITOR also persists here (not only for the current run), because
+	// `make install` can only pass a choice as an environment variable — a
+	// one-shot value would silently resurrect the monitor on the next
+	// `piso setup --rebuild`.
+	wantMonitor, monitorSet := false, false
+	switch {
+	case *noMonitor:
+		wantMonitor, monitorSet = false, true
+	case *withMonitor:
+		wantMonitor, monitorSet = true, true
+	default:
+		if v, ok := pisoconfig.MonitorEnvValue(); ok {
+			wantMonitor, monitorSet = v, true
+		}
+	}
+	// A standalone gateway host may not run a worker, monitor included
+	// (docs/technocore-setup.md). Refusing to *write* true is not enough here:
+	// `piso setup --monitor` on such a host should warn and carry on with the
+	// gateway, not fail the install. Nothing is persisted — placement alone
+	// already answers "off", and a written false would outlive a later
+	// demotion to `local`.
+	if wantMonitor && pisoconfig.IsStandaloneGatewayHost() {
+		if forced, ok := pisoconfig.MonitorEnvValue(); ok && forced {
+			// PISO_MONITOR is the operator override; it really does win, so say
+			// that instead of claiming the monitor "stays off".
+			fmt.Printf("piso: warning: %s=%s forces the project-manager monitor on a "+
+				"standalone gateway host\n", pisoconfig.MonitorEnvEnv, os.Getenv(pisoconfig.MonitorEnvEnv))
+		} else {
+			fmt.Printf("piso: warning: standalone gateway host (placement: standalone) — " +
+				"its worker must not run next to the vault; monitor stays off\n")
+		}
+		wantMonitor, monitorSet = false, false
+	}
+
+	effective := pisoconfig.MonitorEnabled()
+	if monitorSet {
+		got, err := pisoconfig.SetMonitorEnabled(wantMonitor)
+		if err != nil {
+			return err
+		}
+		effective = got
+		if got != wantMonitor {
+			fmt.Printf("piso: warning: %s overrides the requested monitor state; staying %s\n",
+				pisoconfig.MonitorEnvEnv, onOff(got))
+		}
+	}
+	// Always print it, with the reason: a monitor-less gateway must never be a
+	// silent surprise, and "no flag passed" is not an explanation.
+	fmt.Printf("piso: project-manager monitor: %s%s\n", onOff(effective), monitorReason(effective))
+
 	if !*rebuild {
 		return nil
 	}
@@ -1184,19 +1281,23 @@ func rebuildGateway() error {
 			return err
 		}
 	}
-	// The gateway compose now includes the monitor (image: piso-worker); the
-	// shared worker image must exist before `docker compose up` creates it.
-	if _, err := prepareWorkerBuild(); err != nil {
-		return err
-	}
-	if workerNeedsBuild() {
-		if err := buildSharedWorker(); err != nil {
+	// The gateway compose includes the monitor (image: piso-worker) unless this
+	// host opted out with PISO_MONITOR=0; the shared worker image must exist
+	// before `docker compose up` creates it. On a monitor-less standalone
+	// gateway nothing else here needs piso-worker, so skip a multi-minute build.
+	if pisoconfig.MonitorEnabled() {
+		if _, err := prepareWorkerBuild(); err != nil {
 			return err
 		}
-	}
-	// The monitor needs its placeholders.env (scoped model key) too.
-	if err := pisoconfig.EnsureWorkerPlaceholdersEnv("monitor"); err != nil {
-		return err
+		if workerNeedsBuild() {
+			if err := buildSharedWorker(); err != nil {
+				return err
+			}
+		}
+		// The monitor needs its placeholders.env (scoped model key) too.
+		if err := pisoconfig.EnsureWorkerPlaceholdersEnv("monitor"); err != nil {
+			return err
+		}
 	}
 	if err := pisoconfig.EnsurePiProfileFiles(); err != nil {
 		return err
@@ -1209,6 +1310,13 @@ func rebuildGateway() error {
 	}
 	if err := waitGatewayHealthy(); err != nil {
 		return err
+	}
+	// A disabled profile leaves the previous container behind: compose only
+	// skips CREATING it, it does not remove one that is already running.
+	if !pisoconfig.MonitorEnabled() {
+		if err := removeMonitor(); err != nil {
+			fmt.Fprintf(os.Stderr, "piso: warning: remove monitor: %v\n", err)
+		}
 	}
 	fmt.Println("piso: gateway rebuilt")
 	printTrustCAHint()
@@ -1554,7 +1662,9 @@ func rolloutWorkers(old, version string) error {
 		fmt.Printf("  %s: recreated\n", w.Name)
 		updated++
 	}
-	if !containerRunning("piso-gateway") {
+	if !pisoconfig.MonitorEnabled() {
+		fmt.Printf("  %s: monitor disabled on this host, skipping\n", monitorWorkerName)
+	} else if !containerRunning("piso-gateway") {
 		fmt.Printf("  %s: gateway not running, skipping\n", monitorWorkerName)
 	} else if err := recreateMonitor(); err != nil {
 		fmt.Printf("  %s: recreate failed: %v\n", monitorWorkerName, err)
@@ -1647,7 +1757,24 @@ func recreateWorker(w pisoconfig.WorkerRec) error {
 // recreateMonitor replaces the project-manager container from the gateway
 // compose project. --no-deps leaves piso-gateway alone; --force-recreate +
 // -t 0 picks up the rebuilt piso-worker image and kills any in-flight pi -p.
+//
+// Naming the service explicitly auto-enables its compose profile, so the
+// PISO_MONITOR=0 opt-out has to be checked here: compose would otherwise start
+// a worker this host deliberately does not run.
 func recreateMonitor() error {
+	if !pisoconfig.MonitorEnabled() {
+		return nil
+	}
+	// `piso update` builds the image before calling this, but a host that
+	// disabled the monitor and just re-enabled it has no piso-worker yet.
+	if workerNeedsBuild() {
+		if _, err := prepareWorkerBuild(); err != nil {
+			return err
+		}
+		if err := buildSharedWorker(); err != nil {
+			return err
+		}
+	}
 	if err := pisoconfig.EnsureWorkerPlaceholdersEnv(monitorSlug); err != nil {
 		return err
 	}
@@ -1663,6 +1790,72 @@ func recreateMonitor() error {
 		"compose", "-f", gatewayFile, "-p", "piso",
 		"up", "-d", "-t", "0", "--no-deps", "--force-recreate", "monitor",
 	}, composeEnv)
+}
+
+// removeMonitor stops and removes the project-manager container. The
+// piso-agent-monitor volume is left alone so re-enabling keeps its history.
+// A disabled profile only stops compose from CREATING the service; an existing
+// container keeps running until it is removed.
+func removeMonitor() error {
+	gatewayFile, err := pisoconfig.GatewayCompose()
+	if err != nil {
+		return err
+	}
+	composeEnv, err := dockerComposeEnv()
+	if err != nil {
+		return err
+	}
+	// --profile monitor is required, not decorative: the caller removes the
+	// monitor precisely when the profile is DISABLED, and compose refuses to
+	// name a service whose profile is off. Enabling it for this one command
+	// selects nothing else, because the service is named explicitly.
+	if err := runEnv("docker", []string{
+		"compose", "--profile", "monitor", "-f", gatewayFile, "-p", "piso",
+		"rm", "-s", "-f", "monitor",
+	}, composeEnv); err != nil {
+		return err
+	}
+	fmt.Printf("piso: %s removed (volume piso-agent-monitor kept)\n", monitorWorkerName)
+	return nil
+}
+
+func onOff(v bool) string {
+	if v {
+		return "on"
+	}
+	return "off"
+}
+
+// monitorReason says WHY the project-manager worker is on or off, so a
+// monitor-less host (or an overridden one) is never a silent surprise: an
+// explicit PISO_MONITOR setting, the placement rule (a standalone gateway host
+// runs no worker), or an opt-out recorded in host.json.
+func monitorReason(enabled bool) string {
+	env := ""
+	_, envSet := pisoconfig.MonitorEnvValue()
+	if envSet {
+		env = " (" + pisoconfig.MonitorEnvEnv + "=" + os.Getenv(pisoconfig.MonitorEnvEnv) + ")"
+	}
+	standalone := pisoconfig.IsStandaloneGatewayHost()
+	switch {
+	case enabled && envSet && standalone:
+		return env + " forced on a standalone gateway host — the monitor is a worker and " +
+			"must not share this host with the vault"
+	case enabled && envSet:
+		return env
+	case enabled && standalone:
+		// Unreachable in practice (MonitorEnabled derives off); say so rather
+		// than print "on" with no explanation.
+		return " (standalone gateway host, but explicitly enabled)"
+	case enabled:
+		return ""
+	case !enabled && envSet:
+		return env
+	case !enabled && standalone:
+		return " (standalone gateway host: a worker must not share it with the vault)"
+	default:
+		return " (opt-out recorded in host.json; `piso setup --rebuild --monitor` re-enables)"
+	}
 }
 
 // ---- shared helpers ----
@@ -1758,6 +1951,33 @@ for p in os.listdir("/proc"):
 	return err == nil
 }
 
+// publicBindFor picks the host interface the worker TLS mux is published on,
+// from the gateway's advertised public URL.
+//
+// A portless URL means a front proxy terminates :443 and forwards to the
+// container (the colocated Caddy deploy), so the mux needs no host publish at
+// all — loopback keeps it off the machine's interfaces and off the firewall.
+// An explicit port means workers dial this host directly, so it has to be
+// reachable on all interfaces. This is a property of the identity rather than
+// an environment variable on purpose: a shell export is lost the moment someone
+// runs `sudo piso setup --rebuild` or a systemd unit, which would silently
+// republish the mux to the internet. PISO_PUBLIC_BIND still overrides both.
+func publicBindFor(publicURL string) string {
+	u := strings.TrimSpace(publicURL)
+	if u == "" {
+		return "127.0.0.1"
+	}
+	parsed, err := url.Parse(u)
+	if err != nil {
+		// Unparseable: assume the conservative thing, loopback.
+		return "127.0.0.1"
+	}
+	if parsed.Port() != "" {
+		return "0.0.0.0"
+	}
+	return "127.0.0.1"
+}
+
 // dockerComposeEnv is required for compose interpolation of ${PISO_DATA}
 // (gateway bind-mount) and for BuildKit on image builds.
 func dockerComposeEnv() (map[string]string, error) {
@@ -1766,11 +1986,20 @@ func dockerComposeEnv() (map[string]string, error) {
 		return nil, err
 	}
 	p := pisoconfig.LoadHostPorts()
+	// The remote-worker TLS mux is published loopback-only unless the gateway
+	// advertises a public URL WITH a port — see publicBindFor.
 	publicBind := "127.0.0.1"
 	if path, err := identityPath(); err == nil {
-		if id, err := technocore.Load(path); err == nil && strings.TrimSpace(id.PublicURL) != "" {
-			publicBind = "0.0.0.0"
+		if id, err := technocore.Load(path); err == nil {
+			publicBind = publicBindFor(id.PublicURL)
 		}
+	}
+	if v := strings.TrimSpace(os.Getenv("PISO_PUBLIC_BIND")); v != "" {
+		publicBind = v
+	}
+	publicPort := "8443"
+	if v := strings.TrimSpace(os.Getenv("PISO_PUBLIC_PORT")); v != "" {
+		publicPort = v
 	}
 	// PISO_WEB_PORT is the port the gateway advertises in generated URLs
 	// (PISO_INGRESS_PORT inside the container). It defaults to the dashboard
@@ -1788,7 +2017,11 @@ func dockerComposeEnv() (map[string]string, error) {
 		"PISO_INGRESS_PORT": fmt.Sprintf("%d", p.Ingress),
 		"PISO_WEB_PORT":     webPort,
 		"PISO_PUBLIC_BIND":  publicBind,
-		"PISO_PUBLIC_PORT":  "8443",
+		"PISO_PUBLIC_PORT":  publicPort,
+		// Empty here is meaningful: it disables the monitor's compose
+		// profile, so `compose up` leaves the project-manager worker out
+		// (~/.piso/host.json, PISO_MONITOR).
+		"COMPOSE_PROFILES": pisoconfig.ComposeProfiles(),
 	}, nil
 }
 
