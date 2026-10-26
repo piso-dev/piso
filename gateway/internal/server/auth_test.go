@@ -755,6 +755,98 @@ var _ = rand.Reader
 var _ = os.Getenv
 var _ = filepath.Join
 
+// addTestPasskey registers a passkey row. Registration needs a real
+// authenticator, so tests build the stored record directly.
+func addTestPasskey(t *testing.T, s *Server, label string, credID []byte) store.CredentialRec {
+	t.Helper()
+	raw, err := json.Marshal(map[string]any{
+		"id":              credID,
+		"publicKey":       []byte{0x30, 0x59, 0x30},
+		"attestationType": "none",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec, err := s.Store.AddCredential(store.CredentialRec{
+		Kind: store.CredentialPasskey, Label: label, Passkey: raw,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return rec
+}
+
+// A passkey and a nostr key are two independent credentials on one session
+// plane: either signs you in, and removing one leaves the other working.
+func TestPasskeyAndNostrCoexist(t *testing.T) {
+	s := testAuthServer(t)
+	pass := addTestPasskey(t, s, "laptop", []byte{0x01, 0x02, 0x03, 0x04})
+	nostr := addTestCred(t, s, "phone")
+
+	recs := s.Store.CredentialRecs()
+	if len(recs) != 2 {
+		t.Fatalf("want both credentials kept, got %d", len(recs))
+	}
+	if pass.ID == nostr.ID {
+		t.Fatal("credentials must be distinct rows")
+	}
+
+	// The passkey user carries only passkeys; the nostr row never leaks into a
+	// WebAuthn ceremony.
+	user, err := s.webauthnUser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(user.creds) != 1 {
+		t.Fatalf("webauthn user must hold only the passkey, got %d", len(user.creds))
+	}
+
+	// Either credential opens a session of its own kind.
+	for _, c := range []struct{ rec store.CredentialRec }{{pass}, {nostr}} {
+		w := httptest.NewRecorder()
+		s.issueSession(w, c.rec.ID, c.rec.Kind)
+		var cookie *http.Cookie
+		for _, got := range w.Result().Cookies() {
+			if got.Name == sessionCookie {
+				cookie = got
+			}
+		}
+		if cookie == nil {
+			t.Fatalf("%s: no session cookie", c.rec.Kind)
+		}
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.AddCookie(cookie)
+		sess, ok := s.readSession(r)
+		if !ok || sess.Kind != c.rec.Kind || sess.Cred != c.rec.ID {
+			t.Fatalf("%s: session not bound to its credential: ok=%v sess=%+v", c.rec.Kind, ok, sess)
+		}
+	}
+
+	// Re-registering the same authenticator replaces its row instead of
+	// duplicating it, and keeps the row id sessions point at.
+	again := addTestPasskey(t, s, "laptop (again)", []byte{0x01, 0x02, 0x03, 0x04})
+	if again.ID != pass.ID {
+		t.Fatalf("same authenticator must replace its row: %s != %s", again.ID, pass.ID)
+	}
+	if again.Label != "laptop (again)" {
+		t.Fatalf("re-registration must update the label, got %q", again.Label)
+	}
+	if got := len(s.Store.CredentialRecs()); got != 2 {
+		t.Fatalf("want 2 credentials after re-registering, got %d", got)
+	}
+
+	// Removing one must not disturb the other.
+	if err := s.Store.DeleteCredential(pass.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := s.Store.CredentialByID(nostr.ID); !ok {
+		t.Fatal("deleting the passkey must not remove the nostr key")
+	}
+	if got := len(s.Store.CredentialRecs()); got != 1 {
+		t.Fatalf("want 1 credential left, got %d", got)
+	}
+}
+
 // addTestCred registers a nostr credential (the store rejects an empty passkey
 // row, and the session plane does not care which kind issued it).
 func addTestCred(t *testing.T, s *Server, label string) store.CredentialRec {
