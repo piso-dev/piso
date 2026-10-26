@@ -32,6 +32,12 @@ func TestWorkerSeedFiles(t *testing.T) {
 	if !strings.Contains(string(ep), "/run/piso-ready") {
 		t.Fatal("entrypoint must write /run/piso-ready before exec")
 	}
+	// The image uses exec-form ENTRYPOINT ["/usr/local/bin/piso-entrypoint"],
+	// so the kernel runs the script directly. A shebang-less script dies with
+	// `exec format error` before it can log anything -- a silent restart loop.
+	if !strings.HasPrefix(string(ep), "#!") {
+		t.Fatal("worker/entrypoint.sh needs a shebang: exec-form ENTRYPOINT runs it directly, and without one the container exits 255 with 'exec format error'")
+	}
 	for _, want := range []string{"piso-checkin-watch", "piso-egress-forward"} {
 		if !strings.Contains(string(ep), want) {
 			t.Fatalf("entrypoint must respawn %s", want)
