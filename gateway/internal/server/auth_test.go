@@ -61,6 +61,9 @@ func TestAuthExemptPathIsAllowlist(t *testing.T) {
 	for _, p := range []string{
 		"/", "/api/v1/workers", "/api/v1/activities", "/api/v1/model-overrides",
 		"/api/v1/connections", "/api/v1/auth/state", "/some/new/route", "/authentication",
+		// Worker-facing too, but the worker mux token-gates /api/v1/worker/*;
+		// the profile is provider configuration, not public.
+		"/api/v1/worker/pi-profile",
 	} {
 		if authExemptPath(p) {
 			t.Fatalf("%s must require a session", p)

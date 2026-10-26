@@ -874,3 +874,116 @@ func TestPiProviderLegacyTinfoilURLIsLocal(t *testing.T) {
 		t.Fatalf("legacy tinfoil models probe: %d %s", rec.Code, rec.Body.String())
 	}
 }
+
+// A cloud ship has no gateway on its host, so its /opt/piso/pi-profile mount is
+// an empty directory and pi would start with no provider. The worker API hands
+// it the same two files a colocated worker reads off disk.
+func TestWorkerPiProfileServesMountedFiles(t *testing.T) {
+	const real = "sk-test-FAKE-not-written"
+	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"data":[{"id":"model-a"},{"id":"model-b"}]}`)
+	}))
+	defer fake.Close()
+	s, profile := providerTestServer(t, fake)
+	s.Store.SetPiProvider(&store.PiProviderRec{
+		SecretID: "11111111-1111-1111-1111-111111111111",
+		BaseURL:  "https://api.example.test/v1",
+		Models:   []string{"model-a", "model-b"},
+	})
+	apply := httptest.NewRecorder()
+	s.handleGetPiProvider(apply, httptest.NewRequest(http.MethodGet, "/api/v1/pi-provider", nil))
+	if apply.Code != 200 {
+		t.Fatalf("apply status %d body %s", apply.Code, apply.Body.String())
+	}
+
+	rec := httptest.NewRecorder()
+	s.handleWorkerGetPiProfile(rec, httptest.NewRequest(http.MethodGet, "/api/v1/worker/pi-profile", nil))
+	if rec.Code != 200 {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	var got workerPiProfileView
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(rec.Body.String(), real) {
+		t.Fatalf("response leaked the secret: %s", rec.Body.String())
+	}
+	// The payload must be the files themselves, byte for byte: a ship that got a
+	// re-rendering of the store could drift from a colocated worker.
+	onDisk, err := os.ReadFile(filepath.Join(profile, "models.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Models != string(onDisk) {
+		t.Fatalf("models.json served %q, on disk %q", got.Models, onDisk)
+	}
+	if !strings.Contains(got.Models, `"apiKey": "piso_aimlapi"`) {
+		t.Fatalf("placeholder missing: %s", got.Models)
+	}
+	if !strings.Contains(got.Settings, `"defaultModel": "model-a"`) {
+		t.Fatalf("default model missing from settings: %s", got.Settings)
+	}
+	if got.DefaultModel != "model-a" || !got.Applied {
+		t.Fatalf("view: %+v", got)
+	}
+}
+
+// An unapplied profile is a gateway that cannot say what the active model is;
+// answering 200 with empty files would wipe a ship's working profile.
+func TestWorkerPiProfileFailsWhenNothingApplied(t *testing.T) {
+	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"data":[]}`)
+	}))
+	defer fake.Close()
+	s, profile := providerTestServer(t, fake)
+	if err := os.MkdirAll(profile, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// applyPiProviders writes both files even with no provider, so break the
+	// mount instead: a missing profile directory is the real failure.
+	if err := os.RemoveAll(profile); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(profile, []byte("not a directory\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	s.handleWorkerGetPiProfile(rec, httptest.NewRequest(http.MethodGet, "/api/v1/worker/pi-profile", nil))
+	if rec.Code != 500 {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), `"settings":"`) {
+		t.Fatalf("must not serve a profile it could not read: %s", rec.Body.String())
+	}
+}
+
+// A gateway that has never applied a profile (fresh install, or a state file
+// restored without the profile directory) still has to answer: reconcile once
+// from the store, then serve.
+func TestWorkerPiProfileBootstrapsMissingProfile(t *testing.T) {
+	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"data":[{"id":"model-a"}]}`)
+	}))
+	defer fake.Close()
+	s, profile := providerTestServer(t, fake)
+	s.Store.SetPiProvider(&store.PiProviderRec{
+		SecretID: "11111111-1111-1111-1111-111111111111",
+		BaseURL:  "https://api.example.test/v1",
+		Models:   []string{"model-a"},
+	})
+	rec := httptest.NewRecorder()
+	s.handleWorkerGetPiProfile(rec, httptest.NewRequest(http.MethodGet, "/api/v1/worker/pi-profile", nil))
+	if rec.Code != 200 {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	var got workerPiProfileView
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got.Models, `"apiKey": "piso_aimlapi"`) || got.DefaultModel != "model-a" {
+		t.Fatalf("bootstrap served %+v", got)
+	}
+	if _, err := os.Stat(filepath.Join(profile, "models.json")); err != nil {
+		t.Fatalf("profile not written: %v", err)
+	}
+}
