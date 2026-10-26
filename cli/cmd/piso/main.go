@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"piso/cli/internal/dockernet"
@@ -1780,7 +1781,7 @@ func dockerComposeEnv() (map[string]string, error) {
 		webPort = fmt.Sprintf("%d", p.Control)
 	}
 	return map[string]string{
-		"DOCKER_BUILDKIT":   "1",
+		"DOCKER_BUILDKIT":   buildkitMode(),
 		"PISO_DATA":         pisoconfig.ComposeHostPath(data),
 		"PISO_PROXY_PORT":   fmt.Sprintf("%d", p.Proxy),
 		"PISO_CTRL_PORT":    fmt.Sprintf("%d", p.Control),
@@ -1795,6 +1796,36 @@ func healthy(gw string) bool {
 	ok, _ := healthStatus(gw)
 	return ok
 }
+
+// buildkitMode is the DOCKER_BUILDKIT value for compose and docker build.
+//
+// Compose v2 drives builds through the buildx CLI plugin; a Docker CLI without
+// it (common in slim/container hosts, where the plugin is a separate package)
+// fails every build with "BuildKit is enabled but the buildx component is
+// missing". Our Dockerfiles use no BuildKit-only syntax (no RUN --mount, no
+// COPY --link), so the legacy builder produces identical images — fall back
+// to it instead of blocking an install, and say why once.
+func buildkitMode() string {
+	// An explicit setting wins, so a user can force either builder:
+	//   DOCKER_BUILDKIT=0 piso setup --rebuild
+	if v := strings.TrimSpace(os.Getenv("DOCKER_BUILDKIT")); v != "" {
+		return v
+	}
+	buildkitOnce.Do(func() {
+		buildkitValue = "1"
+		if _, err := dockerOutputLite("buildx", "version"); err != nil {
+			buildkitValue = "0"
+			fmt.Fprintln(os.Stderr, "piso: buildx plugin not found — building with the legacy Docker builder")
+			fmt.Fprintln(os.Stderr, "piso: install it for faster builds: https://docs.docker.com/go/buildx")
+		}
+	})
+	return buildkitValue
+}
+
+var (
+	buildkitOnce  sync.Once
+	buildkitValue string
+)
 
 func healthStatus(gw string) (bool, string) {
 	client := &http.Client{Timeout: 2 * time.Second}
