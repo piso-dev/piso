@@ -404,7 +404,7 @@ func TestFindTreeRootWalksParents(t *testing.T) {
 // /root/.piso/worker-build/Dockerfile: no such file or directory".
 func TestWriteRemoteWorkerComposeNeedsStagedContext(t *testing.T) {
 	root := writeSkeletonTree(t)
-	tmpl := []byte("build: WORKER_BUILD_CONTEXT\nPISO_WORKER_HASH: __WORKER_HASH__\nEGRESS_UPSTREAM GATEWAY_API WORKER_TOKEN CA_DIR PROJ-SLUG\n")
+	tmpl := []byte("PISO_EGRESS_UPSTREAM: __EGRESS_UPSTREAM__\nGATEWAY_URL: __GATEWAY_API__\nPISO_WORKER_TOKEN: __WORKER_TOKEN__\nbuild: WORKER_BUILD_CONTEXT\nPISO_WORKER_HASH: __WORKER_HASH__\nCA_DIR PROJ-SLUG\n")
 	if err := os.WriteFile(filepath.Join(root, "compose", "worker-remote.yaml.tmpl"), tmpl, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -462,5 +462,17 @@ func TestWriteRemoteWorkerComposeNeedsStagedContext(t *testing.T) {
 	}
 	if !strings.Contains(got, "https://gateway.example.com") {
 		t.Fatalf("egress endpoint missing:\n%s", got)
+	}
+	if strings.Contains(got, "__EGRESS_UPSTREAM__") || strings.Contains(got, "__GATEWAY_API__") || strings.Contains(got, "__WORKER_TOKEN__") {
+		t.Fatalf("placeholder not replaced:\n%s", got)
+	}
+	for _, want := range []string{
+		"PISO_EGRESS_UPSTREAM: https://gateway.example.com",
+		"GATEWAY_URL: https://gateway.example.com",
+		"PISO_WORKER_TOKEN: tok",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("environment variable corrupted or missing (%s):\n%s", want, got)
+		}
 	}
 }
