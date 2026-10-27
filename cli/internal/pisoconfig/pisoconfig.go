@@ -191,9 +191,9 @@ func WriteRemoteWorkerCompose(p Project, endpoint, token string) (string, error)
 	out = strings.ReplaceAll(out, "WORKER_BUILD_CONTEXT", ComposeHostPath(workerDir))
 	out = strings.ReplaceAll(out, "__WORKER_HASH__", hash)
 	out = strings.ReplaceAll(out, "CA_DIR", ComposeHostPath(dataDir))
-	out = strings.ReplaceAll(out, "EGRESS_UPSTREAM", egress)
-	out = strings.ReplaceAll(out, "GATEWAY_API", api)
-	out = strings.ReplaceAll(out, "WORKER_TOKEN", token)
+	out = strings.ReplaceAll(out, "__EGRESS_UPSTREAM__", egress)
+	out = strings.ReplaceAll(out, "__GATEWAY_API__", api)
+	out = strings.ReplaceAll(out, "__WORKER_TOKEN__", token)
 	dest, err := WorkerComposePath(p.Slug)
 	if err != nil {
 		return "", err
