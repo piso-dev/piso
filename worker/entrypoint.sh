@@ -157,18 +157,68 @@ ensure_gateway_pin() {
   if [ -n "${PISO_MCP_PIN:-}" ]; then return 0; fi
   if [ -s "$pin" ]; then return 0; fi
   local base="${GATEWAY_URL:-}"
-  if [ -z "$base" ]; then return 0; fi
+  if [ -z "$base" ] && [ -z "${PISO_EGRESS_UPSTREAM:-}" ]; then return 0; fi
   base="${base%/}"
 
+  # On a ship every dial to GATEWAY_URL goes through the local egress forwarder
+  # (HTTP(S)_PROXY=127.0.0.1:18080, and NO_PROXY only covers localhost), so
+  # asking for https://<gateway>/mcp/key means CONNECTing to the gateway's own
+  # egress listener - a loop that hangs instead of answering. Check-in already
+  # solves this by posting to the forwarder itself, which injects the worker
+  # token; do the same and keep GATEWAY_URL as a second candidate for the local
+  # hull, where there is no forwarder.
+  local bases=()
+  if [ -n "${PISO_EGRESS_UPSTREAM:-}" ]; then
+    bases+=("http://127.0.0.1:${PISO_EGRESS_LISTEN_PORT:-18080}")
+  fi
+  if [ -n "$base" ]; then
+    bases+=("$base")
+  fi
+
+  local last_code=""
   local tmp
   tmp=$(mktemp "${TMPDIR:-/tmp}/gateway-pin.XXXXXX" 2>/dev/null) || return 0
-  local cacert=()
-  case "$base" in
-    https://*) if [ -f /piso-ca.pem ]; then cacert=(--cacert /piso-ca.pem); fi ;;
-  esac
-  if ! curl -fsS --max-time 10 "${cacert[@]}" "$base/mcp/key" -o "$tmp" 2>/dev/null; then
+  local cacert=() auth=()
+  local token="${PISO_WORKER_TOKEN:-}"
+  if [ -z "$token" ] && [ -r /etc/piso/token ]; then
+    token=$(tr -d '\r\n' </etc/piso/token 2>/dev/null || true)
+  fi
+  if [ -n "$token" ]; then
+    auth=(-H "Authorization: Bearer $token")
+  fi
+
+  # /mcp/key is public material, but a public gateway puts it behind the
+  # remote-worker allowlist, which admits only a worker bearer token (IP
+  # allowlisting skips remote workers by design). Without this header the fetch
+  # is an anonymous 401 and the pin never appears - the exact bug this fixes.
+  local cand code fetched=0
+  for cand in "${bases[@]}"; do
+    cand="${cand%/}"
+    cacert=()
+    case "$cand" in
+      https://*) if [ -f /piso-ca.pem ]; then cacert=(--cacert /piso-ca.pem); fi ;;
+      *) cacert=(--noproxy '*') ;;
+    esac
+    # Empty-array expansion under `set -u` is an error before bash 4.4, and this
+    # script runs with set -e in an image we do not pin by version.
+    code=$(curl -sS --max-time 10 "${cacert[@]+${cacert[@]}}" "${auth[@]+${auth[@]}}" \
+      -o "$tmp" -w '%{http_code}' "$cand/mcp/key" 2>/dev/null) || code="000"
+    if [ "$code" = "200" ]; then
+      base="$cand"
+      fetched=1
+      break
+    fi
+    if [ "$code" = "401" ] || [ "$code" = "407" ]; then
+      rm -f "$tmp"
+      echo "piso: the gateway at $cand rejected this worker's token (HTTP $code); \
+its /mcp/key is behind the remote-worker allowlist and the channel will not start" >&2
+      return 0
+    fi
+    last_code="$code"
+  done
+  if [ "$fetched" != "1" ]; then
     rm -f "$tmp"
-    echo "piso: gateway MCP pin unavailable from $base/mcp/key; the channel will not start" >&2
+    echo "piso: gateway MCP pin unavailable (last HTTP ${last_code:-000}); the channel will not start" >&2
     return 0
   fi
 
@@ -218,7 +268,6 @@ PY
 # volume; otherwise ensure generates one. A corrupt file is left untouched
 # (ensure exits non-zero) so a bad key is never overwritten at boot.
 if [ -x /usr/local/bin/piso-mcp ]; then
-  ensure_gateway_pin || true
   mkdir -p /root/.pi/agent/piso 2>/dev/null || true
   if ! piso-mcp identity ensure >/dev/null; then
     echo "piso-mcp: worker identity ensure failed; channel will not start" >&2
@@ -359,6 +408,16 @@ if [ -x /usr/local/bin/piso-egress-forward ]; then
     (echo >/dev/tcp/127.0.0.1/18080) >/dev/null 2>&1 && break
     sleep 0.2
   done
+fi
+
+# Fetch only after the local proxy is listening. A missing pin is fatal for a
+# task-loop worker: starting watchers without it only produces endless retries.
+ensure_gateway_pin
+if [ "${PISO_TASK_LOOP:-}" = "1" ] && [ -x /usr/local/bin/piso-mcp ]; then
+  if ! piso-mcp key >/dev/null; then
+    echo "piso: gateway MCP pin unavailable or invalid; refusing to start the task loop" >&2
+    exit 3
+  fi
 fi
 
 # Self-heal the slug↔IP registry for the life of the container, not just
