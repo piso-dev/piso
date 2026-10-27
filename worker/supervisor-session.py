@@ -234,14 +234,23 @@ class NotSupervisor(Exception):
 
 
 class Gateway:
-    """The worker-facing mailbox API. No credential is held: identity is the
-    container's source address, exactly like the other worker watchers."""
+    """Worker mailbox API: local source-IP identity or cloud forwarder auth."""
 
     def __init__(self, base, worker, slug, context=None, timeout=10):
         self.base = base.rstrip("/")
         self.worker = worker
         self.slug = slug
-        self.context = context if context is not None else ssl_context()
+        self.opener = None
+        if (os.environ.get("PISO_EGRESS_UPSTREAM") or "").strip() and (os.environ.get("PISO_WORKER_TOKEN") or "").strip():
+            # Origin-form requests reach the gateway control mux, not its
+            # external-traffic scanner. The forwarder supplies worker auth
+            # and owns TLS plus relay/direct assignment for this hop.
+            port = os.environ.get("PISO_EGRESS_LISTEN_PORT") or "18080"
+            self.base = "http://127.0.0.1:" + port
+            self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+            self.context = None
+        else:
+            self.context = context if context is not None else ssl_context()
         self.timeout = timeout
 
     def _request(self, method, path, body=None, timeout=None):
@@ -252,7 +261,11 @@ class Gateway:
             headers["Content-Type"] = "application/json"
         req = urllib.request.Request(self.base + path, data=data, headers=headers, method=method)
         try:
-            with urllib.request.urlopen(req, timeout=timeout or self.timeout, context=self.context) as resp:
+            if self.opener is not None:
+                response = self.opener.open(req, timeout=timeout or self.timeout)
+            else:
+                response = urllib.request.urlopen(req, timeout=timeout or self.timeout, context=self.context)
+            with response as resp:
                 raw = resp.read()
         except urllib.error.HTTPError as err:
             if err.code == 409:
