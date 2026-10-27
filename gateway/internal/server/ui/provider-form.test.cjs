@@ -6,7 +6,7 @@ const fs = require("node:fs");
 const { JSDOM } = require("jsdom");
 const vm = require("node:vm");
 const html = fs.readFileSync(`${__dirname}/index.html`, "utf8");
-const script = html.match(/<script>([\s\S]*)<\/script>/)[1];
+const script = html.match(/<script>([\s\S]*?)<\/script>/)[1];
 
 // The page script is one large top-level scope, so slice out just the helpers
 // the provider dialog needs and run them against a stubbed page.

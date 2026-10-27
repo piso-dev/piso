@@ -19,7 +19,7 @@ function harness() {
   };
   vm.createContext(context);
   vm.runInContext(slice('function badge(', 'function empty(') + slice('function button(', 'function notify(') +
-    slice('function githubAppRows(', 'function githubMapping(') + slice('function githubMapping(', 'function renderGithub('), context);
+    slice('function githubPermissions(', 'function githubMapping(') + slice('function githubMapping(', 'function renderGithub('), context);
   return context;
 }
 

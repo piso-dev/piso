@@ -270,11 +270,12 @@ type GithubApp struct {
 
 // GithubInstallationView is one org/user install without tokens.
 type GithubInstallationView struct {
-	ID          int64    `json:"id"`
-	Account     string   `json:"account"`
-	AccountType string   `json:"accountType,omitempty"`
-	HTMLURL     string   `json:"htmlUrl,omitempty"`
-	Repos       []string `json:"repos,omitempty"`
+	ID          int64             `json:"id"`
+	Account     string            `json:"account"`
+	AccountType string            `json:"accountType,omitempty"`
+	HTMLURL     string            `json:"htmlUrl,omitempty"`
+	Repos       []string          `json:"repos,omitempty"`
+	Permissions map[string]string `json:"permissions,omitempty"`
 }
 
 // GithubAppView is the policy-facing snapshot of an app (no PEM).

@@ -6,7 +6,7 @@ const fs = require("node:fs");
 const { JSDOM } = require("jsdom");
 const vm = require("node:vm");
 const html = fs.readFileSync(`${__dirname}/index.html`, "utf8");
-const script = html.match(/<script>([\s\S]*)<\/script>/)[1];
+const script = html.match(/<script>([\s\S]*?)<\/script>/)[1];
 
 const at = (marker) => {
   const index = script.indexOf(marker);
@@ -34,6 +34,8 @@ const WORKERS = [
 ];
 
 function scopeHarness(t, secret = {}, workers = WORKERS) {
+  // Scope tests need a valid host binding; unbound worker secrets are rejected.
+  secret = { allowedHosts: ["api.example.test"], ...secret };
   const dom = new JSDOM(
     `<dialog id="dialog"><h2 id="dialogTitle"></h2><button id="closeDialog"></button><div id="dialogContent"></div></dialog><div id="toast" hidden></div>`,
     { url: "http://piso.local/" },
@@ -71,6 +73,7 @@ function scopeHarness(t, secret = {}, workers = WORKERS) {
     window.document.querySelector("#f-name").value = "test secret";
     window.document.querySelector("#f-placeholder").value = "piso_test_secret";
     window.document.querySelector("#f-value").value = "test-value";
+    window.document.querySelector("#f-allowedHosts").value = "api.example.test";
   }
   return { window, calls, dialog: window.document.querySelector("dialog") };
 }

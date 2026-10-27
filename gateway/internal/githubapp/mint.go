@@ -128,9 +128,10 @@ func (c *Client) FetchInstallation(app store.GithubAppRec, installationID int64)
 		return store.GithubInstallation{}, err
 	}
 	var raw struct {
-		ID      int64  `json:"id"`
-		HTMLURL string `json:"html_url"`
-		Account struct {
+		ID          int64             `json:"id"`
+		HTMLURL     string            `json:"html_url"`
+		Permissions map[string]string `json:"permissions"`
+		Account     struct {
 			Login string `json:"login"`
 			Type  string `json:"type"`
 		} `json:"account"`
@@ -143,7 +144,7 @@ func (c *Client) FetchInstallation(app store.GithubAppRec, installationID int64)
 	}
 	return store.GithubInstallation{
 		ID: raw.ID, Account: strings.ToLower(raw.Account.Login),
-		AccountType: raw.Account.Type, HTMLURL: raw.HTMLURL,
+		AccountType: raw.Account.Type, HTMLURL: raw.HTMLURL, Permissions: raw.Permissions,
 	}, nil
 }
 
@@ -219,9 +220,10 @@ func (c *Client) Discover(ctx context.Context, app store.GithubAppRec) (store.Gi
 	app.Installations = nil
 	for page := 1; ; page++ {
 		var items []struct {
-			ID      int64  `json:"id"`
-			HTMLURL string `json:"html_url"`
-			Account struct {
+			ID          int64             `json:"id"`
+			HTMLURL     string            `json:"html_url"`
+			Permissions map[string]string `json:"permissions"`
+			Account     struct {
 				Login string `json:"login"`
 				Type  string `json:"type"`
 			} `json:"account"`
@@ -236,7 +238,7 @@ func (c *Client) Discover(ctx context.Context, app store.GithubAppRec) (store.Gi
 			}
 			app.Installations = append(app.Installations, store.GithubInstallation{
 				ID: item.ID, Account: strings.ToLower(item.Account.Login),
-				AccountType: item.Account.Type, HTMLURL: item.HTMLURL,
+				AccountType: item.Account.Type, HTMLURL: item.HTMLURL, Permissions: item.Permissions,
 			})
 		}
 		if len(items) < 100 {
