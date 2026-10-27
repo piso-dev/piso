@@ -14,6 +14,9 @@ WORKER = Path(__file__).resolve().parent
 spec = importlib.util.spec_from_file_location('profile_sync', WORKER / 'pi-profile-sync.py')
 profile = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(profile)
+spec = importlib.util.spec_from_file_location('supervisor_session', WORKER / 'supervisor-session.py')
+supervisor = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(supervisor)
 
 
 class GatewayControlTests(unittest.TestCase):
@@ -84,6 +87,38 @@ class GatewayControlTests(unittest.TestCase):
             self.assertEqual(profile.fetch(url), {'settings': '{}', 'models': '{}'})
         self.assertEqual(self.requests[-1][:3],
                          ('GET', '/api/v1/worker/pi-profile?worker=worker-1', 'Bearer test-worker-token'))
+
+    def test_supervisor_calls_use_loopback_without_proxy_or_local_tls(self):
+        with patch.dict(os.environ, self.env), patch.object(supervisor, 'ssl_context', side_effect=AssertionError('local hop needs no TLS')):
+            gateway = supervisor.Gateway(self.env['GATEWAY_URL'], 'worker-1', 'ship')
+            self.assertEqual(gateway.base, 'http://127.0.0.1:%s' % self.server.server_port)
+            calls = (
+                (lambda: gateway.lease(), 'POST', '/api/v1/worker/supervisor'),
+                (lambda: gateway.messages(25), 'GET', '/api/v1/worker/messages?worker=worker-1&wait=25'),
+                (lambda: gateway.ack(['m1']), 'POST', '/api/v1/worker/messages/ack'),
+                (lambda: gateway.reply(42, 'hello'), 'POST', '/api/v1/worker/reply'),
+                (lambda: gateway.status(42, 'working'), 'POST', '/api/v1/worker/status'),
+            )
+            for call, method, path in calls:
+                with self.subTest(path=path):
+                    call()
+                    self.assertEqual(self.requests[-1][:2], (method, path))
+                    # Authentication is supplied by the forwarder, not this client.
+                    self.assertIsNone(self.requests[-1][2])
+                    if method == 'POST':
+                        self.assertEqual(json.loads(self.requests[-1][3])['worker'], 'worker-1')
+            with patch.object(gateway.opener, 'open', wraps=gateway.opener.open) as opened:
+                gateway.messages(25)
+                self.assertEqual(opened.call_args.kwargs['timeout'], 35)
+
+    def test_local_supervisor_routing_is_unchanged(self):
+        context = object()
+        for missing in ('PISO_WORKER_TOKEN', 'PISO_EGRESS_UPSTREAM'):
+            with self.subTest(missing=missing), patch.dict(os.environ, dict(self.env, **{missing: ''})):
+                gateway = supervisor.Gateway('http://gateway:8083/', 'worker-1', 'ship', context=context)
+                self.assertEqual(gateway.base, 'http://gateway:8083')
+                self.assertIsNone(gateway.opener)
+                self.assertIs(gateway.context, context)
 
     def test_local_profile_url_is_unchanged(self):
         with patch.dict(os.environ, dict(self.env, PISO_WORKER_TOKEN='', GATEWAY_URL='http://gateway:8083')):
