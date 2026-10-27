@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -47,16 +48,25 @@ type pinInstall struct {
 //
 // It uses pairHTTP(), the client the pairing flow already settled trust for:
 // same host, same CA, same channel that just returned the worker assignment.
-// The response is not authenticated beyond TLS, which is the same trust anchor
-// /ca.crt was fetched under - and the pin is worthless to an attacker unless
-// they also hold the matching private keys.
-func fetchGatewayPin(serverURL string) (mcpchannel.Pin, string, error) {
+// The pin itself is public material, but on a public gateway the route sits
+// behind the remote-worker allowlist (gateway/internal/server/public.go), which
+// admits only a valid worker bearer token - IP allowlisting excludes remote
+// workers on purpose. Anonymous fetch therefore gets 401, which is how a ship
+// ended up with no pin at all: the first fix forgot the token.
+func fetchGatewayPin(serverURL, token string) (mcpchannel.Pin, string, error) {
 	base := strings.TrimRight(strings.TrimSpace(serverURL), "/")
 	if base == "" {
 		return mcpchannel.Pin{}, "", errors.New("gateway pin: no gateway endpoint to fetch from")
 	}
 	url := base + "/mcp/key"
-	res, err := pairHTTP().Get(url)
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return mcpchannel.Pin{}, "", fmt.Errorf("gateway pin: %s: %w", url, err)
+	}
+	if token = strings.TrimSpace(token); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	res, err := pairHTTP().Do(req)
 	if err != nil {
 		return mcpchannel.Pin{}, "", fmt.Errorf("gateway pin: %s: %w", url, err)
 	}
@@ -64,6 +74,9 @@ func fetchGatewayPin(serverURL string) (mcpchannel.Pin, string, error) {
 	raw, err := io.ReadAll(io.LimitReader(res.Body, maxGatewayPinBytes+1))
 	if err != nil {
 		return mcpchannel.Pin{}, "", fmt.Errorf("gateway pin: %s: %w", url, err)
+	}
+	if res.StatusCode == http.StatusUnauthorized || res.StatusCode == http.StatusProxyAuthRequired {
+		return mcpchannel.Pin{}, "", fmt.Errorf("gateway pin: %s rejected this worker's token (%s); the gateway must know it as a worker", url, res.Status)
 	}
 	if res.StatusCode != http.StatusOK {
 		return mcpchannel.Pin{}, "", fmt.Errorf("gateway pin: %s returned %s", url, res.Status)
@@ -82,15 +95,38 @@ func fetchGatewayPin(serverURL string) (mcpchannel.Pin, string, error) {
 	return pin, meta.Fingerprint, nil
 }
 
+// installAssignedWorkerGatewayPin trusts the assigned gateway, which may be a
+// separate TLS host from the coordinator used during pairing.
+func installAssignedWorkerGatewayPin(asg workerAssignment, slugDir string) (pinInstall, error) {
+	previous := pairClient
+	defer func() { pairClient = previous }()
+	if asg.CAPem != "" {
+		pool, _, _, err := loadCAPool([]byte(asg.CAPem), "assigned gateway CA")
+		if err != nil {
+			return pinInstall{}, err
+		}
+		setPairClient(&gatewayCA{client: poolClient(pool)})
+	}
+	return installWorkerGatewayPin(asg.Endpoint, asg.Token, slugDir)
+}
+
 // installWorkerGatewayPin fetches the pin and writes it where the worker
 // container will read it. An unchanged pin is left alone, so a relaunch does
 // not rewrite the file under a running container.
-func installWorkerGatewayPin(serverURL, slugDir string) (pinInstall, error) {
+func installWorkerGatewayPin(serverURL, token, slugDir string) (pinInstall, error) {
 	out := pinInstall{Path: filepath.Join(slugDir, mcpchannel.PinFile)}
 	if prev, err := mcpchannel.LoadPin(out.Path); err == nil {
 		out.Replaced = prev.KeyID
 	}
-	pin, fp, err := fetchGatewayPin(serverURL)
+	if token = strings.TrimSpace(token); token == "" {
+		// A relaunch may carry the assignment without the token; the ship keeps
+		// the same value in <data>/workers/<slug>/token, which compose also
+		// mounts at /etc/piso/token for the container.
+		if raw, err := os.ReadFile(filepath.Join(slugDir, "token")); err == nil {
+			token = strings.TrimSpace(string(raw))
+		}
+	}
+	pin, fp, err := fetchGatewayPin(serverURL, token)
 	if err != nil {
 		return out, err
 	}
