@@ -420,6 +420,26 @@ func startRemoteWorker(proj pisoconfig.Project, asg workerAssignment) error {
 	if err := pisoconfig.EnsureWorkerPlaceholdersEnv(proj.Slug); err != nil {
 		return err
 	}
+	// piso-mcp exits before its first request when the gateway pin is absent,
+	// so without this the ship boots with a working check-in and a dead channel.
+	// The gateway publishes the same file for its own workers; a ship has to
+	// fetch it, and the pairing client already trusts this gateway's CA.
+	if pin, err := installWorkerGatewayPin(asg.Endpoint, slugDir); err != nil {
+		fmt.Printf("piso: could not fetch the gateway MCP pin (%v)\n", err)
+		fmt.Printf("piso: the worker channel will fail until %s exists; retry with `piso worker launch`\n", gatewayPinMountPath)
+	} else {
+		if pin.Changed && pin.Replaced != "" {
+			fmt.Printf("piso: gateway MCP pin changed %s -> %s\n", pin.Replaced, pin.Pin.KeyID)
+		}
+		state := "already current"
+		if pin.Changed {
+			state = "written"
+		}
+		fmt.Printf("piso: gateway MCP pin %s %s (%s in the worker)\n", pin.Pin.KeyID, state, gatewayPinMountPath)
+		if pin.Fingerprint != "" {
+			fmt.Printf("piso: gateway fingerprint sha256:%s (compare with `piso gateway status` on the gateway host)\n", pin.Fingerprint)
+		}
+	}
 	// Stage the worker build context before rendering the compose file: the
 	// template embeds the context hash and points `build:` at the staged dir, and
 	// on a fresh ship nothing has been staged yet (no prior `piso up`).

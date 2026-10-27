@@ -36,6 +36,8 @@ HEARTBEAT_SECS="${PISO_TASK_HEARTBEAT_SECS:-60}"
 MAX="${PISO_TASK_WATCH_MAX:-0}"
 SESSION_DIR="${PISO_TASK_SESSION_DIR:-/root/.pi/agent/task-sessions}"
 mkdir -p "$SESSION_DIR"
+# peek() writes its stderr here so a failure can say why (see error_sleep).
+PEEK_ERR="$SESSION_DIR/peek.err"
 export PISO_TASK_EXCLUDE=""
 
 pi_status() {
@@ -44,6 +46,18 @@ pi_status() {
 
 peek() {
   timeout 30 "$MCP" call tools/call '{"name":"inbox_list","arguments":{}}'
+}
+
+# peek()'s stderr used to go to /dev/null, so a channel that could not start at
+# all ("gateway pin missing", an expired key, a gateway 403) was indistinguishable
+# from a flaky network: the log said `peek failed (retry in 30s)` forever and the
+# reason had to be rediscovered by hand. Keep it in the log instead.
+peek_reason() {
+  local file="$1" line=""
+  if [ -s "$file" ]; then
+    line=$(head -c 400 "$file" | tr '\r\n' '  ' | sed 's/[[:space:]]*$//')
+  fi
+  printf '%s' "$line"
 }
 
 decide() {
@@ -153,10 +167,14 @@ idle_sleep() {
 }
 
 error_sleep() {
-  local jitter wait
+  local jitter wait reason="${1:-}"
   jitter=$((RANDOM % 3))
   wait=$((backoff + jitter))
-  echo "piso-task-watch: peek failed (retry in ${wait}s)"
+  if [ -n "$reason" ]; then
+    echo "piso-task-watch: peek failed (retry in ${wait}s): $reason"
+  else
+    echo "piso-task-watch: peek failed (retry in ${wait}s)"
+  fi
   sleep "$wait"
   if [ "$backoff" -lt 30 ]; then
     backoff=$((backoff * 2))
@@ -186,8 +204,8 @@ while true; do
   waiting=0
 
   raw=""
-  if ! raw=$(peek 2>/dev/null); then
-    error_sleep
+  if ! raw=$(peek 2>"$PEEK_ERR"); then
+    error_sleep "$(peek_reason "$PEEK_ERR")"
     if [ "$MAX" -gt 0 ] && [ "$n" -ge "$MAX" ]; then
       exit 0
     fi
@@ -222,7 +240,7 @@ while true; do
       idle_sleep
       ;;
     *)
-      echo "piso-task-watch: peek error"
+      echo "piso-task-watch: peek error: $(printf '%s' "$raw" | head -c 300 | tr '\r\n' '  ')"
       error_sleep
       ;;
   esac
