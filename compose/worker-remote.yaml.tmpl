@@ -57,7 +57,7 @@ services:
       https_proxy: http://127.0.0.1:18080
       http_proxy: http://127.0.0.1:18080
       all_proxy: http://127.0.0.1:18080
-      PISO_EGRESS_UPSTREAM: "EGRESS_UPSTREAM"
+      PISO_EGRESS_UPSTREAM: "__EGRESS_UPSTREAM__"
       NO_PROXY: localhost,127.0.0.1
       no_proxy: localhost,127.0.0.1
       SSL_CERT_FILE: /piso-ca.pem
@@ -65,8 +65,8 @@ services:
       GIT_SSL_CAINFO: /piso-ca.pem
       REQUESTS_CA_BUNDLE: /piso-ca.pem
       NODE_EXTRA_CA_CERTS: /piso-ca.pem
-      GATEWAY_URL: "GATEWAY_API"
-      PISO_WORKER_TOKEN: "WORKER_TOKEN"
+      GATEWAY_URL: "__GATEWAY_API__"
+      PISO_WORKER_TOKEN: "__WORKER_TOKEN__"
       PISO_WORKER_NAME: piso-worker-PROJ-SLUG
       PISO_WORKER_SLUG: PROJ-SLUG
       PISO_HULL: cloud_ship
