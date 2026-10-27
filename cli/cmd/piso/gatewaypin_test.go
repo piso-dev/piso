@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"piso/internal/mcpchannel"
@@ -27,8 +28,20 @@ func testPin(seed byte) mcpchannel.Pin {
 
 func pinServer(t *testing.T, pin mcpchannel.Pin, status int) *httptest.Server {
 	t.Helper()
+	return pinServerAuth(t, pin, status, "")
+}
+
+// pinServerAuth mirrors the real gateway: on a public listener /mcp/key sits
+// behind the remote-worker allowlist, so without the worker's bearer token it is
+// a 401 and no pin is served.
+func pinServerAuth(t *testing.T, pin mcpchannel.Pin, status int, wantToken string) *httptest.Server {
+	t.Helper()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/mcp/key", func(w http.ResponseWriter, r *http.Request) {
+		if wantToken != "" && r.Header.Get("Authorization") != "Bearer "+wantToken {
+			http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+			return
+		}
 		if status != http.StatusOK {
 			http.Error(w, "", status)
 			return
@@ -55,7 +68,7 @@ func TestInstallWorkerGatewayPinWritesMissingPin(t *testing.T) {
 	srv := pinServer(t, pin, http.StatusOK)
 	dir := t.TempDir()
 
-	out, err := installWorkerGatewayPin(srv.URL, dir)
+	out, err := installWorkerGatewayPin(srv.URL, "", dir)
 	if err != nil {
 		t.Fatalf("install: %v", err)
 	}
@@ -93,7 +106,7 @@ func TestInstallWorkerGatewayPinLeavesSamePinAlone(t *testing.T) {
 	srv := pinServer(t, pin, http.StatusOK)
 	dir := t.TempDir()
 
-	if _, err := installWorkerGatewayPin(srv.URL, dir); err != nil {
+	if _, err := installWorkerGatewayPin(srv.URL, "", dir); err != nil {
 		t.Fatal(err)
 	}
 	path := filepath.Join(dir, mcpchannel.PinFile)
@@ -102,7 +115,7 @@ func TestInstallWorkerGatewayPinLeavesSamePinAlone(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	out, err := installWorkerGatewayPin(srv.URL, dir)
+	out, err := installWorkerGatewayPin(srv.URL, "", dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +141,7 @@ func TestInstallWorkerGatewayPinReplacesReKeyedPin(t *testing.T) {
 	}
 	srv := pinServer(t, newPin, http.StatusOK)
 
-	out, err := installWorkerGatewayPin(srv.URL, dir)
+	out, err := installWorkerGatewayPin(srv.URL, "", dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,7 +170,7 @@ func TestInstallWorkerGatewayPinReportsBadResponses(t *testing.T) {
 		"gateway down": http.StatusServiceUnavailable,
 	} {
 		srv := pinServer(t, testPin(5), status)
-		if _, err := installWorkerGatewayPin(srv.URL, dir); err == nil {
+		if _, err := installWorkerGatewayPin(srv.URL, "", dir); err == nil {
 			t.Fatalf("%s: expected an error", name)
 		}
 		if _, err := os.Stat(filepath.Join(dir, mcpchannel.PinFile)); !os.IsNotExist(err) {
@@ -169,7 +182,7 @@ func TestInstallWorkerGatewayPinReportsBadResponses(t *testing.T) {
 		_, _ = w.Write([]byte("<html>not a pin</html>"))
 	}))
 	defer srv.Close()
-	if _, err := installWorkerGatewayPin(srv.URL, dir); err == nil {
+	if _, err := installWorkerGatewayPin(srv.URL, "", dir); err == nil {
 		t.Fatal("expected a parse error")
 	}
 	if _, err := os.Stat(filepath.Join(dir, mcpchannel.PinFile)); !os.IsNotExist(err) {
@@ -178,7 +191,39 @@ func TestInstallWorkerGatewayPinReportsBadResponses(t *testing.T) {
 }
 
 func TestFetchGatewayPinNeedsAnEndpoint(t *testing.T) {
-	if _, _, err := fetchGatewayPin("   "); err == nil {
+	if _, _, err := fetchGatewayPin("   ", ""); err == nil {
 		t.Fatal("expected an error for an empty endpoint")
+	}
+}
+
+// The public listener authenticates /mcp/key with the worker's own token; an
+// anonymous fetch is a 401 and installs nothing. This is the failure that left a
+// re-launched ship without a pin.
+func TestInstallWorkerGatewayPinSendsWorkerToken(t *testing.T) {
+	pin := testPin(7)
+	srv := pinServerAuth(t, pin, http.StatusOK, "ship-token-abc")
+	dir := t.TempDir()
+
+	// No token: the gateway refuses, and the error must say so rather than
+	// blaming the network.
+	if _, err := installWorkerGatewayPin(srv.URL, "", dir); err == nil {
+		t.Fatal("expected a 401 without the worker token")
+	} else if !strings.Contains(err.Error(), "token") {
+		t.Fatalf("error does not mention the token: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, mcpchannel.PinFile)); !os.IsNotExist(err) {
+		t.Fatal("a rejected fetch left a pin file behind")
+	}
+
+	// The relaunch path: token comes from the ship's own token file.
+	if err := os.WriteFile(filepath.Join(dir, "token"), []byte("ship-token-abc\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, err := installWorkerGatewayPin(srv.URL, "", dir)
+	if err != nil {
+		t.Fatalf("install with token file: %v", err)
+	}
+	if !out.Changed || out.Pin.KeyID != pin.KeyID {
+		t.Fatalf("pin not installed: %+v", out)
 	}
 }
