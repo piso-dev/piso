@@ -201,6 +201,13 @@ func TestPutPiProviderSavesWhenCatalogFails(t *testing.T) {
 	if !strings.Contains(string(raw), `"defaultModel": "chosen-model"`) {
 		t.Fatalf("settings: %s", raw)
 	}
+	models, err := os.ReadFile(filepath.Join(profile, "models.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(models), `"id": "chosen-model"`) {
+		t.Fatalf("manual model missing from pi registry: %s", models)
+	}
 }
 
 func TestPiProviderStackSaveActivateDelete(t *testing.T) {

@@ -6,7 +6,7 @@ const fs = require("node:fs");
 const { JSDOM } = require("jsdom");
 const vm = require("node:vm");
 const html = fs.readFileSync(`${__dirname}/index.html`, "utf8");
-const script = html.match(/<script>([\s\S]*)<\/script>/)[1];
+const script = html.match(/<script>([\s\S]*?)<\/script>/)[1];
 
 // Slice the helpers renderSettings needs out of the single page script.
 const at = (marker) => script.indexOf(marker);
