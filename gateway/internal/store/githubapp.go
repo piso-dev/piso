@@ -27,12 +27,13 @@ const (
 
 // GithubInstallation is one GitHub account/org the app is installed on.
 type GithubInstallation struct {
-	AccountID   int64    `json:"accountId,omitempty"`
-	ID          int64    `json:"id"`
-	Account     string   `json:"account"`
-	AccountType string   `json:"accountType,omitempty"`
-	HTMLURL     string   `json:"htmlUrl,omitempty"`
-	Repos       []string `json:"repos,omitempty"`
+	AccountID   int64             `json:"accountId,omitempty"`
+	ID          int64             `json:"id"`
+	Account     string            `json:"account"`
+	AccountType string            `json:"accountType,omitempty"`
+	HTMLURL     string            `json:"htmlUrl,omitempty"`
+	Repos       []string          `json:"repos,omitempty"`
+	Permissions map[string]string `json:"permissions,omitempty"`
 }
 
 // GithubAppRec is a gateway-owned GitHub App. The PEM never leaves state.json.
@@ -91,7 +92,7 @@ func (r GithubAppRec) ToSummary() model.GithubApp {
 	for _, i := range r.Installations {
 		inst = append(inst, model.GithubInstallationView{
 			ID: i.ID, Account: i.Account, AccountType: i.AccountType,
-			HTMLURL: i.HTMLURL, Repos: append([]string(nil), i.Repos...),
+			HTMLURL: i.HTMLURL, Repos: append([]string(nil), i.Repos...), Permissions: copyGithubPermissions(i.Permissions),
 		})
 	}
 	return model.GithubApp{
@@ -348,10 +349,22 @@ func copyGithubApps(in []GithubAppRec) []GithubAppRec {
 	return out
 }
 
+func copyGithubPermissions(in map[string]string) map[string]string {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
+}
+
 func copyGithubApp(r GithubAppRec) GithubAppRec {
 	r.Installations = append([]GithubInstallation(nil), r.Installations...)
 	for i := range r.Installations {
 		r.Installations[i].Repos = append([]string(nil), r.Installations[i].Repos...)
+		r.Installations[i].Permissions = copyGithubPermissions(r.Installations[i].Permissions)
 	}
 	return r
 }

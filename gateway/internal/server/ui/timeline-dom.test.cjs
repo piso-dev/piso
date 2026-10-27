@@ -6,7 +6,7 @@ const fs = require("node:fs");
 const { JSDOM, VirtualConsole } = require("jsdom");
 const vm = require("node:vm");
 const html = fs.readFileSync(`${__dirname}/index.html`, "utf8");
-const script = html.match(/<script>([\s\S]*)<\/script>/)[1];
+const script = html.match(/<script>([\s\S]*?)<\/script>/)[1];
 
 // jsdom does not perform layout. Supply explicit measurements to exercise
 // production panel/connector logic, not to claim browser paint verification.

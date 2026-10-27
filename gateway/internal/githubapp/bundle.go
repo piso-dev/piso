@@ -43,11 +43,12 @@ type BundleApp struct {
 // BundleInstallation is one account/org the app is installed on, plus the
 // repository snapshot the origin gateway last fetched.
 type BundleInstallation struct {
-	ID          int64    `json:"id"`
-	Account     string   `json:"account"`
-	AccountType string   `json:"accountType,omitempty"`
-	HTMLURL     string   `json:"htmlUrl,omitempty"`
-	Repos       []string `json:"repos,omitempty"`
+	ID          int64             `json:"id"`
+	Account     string            `json:"account"`
+	AccountType string            `json:"accountType,omitempty"`
+	HTMLURL     string            `json:"htmlUrl,omitempty"`
+	Repos       []string          `json:"repos,omitempty"`
+	Permissions map[string]string `json:"permissions,omitempty"`
 }
 
 // EncodeBundle renders apps as the plaintext of a shared routing-group secret.
@@ -78,7 +79,7 @@ func EncodeBundle(apps []store.GithubAppRec) (string, error) {
 			}
 			entry.Installations = append(entry.Installations, BundleInstallation{
 				ID: inst.ID, Account: inst.Account, AccountType: inst.AccountType,
-				HTMLURL: inst.HTMLURL, Repos: append([]string(nil), inst.Repos...),
+				HTMLURL: inst.HTMLURL, Repos: append([]string(nil), inst.Repos...), Permissions: inst.Permissions,
 			})
 		}
 		b.Apps = append(b.Apps, entry)
@@ -149,7 +150,7 @@ func (b Bundle) Recs(secretID, resourceID string, version int) []store.GithubApp
 		for _, inst := range app.Installations {
 			rec.Installations = append(rec.Installations, store.GithubInstallation{
 				ID: inst.ID, Account: inst.Account, AccountType: inst.AccountType,
-				HTMLURL: inst.HTMLURL, Repos: append([]string(nil), inst.Repos...),
+				HTMLURL: inst.HTMLURL, Repos: append([]string(nil), inst.Repos...), Permissions: inst.Permissions,
 			})
 		}
 		out = append(out, rec)

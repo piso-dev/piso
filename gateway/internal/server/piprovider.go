@@ -407,7 +407,7 @@ func (s *Server) applyPiProviders() piProviderListView {
 			// carries a working placeholder, and dropping it here would break a
 			// provider that is serving traffic while its secret syncs.
 			if entry, present := applied.providers[p.ID]; present && strings.HasPrefix(entry.APIKey, model.PlaceholderPrefix) && entry.BaseURL == p.BaseURL {
-				providers = append(providers, piprofile.Provider{ID: p.ID, Name: p.Name, APIKey: entry.APIKey, BaseURL: p.BaseURL, API: p.APIType, Models: p.Models})
+				providers = append(providers, piprofile.Provider{ID: p.ID, Name: p.Name, APIKey: entry.APIKey, BaseURL: p.BaseURL, API: p.APIType, Models: piProfileModels(p)})
 				continue
 			}
 			warnings = append(warnings, fmt.Sprintf("%s: selected secret is not on this gateway yet", piProviderLabel(p)))
@@ -419,7 +419,7 @@ func (s *Server) applyPiProviders() piProviderListView {
 			APIKey:  rec.Placeholder,
 			BaseURL: p.BaseURL,
 			API:     p.APIType,
-			Models:  p.Models,
+			Models:  piProfileModels(p),
 		})
 	}
 	if err := piprofile.WriteProviderStack(s.piProfileDir(), providers); err != nil {
@@ -536,6 +536,15 @@ func (s *Server) publishPiProvider() string {
 // effectivePiModel is the model new sessions should start on. An empty
 // explicit default falls back to the last known catalog's first id, which is
 // empty when the catalog has never been fetched.
+func piProfileModels(p *store.PiProviderRec) []string {
+	models := append([]string(nil), p.Models...)
+	// Manual defaults must be resolvable by pi even without a provider catalog.
+	if id := strings.TrimSpace(p.DefaultModel); id != "" && !containsString(models, id) {
+		models = append(models, id)
+	}
+	return models
+}
+
 func effectivePiModel(p *store.PiProviderRec) string {
 	if p == nil {
 		return ""

@@ -7,7 +7,7 @@ const { JSDOM } = require("jsdom");
 const vm = require("node:vm");
 
 const html = fs.readFileSync(`${__dirname}/index.html`, "utf8");
-const script = html.match(/<script>([\s\S]*)<\/script>/)[1];
+const script = html.match(/<script>([\s\S]*?)<\/script>/)[1];
 const at = (marker) => {
   const index = script.indexOf(marker);
   assert.notEqual(index, -1, `marker not found: ${marker}`);
@@ -56,6 +56,7 @@ function attentionHarness(t, asks) {
   });
   vm.createContext(context);
   vm.runInContext(`"use strict";\n${attentionHelpers}\nrenderAttention();`, context);
+  window.document.rerenderAttention = () => vm.runInContext("renderAttention();", context);
   return window.document;
 }
 
@@ -71,6 +72,21 @@ test("review wait renders accept/request-changes/cancel actions", (t) => {
     ["ask-accept", "ask-request_changes", "ask-cancel"],
   );
   assert.equal(buttons[0].dataset.id, "wait-1");
+});
+
+test("inline feedback survives polling and preserves focus", (t) => {
+  const document = attentionHarness(t, [taskWait()]);
+  const input = document.querySelector("textarea[data-feedback]");
+  assert.ok(input);
+  assert.match(document.querySelector(".ask").textContent, /Requested action/);
+  input.value = "Please add coverage <script>unsafe</script>";
+  input.dispatchEvent(new document.defaultView.Event("input"));
+  input.focus();
+  document.rerenderAttention();
+  const refreshed = document.querySelector("textarea[data-feedback]");
+  assert.equal(refreshed.value, "Please add coverage <script>unsafe</script>");
+  assert.equal(document.activeElement, refreshed);
+  assert.equal(document.querySelectorAll("script").length, 0);
 });
 
 test("needs_input wait renders resolve/cancel actions", (t) => {
@@ -158,6 +174,15 @@ test("respond dispatcher posts the idempotency key and wait id", async () => {
     waitId: "wait-1",
     requestId: "req-1",
   });
+});
+
+test("respond dispatcher uses inline feedback rather than a prompt", async () => {
+  const textarea = {value: "Please add regression coverage"};
+  const source = {closest: () => ({querySelector: () => textarea})};
+  const {action, calls} = dispatcher([taskWait()], null, {source});
+  await action("ask-request_changes", "wait-1");
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][2].summary, textarea.value);
 });
 
 test("respond dispatcher aborts when the prompt is cancelled", async () => {
