@@ -13,16 +13,35 @@ piso_gateway_auth_args() {
   fi
 }
 
+# Remote control calls must reach the gateway mux, not CONNECT back through
+# its egress scanner. The local forwarder handles relay/direct assignment and
+# supplies worker transport authentication, just as it does for check-in.
+piso_gateway_control_url() {
+  local url="$1" base="${GATEWAY_URL:-}"
+  base="${base%/}"
+  if [ -n "${PISO_EGRESS_UPSTREAM:-}" ] && [ -n "${PISO_WORKER_TOKEN:-}" ] && [ -n "$base" ]; then
+    case "$url" in
+      "$base"/api/v1/worker/*)
+        url="http://127.0.0.1:${PISO_EGRESS_LISTEN_PORT:-18080}${url#"$base"}"
+        ;;
+    esac
+  fi
+  printf '%s' "$url"
+}
+
 piso_gateway_post_once() {
   local url="$1" body="$2" out="$3" code
+  url=$(piso_gateway_control_url "$url")
+  local direct=()
+  case "$url" in http://127.0.0.1:*) direct=(--noproxy 127.0.0.1) ;; esac
   if [ -n "${PISO_WORKER_TOKEN:-}" ]; then
-    code=$(curl -sS --max-time 3 -o "$out" -w '%{http_code}' \
+    code=$(curl -sS "${direct[@]+${direct[@]}}" --max-time 3 -o "$out" -w '%{http_code}' \
       -X POST "$url" \
       -H 'Content-Type: application/json' \
       -H "Authorization: Bearer ${PISO_WORKER_TOKEN}" \
       -d "$body" 2>/dev/null) || code=000
   else
-    code=$(curl -sS --max-time 3 -o "$out" -w '%{http_code}' \
+    code=$(curl -sS "${direct[@]+${direct[@]}}" --max-time 3 -o "$out" -w '%{http_code}' \
       -X POST "$url" \
       -H 'Content-Type: application/json' \
       -d "$body" 2>/dev/null) || code=000

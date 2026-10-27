@@ -76,6 +76,9 @@ def profile_url():
     worker = (os.environ.get("PISO_WORKER_NAME") or "").strip()
     if not gw:
         return ""
+    if (os.environ.get("PISO_EGRESS_UPSTREAM") or "").strip() and (os.environ.get("PISO_WORKER_TOKEN") or "").strip():
+        port = os.environ.get("PISO_EGRESS_LISTEN_PORT") or "18080"
+        gw = "http://127.0.0.1:" + port
     url = gw + "/api/v1/worker/pi-profile"
     if worker:
         url += "?worker=" + urllib.parse.quote(worker)
@@ -87,10 +90,16 @@ def fetch(url, timeout=15):
     token = (os.environ.get("PISO_WORKER_TOKEN") or "").strip()
     if token:
         req.add_header("Authorization", "Bearer " + token)
-    # urllib honors HTTP(S)_PROXY, which points at the in-container egress
-    # forwarder: it retries the upstream dial, so a gateway recreate is not a
-    # failed profile update.
-    with urllib.request.urlopen(req, timeout=timeout, context=ssl_context()) as resp:
+    # Origin-form HTTP to the local forwarder reaches the gateway control mux
+    # directly. CONNECTing to the public gateway instead sends this bearer
+    # through external-traffic scanning. Do not proxy the loopback request;
+    # the forwarder owns TLS and relay/direct routing for this hop.
+    if url.startswith("http://127.0.0.1:"):
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        response = opener.open(req, timeout=timeout)
+    else:
+        response = urllib.request.urlopen(req, timeout=timeout, context=ssl_context())
+    with response as resp:
         return json.loads(resp.read().decode("utf-8"))
 
 
