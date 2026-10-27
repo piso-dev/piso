@@ -36,12 +36,15 @@ func cmdWorkerLaunch(args []string) error {
 	fs := flag.NewFlagSet("worker launch", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	name := fs.String("name", "", "worker slug")
-	server := fs.String("server", strings.TrimSpace(os.Getenv("PISO_SERVER_URL")), "technocore server URL")
+	server := fs.String("server", "", "required coordinator server URL")
 	noQR := fs.Bool("no-qr", false, "print the approve URL without a terminal QR")
 	caFile := fs.String("ca", "", "trust this gateway CA bundle (PEM) instead of fetching /ca.crt")
 	noCAFetch := fs.Bool("no-ca-fetch", false, "do not fetch an untrusted gateway CA; fail with instructions")
 	if err := fs.Parse(args); err != nil {
-		return errors.New("usage: piso worker launch [workspace-dir] [--name n] [--server url] [--ca file] [--no-ca-fetch] [--no-qr]")
+		return errors.New("usage: piso worker launch --server url [--name n] [--ca file] [--no-ca-fetch] [--no-qr] [workspace-dir]")
+	}
+	if strings.TrimSpace(*server) == "" {
+		return errors.New("--server is required: piso worker launch --server https://api.armortron9000.com")
 	}
 	// A ship is not a project. With no directory given, mount a scratch
 	// workspace that tasks clone repositories into, and let the hostname (or
@@ -69,14 +72,6 @@ func cmdWorkerLaunch(args []string) error {
 	local, localErr := loadLocalGatewayIdentity()
 	if err := errIfStandaloneGatewayHost(local, localErr); err != nil {
 		return err
-	}
-	if *server == "" {
-		if localErr == nil {
-			*server = local.ServerURL
-		}
-		if *server == "" {
-			*server = defaultTechnocoreServer
-		}
 	}
 	// Same normalization as `piso gateway launch`: a bare hostname has no
 	// scheme and every pairing request would fail.
@@ -422,11 +417,8 @@ func startRemoteWorker(proj pisoconfig.Project, asg workerAssignment) error {
 	}
 	// piso-mcp exits before its first request when the gateway pin is absent,
 	// so without this the ship boots with a working check-in and a dead channel.
-	// The gateway publishes the same file for its own workers; a ship has to
-	// fetch it, and the pairing client already trusts this gateway's CA.
-	if pin, err := installWorkerGatewayPin(asg.Endpoint, slugDir); err != nil {
-		fmt.Printf("piso: could not fetch the gateway MCP pin (%v)\n", err)
-		fmt.Printf("piso: the worker channel will fail until %s exists; retry with `piso worker launch`\n", gatewayPinMountPath)
+	if pin, err := installAssignedWorkerGatewayPin(asg, slugDir); err != nil {
+		return fmt.Errorf("cannot start worker without a verified gateway MCP pin: %w", err)
 	} else {
 		if pin.Changed && pin.Replaced != "" {
 			fmt.Printf("piso: gateway MCP pin changed %s -> %s\n", pin.Replaced, pin.Pin.KeyID)
