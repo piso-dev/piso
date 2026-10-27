@@ -140,10 +140,85 @@ if [ -x /usr/local/bin/piso-mcp-add ] && [ -e /root/.pi/agent/bin/piso-mcp-add ]
   rm -f /root/.pi/agent/bin/piso-mcp-add
 fi
 
+# piso-mcp builds its channel from the gateway's public pin, which the worker
+# reads from /etc/piso/gateway.json (compose binds <data>/workers/<slug> there).
+# The gateway writes it for workers on its own host, but a remote ship is
+# enrolled from another machine and only ever received ca.crt/token/identity -
+# so the channel died on every call while check-in, which is plain HTTP with the
+# token, kept reporting ok. Fetch the missing pin here.
+#
+# Never overwrite a pin that is already present: it is what stops a later
+# TLS-stripping attacker from swapping in their own gateway key. A gateway that
+# really did re-key is re-pinned by `piso worker launch` on the ship, which is a
+# deliberate action, not something boot does behind the operator's back.
+ensure_gateway_pin() {
+  local pin=/etc/piso/gateway.json
+  if [ ! -x /usr/local/bin/piso-mcp ]; then return 0; fi
+  if [ -n "${PISO_MCP_PIN:-}" ]; then return 0; fi
+  if [ -s "$pin" ]; then return 0; fi
+  local base="${GATEWAY_URL:-}"
+  if [ -z "$base" ]; then return 0; fi
+  base="${base%/}"
+
+  local tmp
+  tmp=$(mktemp "${TMPDIR:-/tmp}/gateway-pin.XXXXXX" 2>/dev/null) || return 0
+  local cacert=()
+  case "$base" in
+    https://*) if [ -f /piso-ca.pem ]; then cacert=(--cacert /piso-ca.pem); fi ;;
+  esac
+  if ! curl -fsS --max-time 10 "${cacert[@]}" "$base/mcp/key" -o "$tmp" 2>/dev/null; then
+    rm -f "$tmp"
+    echo "piso: gateway MCP pin unavailable from $base/mcp/key; the channel will not start" >&2
+    return 0
+  fi
+
+  # Validate before installing: piso-mcp rejects a malformed pin on every call,
+  # so a truncated file is worse than a missing one.
+  local keyid
+  keyid=$(python3 - "$tmp" <<'PY' 2>/dev/null
+import json, sys
+pin = json.load(open(sys.argv[1]))
+if pin.get("version") != 1:
+    raise SystemExit(1)
+for k in ("x25519", "keyId", "signing"):
+    if not isinstance(pin.get(k), str) or not pin[k]:
+        raise SystemExit(1)
+print(pin["keyId"])
+PY
+  ) || keyid=""
+  if [ -z "$keyid" ]; then
+    rm -f "$tmp"
+    echo "piso: gateway MCP pin from $base/mcp/key is not a usable pin" >&2
+    return 0
+  fi
+  chmod 644 "$tmp" 2>/dev/null || true
+
+  # /etc/piso is a read-write bind on a ship, but read-only on the local hull
+  # where the gateway owns the directory. Fall back to the agent volume and
+  # point piso-mcp - and every watcher it spawns - at the copy.
+  if cp "$tmp" "$pin.tmp" 2>/dev/null && mv "$pin.tmp" "$pin" 2>/dev/null; then
+    rm -f "$tmp"
+    echo "piso: gateway MCP pin fetched (keyId=$keyid)"
+    return 0
+  fi
+  rm -f "$pin.tmp" 2>/dev/null || true
+  local alt=/root/.pi/agent/piso/gateway.json
+  if mkdir -p "$(dirname "$alt")" 2>/dev/null && cp "$tmp" "$alt.tmp" 2>/dev/null && mv "$alt.tmp" "$alt" 2>/dev/null; then
+    rm -f "$tmp"
+    export PISO_MCP_PIN="$alt"
+    echo "piso: gateway MCP pin fetched (keyId=$keyid, PISO_MCP_PIN=$alt)"
+    return 0
+  fi
+  rm -f "$tmp"
+  echo "piso: gateway MCP pin could not be installed; the channel will not start" >&2
+  return 0
+}
+
 # Worker channel key. A mounted remote identity is copied onto the agent
 # volume; otherwise ensure generates one. A corrupt file is left untouched
 # (ensure exits non-zero) so a bad key is never overwritten at boot.
 if [ -x /usr/local/bin/piso-mcp ]; then
+  ensure_gateway_pin || true
   mkdir -p /root/.pi/agent/piso 2>/dev/null || true
   if ! piso-mcp identity ensure >/dev/null; then
     echo "piso-mcp: worker identity ensure failed; channel will not start" >&2
