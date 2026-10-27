@@ -58,6 +58,9 @@ if [ -f /piso-ca.pem ]; then
   bundle="$TMPDIR/piso-ca-bundle.pem"
   {
     cat /piso-ca.pem
+    # Enrollment can write PEM without a trailing newline. Keep its END line
+    # separate from the system bundle's BEGIN line or TLS parsers reject both.
+    printf '\n'
     cat /etc/ssl/certs/ca-certificates.crt 2>/dev/null || true
   } >"$bundle" 2>/dev/null || true
   if [ -s "$bundle" ]; then
