@@ -86,11 +86,12 @@ func cmdIdentity(args []string) error {
 }
 
 func cmdKey() error {
-	pin, err := mcpchannel.LoadPin(pinPath)
+	path := pinPathFor()
+	pin, err := mcpchannel.LoadPin(path)
 	if err != nil {
 		return fmt.Errorf("pinned gateway key: %w", err)
 	}
-	fmt.Printf("file:   %s\n", pinPath)
+	fmt.Printf("file:   %s\n", path)
 	fmt.Printf("keyId:  %s\n", pin.KeyID)
 	fmt.Printf("x25519: %s\n", pin.X25519)
 	return nil
@@ -227,9 +228,10 @@ type client struct {
 }
 
 func newClient() (*client, error) {
-	pin, err := mcpchannel.LoadPin(envOr("PISO_MCP_PIN", pinPath))
+	path := pinPathFor()
+	pin, err := mcpchannel.LoadPin(path)
 	if err != nil {
-		return nil, fmt.Errorf("gateway pin missing (%s): %w", pinPath, err)
+		return nil, fmt.Errorf("gateway pin missing (%s): %w", path, err)
 	}
 	id, err := technocore.Load(workerIdentityPath())
 	if err != nil {
@@ -346,6 +348,12 @@ func isBatch(raw []byte) bool {
 	}
 	return false
 }
+
+// pinPathFor is the pin every command reads. PISO_MCP_PIN lets a worker that
+// cannot write /etc/piso (a read-only gateway-owned bind) keep the pin on its
+// agent volume instead; key/call must agree on which file that is, or `key`
+// reports a path it did not read.
+func pinPathFor() string { return envOr("PISO_MCP_PIN", pinPath) }
 
 func envOr(k, def string) string {
 	if v := os.Getenv(k); v != "" {
