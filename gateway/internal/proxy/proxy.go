@@ -202,6 +202,10 @@ func (h *Handler) handleConnect(w http.ResponseWriter, r *http.Request) {
 		// does). The CONNECT request r carries the worker's origin IP — copy it
 		// so worker-identity lookup (IP→slug) works for tunneled requests.
 		req.RemoteAddr = r.RemoteAddr
+		// Remote workers authenticate the CONNECT, not the decrypted origin
+		// request. Preserve the resolved identity without forwarding credentials
+		// or trusting a worker-supplied origin header.
+		req = req.WithContext(context.WithValue(req.Context(), workerIdentityKey{}, h.workerID(r)))
 		// streamTimeout covers headers + streamed body. headerTimeout on
 		// the transport still fails fast when the origin never sends headers.
 		fwdCtx, cancel := context.WithTimeout(context.Background(), streamTimeout)
@@ -362,6 +366,16 @@ func (h *Handler) process(ctx context.Context, req *http.Request, scheme string)
 		RequestID: reqID,
 	}
 	rec.Findings = toStoreFindings(scan)
+	requestedModel, pinReason := h.modelPin(req, body)
+	if requestedModel != "" {
+		rec.Model = requestedModel
+	}
+	if pinReason != "" && dec.Action != model.ActionBlock {
+		rec.Action, rec.Status = string(model.ActionBlock), http.StatusForbidden
+		rec.Reasons = []string{pinReason}
+		h.Store.AppendLog(rec)
+		return &http.Response{StatusCode: http.StatusForbidden, Status: "403 Forbidden", Proto: "HTTP/1.1", ProtoMajor: 1, ProtoMinor: 1, Header: http.Header{"X-Piso-Reason": {pinReason}}, Body: io.NopCloser(strings.NewReader(pinReason)), Request: req, Close: true}, false
+	}
 
 	switch dec.Action {
 	case model.ActionBlock:
@@ -969,7 +983,12 @@ func capture(req *http.Request, body []byte) *store.Capture {
 	}
 }
 
+type workerIdentityKey struct{}
+
 func (h *Handler) workerID(r *http.Request) string {
+	if identity, ok := r.Context().Value(workerIdentityKey{}).(string); ok && identity != "" {
+		return identity
+	}
 	if h.Worker != nil {
 		if w := h.Worker(r); w != "" {
 			return w

@@ -1089,6 +1089,11 @@
       .task-detail { max-width: 76ch; }
       .task-detail section, .task-update { margin-top: 24px; }
       .task-prose { white-space: pre-wrap; overflow-wrap: anywhere; }
+      .task-prose code { font-family: var(--mono); }
+      .task-prose pre { padding: 16px; background: var(--surface); overflow-x: auto; white-space: pre; }
+      .task-back { display: inline-block; padding: 12px 18px; border: 1px solid var(--line); border-radius: 8px; text-decoration: none; }
+      .ask label { display: grid; gap: 8px; margin: 18px 0; }
+      .ask textarea { min-height: 96px; width: 100%; }
       .task-update { border-top: 1px solid var(--line); padding-top: 12px; }
       .record {
         border-top: 1px solid var(--line);
@@ -2959,6 +2964,20 @@
           }
         }
       }
+      // A small, deliberately text-first formatter. Escape before adding markup;
+      // never accept raw HTML, images or executable links from worker logs.
+      function taskMarkup(text) {
+        const inline = value => esc(value)
+          .replace(/`([^`\n]+)`/g, '<code>$1</code>')
+          .replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
+        return String(text).split(/(```[\s\S]*?```)/g).map(part => {
+          if (part.startsWith("```")) return `<pre><code>${esc(part.slice(3, -3).replace(/^[^\n]*\n/, ""))}</code></pre>`;
+          return part.split("\n").map(line => {
+            const heading = line.match(/^#{1,6}\s+(.+)$/);
+            return heading ? `<strong>${inline(heading[1])}</strong>` : inline(line);
+          }).join("\n");
+        }).join("");
+      }
       function renderTasks() {
         const gate = coordinatorNotice("Tasks");
         if (gate) return replaceContent(gate);
@@ -2972,14 +2991,14 @@
         const notice = taskUI.error ? `<div class="notice error" role="alert"><p>Tasks could not be refreshed. Any displayed data may be out of date.</p><p>${esc(taskUI.error)}</p>${button("Retry", "task-retry")}</div>` : "";
         if (taskUI.id) {
           const t = taskUI.detail;
-          const prose = (title, text) => text ? `<section><h2>${esc(title)}</h2><p class="task-prose">${esc(text)}</p></section>` : "";
-          replaceContent(`<p><a href="#/tasks">Back to tasks</a></p>${notice}${t ? `<article class="task-detail"><header><h2>${esc(t.title)}</h2>${badge(taskStatus(t), taskTone(t))}</header>
+          const prose = (title, text) => text ? `<section><h2>${esc(title)}</h2><div class="task-prose">${taskMarkup(text)}</div></section>` : "";
+          replaceContent(`<p><a class="task-back" href="#/tasks">← Back to tasks</a></p>${notice}${t ? `<article class="task-detail"><header><h2>${esc(t.title)}</h2>${badge(taskStatus(t), taskTone(t))}</header>
             ${t.status === "proposed" ? `<p>${esc(t.proposedBy || "A worker")} proposed this work. Nothing can claim it until you approve it, and it can be revised or withdrawn until you do. <a href="#/attention">Decide in Needs you</a>.</p>` : ""}
             ${t.status === "waiting" ? '<p><a href="#/attention">Review requests in Needs you</a></p>' : ""}
             ${prose("Instructions", t.body)}${prose("Acceptance criteria", t.acceptanceCriteria)}
             ${prose("Latest checkpoint", t.checkpoint)}${prose("Result", t.result?.summary)}${prose("Evidence", t.result?.evidence)}
             ${t.artifacts?.length ? '<h2>Artifacts</h2><ul>' + t.artifacts.map(a => { const url = safeURL(a.url || ""); return '<li>' + (a.url && url ? `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(a.title || a.type || a.url)}</a>` : esc(a.title || a.type)) + '</li>'; }).join("") + '</ul>' : ""}
-            <h2>Updates</h2>${(t.updates || []).slice().reverse().map(u => `<div class="task-update"><small>${esc(u.author || u.kind)} · ${esc(time(u.createdAt))}</small><p class="task-prose">${esc(u.body)}</p></div>`).join("") || '<p>No updates yet.</p>'}</article>` : taskUI.loading ? '<p role="status">Loading task…</p>' : ""}`);
+            <h2>Updates</h2>${(t.updates || []).slice().reverse().map(u => `<div class="task-update"><small>${esc(u.author || u.kind)} · ${esc(time(u.createdAt))}</small><div class="task-prose">${taskMarkup(u.body || "")}</div></div>`).join("") || '<p>No updates yet.</p>'}</article>` : taskUI.loading ? '<p role="status">Loading task…</p>' : ""}`);
           restoreLinkFocus();
           return;
         }
@@ -3688,7 +3707,11 @@
         // name exactly the text the human read, not whatever arrived since.
         return `<article class="ask"${revision ? ` data-revision="${esc(revision)}"` : ""}><div class="ask-top"><span>${esc(kind)}</span><span>${esc(source)}</span></div><h3>${esc(title)}</h3><p>${esc(description)}</p>${extra}<div class="actions">${actions}</div></article>`;
       }
+      const attentionDrafts = new Map();
       function renderAttention() {
+        const active = document.activeElement;
+        const focusedFeedback = active?.dataset.feedback;
+        const selection = focusedFeedback ? [active.selectionStart, active.selectionEnd] : null;
         const cards = [];
         const waitLabels = {
           review: "Ready for review",
@@ -3713,6 +3736,7 @@
                 a.title || "Task",
                 a.question || "The worker is waiting for you.",
                 actions,
+                `<p><strong>Requested action:</strong> ${reason === "review" ? "Review the result, then accept or describe the changes needed." : "Provide the missing answer or explain how to proceed."}</p><label>Feedback for the worker<textarea data-feedback="${esc(a.id)}" placeholder="Add guidance, a review note, or requested changes">${esc(attentionDrafts.get(a.id) || "")}</textarea></label>`,
               ),
             );
           }
@@ -3793,6 +3817,13 @@
         replaceContent(
           `<div class="section-intro"><p class="muted">${cards.length} pending ${cards.length === 1 ? "request" : "requests"}. Nothing is approved automatically.</p>${button("Refresh", "refresh-attention", "", "quiet small")}</div>${cards.length ? `<div class="queue">${cards.join("")}</div>` : ready ? empty("No pending requests", "Blocked network requests are listed in Traffic.") : '<p class="loading">Loading requests. If a connection failed, use Retry above.</p>'}`,
         );
+        $("#content").querySelectorAll("textarea[data-feedback]").forEach(input => {
+          input.oninput = () => attentionDrafts.set(input.dataset.feedback, input.value);
+          if (input.dataset.feedback === focusedFeedback) {
+            input.focus({preventScroll: true});
+            input.setSelectionRange(...selection);
+          }
+        });
       }
       function renderTraffic() {
         const records = (paused ? frozenRequests : list("requests"))
@@ -3830,7 +3861,7 @@
                               (r.path || ""),
                           ],
                           ["Method", r.method],
-                          ["Worker", r.worker],
+                          ["Worker", r.slug || r.worker || "gateway"],
                           [
                             "Context",
                             [r.project, r.branch, r.commit, r.model]
@@ -4141,6 +4172,12 @@
       // render so the operator can see what workers can reach, but every action
       // is withheld — those endpoints act as the signed-in identity, and
       // offering a button that can only 401 is worse than saying why.
+      function githubPermissions(inst) {
+        const permissions = inst.permissions;
+        if (!permissions) return '<p>Permissions not checked. Refresh installations to inspect GitHub’s grants.</p>';
+        const write = permissions.contents === "write" || permissions.contents === "admin";
+        return `<div>${facts([["Granted permissions", Object.entries(permissions).map(([name, level]) => name + ": " + level)], ["Merge / push to master", write ? "Contents write granted; repository rules still apply" : "Not granted"], ["Create tags", write ? "Contents write granted; tag rules still apply" : "Not granted"]])}<p>These are installation grants, not a guarantee. Branch protection, required reviews/checks, and branch/tag rulesets may reject writes. Bypass rights have not been audited.</p></div>`;
+      }
       function githubAppRows(g, canManage = true) {
         return (g.apps || []).flatMap((app) => {
           const installations = app.installations?.length ? app.installations : [{ account: "Not installed", id: "—" }];
@@ -4157,7 +4194,7 @@
             const maintenance = !canManage
               ? `<div class="github-maintenance"><button type="button" class="github-row-toggle small quiet" aria-expanded="false" aria-controls="github-repos-${key}" aria-label="Show details for ${esc(app.name || app.slug || 'app')} on ${esc(inst.account)}">Details</button><small>Sign in to manage</small></div>`
               : `<div class="github-maintenance"><button type="button" class="github-row-toggle small quiet" aria-expanded="false" aria-controls="github-repos-${key} github-actions-${key}" aria-label="Manage ${esc(app.name || app.slug || 'app')} on ${esc(inst.account)}">Manage app</button><div id="github-actions-${key}" class="actions" data-row-detail hidden>${!needsRegister && app.installations?.length ? button("Install on another account", "github-install", app.id, "small") : ""}${button("Replace credentials", "github-reconnect", app.id, "small")}${button("Refresh installations", "github-refresh", app.id, "small")}${button(conflict ? "Remove conflicting app" : "Remove app", "github-remove", app.id, "small danger")}</div></div>`;
-            return `<tr class="github-app-row${conflict ? ' github-conflict' : ''}" data-key="github-row-${key}"><td>${esc(inst.account)}<div id="github-repos-${key}" class="github-repositories" data-row-detail hidden>${inst.repos?.length ? inst.repos.map(repo => `<div>${esc(repo)}</div>`).join('') : '<small>No repositories listed</small>'}</div></td><td>${esc(app.name || app.slug)}<br><small>App ${esc(app.appId || "not registered")}</small></td><td>${esc(inst.id)}</td><td>${badge(conflict ? "Ambiguous — blocked" : app.status, conflict || app.status !== "ok" ? "warn" : "good")}</td><td><div class="github-row-actions">${next}${maintenance}</div></td></tr>`;
+            return `<tr class="github-app-row${conflict ? ' github-conflict' : ''}" data-key="github-row-${key}"><td>${esc(inst.account)}<div id="github-repos-${key}" class="github-repositories" data-row-detail hidden>${inst.repos?.length ? inst.repos.map(repo => `<div>${esc(repo)}</div>`).join('') : '<small>No repositories listed</small>'}${githubPermissions(inst)}</div></td><td>${esc(app.name || app.slug)}<br><small>App ${esc(app.appId || "not registered")}</small></td><td>${esc(inst.id)}</td><td>${badge(conflict ? "Ambiguous — blocked" : app.status, conflict || app.status !== "ok" ? "warn" : "good")}</td><td><div class="github-row-actions">${next}${maintenance}</div></td></tr>`;
           });
         }).join("");
       }
@@ -6287,7 +6324,8 @@
               resolve: "Resolution or guidance for the worker",
               cancel: "Why is this task cancelled?",
             };
-            const summary = window.prompt(prompts[decision] || "Note", "");
+            const feedback = source?.closest?.(".ask")?.querySelector?.("textarea[data-feedback]");
+            const summary = feedback ? feedback.value : window.prompt(prompts[decision] || "Note", "");
             if (summary === null) return;
             await api("tasks/" + enc(a.taskId) + "/respond", "POST", {
               action: decision,
@@ -6295,6 +6333,7 @@
               waitId: a.id,
               requestId: rid(),
             });
+            if (typeof attentionDrafts !== "undefined") attentionDrafts.delete(a.id);
             return changed(["asks"]);
           }
           // The revision rendered into this card, not the newest one fetched:

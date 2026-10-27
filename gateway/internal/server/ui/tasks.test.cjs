@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const { JSDOM } = require('jsdom');
 const html = fs.readFileSync(`${__dirname}/index.html`, 'utf8');
-const script = html.match(/<script>([\s\S]*)<\/script>/)[1];
+const script = html.match(/<script>([\s\S]*?)<\/script>/)[1];
 const tick = () => new Promise(resolve => setTimeout(resolve, 20));
 
 async function harness(t, handler = () => ({ tasks: [], nextCursor: null })) {
