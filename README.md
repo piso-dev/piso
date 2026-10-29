@@ -151,6 +151,33 @@ The shared profile is a read-only mount. A running session re-reads it every
 15 seconds and applies provider or default changes at its next idle boundary,
 so selecting a provider does not require a restart or `/reload`.
 
+#### Approved models
+
+Each profile has a default model and an optional list of approved model ids.
+The list is what the gateway's model pin enforces: a generation request through
+that provider must name one of them. An empty list means **only the default
+model**, never "whatever the catalog returns", so a profile saved without a list
+behaves exactly as it did before the list existed.
+
+The default model is always usable in addition to the list, because it is the
+model new sessions start on: a list that excluded it would leave the provider
+unable to serve its own start state. Saving a list that omits the default says
+so on the provider card, and the resolved set is reported as `allowedModels`
+next to the stored `approvedModels`. An approved id the provider's last known
+catalog does not list is saved with a warning rather than refused — a catalog
+change must not lock the operator out of editing the list that fixes it.
+
+Saving a provider without the `approvedModels` field keeps the stored list; an
+explicit empty array clears it. That split is what stops a dashboard older than
+the field from erasing a list configured through the API every time the
+provider is edited.
+
+A refused request answers **403** with a body that names the requested model and
+the ids that would have been accepted, plus `X-Piso-Reason` (`model-not-allowed`,
+`model-required`, `model-provider-mismatch`, or `model-pin-unresolved`) and
+`X-Piso-Allowed-Models`. `model-not-allowed` replaces the former
+`model-mismatch`, which answered with a bare code and no expected model.
+
 ### Per-worker overrides
 
 The active provider is the default for every worker. When one worker needs a
@@ -180,6 +207,11 @@ only fail with a 403, so the dashboard refuses the pick and names the fix
 (**Access → Secrets**). If a pinned provider is later deleted the row stays
 visible and marked, and the worker falls back to the active provider until the
 provider is recreated or the override is removed.
+
+An override pins a provider, and a worker may use any model on that provider's
+approved list. A request for a model outside it is refused with `model-not-allowed`
+before it is forwarded, so the provider's approval list is the only place model
+access is widened or narrowed.
 
 ### Windows
 

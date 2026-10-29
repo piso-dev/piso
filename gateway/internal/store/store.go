@@ -94,6 +94,13 @@ type PiProviderRec struct {
 	// catalog, and that must not depend on string comparison against a
 	// constant that lives in another file.
 	Kind string `json:"kind,omitempty"`
+	// ApprovedModels is the closed set of model ids this provider may serve: a
+	// generation request through it must name one of these, and a worker's
+	// /model list is built from them. Empty means "only DefaultModel", never
+	// "anything the catalog returns", so an unset list keeps the behaviour of
+	// a pin to one model and cannot widen by omission. DefaultModel is always
+	// usable in addition to this list (see AllowedModelIDs).
+	ApprovedModels []string `json:"approvedModels,omitempty"`
 	// Models is the last successfully fetched catalog. It is advisory: it
 	// feeds the dashboard autocomplete and lazy default resolution, never the
 	// save path. CatalogError holds the last failure for display.
@@ -101,6 +108,57 @@ type PiProviderRec struct {
 	CatalogCheckedAt time.Time `json:"catalogCheckedAt,omitempty"`
 	CatalogError     string    `json:"catalogError,omitempty"`
 	UpdatedAt        time.Time `json:"updatedAt,omitempty"`
+}
+
+// DefaultModelID is the model this provider's sessions start on: its configured
+// default, else the first approved model, else the first catalog entry. The
+// dashboard, the worker view, and the proxy's model pin all read this one
+// fallback chain.
+func (p *PiProviderRec) DefaultModelID() string {
+	if p == nil {
+		return ""
+	}
+	if m := strings.TrimSpace(p.DefaultModel); m != "" {
+		return m
+	}
+	for _, m := range p.ApprovedModels {
+		if m = strings.TrimSpace(m); m != "" {
+			return m
+		}
+	}
+	for _, m := range p.Models {
+		if m = strings.TrimSpace(m); m != "" {
+			return m
+		}
+	}
+	return ""
+}
+
+// AllowedModelIDs is the closed set of model ids a generation request through
+// this provider may name, in stored order: the approved list, then the default
+// model if the list omitted it. The default is always usable because it is the
+// model new sessions start on — a list that excluded it would leave the
+// provider unable to serve its own start state, which is a contradiction rather
+// than a policy. An empty result means nothing can be resolved yet (no list, no
+// default, no catalog); the pin reports that as unresolved, not as a rejection.
+func (p *PiProviderRec) AllowedModelIDs() []string {
+	if p == nil {
+		return nil
+	}
+	out := make([]string, 0, len(p.ApprovedModels)+1)
+	seen := make(map[string]bool, len(p.ApprovedModels)+1)
+	for _, m := range p.ApprovedModels {
+		m = strings.TrimSpace(m)
+		if m == "" || seen[m] {
+			continue
+		}
+		seen[m] = true
+		out = append(out, m)
+	}
+	if def := p.DefaultModelID(); def != "" && !seen[def] {
+		out = append(out, def)
+	}
+	return out
 }
 
 // JSON-friendly records (this package owns persistence shape).
@@ -730,6 +788,7 @@ func copyPiProviderRec(rec *PiProviderRec) *PiProviderRec {
 	}
 	cp := *rec
 	cp.Models = append([]string(nil), rec.Models...)
+	cp.ApprovedModels = append([]string(nil), rec.ApprovedModels...)
 	return &cp
 }
 

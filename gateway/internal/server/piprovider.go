@@ -36,14 +36,19 @@ func (s *Server) piProfileDir() string {
 }
 
 type piProviderView struct {
-	ID             string   `json:"id"`
-	Name           string   `json:"name,omitempty"`
-	SecretID       string   `json:"secretId,omitempty"`
-	BaseURL        string   `json:"baseUrl,omitempty"`
-	Kind           string   `json:"kind,omitempty"` // "" remote | "tinfoil"
-	Placeholder    string   `json:"placeholder,omitempty"`
-	DefaultModel   string   `json:"defaultModel"`
-	EffectiveModel string   `json:"effectiveModel,omitempty"`
+	ID             string `json:"id"`
+	Name           string `json:"name,omitempty"`
+	SecretID       string `json:"secretId,omitempty"`
+	BaseURL        string `json:"baseUrl,omitempty"`
+	Kind           string `json:"kind,omitempty"` // "" remote | "tinfoil"
+	Placeholder    string `json:"placeholder,omitempty"`
+	DefaultModel   string `json:"defaultModel"`
+	EffectiveModel string `json:"effectiveModel,omitempty"`
+	// ApprovedModels is the stored list as the edit dialog shows it; an empty
+	// list means "only the default". AllowedModels is the resolved set the pin
+	// actually enforces, so the dashboard never has to re-derive the fallback.
+	ApprovedModels []string `json:"approvedModels,omitempty"`
+	AllowedModels  []string `json:"allowedModels,omitempty"`
 	API            string   `json:"api,omitempty"`
 	Active         bool     `json:"active"`
 	Applied        bool     `json:"applied"`
@@ -76,15 +81,20 @@ func (s *Server) handleGetPiProvider(w http.ResponseWriter, r *http.Request) {
 // provider. The dashboard fetches the catalog separately for the picker.
 func (s *Server) handlePutPiProvider(w http.ResponseWriter, r *http.Request) {
 	var in struct {
-		ID           string   `json:"id"`
-		Name         string   `json:"name"`
-		SecretID     string   `json:"secretId"`
-		BaseURL      string   `json:"baseUrl"`
-		Kind         string   `json:"kind"`
-		DefaultModel string   `json:"defaultModel"`
-		API          string   `json:"api"`
-		Models       []string `json:"models"`
-		Activate     bool     `json:"activate"`
+		ID           string `json:"id"`
+		Name         string `json:"name"`
+		SecretID     string `json:"secretId"`
+		BaseURL      string `json:"baseUrl"`
+		Kind         string `json:"kind"`
+		DefaultModel string `json:"defaultModel"`
+		// ApprovedModels narrows what this provider may serve. An absent or
+		// empty list keeps the pre-allowlist behaviour: only the default model.
+		// A dashboard that predates the field therefore narrows rather than
+		// widens, which is the safe direction for an omission.
+		ApprovedModels []string `json:"approvedModels"`
+		API            string   `json:"api"`
+		Models         []string `json:"models"`
+		Activate       bool     `json:"activate"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		writeJSON(w, 400, map[string]string{"error": "bad json"})
@@ -135,15 +145,32 @@ func (s *Server) handlePutPiProvider(w http.ResponseWriter, r *http.Request) {
 		id = s.uniquePiProviderID(providerIDFrom(in.Name, baseURL, ""))
 	}
 	warning := ""
+	approved := cleanModelIDs(in.ApprovedModels)
+	// An absent (or null) field keeps the stored list; an explicitly empty array
+	// clears it, which is how the dialog expresses "only the default". Without
+	// this split, a dashboard that predates the field would erase a list
+	// configured through the API every time the provider was edited.
+	if in.ApprovedModels == nil && existing != nil {
+		approved = cleanModelIDs(existing.ApprovedModels)
+	}
+	defaultModel := strings.TrimSpace(in.DefaultModel)
+	// A mismatch between the approved list and the default is not an error: the
+	// default is always usable, so the list cannot lock a provider out of its own
+	// start state. Say so plainly, because the resolved set the dashboard shows
+	// under allowedModels is a model wider than the list that was typed.
+	if defaultModel != "" && len(approved) > 0 && !containsString(approved, defaultModel) {
+		warning = "the default model " + defaultModel + " is not in the approved list; it stays usable as the default"
+	}
 	pointer := &store.PiProviderRec{
-		ID:           id,
-		Name:         strings.TrimSpace(in.Name),
-		SecretID:     resourceIDFor(rec, in.SecretID),
-		BaseURL:      baseURL,
-		Kind:         kind,
-		DefaultModel: strings.TrimSpace(in.DefaultModel),
-		APIType:      strings.TrimSpace(in.API),
-		UpdatedAt:    time.Now().UTC(),
+		ID:             id,
+		Name:           strings.TrimSpace(in.Name),
+		SecretID:       resourceIDFor(rec, in.SecretID),
+		BaseURL:        baseURL,
+		Kind:           kind,
+		DefaultModel:   defaultModel,
+		ApprovedModels: approved,
+		APIType:        strings.TrimSpace(in.API),
+		UpdatedAt:      time.Now().UTC(),
 	}
 	// Keep the last known catalog; it is advisory and the save path never
 	// refreshes it. A different endpoint invalidates it.
@@ -162,6 +189,21 @@ func (s *Server) handlePutPiProvider(w http.ResponseWriter, r *http.Request) {
 	}
 	if pointer.DefaultModel != "" && len(pointer.Models) > 0 && !containsString(pointer.Models, pointer.DefaultModel) {
 		warning = "default model is not in the provider's last known catalog; it was saved anyway"
+	}
+	// An approved id the catalog no longer lists will pass the pin and then be
+	// refused upstream. That is a catalog change, not a broken profile, so it is
+	// reported and the profile still saves: a stale catalog must not lock the
+	// operator out of editing the list that fixes it.
+	if len(pointer.ApprovedModels) > 0 && len(pointer.Models) > 0 {
+		missing := make([]string, 0, len(pointer.ApprovedModels))
+		for _, m := range pointer.ApprovedModels {
+			if !containsString(pointer.Models, m) {
+				missing = append(missing, m)
+			}
+		}
+		if len(missing) > 0 {
+			warning = joinWarning(warning, "approved model(s) not in the provider's last known catalog: "+strings.Join(missing, ", "))
+		}
 	}
 	// A tinfoil provider's real request leaves the worker's proxy for a router
 	// enclave, so a secret bound only to loopback substitutes nothing and every
@@ -282,6 +324,8 @@ func (s *Server) providerViewFor(p *store.PiProviderRec, fs profileFileState) pi
 		Kind:           p.Kind,
 		DefaultModel:   p.DefaultModel,
 		EffectiveModel: effectivePiModel(p),
+		ApprovedModels: append([]string(nil), p.ApprovedModels...),
+		AllowedModels:  p.AllowedModelIDs(),
 		API:            p.APIType,
 		Active:         p.ID == activeID,
 		CatalogError:   p.CatalogError,
@@ -545,19 +589,11 @@ func piProfileModels(p *store.PiProviderRec) []string {
 	return models
 }
 
+// effectivePiModel is the model a profile's sessions start on. It delegates to
+// the record so the dashboard, the worker view, and the proxy pin share one
+// fallback chain (default → first approved → first catalog entry).
 func effectivePiModel(p *store.PiProviderRec) string {
-	if p == nil {
-		return ""
-	}
-	if m := strings.TrimSpace(p.DefaultModel); m != "" {
-		return m
-	}
-	for _, m := range p.Models {
-		if m = strings.TrimSpace(m); m != "" {
-			return m
-		}
-	}
-	return ""
+	return p.DefaultModelID()
 }
 
 func piProviderLabel(p *store.PiProviderRec) string {

@@ -366,15 +366,15 @@ func (h *Handler) process(ctx context.Context, req *http.Request, scheme string)
 		RequestID: reqID,
 	}
 	rec.Findings = toStoreFindings(scan)
-	requestedModel, pinReason := h.modelPin(req, body)
-	if requestedModel != "" {
-		rec.Model = requestedModel
+	pin := h.modelPin(req, body)
+	if pin.Model != "" {
+		rec.Model = pin.Model
 	}
-	if pinReason != "" && dec.Action != model.ActionBlock {
+	if pin.Refused() && dec.Action != model.ActionBlock {
 		rec.Action, rec.Status = string(model.ActionBlock), http.StatusForbidden
-		rec.Reasons = []string{pinReason}
+		rec.Reasons = []string{pin.Reason}
 		h.Store.AppendLog(rec)
-		return &http.Response{StatusCode: http.StatusForbidden, Status: "403 Forbidden", Proto: "HTTP/1.1", ProtoMajor: 1, ProtoMinor: 1, Header: http.Header{"X-Piso-Reason": {pinReason}}, Body: io.NopCloser(strings.NewReader(pinReason)), Request: req, Close: true}, false
+		return &http.Response{StatusCode: http.StatusForbidden, Status: "403 Forbidden", Proto: "HTTP/1.1", ProtoMajor: 1, ProtoMinor: 1, Header: pin.Header(), Body: io.NopCloser(strings.NewReader(pin.Message)), Request: req, Close: true}, false
 	}
 
 	switch dec.Action {

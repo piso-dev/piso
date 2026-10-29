@@ -210,6 +210,93 @@ func TestPutPiProviderSavesWhenCatalogFails(t *testing.T) {
 	}
 }
 
+// TestPutPiProviderApprovedModels covers the approval list: it round-trips,
+// an empty list narrows to the default, and a default outside its own approved
+// list is refused rather than saved as a profile that 403s every request.
+func TestPutPiProviderApprovedModels(t *testing.T) {
+	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"data":[{"id":"model-a"},{"id":"model-b"}]}`)
+	}))
+	defer fake.Close()
+	s, _ := providerTestServer(t, fake)
+
+	put := func(body string) (*httptest.ResponseRecorder, piProviderView) {
+		rec := httptest.NewRecorder()
+		s.handlePutPiProvider(rec, httptest.NewRequest(http.MethodPut, "/api/v1/pi-provider", strings.NewReader(body)))
+		var view piProviderView
+		if rec.Code == 200 {
+			if err := json.Unmarshal(rec.Body.Bytes(), &view); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return rec, view
+	}
+	base := `"secretId":"11111111-1111-1111-1111-111111111111","baseUrl":"` + fake.URL + `/v1"`
+
+	rec, view := put(`{` + base + `,"defaultModel":"model-a","approvedModels":["model-a","model-b"," model-a "]}`)
+	if rec.Code != 200 {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	// Every later save edits the same profile, which is the case where an
+	// omitted field has to preserve what is stored.
+	id := view.ID
+	if id == "" {
+		t.Fatalf("no provider id: %s", rec.Body.String())
+	}
+	edit := func(tail string) (*httptest.ResponseRecorder, piProviderView) {
+		return put(`{"id":"` + id + `",` + base + `,` + tail + `}`)
+	}
+	// The stored list is trimmed and de-duplicated, and the view reports both
+	// the stored list and the set the pin enforces.
+	if got := strings.Join(view.ApprovedModels, ","); got != "model-a,model-b" {
+		t.Fatalf("approvedModels %q", got)
+	}
+	if got := strings.Join(view.AllowedModels, ","); got != "model-a,model-b" {
+		t.Fatalf("allowedModels %q", got)
+	}
+	if view.EffectiveModel != "model-a" {
+		t.Fatalf("effectiveModel %q", view.EffectiveModel)
+	}
+
+	// A default outside the approved list is not an error and not a refusal: the
+	// default stays usable, so the provider can always serve its start state.
+	// The resolved set is one model wider than the list that was typed, and the
+	// save says so.
+	rec, view = edit(`"defaultModel":"model-b","approvedModels":["model-a"]`)
+	if rec.Code != 200 {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	if got := strings.Join(view.ApprovedModels, ","); got != "model-a" {
+		t.Fatalf("approvedModels %q", got)
+	}
+	if got := strings.Join(view.AllowedModels, ","); got != "model-a,model-b" {
+		t.Fatalf("allowedModels %q", got)
+	}
+	if !strings.Contains(view.Warning, "not in the approved list") {
+		t.Fatalf("warning %q", view.Warning)
+	}
+
+	// Omitting the field keeps the stored list: an older dashboard editing the
+	// provider must not erase a list configured through the API.
+	rec, view = edit(`"defaultModel":"model-b"`)
+	if rec.Code != 200 {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	if got := strings.Join(view.ApprovedModels, ","); got != "model-a" {
+		t.Fatalf("omitted list was not preserved: %q", got)
+	}
+
+	// An explicit empty list clears it, which is how the dialog says "only the
+	// default".
+	rec, view = edit(`"defaultModel":"model-b","approvedModels":[]`)
+	if rec.Code != 200 {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	if len(view.ApprovedModels) != 0 || strings.Join(view.AllowedModels, ",") != "model-b" {
+		t.Fatalf("view %+v", view)
+	}
+}
+
 func TestPiProviderStackSaveActivateDelete(t *testing.T) {
 	dir := t.TempDir()
 	profile := filepath.Join(dir, "pi-profile")
