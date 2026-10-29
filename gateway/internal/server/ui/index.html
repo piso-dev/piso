@@ -1092,6 +1092,26 @@
       .task-prose code { font-family: var(--mono); }
       .task-prose pre { padding: 16px; background: var(--surface); overflow-x: auto; white-space: pre; }
       .task-back { display: inline-block; padding: 12px 18px; border: 1px solid var(--line); border-radius: 8px; text-decoration: none; }
+      /* The way back, the title with its status, and the verbs are three rows of
+         one header. They were touching, so the buttons read as part of the
+         title instead of as the controls they are. */
+      .task-back-row { padding: 2px 0 20px; }
+      .task-detail > header {
+        /* Column, not row: the status is a line of the header, not something
+           that only sits beside the title when the title happens to be short. */
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 10px;
+        padding: 4px 0 18px;
+      }
+      .task-detail > .card-actions {
+        gap: 12px;
+        padding: 0 0 26px;
+      }
+      .task-detail > .card-actions button {
+        padding: 12px 17px;
+      }
       .ask label { display: grid; gap: 8px; margin: 18px 0; }
       .ask textarea { min-height: 96px; width: 100%; }
       .task-update { border-top: 1px solid var(--line); padding-top: 12px; }
@@ -1222,13 +1242,64 @@
       .board-toolbar {
         display: flex;
         align-items: center;
-        gap: 14px;
-        flex-wrap: wrap;
+        gap: 12px;
+        flex-wrap: nowrap;
         padding: 2px 0 20px;
       }
-      .board-toolbar .search {
-        flex: 1 1 240px;
-        max-width: 420px;
+      /* Four controls, one row, one height. Board/List, the field and Search are
+         a single bar; letting any of them take their natural height made the
+         field sit four pixels lower than the tabs and ten below the button. */
+      .board-toolbar .subnav {
+        margin-bottom: 0;
+        flex: 0 0 auto;
+        flex-wrap: nowrap;
+        gap: 7px;
+      }
+      .board-toolbar .subnav button,
+      .board-toolbar .search-row button,
+      .board-toolbar .search-row input {
+        height: 40px;
+        padding-top: 0;
+        padding-bottom: 0;
+      }
+      .board-toolbar .subnav button,
+      .board-toolbar .search-row button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        white-space: nowrap;
+      }
+      .board-toolbar .subnav button {
+        padding-left: 14px;
+        padding-right: 14px;
+      }
+      /* The label and its button stay on one line. A form that wraps turns two
+         halves of one control into a stack that reads like two separate jobs,
+         so this row is deliberately nowrap. */
+      .board-toolbar .search-row {
+        display: flex;
+        flex-wrap: nowrap;
+        align-items: center;
+        gap: 10px;
+        flex: 1 1 auto;
+        max-width: 520px;
+        min-width: 0;
+        margin: 0;
+      }
+      .board-toolbar .search-row label {
+        flex: 1 1 auto;
+        max-width: none;
+        min-width: 0;
+        height: 40px;
+      }
+      .board-toolbar .search-row input {
+        width: 100%;
+        min-width: 0;
+      }
+      .board-toolbar .search-row button {
+        flex: 0 0 auto;
+        padding-left: 18px;
+        padding-right: 18px;
       }
       .board {
         display: grid;
@@ -1251,7 +1322,9 @@
       }
       .column-head {
         display: flex;
-        align-items: baseline;
+        /* Centre, not baseline: the tools group can hold a button taller than
+           the heading and its count. */
+        align-items: center;
         justify-content: space-between;
         gap: 10px;
         padding: 2px 2px 4px;
@@ -1272,12 +1345,14 @@
         align-items: center;
         gap: 10px;
       }
-      /* The one control that starts work from the board itself: a [+] on the
-         only column a new task can land in. Small square, real hit area. */
+      /* The one control that starts work from the board itself: a bordered +
+         on the only column a new task can land in. Small, but a real hit area
+         with padding on all four sides. */
       .column-head .column-add {
-        font-size: 15px;
+        font-size: 16px;
         line-height: 1;
-        padding: 3px 9px 5px;
+        min-width: 30px;
+        padding: 6px 10px;
       }
       .column-note {
         color: var(--muted);
@@ -1299,12 +1374,9 @@
         padding: 18px 16px;
         min-width: 0;
       }
-      .card.inbox {
-        border-left: 3px solid var(--amber);
-      }
-      .card.fresh {
-        border-left: 3px solid var(--blue);
-      }
+      /* No accent stripe on a card. What a card is waiting for is already said
+         by its column and its badge; a left border in three colours made the
+         board look like a legend you had to learn. */
       .card-top {
         display: flex;
         align-items: flex-start;
@@ -1315,6 +1387,14 @@
         font-weight: 600;
         text-decoration: none;
         overflow-wrap: anywhere;
+        /* A card is a glance, not a page: two lines of title, then an ellipsis.
+           The full text is one click away on the detail page. */
+        display: -webkit-box;
+        -webkit-box-orient: vertical;
+        -webkit-line-clamp: 2;
+        line-clamp: 2;
+        overflow: hidden;
+        text-overflow: ellipsis;
       }
       .card-title:hover {
         text-decoration: underline;
@@ -1331,6 +1411,21 @@
         font-size: 13px;
         white-space: pre-wrap;
         overflow-wrap: anywhere;
+        /* Same reason as the title: a worker's question or a pause reason can
+           run for paragraphs, and a column of two-hundred-word cards is not a
+           board anyone can scan. Three lines, then an ellipsis. */
+        display: -webkit-box;
+        -webkit-box-orient: vertical;
+        -webkit-line-clamp: 3;
+        line-clamp: 3;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .column .card-kicker code {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
       }
       .card-actions {
         display: flex;
@@ -1342,7 +1437,7 @@
         display: none;
       }
       .card-actions button {
-        padding: 9px 13px;
+        padding: 10px 14px;
       }
       .card code {
         font-family: var(--mono, monospace);
@@ -1545,6 +1640,13 @@
       .dialog-content .actions {
         margin-top: 24px;
         justify-content: flex-end;
+      }
+      /* A dialog footer is a decision, so it sits on the right edge under a
+         full-width form rather than floating beneath the last field. */
+      .dialog-content .dialog-actions {
+        width: 100%;
+        justify-content: flex-end;
+        padding-top: 4px;
       }
       .dialog-content .notice {
         margin-top: 20px;
@@ -2761,7 +2863,7 @@
       function formDialog(title, description, fields, submit, onSubmit) {
         mountDialog(
           title,
-          `<p>${esc(description)}</p><form id="actionForm"><div class="form-grid">${fields}</div><div id="formError" class="notice error" role="alert" hidden></div><div class="actions">${button("Cancel", "close")}<button type="submit" class="primary">${esc(submit)}</button></div></form>`,
+          `<p>${esc(description)}</p><form id="actionForm"><div class="form-grid">${fields}</div><div id="formError" class="notice error" role="alert" hidden></div><div class="actions dialog-actions">${button("Cancel", "close")}<button type="submit" class="primary">${esc(submit)}</button></div></form>`,
         );
         $("#actionForm").onsubmit = async (e) => {
           e.preventDefault();
@@ -3169,7 +3271,7 @@
       const BOARD = [
         {key: "inbox", title: "Inbox", note: "Decide these now; nothing here can move without you."},
         {key: "queued", title: "Queued", note: "Claimable by any worker with access. Higher priority is picked first.",
-         add: "New task"},
+         add: "+"},
         {key: "paused", title: "Paused", note: "Held out of the queue until you resume it."},
         {key: "working", title: "Working", note: "A worker holds a live lease. Pause stops it at its next heartbeat."},
         {key: "waiting", title: "Waiting", note: "The worker stopped and asked for something."},
@@ -3394,14 +3496,14 @@
           ? `<div class="notice error" role="alert"><p>Tasks could not be refreshed. Any displayed data may be out of date.</p><p>${esc(taskUI.error)}</p>${button("Retry", "task-retry")}</div>`
           : "";
         if (taskUI.id) {
-          replaceContent(`<p><a class="task-back" href="#/tasks">← Back to the board</a></p>${notice}${taskDetailMarkup()}`);
+          replaceContent(`<p class="task-back-row"><a class="task-back" href="#/tasks">← Back to the board</a></p>${notice}${taskDetailMarkup()}`);
           restore();
           return;
         }
         const modes = `<div class="subnav" aria-label="Task view">${[["board", "Board"], ["list", "List"]]
           .map(([key, label]) => `<button data-action="task-mode" data-id="${key}" aria-pressed="${taskUI.mode === key}">${label}</button>`)
           .join("")}</div>`;
-        const search = `<form id="taskSearchForm" class="toolbar"><label class="search">Search titles<input id="taskSearch" type="search" maxlength="300" value="${esc(taskUI.searchDraft)}"></label><button type="submit">Search</button></form>`;
+        const search = `<form id="taskSearchForm" class="toolbar search-row"><label class="search">Search titles<input id="taskSearch" type="search" maxlength="300" value="${esc(taskUI.searchDraft)}"></label><button type="submit">Search</button></form>`;
         replaceContent(`<div class="board-toolbar">${modes}${search}</div>${notice}${taskUI.mode === "list" ? taskListMarkup() : boardMarkup()}`);
         $("#taskSearch").oninput = (e) => { taskUI.searchDraft = e.target.value; };
         $("#taskSearchForm").onsubmit = (e) => {
@@ -3428,7 +3530,7 @@
           field("title", "Title", "", {required: true, full: true}) +
           field("body", "Instructions", "", {type: "textarea", full: true}) +
           field("acceptanceCriteria", "Acceptance criteria", "", {type: "textarea", full: true}) +
-          '<div id="taskDiscard" class="notice field full" hidden><p>Discard this draft? A previous submission may still have reached the server; check Tasks before creating it again.</p><div class="actions">' + button("Keep editing", "task-keep") + button("Discard draft", "task-discard", "", "danger") + '</div>',
+          '<div id="taskDiscard" class="notice field full" hidden><p>Discard this draft? A previous submission may still have reached the server; check Tasks before creating it again.</p><div class="actions">' + button("Keep editing", "task-keep") + button("Discard draft", "task-discard", "", "danger") + '</div></div>',
           "Create task", async values => {
             if (!values.title.trim()) throw new Error("Enter a title.");
             if (!submission) submission = {id: taskUUID(), ...values, title: values.title.trim()};
