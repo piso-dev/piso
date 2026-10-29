@@ -248,15 +248,18 @@ func (h *Handler) handlePlainHTTP(w http.ResponseWriter, r *http.Request) {
 		out.StatusCode = http.StatusOK
 	}
 	copyHeader(w.Header(), out.Header)
-	w.WriteHeader(out.StatusCode)
-	io.Copy(w, out.Body)
+	// Ask net/http to close after this response instead of hijacking the
+	// connection to do it. Hijacking hands the socket away from the response
+	// writer, which is what used to lose the response: the body sat in
+	// net/http's 4KB buffer and the terminating chunk was never written, so
+	// every body smaller than the buffer arrived as a truncated response.
+	// Setting the header closes the same connection, with the framing finished
+	// and flushed by the server.
 	if out.Close || !keepAlive {
-		if hj, ok := w.(http.Hijacker); ok {
-			if c, _, err := hj.Hijack(); err == nil {
-				c.Close()
-			}
-		}
+		w.Header().Set("Connection", "close")
 	}
+	w.WriteHeader(out.StatusCode)
+	_, _ = io.Copy(w, out.Body)
 }
 
 // Replay re-runs the full policy on a captured request and forwards it. This
