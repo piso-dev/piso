@@ -2910,11 +2910,15 @@
         if (pending.has(key)) return pending.get(key);
         const job = api(endpoints[key])
           .then((value) => {
+            // Asks still arrive inside their envelope. The directive proxy
+            // unwraps the coordinator's {"directives": [...]} itself so the
+            // dashboard stores a bare array like every other collection, and a
+            // reader that looked for .directives here would always show none.
             data[key] =
               key === "asks"
                 ? value?.asks || []
                 : key === "directives"
-                  ? value?.directives || []
+                  ? (Array.isArray(value) ? value : value?.directives) || []
                   : value;
             loaded.add(key);
             failures.delete(key);
@@ -4696,6 +4700,12 @@
               ? await api("directives/" + enc(id), "PUT", payload)
               : await api("directives", "POST", { id: directiveUUID, ...payload });
             await changed(["directives"]);
+            // Land on the Directives page, where the new code is the visible
+            // confirmation and the row the instruction now lives in. A save
+            // from another view (a link, a future shortcut) should never leave
+            // the operator where they cannot see what they just wrote.
+            if (location.hash !== "#/directives")
+              location.hash = "#/directives";
             return (id ? "Saved " : "Created ") + row.code + ".";
           },
         );
