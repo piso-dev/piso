@@ -32,6 +32,15 @@ func TestTaskControlProxy(t *testing.T) {
 				t.Errorf("query: %s", r.URL.RawQuery)
 			}
 			io.WriteString(w, `{"tasks":[],"nextCursor":"more"}`)
+		case "POST /api/v1/control/tasks/task-id":
+			// The dashboard's only direct write: a priority (or an edit) goes
+			// through update_task, never through the lifecycle.
+			var body map[string]any
+			json.NewDecoder(r.Body).Decode(&body)
+			if body["priority"] != float64(3) {
+				t.Errorf("priority body: %v", body)
+			}
+			io.WriteString(w, `{"id":"task-id","status":"open","priority":3}`)
 		case "GET /api/v1/control/tasks/task-id":
 			w.WriteHeader(404)
 			io.WriteString(w, `{"error":"not found"}`)
@@ -56,6 +65,10 @@ func TestTaskControlProxy(t *testing.T) {
 	detail := doJSON(t, s.ControlHandler(), "GET", "/api/v1/tasks/task-id", nil)
 	if detail.Code != 404 || !strings.Contains(detail.Body.String(), "not found") {
 		t.Fatalf("detail: %d %s", detail.Code, detail.Body)
+	}
+	bumped := doJSON(t, s.ControlHandler(), "POST", "/api/v1/tasks/task-id", map[string]int{"priority": 3})
+	if bumped.Code != 200 || !strings.Contains(bumped.Body.String(), `"priority":3`) {
+		t.Fatalf("priority: %d %s", bumped.Code, bumped.Body)
 	}
 }
 

@@ -13,7 +13,12 @@ import (
 // Dashboard-only routes: WorkerHandler and MCP deliberately do not expose them.
 func (s *Server) registerTasks(mux *http.ServeMux) {
 	csrf := http.NewCrossOriginProtection()
-	for _, pattern := range []string{"GET /api/v1/tasks", "POST /api/v1/tasks", "GET /api/v1/tasks/{id}"} {
+	// POST /tasks/{id} is the dashboard's only direct write to a task (edits and
+	// priority). Everything else about a task moves through the lifecycle.
+	for _, pattern := range []string{
+		"GET /api/v1/tasks", "POST /api/v1/tasks",
+		"GET /api/v1/tasks/{id}", "POST /api/v1/tasks/{id}",
+	} {
 		mux.Handle(pattern, csrf.Handler(http.HandlerFunc(s.handleTasks)))
 	}
 }
