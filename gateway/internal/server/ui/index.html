@@ -1436,6 +1436,47 @@
       .card-actions:empty {
         display: none;
       }
+      /* The grace period is the one green thing on the board: it is a healthy
+         state that expires by itself (a worker may claim this shortly), not a
+         warning and not an error. Tabular figures keep the seconds from
+         jittering the chip wider as they tick down. */
+      .grace {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        border: 1px solid var(--green);
+        border-radius: 999px;
+        background: rgba(153, 203, 178, 0.12);
+        color: var(--green);
+        font-size: 12px;
+        font-weight: 600;
+        padding: 4px 10px;
+        font-variant-numeric: tabular-nums;
+      }
+      .grace-text {
+        font-family: var(--mono, monospace);
+        min-width: 5ch;
+      }
+      /* The hold the countdown cannot show: somebody has the task open, so it
+         waits for them instead of running out. Muted, not green: nothing is
+         counting down any more. */
+      .grace.held {
+        border-color: var(--blue);
+        background: rgba(165, 198, 255, 0.1);
+        color: var(--blue);
+        font-weight: 500;
+      }
+      .grace.held .grace-text {
+        font-family: inherit;
+        min-width: 0;
+      }
+      .task-detail > .grace-row {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 12px;
+        margin: 16px 0 0;
+      }
       .card-actions button {
         padding: 10px 14px;
       }
@@ -3078,6 +3119,10 @@
       }
       function navigate() {
         hideTimelineTip();
+        // Leaving the detail view ends the hold it was applying before the new
+        // page renders: a task must not stay out of the queue because a tab was
+        // navigated away from.
+        if (!location.hash.startsWith("#/tasks/")) stopViewBeat();
         const parts = location.hash.replace(/^#\//, "").split("/");
         // "Needs you" is the board's first column now. Old links, bookmarks and
         // muscle memory land on the board instead of a page that is gone.
@@ -3315,12 +3360,104 @@
             cancel;
         if (t.pausedAt) return button("Resume", "task-resume", t.id, "primary") + button("Add note", "task-note", t.id) + cancel;
         if (t.status === "open")
-          return button("Run next", "task-prioritise", t.id, "", "Move this to the front of the claim order") + cancel;
+          return graceVerbs(t) + button("Run next", "task-prioritise", t.id, "", "Move this to the front of the claim order") + cancel;
         return "";
+      }
+      // ---- Grace period ----------------------------------------------------
+      // A task a human just created is held for a countdown: visible on the
+      // board, invisible to workers. The board shows the state three ways — a
+      // green clock while it runs, a blue "held" line once somebody opens it,
+      // and nothing once it is released — and the coordinator is the only
+      // authority on which one applies. The page never decides a task is
+      // available; it re-reads the row and lets the server say so, so two
+      // devices that disagree about the clock cannot disagree about the queue.
+      const GRACE_HEARTBEAT_MS = 5000;
+      function graceRemaining(t) {
+        if (!t?.graceHeld || !t.availableAt) return 0;
+        const at = new Date(t.availableAt).getTime();
+        return Number.isFinite(at) ? Math.max(0, at - Date.now()) : 0;
+      }
+      const clockText = (ms) => {
+        const total = Math.ceil(ms / 1000);
+        return Math.floor(total / 60) + ":" + String(total % 60).padStart(2, "0");
+      };
+      function graceMarkup(t) {
+        if (!t?.graceHeld) return "";
+        if (t.graceHeld === "viewing")
+          return `<span class="grace held" data-grace="${esc(t.id)}"><span class="grace-text">Held open${t.viewedBy ? " by " + esc(t.viewedBy) : ""}</span></span>`;
+        return `<span class="grace" data-grace="${esc(t.id)}" title="No worker can see or claim this task until the countdown ends, unless someone has it open."><span aria-hidden="true">◷</span><span class="grace-text">${clockText(graceRemaining(t))}</span></span>`;
+      }
+      const graceVerbs = (t) =>
+        t?.graceHeld
+          ? button("▶ Make available now", "task-available", t.id, "", "End the grace period and let a worker claim this immediately.")
+          : "";
+      const graceExplanation = (t) =>
+        t?.graceHeld === "viewing"
+          ? "You have this open, so it stays out of the queue. It becomes claimable shortly after you leave this page."
+          : t?.graceHeld
+            ? "No worker can see or claim this yet. Leaving this page does not release it early; the countdown has to end, or press Make available now."
+            : "";
+      // One ticker patches only the text of the clocks already on screen: a full
+      // re-render every second would fight typing, hover and scroll for no gain.
+      // The map remembers which deadline a refresh was already asked for, so a
+      // server that still reports the hold (clock skew) is not asked every
+      // second, while a genuinely new deadline is.
+      const graceReloaded = new Map();
+      function tickGrace() {
+        let due = false;
+        const seen = new Set();
+        document.querySelectorAll("[data-grace]").forEach((node) => {
+          const id = node.dataset.grace;
+          const t = taskUI.detail?.id === id ? taskUI.detail : allBoardTasks().find((row) => row.id === id);
+          seen.add(id);
+          // A "viewing" hold has no number to tick, and a row that already
+          // released has no chip once the next render lands.
+          if (t?.graceHeld !== "timer") return;
+          const remaining = graceRemaining(t);
+          const text = node.querySelector(".grace-text");
+          if (text) text.textContent = clockText(remaining);
+          if (remaining > 0 || graceReloaded.get(id) === t.availableAt) return;
+          // The countdown is over. Only a fresh row can say whether the task is
+          // now available or held open by somebody reading it, so ask once.
+          graceReloaded.set(id, t.availableAt);
+          due = true;
+        });
+        for (const id of [...graceReloaded.keys()]) if (!seen.has(id)) graceReloaded.delete(id);
+        if (due) loadTasks();
+      }
+      // The view heartbeat: the only thing that keeps a task out of the queue
+      // while a human reads it. It runs only for a task still in its grace
+      // period and stops the moment the page leaves the detail view; the DELETE
+      // is best-effort because a stale beat lifts the hold by itself.
+      const viewBeat = {id: "", timer: 0};
+      function stopViewBeat() {
+        if (viewBeat.timer) clearInterval(viewBeat.timer);
+        viewBeat.timer = 0;
+        const leaving = viewBeat.id;
+        viewBeat.id = "";
+        if (leaving) api("tasks/" + enc(leaving) + "/view", "DELETE").catch(() => {});
+      }
+      function syncViewBeat() {
+        const t = taskUI.detail;
+        // Only a task still in its grace period needs holding. A beat on a task
+        // whose countdown already ran out would be a heartbeat with nothing to
+        // keep alive, and on a released one it would be noise.
+        const wanted =
+          view === "tasks" && !document.hidden && taskUI.id && t && t.graceHeld
+            ? taskUI.id
+            : "";
+        if (wanted === viewBeat.id) return;
+        stopViewBeat();
+        if (!wanted) return;
+        viewBeat.id = wanted;
+        const beat = () => api("tasks/" + enc(wanted) + "/view", "POST", {}).catch(() => {});
+        beat();
+        viewBeat.timer = setInterval(beat, GRACE_HEARTBEAT_MS);
       }
       function taskCard(t, inbox = false) {
         const ask = askForTask(t.id);
         const bits = [badge(taskStatus(t), taskTone(t))];
+        if (t.graceHeld) bits.push(graceMarkup(t));
         if (t.assignee) bits.push(`<span>Held by ${esc(t.assignee)}</span>`);
         if (t.priority) bits.push(`<span>Priority ${esc(t.priority)}</span>`);
         if (t.status === "working" && t.leaseExpiresAt) bits.push(`<span>Lease ends ${esc(time(t.leaseExpiresAt))}</span>`);
@@ -3456,6 +3593,7 @@
         const note = t.humanInstructions;
         return `<article class="task-detail"><header><h2>${esc(t.title)}</h2>${badge(taskStatus(t), taskTone(t))}</header>
           <div class="card-actions">${taskVerbs(t)}</div>
+          ${t.graceHeld ? `<div class="grace-row">${graceMarkup(t)}${graceVerbs(t)}</div><p class="card-note">${esc(graceExplanation(t))}</p>` : ""}
           ${t.pausedAt ? `<p class="card-note">Paused ${esc(age(t.pausedAt))}. Nothing claims it until you resume.</p>` : ""}
           ${t.status === "proposed" ? `<p>${esc(t.proposedBy || "A worker")} proposed this work. Nothing can claim it until you approve it, and it can be revised or withdrawn until you do.</p>` : ""}
           ${t.assignee ? `<p class="card-note">Held by ${esc(t.assignee)}${t.leaseExpiresAt ? ` · lease ends ${esc(time(t.leaseExpiresAt))}` : ""}.</p>` : ""}
@@ -3502,8 +3640,13 @@
         if (taskUI.id) {
           replaceContent(`<p class="task-back-row"><a class="task-back" href="#/tasks">← Back to the board</a></p>${notice}${taskDetailMarkup()}`);
           restore();
+          // The open detail page is what holds a task in its grace period, so
+          // the heartbeat follows the render: start it here, and let the board
+          // and the navigation below stop it.
+          syncViewBeat();
           return;
         }
+        stopViewBeat();
         const modes = `<div class="subnav" aria-label="Task view">${[["board", "Board"], ["list", "List"]]
           .map(([key, label]) => `<button data-action="task-mode" data-id="${key}" aria-pressed="${taskUI.mode === key}">${label}</button>`)
           .join("")}</div>`;
@@ -3530,7 +3673,7 @@
       }
       function newTask() {
         let submission = null;
-        formDialog("New task", "Eligible workers pick up queued tasks automatically. Include repository and access requirements in your instructions; you don’t need to choose a worker.",
+        formDialog("New task", "Eligible workers pick up queued tasks automatically. Include repository and access requirements in your instructions; you don’t need to choose a worker. A new task is held for 10 minutes before any worker can claim it, so you can fix it or press Make available now on the card.",
           field("title", "Title", "", {required: true, full: true}) +
           field("body", "Instructions", "", {type: "textarea", full: true}) +
           field("acceptanceCriteria", "Acceptance criteria", "", {type: "textarea", full: true}) +
@@ -3555,7 +3698,12 @@
               search: "", searchDraft: "", group: "active"});
             if (location.hash === "#/tasks") loadTasks();
             else location.hash = "#/tasks";
-            return "Task created and queued.";
+            // Say why the card is sitting there with a clock on it: a fresh
+            // task is held for a moment, and the countdown in the toast is the
+            // coordinator's deadline, not a guess.
+            return task?.graceHeld === "timer"
+              ? `Task created and queued. No worker can claim it for ${clockText(graceRemaining(task))}.`
+              : "Task created and queued.";
           });
         $("#f-title").maxLength = 300;
         $("#f-body").maxLength = $("#f-acceptanceCriteria").maxLength = 20000;
@@ -4208,6 +4356,7 @@
       setInterval(() => {
         if (!document.hidden) updateTimeline();
       }, 1000);
+      setInterval(tickGrace, 1000);
       // ---- Deciding --------------------------------------------------------
       // Every decision funnels through one dialog, so the mandatory note, the
       // optional amendment and the refreshed-on-conflict behaviour are identical
@@ -6805,6 +6954,17 @@
         if (name === "directive-new") return directiveForm("");
         if (name === "directive-edit") return directiveForm(id);
         if (name === "task-retry") return loadTasks();
+        if (name === "task-available") {
+          // End the grace period now. The row is re-read rather than patched, so
+          // what the board shows afterwards is the coordinator's answer.
+          try {
+            await api("tasks/" + enc(id) + "/available", "POST", {});
+          } catch (e) {
+            return notify(e.message);
+          }
+          await loadTasks();
+          return notify("Task is available to workers now.");
+        }
         if (name === "task-mode") {
           taskUI.mode = id === "list" ? "list" : "board";
           taskUI.cursor = "";
@@ -7104,8 +7264,13 @@
       });
       window.addEventListener("hashchange", navigate);
       document.addEventListener("visibilitychange", () => {
-        if (document.hidden) stopLiveClock();
-        else if (view === "live") renderLive();
+        if (document.hidden) {
+          stopLiveClock();
+          // A hidden tab is not a person reading the task. Staying silent also
+          // means the browser cannot throttle a beat into a false hold.
+          stopViewBeat();
+        } else if (view === "live") renderLive();
+        else if (view === "tasks") syncViewBeat();
       });
       let streamTimer;
       function stream() {
