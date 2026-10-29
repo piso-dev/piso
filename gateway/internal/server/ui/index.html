@@ -1826,6 +1826,13 @@
       .override-provider { color: var(--muted); font-size: 13px; }
       .override-model { margin-left: auto; font-family: monospace; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
       .override-warning { flex: 1 1 100%; color: var(--amber); font-size: 13px; }
+      .override-pinned { text-decoration: line-through; opacity: 0.7; }
+      /* Drift on a provider card. The alert is for a default model that is gone
+         (new sessions start broken); the dim line is a shrinking approved list
+         or the reason no check was possible. Neither is styled as an error when
+         the catalog was never read: "not checked" is not "broken". */
+      .provider-warning { margin: 0; padding: 0 4px 8px; color: var(--red); font-size: 13px; }
+      .provider-drift { margin: 0; padding: 0 4px 8px; color: var(--muted); font-size: 12px; }
     </style>
   </head>
   <body>
@@ -1959,9 +1966,16 @@
       // workers, traffic, policy) works without one, so only these wait for a
       // paired gateway instead of asking for data that can only be refused.
       const coordinatorKeys = new Set(["directives"]);
-      // Provider ids whose catalog has been fetched for the card view this
-      // page. Keeps the card list from refetching on every render.
-      const providerCatalogs = new Set();
+      // Every visit to the provider view re-reads each provider's catalog, so
+      // drift is judged against what the provider serves now rather than what it
+      // served the first time the page was opened. Two flags keep that from
+      // becoming a request loop: `inFlight` collapses concurrent renders onto
+      // one pass, and `settled` marks the single re-render a completed pass
+      // causes, which must not start another one. `navigate` clears both, so
+      // arriving at the view is what triggers a fetch — not every render of it
+      // (the poll re-renders this view too, and a catalog fetch per tick would
+      // hammer the provider).
+      const catalogRefresh = { inFlight: false, settled: false };
       let view = "projects",
         sub = "",
         query = "",
@@ -2822,6 +2836,8 @@
       }
       function navigate() {
         hideTimelineTip();
+        // A new visit: the provider view may fetch its catalogs again.
+        catalogRefresh.settled = false;
         const parts = location.hash.replace(/^#\//, "").split("/");
         view = titles[parts[0]] ? parts[0] : "projects";
         sub = sections[view]?.some(([k]) => k === parts[1])
@@ -5092,6 +5108,30 @@
         );
       }
 
+      // providerDriftLines turns the gateway's verdicts into the two lines a
+      // card needs: the loud one for a default that is gone (every new session
+      // on this provider starts broken), and a quiet count for approved models
+      // that dropped out of the catalog (a shrinking menu, not an outage).
+      // Nothing is said when the catalog could not be checked: "we did not
+      // look" and "it is gone" are different facts.
+      function providerDriftLines(p) {
+        const drift = p.drift;
+        if (!drift || !Array.isArray(drift.items)) return { alert: "", note: "" };
+        const missing = drift.items.filter((i) => i.state === "missing");
+        const def = missing.find((i) => i.role === "default");
+        const alert = def
+          ? `Default model ${def.model} is not in the provider's catalog any more. ` +
+            (def.suggested
+              ? `Did you mean ${def.suggested}?`
+              : "Pick a new default before new sessions start on it.")
+          : "";
+        const others = missing.filter((i) => i.role !== "default");
+        const note = others.length
+          ? `${others.length} approved ${others.length === 1 ? "model is" : "models are"} no longer listed: ` +
+            others.map((i) => i.model).join(", ")
+          : "";
+        return { alert, note };
+      }
       function providerCard(p) {
         const model = p.defaultModel || p.effectiveModel || "first available";
         const count = Array.isArray(p.models) ? p.models.length : 0;
@@ -5112,12 +5152,26 @@
             : p.active
               ? badge("Active — pending apply", "warn")
               : "";
+        const drift = providerDriftLines(p);
+        const driftAlert = drift.alert
+          ? `<p class="provider-warning" role="status">${esc(drift.alert)}</p>`
+          : "";
+        const driftNote = drift.note
+          ? `<p class="provider-drift">${esc(drift.note)}</p>`
+          : "";
+        // Why no verdict exists is worth one dim line: "not checked" must not
+        // read as "fine", and a local catalog can never be checked at all.
+        const unknown =
+          !driftAlert && p.driftUnknown
+            ? `<p class="provider-drift">${esc(p.driftUnknown)}</p>`
+            : "";
         return `<article class="provider-card${p.active ? " active" : ""}">
           <button class="provider-select" type="button" data-action="provider-activate" data-id="${esc(p.id)}" aria-pressed="${p.active ? "true" : "false"}">
             <span class="provider-name">${esc(p.name || p.id)} ${active}</span>
             <span class="provider-meta">${esc(p.baseUrl || "No URL")} · default: ${esc(model)}</span>
             <span class="provider-status${count ? "" : p.catalog === "failed" ? " warn" : ""}">${esc(catalog)}${p.checkedAt ? " · checked " + esc(age(p.checkedAt)) : ""}</span>
           </button>
+          ${driftAlert}${driftNote}${unknown}
           <div class="provider-card-actions">
             ${button("Edit", "provider-edit", p.id, "small")}
             ${button("Delete", "provider-delete", p.id, "small danger")}
@@ -5187,13 +5241,20 @@
         const rows = overrides
           .map((o) => {
             const live = o.model ? o.model : "no model resolved";
+            // A drifted row shows both models: the pin is still the operator's
+            // intent, and the worker is running something else because the
+            // provider stopped offering it. Hiding either one would make the
+            // substitution look intentional.
+            const shown = o.drifted && o.pinnedModel
+              ? `<span class="override-pinned">${esc(o.pinnedModel)}</span> → ${esc(live)} ${badge("drifted", "warn")}`
+              : esc(live);
             const warning = o.warning
               ? `<p class="override-warning">${esc(o.warning)}</p>`
               : "";
             return `<li class="override-row">
               <span class="override-worker">${esc(o.slug)}</span>
               <span class="override-provider">${esc(o.providerName || o.providerId || "provider removed")}</span>
-              <span class="override-model">${esc(live)}</span>
+              <span class="override-model">${shown}</span>
               ${button("Remove", "override-remove", o.slug, "small danger")}
               ${warning}
             </li>`;
@@ -5234,7 +5295,7 @@
             : "";
         formDialog(
           "Override a worker's provider",
-          "The worker starts on this provider instead of the account default. The shared provider stack is unchanged, and the switch happens at the worker's next idle boundary — no reload is needed. A provider whose secret is not granted to the worker cannot be chosen: the worker would receive a placeholder it has no value for.",
+          "The worker starts on this provider instead of the account default. The shared provider stack is unchanged, and the switch happens at the worker's next idle boundary — no reload is needed. A provider whose secret is not granted to the worker cannot be chosen: the worker would receive a placeholder it has no value for. The model is optional and limited to the provider's approved models: leaving it empty follows the provider's default, so the row keeps working if that default later moves.",
           field("slug", "Worker", free[0].slug, {
             required: true,
             full: true,
@@ -5247,14 +5308,47 @@
                 p.id,
                 (p.name || p.id) + (p.defaultModel ? " · " + p.defaultModel : "") + scopeNote(p),
               ]),
+            }) +
+            field("model", "Model", "", {
+              full: true,
+              choices: modelChoices(providers, providers[0].id),
+              hint: "Only the provider's approved models are offered; the gateway refuses anything else at save time.",
             }),
           "Pin worker",
           async (f) => {
-            await api("model-overrides", "PUT", { slug: f.slug, providerId: f.providerId });
+            await api("model-overrides", "PUT", {
+              slug: f.slug,
+              providerId: f.providerId,
+              model: f.model,
+            });
             await changed(["modelOverrides"]);
             return "Override saved. The worker switches at its next idle boundary.";
           },
         );
+        // The approved list belongs to the chosen provider, so the option list
+        // is rebuilt when the provider changes rather than filtered from the
+        // whole catalog: offering a model the gateway will refuse turns a
+        // policy into a 403 at save time.
+        const providerField = $("#f-providerId");
+        const modelField = $("#f-model");
+        if (providerField && modelField)
+          providerField.addEventListener("change", () => {
+            modelField.innerHTML = modelChoices(providers, providerField.value)
+              .map(([v, t]) => `<option value="${esc(v)}">${esc(t)}</option>`)
+              .join("");
+          });
+      }
+
+      // modelChoices is "provider default" plus the provider's approved models.
+      // The empty value is what the store treats as "follow the default".
+      function modelChoices(providers, providerId) {
+        const p = providers.find((x) => x.id === providerId) || {};
+        const allowed = Array.isArray(p.allowedModels) ? p.allowedModels : [];
+        const def = p.defaultModel || "";
+        return [
+          ["", def ? `Provider default (${def})` : "Provider default"],
+          ...allowed.filter((id) => id !== def).map((id) => [id, id]),
+        ];
       }
 
       function providerForm(id) {
@@ -5328,10 +5422,24 @@
           full: true,
         });
         const modelField = `<label class="field full" for="f-defaultModel"><span>Default model (optional)</span><input name="defaultModel" id="f-defaultModel" type="text" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="modelList" autocomplete="off" placeholder="First model the provider lists" value="${esc(p.defaultModel || "")}"><ul id="modelList" class="suggestions" role="listbox" hidden></ul><small id="modelHint">Choose an API key secret to load its model list.</small></label>`;
+        // Approved models are the closed set the gateway will accept from a
+        // worker on this provider, and what /model offers inside a session.
+        // Empty keeps the narrow default: only the default model, which is
+        // what a provider saved before this field existed already behaves like.
+        const approvedField = field(
+          "approvedModels",
+          "Approved models (one per line, optional)",
+          (Array.isArray(p.approvedModels) ? p.approvedModels : []).join("\n"),
+          {
+            type: "textarea",
+            full: true,
+            hint: "The only models a worker may use on this provider. Leave empty for just the default model. The default is always usable, and a model the provider no longer lists is reported rather than removed.",
+          },
+        );
         formDialog(
           id ? "Edit provider" : "Add provider",
           "A provider is a secret, an API base URL, and an optional default model. Saving writes it to the shared pi profile; activating it makes it the startup default for new sessions. The model list is optional: a provider saves even when its catalog cannot be reached.",
-          tabs + shared + urlPanel + tinfoilPanel + modelField,
+          tabs + shared + urlPanel + tinfoilPanel + modelField + approvedField,
           id ? "Save provider" : "Add provider",
           async (f) => {
             // The Tinfoil tab has no URL input at all; its URL is a constant,
@@ -5391,6 +5499,13 @@
             try {
               out = await api("pi-provider", "PUT", {
                 ...providerFields,
+                // Split here rather than sending the raw textarea: the field is
+                // a list, and the API takes a list. Blank lines and stray commas
+                // are the operator's formatting, not model ids.
+                approvedModels: String(providerFields.approvedModels || "")
+                  .split(/[\n,]/)
+                  .map((id) => id.trim())
+                  .filter(Boolean),
                 secretId,
                 baseUrl,
                 kind: mode === "tinfoil" ? "tinfoil" : "",
@@ -5727,28 +5842,21 @@
 
       // A card must not keep saying "model list pending" for a provider whose
       // catalog the edit dialog would load. Fetch the same endpoint the dialog
-      // uses, once per provider per page, and fold the result into the cached
-      // provider list so the card and dialog agree.
+      // uses on every display of this view, then reload the provider list once
+      // so the gateway judges drift against the catalog that just arrived.
       function loadProviderCatalogs() {
+        // The render caused by a finished refresh must not start another one.
+        if (catalogRefresh.settled) {
+          catalogRefresh.settled = false;
+          return;
+        }
+        if (catalogRefresh.inFlight) return;
         const providers = Array.isArray(data.provider?.providers)
           ? data.provider.providers
           : [];
+        const remote = [];
         for (const provider of providers) {
           if (!provider.id) continue;
-          // Memoize on the fields the catalog describes, not the id alone: a
-          // provider whose endpoint or secret changed has a new catalog to
-          // load, and one whose stored catalog was dropped (e.g. by an edit)
-          // must be asked again instead of staying stuck on "model list
-          // pending".
-          const fingerprint =
-            provider.id +
-            "|" +
-            (provider.baseUrl || "") +
-            "|" +
-            (provider.secretId || "");
-          if (providerCatalogs.has(fingerprint)) continue;
-          if (Array.isArray(provider.models) && provider.models.length) continue;
-          providerCatalogs.add(fingerprint);
           // A local provider's catalog is served by a proxy inside the worker
           // and is unreachable from here, so there is nothing to ask for. Skip
           // the round trip and say so directly.
@@ -5756,34 +5864,48 @@
             provider.catalog = "local";
             continue;
           }
-          api("pi-provider/models?id=" + encodeURIComponent(provider.id))
-            .then((result) => {
-              provider.models = Array.isArray(result?.models) ? result.models : [];
-              provider.catalog =
-                result?.catalog === "failed"
-                  ? "failed"
-                  : result?.catalog === "local"
-                    ? "local"
-                    : result?.catalog === "ok"
-                      ? "ok"
-                      : provider.models.length
-                        ? "ok"
-                        : "pending";
-              if (result?.checkedAt) provider.checkedAt = result.checkedAt;
-              provider.catalogError =
-                result?.catalog === "failed"
-                  ? result.error || "provider model catalog is unavailable"
-                  : "";
-            })
-            .catch((e) => {
-              provider.catalog = "failed";
-              provider.catalogError =
-                e?.message || "provider model catalog is unavailable";
-            })
-            .finally(() => {
-              if (view === "access" && sub === "provider") renderContent();
-            });
+          remote.push(provider);
         }
+        // Nothing to ask: the cards were already built from the stored state,
+        // and a local catalog is never fetched.
+        if (!remote.length) return;
+        catalogRefresh.inFlight = true;
+        Promise.allSettled(
+          remote.map((provider) =>
+            api("pi-provider/models?id=" + encodeURIComponent(provider.id)).then(
+              (result) => {
+                provider.models = Array.isArray(result?.models) ? result.models : [];
+                provider.catalog =
+                  result?.catalog === "failed"
+                    ? "failed"
+                    : result?.catalog === "local"
+                      ? "local"
+                      : result?.catalog === "ok"
+                        ? "ok"
+                        : provider.models.length
+                          ? "ok"
+                          : "pending";
+                if (result?.checkedAt) provider.checkedAt = result.checkedAt;
+                provider.catalogError =
+                  result?.catalog === "failed"
+                    ? result.error || "provider model catalog is unavailable"
+                    : "";
+              },
+            ),
+          ),
+        )
+          .then(() => {
+            // The refreshed catalog is on disk now; only the provider list can
+            // say which models that leaves missing, so ask for it once. A
+            // rejected fetch still lands here (allSettled), and the card then
+            // reads "unknown" with the failure named — the state a refresh that
+            // could not happen deserves.
+            catalogRefresh.settled = true;
+            return changed(["provider"]);
+          })
+          .finally(() => {
+            catalogRefresh.inFlight = false;
+          });
       }
       function addPolicy(kind) {
         let fields = "",

@@ -57,7 +57,13 @@ type piProviderView struct {
 	CatalogError   string   `json:"catalogError,omitempty"`
 	Models         []string `json:"models,omitempty"`
 	CheckedAt      string   `json:"checkedAt,omitempty"`
-	UpdatedAt      string   `json:"updatedAt,omitempty"`
+	// Drift judges the configured ids against the catalog: which of them the
+	// provider no longer offers. It is a report, never a repair — nothing on
+	// this path edits the provider. DriftUnknown explains a report that could
+	// not be made (no catalog yet, a failed fetch, or a local provider).
+	Drift        *store.ModelDriftReport `json:"drift,omitempty"`
+	DriftUnknown string                  `json:"driftUnknown,omitempty"`
+	UpdatedAt    string                  `json:"updatedAt,omitempty"`
 }
 
 type piProviderListView struct {
@@ -353,6 +359,16 @@ func (s *Server) providerViewFor(p *store.PiProviderRec, fs profileFileState) pi
 	if piProviderIsLocal(p) {
 		view.Catalog = "local"
 	}
+	if report := store.ModelDriftFor(p, nil); report.Total > 0 {
+		report := report
+		// A local catalog is never fetched by this gateway, so its stored list
+		// is not evidence that anything left the provider.
+		if piProviderIsLocal(p) {
+			report.MarkUnknown()
+		}
+		view.Drift = &report
+		view.DriftUnknown = driftUnknownReason(p, view.Catalog)
+	}
 	rec, ok := s.secretForPiProvider(p.SecretID)
 	if !ok || !strings.HasPrefix(rec.Placeholder, model.PlaceholderPrefix) {
 		// The secret is not resolvable on this gateway right now. If the shared
@@ -379,6 +395,24 @@ func (s *Server) providerViewFor(p *store.PiProviderRec, fs profileFileState) pi
 		view.Warning = joinWarning(view.Warning, "worker default model does not match the active provider; save again to apply")
 	}
 	return view
+}
+
+// driftUnknownReason says why no drift verdict exists, in the operator's terms.
+// Empty means the catalog was checked and the verdict is trustworthy.
+func driftUnknownReason(p *store.PiProviderRec, catalogState string) string {
+	switch {
+	case p == nil:
+		return "no provider configured"
+	case catalogState == "local":
+		return "this provider's catalog is served inside the worker, so the gateway cannot check it"
+	case p.CatalogError != "":
+		return "the last catalog check failed: " + p.CatalogError
+	case p.CatalogSuspect:
+		return "the last catalog was much smaller than the one before it; waiting for the provider to finish reindexing"
+	case p.CatalogCheckedAt.IsZero():
+		return "the catalog has not been checked yet"
+	}
+	return ""
 }
 
 // profileFileState is the dashboard-owned slice of the shared profile.

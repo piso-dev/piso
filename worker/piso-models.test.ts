@@ -555,7 +555,69 @@ describe("Piso worker model overrides", () => {
 		expect(JSON.parse(await readFile(join(dir, "piso-model.json"), "utf8"))).toEqual({
 			provider: "piso-two",
 			model: "m2",
+			allowedModels: [],
 		});
+	});
+
+	test("the approved list filters /model and is read back from the cache", async () => {
+		await stackDir(stack, { defaultProvider: "piso", defaultModel: "m1" });
+		process.env.GATEWAY_URL = "http://gateway:8083";
+		process.env.PISO_WORKER_NAME = "piso-worker-demo";
+		globalThis.fetch = (async () =>
+			Response.json({
+				provider: "piso",
+				model: "m1",
+				source: "override",
+				allowedModels: ["m1"],
+			})) as typeof fetch;
+
+		const registrations: Array<{ name: string; config: any }> = [];
+		const pi = {
+			registerProvider(name: string, config: unknown) {
+				registrations.push({ name, config });
+			},
+			unregisterProvider() {},
+			setModel() {
+				return Promise.resolve(true);
+			},
+			on() {
+				return () => {};
+			},
+		};
+		await pisoModels(pi as any);
+
+		// piso-two is not this worker's provider, so its catalog is untouched:
+		// the pin only decides what one worker may use on the provider it was
+		// pinned to.
+		const piso = registrations.find((r) => r.name === "piso")?.config;
+		expect(piso.models.map((m: any) => m.id)).toEqual(["m1"]);
+		expect(registrations.find((r) => r.name === "piso-two")?.config.models.map((m: any) => m.id))
+			.toEqual(["m2"]);
+	});
+
+	test("an approved list that shrinks swaps a running session off the removed model", async () => {
+		const dir = await stackDir(stack, { defaultProvider: "piso", defaultModel: "m2" });
+		process.env.GATEWAY_URL = "http://gateway:8083";
+		process.env.PISO_WORKER_NAME = "piso-worker-demo";
+		// A session that started while m2 was approved, against a gateway that
+		// has since narrowed the list to m1.
+		await writeFile(
+			join(dir, "piso-model.json"),
+			JSON.stringify({ provider: "piso", model: "m2", allowedModels: ["m1"] }),
+		);
+		const warnings: string[] = [];
+		console.warn = (message: string) => warnings.push(String(message));
+		globalThis.fetch = (async () => {
+			throw new Error("connection refused");
+		}) as typeof fetch;
+
+		const { apply, ctx, setModels } = liveApply({
+			piso: [{ id: "m1" }, { id: "m2" }],
+		});
+		await apply(ctx, true);
+
+		expect(setModels.at(-1)).toEqual({ id: "m1", provider: "piso" });
+		expect(warnings.join("\n")).toContain("no longer approved");
 	});
 
 	test("the account default applies when the gateway reports no override", async () => {

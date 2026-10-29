@@ -107,7 +107,14 @@ type PiProviderRec struct {
 	Models           []string  `json:"models,omitempty"`
 	CatalogCheckedAt time.Time `json:"catalogCheckedAt,omitempty"`
 	CatalogError     string    `json:"catalogError,omitempty"`
-	UpdatedAt        time.Time `json:"updatedAt,omitempty"`
+	// CatalogSuspect marks a catalog that is too much smaller than the one it
+	// replaced to be believed: an endpoint being reindexed answers with a
+	// partial list, and treating that as truth would declare every approved
+	// model missing at once. Drift verdicts are suppressed for a suspect
+	// catalog; the next fetch that agrees with it clears the flag, so a real
+	// mass deprecation is confirmed once and then reported as drift.
+	CatalogSuspect bool      `json:"catalogSuspect,omitempty"`
+	UpdatedAt      time.Time `json:"updatedAt,omitempty"`
 }
 
 // DefaultModelID is the model this provider's sessions start on: its configured
@@ -897,8 +904,14 @@ func (s *Store) ActivatePiProvider(id string) error {
 	return fmt.Errorf("pi provider %s not found", id)
 }
 
-// SetPiProviderCatalog records the last catalog fetch for one profile. A
-// fingerprint of the base URL is not stored; callers pass the profile id.
+// SetPiProviderCatalog records the last catalog fetch for one profile.
+//
+// A list less than half the size of the stored one is stored but flagged
+// suspect: providers answer with partial lists while reindexing, and one such
+// answer would otherwise declare every approved model missing at once. A
+// suspect catalog suppresses drift verdicts while still feeding the picker, and
+// the flag clears as soon as a fetch agrees with it — so a real mass
+// deprecation costs one quiet refresh, and a one-off glitch costs nothing.
 func (s *Store) SetPiProviderCatalog(id string, models []string, fetchErr string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -906,14 +919,56 @@ func (s *Store) SetPiProviderCatalog(id string, models []string, fetchErr string
 		if s.state.PiProviders[i].ID != id {
 			continue
 		}
-		s.state.PiProviders[i].CatalogCheckedAt = time.Now().UTC()
-		s.state.PiProviders[i].CatalogError = fetchErr
-		if fetchErr == "" {
-			s.state.PiProviders[i].Models = append([]string(nil), models...)
+		rec := &s.state.PiProviders[i]
+		if fetchErr != "" {
+			// A failed fetch records the failure and keeps the cached list so
+			// the picker still works; the drift report renders every id
+			// unknown rather than treating the cache as current.
+			if rec.CatalogError == fetchErr {
+				return nil
+			}
+			rec.CatalogError = fetchErr
+			rec.CatalogCheckedAt = time.Now().UTC()
+			return s.save()
 		}
+		next := append([]string(nil), models...)
+		suspect := newCatalogLooksTruncated(rec.Models, next)
+		if suspect == rec.CatalogSuspect && rec.CatalogError == "" &&
+			!rec.CatalogCheckedAt.IsZero() && equalModelLists(rec.Models, next) {
+			// Re-fetching an identical catalog is the common case once the
+			// dashboard refreshes on every visit. Bumping the timestamp would
+			// rewrite state.json each time for no new information.
+			return nil
+		}
+		rec.Models = next
+		rec.CatalogSuspect = suspect
+		rec.CatalogError = ""
+		rec.CatalogCheckedAt = time.Now().UTC()
 		return s.save()
 	}
 	return nil
+}
+
+// newCatalogLooksTruncated reports whether next is too much smaller than the
+// list it would replace to be believed. A provider with no stored catalog has
+// nothing to compare against, so a first fetch is always trusted.
+func newCatalogLooksTruncated(prev, next []string) bool {
+	if len(prev) < 4 {
+		return false
+	}
+	return len(next)*2 < len(prev)
+}
+
+func equalModelLists(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // ReplaceSecret overwrites a secret by ID and rewrites worker env files.

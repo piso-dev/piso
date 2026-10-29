@@ -223,7 +223,10 @@ export async function loadProfiles(dir = agentDir()): Promise<ProviderProfile[]>
 
 // ModelOverride is the gateway's answer to "which provider should this worker
 // start on". An empty provider means the worker follows the account default.
-type ModelOverride = { provider: string; model: string };
+// allowed is the closed set of model ids the gateway will accept from this
+// worker on that provider; empty means the gateway did not say, and the worker
+// registers the provider's whole catalog as before.
+type ModelOverride = { provider: string; model: string; allowed: string[] };
 
 function overrideCachePath(dir: string): string {
 	return join(dir, OVERRIDE_CACHE_FILE);
@@ -239,6 +242,7 @@ function parseOverride(payload: unknown): ModelOverride | undefined {
 	return {
 		provider: raw ? normalizeProviderId(raw) : "",
 		model: typeof payload.model === "string" ? payload.model.trim() : "",
+		allowed: stringArray(payload.allowedModels) ?? [],
 	};
 }
 
@@ -268,15 +272,43 @@ async function refreshOverrideCache(dir = agentDir()): Promise<void> {
 	}
 	if (!next) return;
 	const current = parseOverride(await readJson(overrideCachePath(dir)));
-	if (current && current.provider === next.provider && current.model === next.model) return;
+	if (current && current.provider === next.provider && current.model === next.model && sameModelIds(current.allowed, next.allowed)) return;
 	try {
 		await writeFile(
 			overrideCachePath(dir),
-			`${JSON.stringify({ provider: next.provider, model: next.model })}\n`,
+			`${JSON.stringify({ provider: next.provider, model: next.model, allowedModels: next.allowed })}\n`,
 		);
 	} catch {
 		// A read-only or full agent dir must not break the session.
 	}
+}
+
+function sameModelIds(a: string[], b: string[]): boolean {
+	return a.length === b.length && a.every((id, i) => id === b[i]);
+}
+
+// approvedModelsFor returns the model ids this worker may use on providerId, or
+// an empty slice when the gateway has no opinion (no pin, an older gateway, or
+// an unreachable one and no cache). Empty must mean "do not filter": the
+// gateway's model pin remains the boundary, and a worker that guessed here would
+// hide models the gateway would happily serve.
+async function approvedModelsFor(providerId: string, dir = agentDir()): Promise<string[]> {
+	const cached = parseOverride(await readJson(overrideCachePath(dir)));
+	if (!cached || cached.provider !== providerId) return [];
+	return cached.allowed;
+}
+
+// restrictToApproved narrows a catalog to the approved ids, keeping catalog
+// order. Applied at every point the catalog is assembled — the disk cache, the
+// models.json fallback, and both branches of a refresh — because a single
+// unfiltered path would quietly put the whole catalog back in /model.
+function restrictToApproved(
+	models: ProviderModelConfig[],
+	allowed: string[],
+): ProviderModelConfig[] {
+	if (allowed.length === 0) return models;
+	const keep = new Set(allowed);
+	return models.filter((model) => keep.has(model.id));
 }
 
 async function loadActiveDefault(dir = agentDir()): Promise<ActiveDefault> {
@@ -339,12 +371,16 @@ async function loadStartupModels(profile: ProviderProfile): Promise<ProviderMode
 // discovery leaves the provider registered with an empty catalog so the
 // session still starts and the default can resolve later.
 async function buildProviderConfig(profile: ProviderProfile): Promise<ProviderConfig> {
-	const fallback = (profile.models ?? []).flatMap((model) => {
-		const normalized = configModel(model);
-		return normalized ? [normalized] : [];
-	});
+	const allowed = await approvedModelsFor(profile.id);
+	const fallback = restrictToApproved(
+		(profile.models ?? []).flatMap((model) => {
+			const normalized = configModel(model);
+			return normalized ? [normalized] : [];
+		}),
+		allowed,
+	);
 
-	let startupModels = await loadStartupModels(profile);
+	let startupModels = restrictToApproved(await loadStartupModels(profile), allowed);
 	if (startupModels.length === 0) startupModels = fallback;
 	// Interactive Pi refreshes in the background *after* initial model selection.
 	// Await discovery only on a cold start, using the dashboard's literal scoped
@@ -359,7 +395,10 @@ async function buildProviderConfig(profile: ProviderProfile): Promise<ProviderCo
 				signal: AbortSignal.timeout(STARTUP_DISCOVERY_TIMEOUT_MS),
 			});
 			if (!response.ok) throw new Error("discovery failed");
-			startupModels = mergeCatalog(catalogEntries(await response.json()), fallback);
+			startupModels = restrictToApproved(
+				mergeCatalog(catalogEntries(await response.json()), fallback),
+				allowed,
+			);
 			if (startupModels.length === 0) throw new Error("empty catalog");
 		} catch {
 			// Never print the response, URL, credentials, or raw network errors.
@@ -373,9 +412,12 @@ async function buildProviderConfig(profile: ProviderProfile): Promise<ProviderCo
 		baseUrl: profile.baseUrl,
 		api: profile.api ?? "openai-completions",
 		async refreshModels(context: RefreshModelsContext): Promise<ProviderModelConfig[]> {
-			const cached = (context.stored?.models ?? [])
-				.filter((model) => model.provider === profile.id && model.baseUrl === profile.baseUrl)
-				.map(storedModel);
+			const cached = restrictToApproved(
+				(context.stored?.models ?? [])
+					.filter((model) => model.provider === profile.id && model.baseUrl === profile.baseUrl)
+					.map(storedModel),
+				allowed,
+			);
 			const current = cached.length > 0 ? cached : startupModels;
 			if (!context.allowNetwork) return current;
 			if (context.credential?.type !== "api_key" || !context.credential.key) return current;
@@ -397,9 +439,15 @@ async function buildProviderConfig(profile: ProviderProfile): Promise<ProviderCo
 			}
 			if (!response.ok) throw new Error(`Piso model discovery failed: HTTP ${response.status}`);
 
-			const refreshed = mergeCatalog(catalogEntries(await response.json()), fallback, cached);
+			const refreshed = restrictToApproved(
+				mergeCatalog(catalogEntries(await response.json()), fallback, cached),
+				allowed,
+			);
 			if (refreshed.length === 0) throw new Error("Piso model discovery returned no models");
 			const entry: ModelsStoreEntry = {
+				// Persist the filtered list: the cache is read back as the catalog
+				// on the next start, so storing every discovered id would put the
+				// models the gateway refuses back into /model one session later.
 				models: persistedModels(profile, refreshed),
 				checkedAt: Date.now(),
 				etag: response.headers.get("etag") ?? undefined,
@@ -431,10 +479,23 @@ function snapshotKey(profiles: ProviderProfile[], active: ActiveDefault): string
 	]);
 }
 
-function providerConfigKey(profile: ProviderProfile): string {
-	return JSON.stringify([profile.baseUrl, profile.api ?? "", profile.models.map((m) => m.id)]);
+// providerConfigKey covers everything that changes a registered provider. The
+// approved list belongs here: narrowing it must rebuild the catalog, or /model
+// keeps offering a model the gateway has stopped accepting until the next
+// restart.
+function providerConfigKey(profile: ProviderProfile, allowed: string[] = []): string {
+	return JSON.stringify([
+		profile.baseUrl,
+		profile.api ?? "",
+		profile.models.map((m) => m.id),
+		allowed,
+	]);
 }
 
+// Note on the initial keys: they carry no approved list, so the first apply pass
+// rebuilds each provider once with the real one. That pass runs at session start
+// before any model is chosen, and it keeps this function synchronous for the
+// callers and tests that treat registration as a load-time side effect.
 type LiveState = {
 	signature: string;
 	configs: Map<string, string>;
@@ -468,7 +529,7 @@ export function wireLiveApply(
 		const seen = new Set<string>();
 		for (const profile of profiles) {
 			seen.add(profile.id);
-			const key = providerConfigKey(profile);
+			const key = providerConfigKey(profile, await approvedModelsFor(profile.id));
 			if (state.configs.get(profile.id) === key) continue;
 			try {
 				pi.registerProvider(profile.id, await buildProviderConfig(profile));
@@ -505,10 +566,27 @@ export function wireLiveApply(
 		// that is the arbitrary-model symptom. The first-model fallback stays
 		// only for the documented case where the dashboard saved no model
 		// (its catalog fetch failed).
+		const allowed = await approvedModelsFor(active.provider);
 		const catalog = ctx.modelRegistry.getModelsOfType("chat", active.provider);
-		const model = modelId
+		const offered = restrictToApproved(catalog, allowed);
+		let model = modelId
 			? ctx.modelRegistry.find(active.provider, modelId) ?? (active.model ? undefined : catalog[0])
 			: undefined;
+		// A session that started before the approved list shrank still holds the
+		// removed model. Switching to an offered one keeps /model and the
+		// gateway in agreement instead of 403ing every request until restart.
+		if (model && allowed.length > 0 && !allowed.includes(model.id)) {
+			const fallback = offered[0];
+			const replacement = fallback
+				? ctx.modelRegistry.find(active.provider, fallback.id) ?? fallback
+				: undefined;
+			warnOnce(
+				`revoked:${active.provider}/${model.id}`,
+				`Piso: model ${active.provider}/${model.id} is no longer approved for this worker; ` +
+					(replacement ? `switching to ${replacement.id}.` : "no approved model is registered yet."),
+			);
+			model = replacement;
+		}
 		if (!model) {
 			if (active.model) {
 				const key = `unresolved:${active.provider}/${active.model}`;

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -32,12 +33,21 @@ type modelOverrideView struct {
 	ProviderName string `json:"providerName,omitempty"`
 	// Model is the model that actually applies under the pinned provider.
 	Model string `json:"model,omitempty"`
+	// PinnedModel is the model the row asked for. It differs from Model when
+	// the pin was dropped — see Drifted.
+	PinnedModel string `json:"pinnedModel,omitempty"`
 	// LiveModel is what the worker last reported running (advisory; it is a
 	// different thing from the configured selection).
 	LiveModel string `json:"liveModel,omitempty"`
 	Source    string `json:"source"`
-	Warning   string `json:"warning,omitempty"`
-	UpdatedAt string `json:"updatedAt,omitempty"`
+	// Drifted says the pinned model is no longer in the provider's catalog and
+	// the row fell back to the provider's default. Model then names the
+	// substitute, so the row can show both without a second lookup.
+	Drifted bool   `json:"drifted,omitempty"`
+	Warning string `json:"warning,omitempty"`
+	// DriftState is the pinned model's verdict: ok, missing, or unknown.
+	DriftState string `json:"driftState,omitempty"`
+	UpdatedAt  string `json:"updatedAt,omitempty"`
 }
 
 // modelOverrideProviderView feeds the provider dropdown. Workers is the
@@ -48,6 +58,10 @@ type modelOverrideProviderView struct {
 	Name         string   `json:"name,omitempty"`
 	DefaultModel string   `json:"defaultModel,omitempty"`
 	Workers      []string `json:"workers,omitempty"`
+	// AllowedModels is the set a pin may name, so the dashboard's model
+	// dropdown offers exactly what the gateway will accept instead of the
+	// provider's whole catalog.
+	AllowedModels []string `json:"allowedModels,omitempty"`
 }
 
 type modelOverrideListView struct {
@@ -74,30 +88,94 @@ type workerModelView struct {
 	// is already applied here.
 	Source  string `json:"source"`
 	Warning string `json:"warning,omitempty"`
+	// AllowedModels is the closed set this worker's requests may name. The
+	// worker filters its /model picker to it: models.json lists a provider's
+	// whole catalog, and offering ids the gateway will refuse turns a policy
+	// into a 403 in the middle of a session. Omitted when empty so an older
+	// worker keeps its current behaviour.
+	AllowedModels []string `json:"allowedModels,omitempty"`
 }
 
 // resolveWorkerModel applies the precedence in one place: a worker override
 // wins over the account default, and an override pointing at a provider that no
 // longer exists falls back to the account default with a warning rather than
 // leaving the worker with nothing.
+//
+// Within a pinned provider, an override's model wins over that provider's
+// default, and a pinned model the catalog no longer lists falls back to the
+// provider's default with a warning. The fallback is deliberate: a drifted pin
+// is a config bug, and a worker that refuses to start is a worse outcome than
+// one that runs a documented substitute the dashboard is already flagging.
 func (s *Server) resolveWorkerModel(slug string) workerModelView {
 	slug = strings.TrimSpace(slug)
 	out := workerModelView{Slug: slug, Source: "none"}
-	if p := s.Store.PiProviderByID(s.Store.ModelOverrideProviderID(slug)); p != nil {
+	rec, hasOverride := s.Store.ModelOverrideBySlug(slug)
+	if p := s.Store.PiProviderByID(rec.ProviderID); hasOverride && p != nil {
 		out.Provider = p.ID
 		out.Model = effectivePiModel(p)
 		out.Source = "override"
+		out.AllowedModels = p.AllowedModelIDs()
+		if pinned := strings.TrimSpace(rec.Model); pinned != "" {
+			switch s.pinnedModelDrift(p, pinned) {
+			case "":
+				out.Model = pinned
+			case "model-not-approved":
+				out.Warning = fmt.Sprintf(
+					"the pinned model %s is not an approved model for %s; this worker uses %s instead",
+					pinned, piProviderLabel(p), out.Model)
+			default:
+				out.Warning = fmt.Sprintf(
+					"the pinned model %s is no longer offered by %s; this worker uses %s instead",
+					pinned, piProviderLabel(p), out.Model)
+			}
+		}
 		return out
 	}
-	if _, ok := s.Store.ModelOverrideBySlug(slug); ok {
+	if hasOverride {
 		out.Warning = "the pinned provider no longer exists; this worker uses the account default"
 	}
 	if p := s.Store.PiProvider(); p != nil {
 		out.Provider = p.ID
 		out.Model = effectivePiModel(p)
 		out.Source = "account"
+		out.AllowedModels = p.AllowedModelIDs()
 	}
 	return out
+}
+
+// pinnedModelDrift returns a non-empty reason when model cannot be used under p,
+// or "" when it can. Two different failures, deliberately kept apart:
+//
+//   - "model-not-approved": the provider's own approved list excludes it, so
+//     every request would be refused no matter what the catalog says. Only an
+//     older row (or a hand-edited state file) can be in this state, since the
+//     API validates the pin on save.
+//   - "model-not-in-catalog": the list accepts it but the provider stopped
+//     offering it.
+//
+// Neither is a reason to substitute when the catalog could not be checked: an
+// unanswered question must not rewrite the config on a guess.
+func (s *Server) pinnedModelDrift(p *store.PiProviderRec, model string) string {
+	if p == nil || model == "" {
+		return ""
+	}
+	approved := slices.Contains(p.AllowedModelIDs(), model)
+	report := store.ModelDriftFor(p, map[string]string{"pinned": model})
+	if report.Error != "" || report.Suspect || report.CheckedAt == "" {
+		// The catalog is silent, so only the approved list can rule the model
+		// out — and if it does, the pin is simply wrong.
+		if !approved {
+			return "model-not-approved"
+		}
+		return ""
+	}
+	if approved && store.ModelDriftState(report, model).State != store.ModelStateMissing {
+		return ""
+	}
+	if !approved {
+		return "model-not-approved"
+	}
+	return "model-not-in-catalog"
 }
 
 // providerWorkers returns the secret scope for the provider's credential: the
@@ -148,14 +226,15 @@ func (s *Server) modelOverrideListView() modelOverrideListView {
 	for _, p := range s.Store.PiProviderStack() {
 		rec := p
 		view.Providers = append(view.Providers, modelOverrideProviderView{
-			ID:           rec.ID,
-			Name:         piProviderLabel(&rec),
-			DefaultModel: effectivePiModel(&rec),
-			Workers:      s.providerWorkers(&rec),
+			ID:            rec.ID,
+			Name:          piProviderLabel(&rec),
+			DefaultModel:  effectivePiModel(&rec),
+			Workers:       s.providerWorkers(&rec),
+			AllowedModels: rec.AllowedModelIDs(),
 		})
 	}
 	for _, rec := range s.Store.ModelOverrides() {
-		row := modelOverrideView{Slug: rec.Slug, ProviderID: rec.ProviderID, Source: "override"}
+		row := modelOverrideView{Slug: rec.Slug, ProviderID: rec.ProviderID, PinnedModel: rec.Model, Source: "override"}
 		if w, ok := s.Store.WorkerBySlug(rec.Slug); ok {
 			row.Worker = w.Name
 		}
@@ -170,6 +249,18 @@ func (s *Server) modelOverrideListView() modelOverrideListView {
 			row.Model = effectivePiModel(p)
 			if ok, why := s.providerReachableFrom(p, rec.Slug); !ok {
 				row.Warning = why
+			}
+			// The resolved answer and the drift verdict come from the same
+			// resolver the worker uses, so a row can never claim a model the
+			// worker will not actually run.
+			resolved := s.resolveWorkerModel(rec.Slug)
+			row.Model = resolved.Model
+			row.DriftState = store.ModelDriftState(store.ModelDriftFor(p, nil), rec.Model).State
+			if rec.Model != "" && resolved.Model != rec.Model {
+				row.Drifted = true
+				if row.Warning == "" {
+					row.Warning = resolved.Warning
+				}
 			}
 		} else {
 			resolved := s.resolveWorkerModel(rec.Slug)
@@ -191,6 +282,7 @@ func (s *Server) handlePutModelOverride(w http.ResponseWriter, r *http.Request) 
 	var in struct {
 		Slug       string `json:"slug"`
 		ProviderID string `json:"providerId"`
+		Model      string `json:"model"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		writeJSON(w, 400, map[string]string{"error": "bad json"})
@@ -221,7 +313,21 @@ func (s *Server) handlePutModelOverride(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, 400, map[string]string{"error": why})
 		return
 	}
-	if _, err := s.Store.SetModelOverride(slug, id); err != nil {
+	// A pin outside the provider's approved set is refused rather than saved
+	// with a warning: the worker would 403 the moment it switched, and unlike
+	// the catalog this set is right here in the request. The extra model is a
+	// dashboard edit away, which is the point of the split.
+	model := strings.TrimSpace(in.Model)
+	if model != "" {
+		allowed := p.AllowedModelIDs()
+		if !slices.Contains(allowed, model) {
+			writeJSON(w, 400, map[string]string{"error": fmt.Sprintf(
+				"%s is not an approved model for %s; pick one of: %s",
+				model, piProviderLabel(p), strings.Join(allowed, ", "))})
+			return
+		}
+	}
+	if _, err := s.Store.SetModelOverride(slug, id, model); err != nil {
 		writeJSON(w, 500, map[string]string{"error": err.Error()})
 		return
 	}
