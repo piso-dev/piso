@@ -7,7 +7,9 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -246,6 +248,44 @@ func mustKey(t *testing.T, s *Server) []byte {
 	return k
 }
 
+// hostBridgeForTest returns the remote address a host-originated request to a
+// published port arrives from, plus a CIDR containing it: the interface's
+// network and its gateway (network+1). Skips when the machine has no
+// non-loopback IPv4 interface.
+func hostBridgeForTest(t *testing.T) (remote, cidr string) {
+	t.Helper()
+	for _, n := range hostInterfaceNets() {
+		if n.gw == nil || n.net == nil {
+			continue
+		}
+		ones, _ := n.net.Mask.Size()
+		return n.gw.String() + ":41000", fmt.Sprintf("%s/%d", n.net.IP.String(), ones)
+	}
+	t.Skip("no non-loopback IPv4 interface to derive a bridge address from")
+	return "", ""
+}
+
+// hostPeerForTest returns an off-host address on the same subnet as the bridge
+// above: still inside the trusted CIDR, but not the host.
+func hostPeerForTest(t *testing.T) string {
+	t.Helper()
+	for _, n := range hostInterfaceNets() {
+		if n.gw == nil || n.net == nil {
+			continue
+		}
+		for offset := 2; offset < 12; offset++ {
+			peer := append([]byte{}, n.gw.To4()...)
+			peer[3] += byte(offset)
+			ip := net.IP(peer)
+			if n.net.Contains(ip) && (n.self == nil || !ip.Equal(n.self)) {
+				return ip.String() + ":41000"
+			}
+		}
+	}
+	t.Skip("no non-loopback IPv4 interface to derive a peer address from")
+	return ""
+}
+
 // The gate must leave a local gateway alone, and must stop an off-host request
 // that carries no credential.
 func TestDashboardAuthGate(t *testing.T) {
@@ -287,6 +327,37 @@ func TestDashboardAuthGate(t *testing.T) {
 		}
 		if body["error"] == "" {
 			t.Fatal("401 body must explain itself")
+		}
+	})
+
+	t.Run("host-side publish is not gated", func(t *testing.T) {
+		// The host reaches its own published port through the bridge, so the
+		// source address is the bridge gateway — inside the trusted subnet. That
+		// address is the host, not the front proxy: asking it for a password
+		// nobody set is the bug this covers.
+		bridge, cidr := hostBridgeForTest(t)
+		s := testAuthServer(t)
+		t.Setenv("PISO_TRUSTED_PEER_CIDRS", cidr)
+		t.Setenv("PISO_DASHBOARD_AUTH", "")
+		t.Setenv("PISO_DASHBOARD_HOST", "")
+		w := render(s, "/api/v1/workers", "piso.local", bridge)
+		if w.Code != http.StatusOK {
+			t.Fatalf("host publish from %s must not need a login, got %d (%s): %s",
+				bridge, w.Code, w.Header().Get("X-Piso-Auth"), w.Body)
+		}
+	})
+
+	t.Run("off-host on the trusted subnet is still gated", func(t *testing.T) {
+		// The exemption is for the host's two addresses only, not the subnet.
+		_, cidr := hostBridgeForTest(t)
+		peer := hostPeerForTest(t)
+		s := testAuthServer(t)
+		t.Setenv("PISO_TRUSTED_PEER_CIDRS", cidr)
+		t.Setenv("PISO_DASHBOARD_AUTH", "")
+		t.Setenv("PISO_DASHBOARD_HOST", "")
+		w := render(s, "/api/v1/workers", "piso.local", peer)
+		if w.Code != http.StatusUnauthorized {
+			t.Fatalf("another host on %s must still need a session, got %d: %s", cidr, w.Code, w.Body)
 		}
 	})
 

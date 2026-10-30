@@ -26,6 +26,42 @@ func TestPeerTrustedFrontProxyCIDR(t *testing.T) {
 // default-route peer into something this check accepts. peerOnWorkerVPC uses
 // real interfaces, so assert the invariant on the composition of the two
 // helpers instead: trust is consulted only inside the deny branch.
+// The host's own address and the bridge address it is masqueraded to are not
+// peers. Derived from the real interfaces: a fabricated table would not prove
+// the mapping the gate actually consults.
+func TestPeerIsThisHost(t *testing.T) {
+	nets := hostInterfaceNets()
+	if len(nets) == 0 {
+		t.Skip("no non-loopback IPv4 interface to derive a host address from")
+	}
+	for _, n := range nets {
+		if n.self == nil {
+			continue
+		}
+		if !peerIsThisHost(n.self) {
+			t.Fatalf("interface address %s must count as this host", n.self)
+		}
+		if n.gw == nil || n.net == nil {
+			continue
+		}
+		if !peerIsThisHost(n.gw) {
+			t.Fatalf("bridge address %s must count as this host", n.gw)
+		}
+		// Somebody else on the same subnet is still somebody else.
+		for offset := 2; offset < 12; offset++ {
+			peer := net.IP(append([]byte{}, n.gw.To4()...))
+			peer[3] += byte(offset)
+			if !n.net.Contains(peer) || peer.Equal(n.self) {
+				continue
+			}
+			if peerIsThisHost(peer) {
+				t.Fatalf("%s is an ordinary peer on %s and must not be exempt", peer, n.net)
+			}
+			break
+		}
+	}
+}
+
 func TestTrustOnlyNarrowsDenial(t *testing.T) {
 	t.Setenv("PISO_TRUSTED_PEER_CIDRS", "172.30.99.0/24")
 
