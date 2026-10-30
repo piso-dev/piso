@@ -1392,15 +1392,15 @@
         display: flex;
         flex-direction: column;
         gap: 14px;
-        background: var(--panel);
+        /* The item's type is a tint of the panel, and the only place a card
+           wears colour. State is already said twice — by the column and by
+           the badge — so the hue is spent on what the thing *is*. A wash over
+           --panel rather than over transparent: the column behind it is grey,
+           and a solid tint keeps the card a card instead of letting the
+           column bleed through. Mixed into the panel, not the background, so
+           the tint is readable and stays low-key at 16%. */
+        background: color-mix(in srgb, var(--type, var(--panel)) 16%, var(--panel));
         border: 1px solid var(--line);
-        /* The left rule is the item's type, and the only place a card wears
-           colour. State is already said twice — by the column and by the
-           badge — so the hue is spent on what the thing *is*. Written as
-           longhands so the width survives a browser that resolves var()
-           lazily. */
-        border-left-width: 3px;
-        border-left-color: var(--type, var(--line));
         border-radius: 6px;
         padding: 18px 16px;
         min-width: 0;
@@ -1573,18 +1573,6 @@
       }
       .dialog-content .form-grid textarea {
         min-height: 96px;
-      }
-      .dialog-section {
-        display: flex;
-        flex-direction: column;
-        gap: 16px;
-        margin-top: 22px;
-        padding-top: 18px;
-        border-top: 1px solid var(--line);
-      }
-      .dialog-section > p {
-        color: var(--muted);
-        margin: 0;
       }
       .section-label {
         font-size: 13px;
@@ -3288,7 +3276,14 @@
           ? document.activeElement
           : null;
         const focusKey = focused?.closest("[data-key]")?.dataset.key;
+        // A poll rebuilds this subtree, and a rebuild loses both places the
+        // reader can be: the window's vertical scroll, and the board's own
+        // horizontal scroller (the columns are wider than the viewport). Saved
+        // here and put back below, so a ten-second refresh never throws the
+        // page back to the top left.
         const scroll = window.scrollY;
+        const board = box.querySelector(".board");
+        const boardLeft = board ? board.scrollLeft : 0;
         box.innerHTML = html;
         box.querySelectorAll("details[data-key]").forEach((d) => {
           if (open.has(d.dataset.key)) d.open = true;
@@ -3299,7 +3294,14 @@
           if (open.has(row.dataset.key)) setGithubRowExpanded(row, true);
           if (focusKey === row.dataset.key) row.querySelector(".github-row-toggle")?.focus({ preventScroll: true });
         });
-        if (focused) window.scrollTo({ top: scroll });
+        // Restore unconditionally, focus or not: this is the same page, so the
+        // reader's place in it is not the browser's to decide. Focus is put back
+        // with preventScroll above, and this line is the last word on scroll.
+        window.scrollTo({ top: scroll });
+        if (board && boardLeft) {
+          const next = box.querySelector(".board");
+          if (next) next.scrollLeft = boardLeft;
+        }
       }
       function count(n, label = "records") {
         if ($("#resultCount")) $("#resultCount").textContent = n + " " + label;
@@ -3792,12 +3794,28 @@
         const hex = [...bytes].map(b => b.toString(16).padStart(2, "0")).join("");
         return [hex.slice(0,8), hex.slice(8,12), hex.slice(12,16), hex.slice(16,20), hex.slice(20)].join("-");
       }
+      // The fields that describe the work itself. The New task dialog and the
+      // approval dialog share them, so approving a proposal shows the form the
+      // proposal was written in, with its text already in place.
+      function taskDraftFields(task) {
+        return (
+          field("title", "Title", task?.title || "", {required: true, full: true}) +
+          field("body", "Instructions", task?.body || "", {type: "textarea", full: true}) +
+          field("acceptanceCriteria", "Acceptance criteria", task?.acceptanceCriteria || "", {type: "textarea", full: true})
+        );
+      }
+      // The coordinator's limits, set on the element rather than passed through
+      // field(): an over-long draft is stopped before the round-trip, and the
+      // instructions get the taller box a plan needs.
+      function taskDraftLimits() {
+        $("#f-title").maxLength = 300;
+        $("#f-body").maxLength = $("#f-acceptanceCriteria").maxLength = 20000;
+        $("#f-body").rows = 6;
+      }
       function newTask() {
         let submission = null;
         formDialog("New task", "Eligible workers pick up queued tasks automatically. Include repository and access requirements in your instructions; you don’t need to choose a worker. A new task is held for 10 minutes before any worker can claim it, so you can fix it or press Make available now on the card.",
-          field("title", "Title", "", {required: true, full: true}) +
-          field("body", "Instructions", "", {type: "textarea", full: true}) +
-          field("acceptanceCriteria", "Acceptance criteria", "", {type: "textarea", full: true}) +
+          taskDraftFields() +
           '<div id="taskDiscard" class="notice field full" hidden><p>Discard this draft? A previous submission may still have reached the server; check Tasks before creating it again.</p><div class="actions">' + button("Keep editing", "task-keep") + button("Discard draft", "task-discard", "", "danger") + '</div></div>',
           "Create task", async values => {
             if (!values.title.trim()) throw new Error("Enter a title.");
@@ -3826,9 +3844,7 @@
               ? `Task created and queued. No worker can claim it for ${clockText(graceRemaining(task))}.`
               : "Task created and queued.";
           });
-        $("#f-title").maxLength = 300;
-        $("#f-body").maxLength = $("#f-acceptanceCriteria").maxLength = 20000;
-        $("#f-body").rows = 6;
+        taskDraftLimits();
         $("#dialog").taskGuard = () => {
           if ([...$("#actionForm").querySelectorAll("input, textarea")].some(el => el.value.trim())) { $("#taskDiscard").hidden = false; return false; }
           return true;
@@ -4546,18 +4562,11 @@
           danger: true,
         },
       };
-      // The amendment editor only appears where the text is still the text a
-      // worker will read: before anyone has claimed it. Once there is a live
-      // attempt, rewriting the instructions turns its checkpoint into a lie, so
-      // the server refuses it too.
-      function amendmentFields(task) {
-        if (!task) return "";
-        return `<div class="dialog-section"><p>Optional: change the work itself before it is queued. Leave a field as it is to keep it.</p>${
-          field("title", "Title", task.title, { full: true }) +
-          field("body", "Instructions", task.body || "", { type: "textarea", full: true }) +
-          field("acceptanceCriteria", "Acceptance criteria", task.acceptanceCriteria || "", { type: "textarea", full: true })
-        }</div>`;
-      }
+      // Only the fields the human actually rewrote travel with the decision; a
+      // field left as the proposal wrote it is not an amendment. The editor
+      // appears only where the text is still the text a worker will read: before
+      // anyone has claimed it. Once there is a live attempt, rewriting the
+      // instructions turns its checkpoint into a lie, so the server refuses it.
       function amendmentDiff(values, task) {
         const amend = {};
         for (const [key, current] of [
@@ -4586,13 +4595,20 @@
           proposal && decision === "approved" && a.taskId
             ? await api("tasks/" + enc(a.taskId)).catch(() => null)
             : null;
-        const fields =
-          field("summary", spec.label, spec.prefill || "", {
+        // Approving a proposal is the New task modal with the proposal already
+        // in it, plus one field at the bottom for what the worker should hear
+        // on top of the work itself. Other approvals have no task text to edit,
+        // so they keep the single decision note.
+        const note = (label, required) =>
+          field("summary", label, spec.prefill || "", {
             type: "textarea",
-            required: true,
+            required,
             full: true,
             hint: spec.hint,
-          }) + amendmentFields(task);
+          });
+        const fields = task
+          ? taskDraftFields(task) + note("Further instructions for the worker (optional)", false)
+          : note(spec.label, true);
         formDialog(
           spec.title,
           proposal
@@ -4648,6 +4664,10 @@
             return "Decided.";
           },
         );
+        if (task) {
+          taskDraftLimits();
+          $("#f-title").focus();
+        }
       }
       async function taskAction(action, id) {
         const t =

@@ -45,13 +45,24 @@ Tasks sits directly below Projects. It uses compact linked rows rather than
 summary cards, Active / Finished filters, server-side title search, and signed
 cursor pagination. Details show authoritative task state, instructions,
 acceptance criteria, checkpoint, result, artifacts, and updates. Waiting tasks
-link to Needs you for decisions. The visible list/detail polls every ten seconds.
+link to Needs you for decisions. The visible list/detail polls every ten seconds,
+and a poll re-renders in place: the window scroll and the board's own sideways
+scroll are read before the rebuild and put back after it, so a refresh never
+throws the reader to the top left or back to the first column.
 
 The native New task dialog uses the existing graphite/chalk/blue palette and
 system typography. No worker selection: creation uses the shared Tasks queue.
 Drafts remain in memory only. An ambiguous submission freezes the original
 UUID and payload for retry; validation errors remain editable. Dismissal of a
 nonempty draft requires confirmation. No new dependencies or build step.
+
+Approving a proposal reuses that same form rather than a second editor: the
+Title, Instructions and Acceptance criteria fields arrive filled with the
+proposal, under the same limits, so the human sees exactly what will be queued
+and edits it in the place it was written. One extra field at the bottom carries
+further instructions for the worker; it is optional, and only fields the human
+actually rewrote travel as an amendment. An approval that carries no task text
+keeps the single decision note.
 
 A newly created task is held for a grace period, and the hold is drawn as one
 panel rather than a badge plus a loose verb: a green-bordered, green-tinted
@@ -66,19 +77,23 @@ second so a tick cannot steal focus or scroll position.
 
 The board colours what a card *is*, not how far along it is: state is already
 said twice, by the column and by the status badge, so the hue is spent on type
-instead. Each card carries a 3px left rule in its type's colour and, above the
-status, a tinted pill naming that type in words. Blue is plain work; violet is
+instead. Each card is washed in its type's colour — a solid, low-key tint
+(16% of the hue mixed into the graphite panel, so the card stays a card on the
+neutral column rather than going translucent) — and carries, above the status,
+a tinted pill naming that type in words. There is no left colour block: a 3px
+rule down one edge read as a legend you had to learn, while a tint names the
+whole object. Blue is plain work; violet is
 a proposal or a decision (approve or reject); teal is a review (accept or send
 back); amber is a question or a human action, both of which wait on the same
 thing, someone answering; moss is a preview to publish; and grey is an access
 grant, the one request that is a credential rather than a piece of work. Plain
-work carries no chip: it is the default, and its blue rule is the only label it
+work carries no chip: it is the default, and its blue tint is the only label it
 needs. The hue is never the only cue, and two types share a hue only when the
 operator owes them the same verb, so the chip still names the exact type.
 Columns stay neutral, so the board has one colour legend rather than two.
 Red and green stay out of that legend: they already mean failure and health.
-The detail page repeats the same rule and chip in its header, so a card and its
-detail cannot disagree about what the thing is. The grace panel keeps its
+The detail page repeats the same hue as a left rule plus the same chip in its
+header, so a card and its detail cannot disagree about what the thing is. The grace panel keeps its
 stronger solid green border, so a hold still reads as an object inside a card.
 
 ## Live connection

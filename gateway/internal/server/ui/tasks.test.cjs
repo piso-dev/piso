@@ -146,3 +146,21 @@ test('submit is disabled while pending and background renders do not erase draft
   assert.equal(h.doc.querySelector('#f-title').value, 'Keep me');
   resolve({id: 'one', title: 'Keep me', status: 'open'}); await tick();
 });
+
+test('a polling refresh keeps the reader’s place, sideways on the board included', async t => {
+  const card = {id: 'one', title: 'Alpha', status: 'open', priority: 0, labels: {}, artifacts: [], updates: [],
+    createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:00Z'};
+  const h = await harness(t, () => ({tasks: [card], nextCursor: null}));
+  const doc = h.doc, w = h.w;
+  const scrolls = [];
+  w.scrollTo = ({top}) => scrolls.push(top);
+  Object.defineProperty(w, 'scrollY', {value: 640, configurable: true});
+  const board = doc.querySelector('.board');
+  // The columns are wider than the viewport, so this scroller is the reader's
+  // place too. A rebuild used to snap it back to the first column.
+  board.scrollLeft = 420;
+  await w.taskTest.loadTasks(); await tick();
+  assert.notEqual(doc.querySelector('.board'), board, 'the board really was rebuilt');
+  assert.equal(scrolls.at(-1), 640);
+  assert.equal(doc.querySelector('.board').scrollLeft, 420);
+});
