@@ -62,16 +62,24 @@ const content = doc => doc.querySelector('#content');
 const beatTimers = timers => [...timers.entries()].filter(([, v]) => v.ms === 5000);
 const viewCalls = calls => calls.filter(c => c.path.endsWith('/t1/view'));
 
-test('a queued task in its grace period shows a green countdown and a release button', async t => {
+test('a held card shows one green panel: clock top left, release bottom right', async t => {
   const {doc, calls, w} = await harness(t, {hash: '#/tasks', tasks: [task()]});
-  const chip = content(doc).querySelector('.grace');
-  assert.ok(chip, 'no countdown chip on the card');
-  assert.match(chip.textContent, /0:2[01]/);
-  assert.doesNotMatch(chip.className, /held/);
-  const release = [...content(doc).querySelectorAll('button')]
-    .find(b => b.dataset.action === 'task-available');
-  assert.ok(release, 'no "make available now" control');
+  const panel = content(doc).querySelector('.card .grace-panel');
+  assert.ok(panel, 'no grace panel on the card');
+  assert.doesNotMatch(panel.className, /held/);
+  // One panel, not a chip plus a loose button: the state and its action are the
+  // same object, so they cannot drift apart in the kicker or the verb row.
+  assert.equal(content(doc).querySelectorAll('.grace-panel').length, 1);
+  const state = panel.firstElementChild;
+  assert.match(state.className, /grace-state/, 'the clock is not the first line of the panel');
+  assert.match(state.textContent, /0:2[01]/);
+  const action = panel.lastElementChild;
+  assert.match(action.className, /grace-action/, 'the button is not the last row of the panel');
+  const release = action.querySelector('button[data-action="task-available"]');
+  assert.ok(release, 'no "make available now" control in the panel');
   assert.match(release.textContent, /Make available now/);
+  // ...and it is not duplicated in the card's verb row.
+  assert.equal([...content(doc).querySelectorAll('button[data-action="task-available"]')].length, 1);
 
   release.click();
   await tick();
@@ -80,7 +88,7 @@ test('a queued task in its grace period shows a green countdown and a release bu
     'the button did not post the release');
   // The row is re-read rather than patched: the board shows the coordinator's
   // answer, not the browser's guess about the clock.
-  assert.equal(content(doc).querySelector('.grace'), null);
+  assert.equal(content(doc).querySelector('.grace-panel'), null);
   assert.match(doc.querySelector('#toast').textContent, /available to workers now/i);
 });
 
@@ -90,10 +98,10 @@ test('a viewed task holds open instead of counting down', async t => {
     tasks: [task({graceHeld: 'viewing', availableAt: new Date(Date.now() - 1000).toISOString(),
       viewedBy: 'Ada'})],
   });
-  const chip = content(doc).querySelector('.grace.held');
-  assert.ok(chip, 'no held-open state on the card');
-  assert.match(chip.textContent, /Held open by Ada/);
-  assert.doesNotMatch(chip.textContent, /\d+:\d\d/);
+  const panel = content(doc).querySelector('.grace-panel.held');
+  assert.ok(panel, 'no held-open panel on the card');
+  assert.match(panel.querySelector('.grace-state').textContent, /Held open by Ada/);
+  assert.doesNotMatch(panel.querySelector('.grace-state').textContent, /\d+:\d\d/);
 });
 
 test('the detail page beats every five seconds and says goodbye when it closes', async t => {
@@ -101,7 +109,10 @@ test('the detail page beats every five seconds and says goodbye when it closes',
     hash: '#/tasks/t1',
     detail: task({graceHeld: 'viewing', viewedBy: 'Ada'}),
   });
-  assert.match(content(doc).textContent, /You have this open, so it stays out of the queue/);
+  // The detail page carries the same panel as the card it came from.
+  const panel = content(doc).querySelector('.task-detail > .grace-panel');
+  assert.ok(panel, 'no grace panel on the detail page');
+  assert.match(panel.textContent, /It stays out of the queue while you have it open/);
   assert.equal(viewCalls(calls).filter(c => c.method === 'POST').length, 1, 'no beat on open');
   const beats = beatTimers(timers);
   assert.equal(beats.length, 1, 'expected exactly one 5s heartbeat timer');
@@ -141,9 +152,8 @@ test('a ten-minute default renders as minutes, not a bare seconds count', async 
     hash: '#/tasks',
     tasks: [task({availableAt: new Date(Date.now() + 600000).toISOString()})],
   });
-  const chip = content(doc).querySelector('.grace-text');
-  assert.equal(chip.textContent, '10:00');
-  assert.match(content(doc).querySelector('.grace').title, /until the countdown ends/i);
+  const state = content(doc).querySelector('.grace-state');
+  assert.equal(state.textContent.trim(), '◷10:00');
 });
 
 test('a task with no grace period has no grace chrome at all', async t => {

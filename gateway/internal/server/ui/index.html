@@ -1088,6 +1088,14 @@
       .task-pagination button:disabled { cursor: default; }
       .task-detail { max-width: 76ch; }
       .task-detail section, .task-update { margin-top: 24px; }
+      /* Updates is a section like any other, but its heading used to sit flush
+         against whatever came before it — acceptance criteria ended and the
+         word "Updates" started on the next line. The extra room is vertical
+         padding on the section, not a margin on the heading, so the first
+         update's divider keeps its own spacing. */
+      .task-detail > .task-updates {
+        padding-top: 12px;
+      }
       .task-prose { white-space: pre-wrap; overflow-wrap: anywhere; }
       .task-prose code { font-family: var(--mono); }
       .task-prose pre { padding: 16px; background: var(--surface); overflow-x: auto; white-space: pre; }
@@ -1438,44 +1446,72 @@
       }
       /* The grace period is the one green thing on the board: it is a healthy
          state that expires by itself (a worker may claim this shortly), not a
-         warning and not an error. Tabular figures keep the seconds from
-         jittering the chip wider as they tick down. */
-      .grace {
-        display: inline-flex;
-        align-items: center;
-        gap: 8px;
+         warning and not an error. The tint says "no action needed, but notice
+         this"; the solid green border makes it a panel rather than a badge, so
+         it reads as part of the card rather than a sticker on it. */
+      .grace-panel {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 6px;
         border: 1px solid var(--green);
-        border-radius: 999px;
-        background: rgba(153, 203, 178, 0.12);
-        color: var(--green);
-        font-size: 12px;
-        font-weight: 600;
-        padding: 4px 10px;
-        font-variant-numeric: tabular-nums;
-      }
-      .grace-text {
-        font-family: var(--mono, monospace);
-        min-width: 5ch;
-      }
-      /* The hold the countdown cannot show: somebody has the task open, so it
-         waits for them instead of running out. Muted, not green: nothing is
-         counting down any more. */
-      .grace.held {
-        border-color: var(--blue);
-        background: rgba(165, 198, 255, 0.1);
-        color: var(--blue);
-        font-weight: 500;
-      }
-      .grace.held .grace-text {
-        font-family: inherit;
+        border-radius: 8px;
+        background: color-mix(in srgb, var(--green) 14%, transparent);
+        color: #fff;
+        padding: 12px 14px;
         min-width: 0;
       }
-      .task-detail > .grace-row {
+      /* The clock is the headline: it is the one number that changes, and it is
+         top left because that is where the eye starts. Tabular figures keep the
+         panel from twitching as the seconds tick. */
+      .grace-state {
         display: flex;
-        flex-wrap: wrap;
         align-items: center;
-        gap: 12px;
-        margin: 16px 0 0;
+        gap: 8px;
+        margin: 0;
+        font-family: var(--mono, monospace);
+        font-size: 19px;
+        font-weight: 600;
+        font-variant-numeric: tabular-nums;
+        line-height: 1.2;
+      }
+      .grace-why {
+        margin: 0;
+        color: rgba(255, 255, 255, 0.82);
+        font-size: 12px;
+        overflow-wrap: anywhere;
+      }
+      /* Bottom right: the same corner a card's verbs live in, so the one way to
+         end the hold is where a control is expected. */
+      .grace-action {
+        align-self: flex-end;
+        margin-top: 2px;
+      }
+      .grace-panel .grace-action button {
+        border: 1px solid var(--green);
+        background: transparent;
+        color: #fff;
+        font-weight: 600;
+      }
+      .grace-panel .grace-action button:hover {
+        background: color-mix(in srgb, var(--green) 26%, transparent);
+      }
+      /* Held open is not counting down, so the panel stops being green: nothing
+         is expiring, somebody is reading. Same shape, different colour, so the
+         two states are never mistaken for each other at a glance. */
+      .grace-panel.held {
+        border-color: var(--blue);
+        background: color-mix(in srgb, var(--blue) 14%, transparent);
+      }
+      .grace-panel.held .grace-state {
+        font-family: inherit;
+        font-size: 14px;
+      }
+      .grace-panel.held .grace-action button {
+        border-color: var(--blue);
+      }
+      .grace-panel.held .grace-action button:hover {
+        background: color-mix(in srgb, var(--blue) 26%, transparent);
       }
       .card-actions button {
         padding: 10px 14px;
@@ -3360,7 +3396,7 @@
             cancel;
         if (t.pausedAt) return button("Resume", "task-resume", t.id, "primary") + button("Add note", "task-note", t.id) + cancel;
         if (t.status === "open")
-          return graceVerbs(t) + button("Run next", "task-prioritise", t.id, "", "Move this to the front of the claim order") + cancel;
+          return button("Run next", "task-prioritise", t.id, "", "Move this to the front of the claim order") + cancel;
         return "";
       }
       // ---- Grace period ----------------------------------------------------
@@ -3381,21 +3417,28 @@
         const total = Math.ceil(ms / 1000);
         return Math.floor(total / 60) + ":" + String(total % 60).padStart(2, "0");
       };
-      function graceMarkup(t) {
+      // The grace period is one panel, not a chip plus a stray button: the state
+      // (counting down, or held open by whoever is reading it) sits top left, and
+      // the one action that ends it sits bottom right, where the eye already
+      // looks for a control. Green border and tint mean "healthy and temporary";
+      // the label is white so the clock stays legible on the tint.
+      function gracePanel(t) {
         if (!t?.graceHeld) return "";
-        if (t.graceHeld === "viewing")
-          return `<span class="grace held" data-grace="${esc(t.id)}"><span class="grace-text">Held open${t.viewedBy ? " by " + esc(t.viewedBy) : ""}</span></span>`;
-        return `<span class="grace" data-grace="${esc(t.id)}" title="No worker can see or claim this task until the countdown ends, unless someone has it open."><span aria-hidden="true">◷</span><span class="grace-text">${clockText(graceRemaining(t))}</span></span>`;
+        const held = t.graceHeld === "viewing";
+        const state = held
+          ? `<span class="grace-text">Held open${t.viewedBy ? " by " + esc(t.viewedBy) : ""}</span>`
+          : `<span aria-hidden="true">◷</span><span class="grace-text">${clockText(graceRemaining(t))}</span>`;
+        return `<div class="grace-panel${held ? " held" : ""}" data-grace="${esc(t.id)}">
+            <p class="grace-state">${state}</p>
+            <p class="grace-why">${esc(graceExplanation(t))}</p>
+            <div class="grace-action">${button("▶ Make available now", "task-available", t.id, "", "End the grace period and let a worker claim this immediately.")}</div>
+          </div>`;
       }
-      const graceVerbs = (t) =>
-        t?.graceHeld
-          ? button("▶ Make available now", "task-available", t.id, "", "End the grace period and let a worker claim this immediately.")
-          : "";
       const graceExplanation = (t) =>
         t?.graceHeld === "viewing"
-          ? "You have this open, so it stays out of the queue. It becomes claimable shortly after you leave this page."
+          ? "Now available to workers. It stays out of the queue while you have it open."
           : t?.graceHeld
-            ? "No worker can see or claim this yet. Leaving this page does not release it early; the countdown has to end, or press Make available now."
+            ? "No worker can see or claim this yet. The countdown has to end, unless you release it now."
             : "";
       // One ticker patches only the text of the clocks already on screen: a full
       // re-render every second would fight typing, hover and scroll for no gain.
@@ -3457,7 +3500,6 @@
       function taskCard(t, inbox = false) {
         const ask = askForTask(t.id);
         const bits = [badge(taskStatus(t), taskTone(t))];
-        if (t.graceHeld) bits.push(graceMarkup(t));
         if (t.assignee) bits.push(`<span>Held by ${esc(t.assignee)}</span>`);
         if (t.priority) bits.push(`<span>Priority ${esc(t.priority)}</span>`);
         if (t.status === "working" && t.leaseExpiresAt) bits.push(`<span>Lease ends ${esc(time(t.leaseExpiresAt))}</span>`);
@@ -3470,6 +3512,7 @@
         return `<article class="card${inbox ? " inbox" : ""}${t.status === "proposed" ? " fresh" : ""}" data-key="task-${esc(t.id)}">
           <div class="card-top"><a class="card-title" href="#/tasks/${enc(t.id)}">${esc(t.title)}</a></div>
           <div class="card-kicker">${bits.join("")}</div>
+          ${gracePanel(t)}
           ${note ? `<p class="card-note">${esc(note)}</p>` : ""}
           <div class="card-actions">${taskVerbs(t)}</div>
         </article>`;
@@ -3593,14 +3636,14 @@
         const note = t.humanInstructions;
         return `<article class="task-detail"><header><h2>${esc(t.title)}</h2>${badge(taskStatus(t), taskTone(t))}</header>
           <div class="card-actions">${taskVerbs(t)}</div>
-          ${t.graceHeld ? `<div class="grace-row">${graceMarkup(t)}${graceVerbs(t)}</div><p class="card-note">${esc(graceExplanation(t))}</p>` : ""}
+          ${gracePanel(t)}
           ${t.pausedAt ? `<p class="card-note">Paused ${esc(age(t.pausedAt))}. Nothing claims it until you resume.</p>` : ""}
           ${t.status === "proposed" ? `<p>${esc(t.proposedBy || "A worker")} proposed this work. Nothing can claim it until you approve it, and it can be revised or withdrawn until you do.</p>` : ""}
           ${t.assignee ? `<p class="card-note">Held by ${esc(t.assignee)}${t.leaseExpiresAt ? ` · lease ends ${esc(time(t.leaseExpiresAt))}` : ""}.</p>` : ""}
           ${note ? `<section><h2>Your latest note</h2><div class="task-prose">${taskMarkup(note.body || "")}</div><p class="card-note">${esc(note.author || "a human")} · ${esc(time(note.createdAt))} · ${esc(note.kind)}</p></section>` : ""}
           ${prose("Instructions", t.body)}${prose("Acceptance criteria", t.acceptanceCriteria)}
           ${prose("Latest checkpoint", t.checkpoint)}${prose("Result", t.result?.summary)}${prose("Evidence", t.result?.evidence)}
-          ${artifacts}<h2>Updates</h2>${updates || "<p>No updates yet.</p>"}</article>`;
+          ${artifacts}<section class="task-updates"><h2>Updates</h2>${updates || "<p>No updates yet.</p>"}</section></article>`;
       }
       function renderTasks() {
         const gate = coordinatorNotice("Tasks");

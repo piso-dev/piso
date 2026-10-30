@@ -53,6 +53,17 @@ Drafts remain in memory only. An ambiguous submission freezes the original
 UUID and payload for retry; validation errors remain editable. Dismissal of a
 nonempty draft requires confirmation. No new dependencies or build step.
 
+A newly created task is held for a grace period, and the hold is drawn as one
+panel rather than a badge plus a loose verb: a green-bordered, green-tinted
+block with white text, the countdown at its top left and "Make available now"
+at its bottom right. State and action in one object means they cannot drift into
+different corners of the card. Green is the only cheerful colour on the board —
+the hold expires by itself, so it is not a warning — and the panel turns blue
+with "Held open by …" when somebody reading the task is what is holding it,
+because then nothing is counting down. The same panel renders on the board card
+and on the detail page; the timer patches only the clock's text node once a
+second so a tick cannot steal focus or scroll position.
+
 ## Live connection
 
 One rail button carries the API/stream dot, the enrollment words, and a
@@ -90,7 +101,9 @@ a read-only summary of the paired gateway. The terminal equivalent stays one
 - The piso mark ships as an embedded `ui/favicon.svg`, served same-origin at `/favicon.svg` and `/favicon.ico` with the dashboard. No remote asset is fetched; the single embedded page still has no build step.
 - `go test ./gateway/internal/server` passes with the replacement embedded UI.
 - `git diff --check` passes.
-- Browser verification was attempted but Chromium cannot launch in this worker because system libraries are missing. No system packages were installed. Responsive layouts, focus behavior, popups, and end-to-end mutations still need real-browser verification.
+- Browser verification runs in a real Chromium from `.tools/pw` (see
+  `.tools/board-visual.sh` and `.tools/grace-visual.py`): geometry, computed
+  colours and spacing are measured in the browser, not inferred from the CSS.
 - The project timeline uses timestamps, not event-order strips. The existing activities endpoint supports `window=3h` to avoid truncation at the old 2,000-event cap. Project attention status reflects the latest reported semantic event in that window, not an authoritative task state. The topology diagram remains replaced by the inspectable traffic feed.
 - Timeline tests: `node --test gateway/internal/server/ui/timeline.test.cjs` covers merging, window boundaries, callout layout/expiry, and return-to-now. A local jsdom smoke check also verifies page execution, merged hover details, escaped content, expiry, navigation, and follow behavior; it is not visual layout verification.
 - Request presentation is bounded to 300 rows after live updates. There is no historical pagination. Pausing the feed freezes presentation, not collection.
