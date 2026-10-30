@@ -199,7 +199,7 @@ func TestWorkerCapabilitiesIdentity(t *testing.T) {
 	}
 }
 
-// The `host` kind is a valid activity kind (Host Action Request protocol).
+// The `host` kind is a valid activity kind (the host-request path).
 func TestWorkerActivityAcceptsHostKind(t *testing.T) {
 	s := testServer(t)
 	wh := s.WorkerHandler()

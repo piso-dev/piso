@@ -140,10 +140,10 @@ cmd_install() {
 workbench: don't know how to install '$tool'.
   - Go tools: workbench go install example.com/tool/cmd/tool@latest
   - Anything else with prebuilt release assets from GitHub: the gateway
-    504s/407s releases/download and api.github.com, so ask the host:
-      HOST ACTION REQUEST: fetch <url>
-        COMMAND: curl -fsSL -o /workspace/.tools/<name> <url>   # or wherever the host prefers
-        RESULT:  $WB/bin/<name>
+    504s/407s releases/download and api.github.com, so ask the host with the
+    piso MCP tool \`host_request\`:
+      command="curl -fsSL -o /workspace/.tools/<name> <url>"
+      resultPath="$WB/bin/<name>"
 EOF
       exit 2
       ;;

@@ -79,15 +79,17 @@ broken).
   `piso-worker-<slug>` are all self-inflicted outages. Change the host around
   it, or ask.
 
-## Do not emit Host Action Requests
+## You are the host
 
-`CAPABILITIES.md` describes a `host_request` protocol because a local worker
-cannot touch its host. On a ship that is inverted: you *are* the host, so a
-host request is a stall, not a handoff. Do the work, then report it in your
-`task_update`/activity line.
+On a ship you *are* the machine: do the work, then report it in your
+`task_update` or activity line. Reach for `host_request` only when the step
+genuinely belongs to another box — something that has to happen on the
+*gateway* host, which you cannot reach from here.
 
-Use `kind=host` / `host_request` only when the machine genuinely cannot do it
-itself — e.g. something that must happen on the *gateway* box.
+```
+command="..."
+resultPath="..."
+```
 
 ## Interactive sessions suppress the task loop
 

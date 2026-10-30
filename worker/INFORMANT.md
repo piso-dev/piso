@@ -27,9 +27,8 @@ Do this **briefly and often** — one short line, not prose:
   `activity_post` with `kind=waiting`, `text="Need you to pick the auth approach"`
 - **A step is OUT OF BOUNDS for this sandboxed worker** (ssh, docker,
   privileged writes): do NOT attempt it — call
-  `host_request` instead. See the CAPABILITIES section for the format.
-  `host_request` with `command="git clone git@github.com:org/repo.git"`,
-  `resultPath="/workspace/repo"`
+  `host_request` instead, with `command="git clone git@github.com:org/repo.git"`
+  and `resultPath="/workspace/repo"`.
 - **Any notable status the human should know**:
   `activity_post` with `kind=note`, `text="spent the afternoon on the CQRS docs"`
 
@@ -77,8 +76,8 @@ dashboard a real project manager instead of a motion sensor.
 
 # CAPABILITIES — where the sandbox ends
 
-The full boundary contract (what this worker can/cannot do, the Host Action
-Request protocol, probe cautions) is appended below by the entrypoint from
+The full boundary contract (what this worker can/cannot do, how to reach the
+host when it cannot, probe cautions) is appended below by the entrypoint from
 /opt/piso/CAPABILITIES.md on every boot — read it before attempting anything
 you suspect is out of bounds. Two things to internalize up front:
 
