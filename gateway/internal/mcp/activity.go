@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"encoding/json"
+	"net/http"
 	"strings"
 
 	"piso/gateway/internal/store"
@@ -37,12 +38,19 @@ func (h *Handler) registerBoard() {
 	})
 	h.Register(Tool{
 		Name:        "host_request",
-		Description: "Ask the host to run a command. The result comes back at a rendezvous path under /workspace.",
+		Description: "Ask a person to run a command on the host; the output lands at resultPath. Files a tracked, blocking request AND a board line. With taskId, requires attemptId, requestId, summary, checkpoint; atomically waits and ends execution. Exit after success.",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"command":    map[string]any{"type": "string"},
 				"resultPath": map[string]any{"type": "string"},
+				"title":      map[string]any{"type": "string"},
+				"category":   map[string]any{"type": "string"},
+				"taskId":     map[string]any{"type": "string"},
+				"attemptId":  map[string]any{"type": "string"},
+				"requestId":  map[string]any{"type": "string"},
+				"summary":    map[string]any{"type": "string"},
+				"checkpoint": map[string]any{"type": "string"},
 			},
 			"required": []string{"command", "resultPath"},
 		},
@@ -62,6 +70,10 @@ func agentActivityKind(k string) bool {
 }
 
 func (h *Handler) insertBoard(caller store.WorkerRec, kind, text, target string) (any, *rpcError) {
+	return h.insertBoardAsk(caller, kind, text, target, "")
+}
+
+func (h *Handler) insertBoardAsk(caller store.WorkerRec, kind, text, target, askID string) (any, *rpcError) {
 	if h.Store == nil {
 		return nil, &rpcError{Code: codeInternal, Message: "activity store unavailable"}
 	}
@@ -80,6 +92,7 @@ func (h *Handler) insertBoard(caller store.WorkerRec, kind, text, target string)
 		Kind:       kind,
 		TargetSlug: target,
 		Text:       text,
+		AskID:      askID,
 	})
 	if err != nil {
 		return nil, &rpcError{Code: codeServer, Message: err.Error()}
@@ -102,6 +115,17 @@ func (h *Handler) toolActivityPost(caller store.WorkerRec, args json.RawMessage)
 	return h.insertBoard(caller, in.Kind, in.Text, in.TargetSlug)
 }
 
+// toolHostRequest is "I cannot continue until a person does this", not "FYI".
+//
+// It used to write one activity row and return, which meant the worker exited
+// with no record a human could answer and nothing holding the task. Now the
+// durable HumanAction is written first (and, with taskId, the wait that ends
+// the lease), and the activity row is the timeline trace pointing at it.
+//
+// Order is load-bearing. The ask is the block; the activity is the trace. A
+// failed activity write must not lose the block, so it degrades to a warning —
+// but a failed ask with taskId must not fall back to the activity alone, or a
+// worker would exit believing it is blocked while nothing holds the task.
 func (h *Handler) toolHostRequest(caller store.WorkerRec, args json.RawMessage) (any, *rpcError) {
 	if err := rejectWorkerArg(args); err != nil {
 		return nil, err
@@ -109,17 +133,131 @@ func (h *Handler) toolHostRequest(caller store.WorkerRec, args json.RawMessage) 
 	var in struct {
 		Command    string `json:"command"`
 		ResultPath string `json:"resultPath"`
+		Title      string `json:"title"`
+		Category   string `json:"category"`
+		TaskID     string `json:"taskId"`
+		AttemptID  string `json:"attemptId"`
+		RequestID  string `json:"requestId"`
+		Summary    string `json:"summary"`
+		Checkpoint string `json:"checkpoint"`
 	}
 	if err := json.Unmarshal(args, &in); err != nil {
 		return nil, &rpcError{Code: codeInvalidParams, Message: "command and resultPath required"}
 	}
-	cmd := store.SanitizeLabel(in.Command, 400)
-	path := store.SanitizeLabel(in.ResultPath, 200)
-	if cmd == "" || path == "" {
+	// Keep the command verbatim (only trimmed) for the ask: a human copies it
+	// into a shell, so collapsing its whitespace would change what runs. The
+	// board line gets a sanitized copy like every other activity row.
+	command := strings.TrimSpace(in.Command)
+	resultPath := strings.TrimSpace(in.ResultPath)
+	if command == "" || resultPath == "" {
 		return nil, &rpcError{Code: codeInvalidParams, Message: "command and resultPath required"}
 	}
-	text := cmd + " · result → " + path
-	return h.insertBoard(caller, store.ActivityKindHost, text, "")
+	category := strings.TrimSpace(in.Category)
+	if category == "" {
+		category = "host"
+	}
+	taskLinked := strings.TrimSpace(in.TaskID) != ""
+
+	body := map[string]any{
+		"category":     category,
+		"instructions": store.SanitizeCommand(command, 20000),
+		"verification": store.SanitizeLabel(resultPath, 2000),
+	}
+	if t := strings.TrimSpace(in.Title); t != "" {
+		body["title"] = store.SanitizeLabel(t, 300)
+	} else {
+		body["title"] = "Host: " + store.SanitizeLabel(command, 292)
+	}
+	if taskLinked {
+		body["taskId"] = strings.TrimSpace(in.TaskID)
+		body["attemptId"] = strings.TrimSpace(in.AttemptID)
+		body["requestId"] = strings.TrimSpace(in.RequestID)
+		body["summary"] = in.Summary
+		body["checkpoint"] = in.Checkpoint
+	} else if id := strings.TrimSpace(in.RequestID); id != "" {
+		// The untasked form dedupes on requestId at the coordinator; without
+		// one, a retry is a second ask, which is the pre-existing behaviour.
+		body["requestId"] = id
+	}
+	if rpcErr := requireTaskAskFields(body); rpcErr != nil {
+		return nil, rpcErr
+	}
+
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return nil, &rpcError{Code: codeInvalidParams, Message: "invalid request"}
+	}
+
+	var askID, waitID string
+	var warning string
+	status, doc, rpcErr := h.coord(caller, http.MethodPost, "/api/v1/human-actions", nil, payload)
+	switch {
+	case rpcErr != nil:
+		// Coordinator unreachable, or this worker is not enrolled. A block
+		// that only exists on the board is worse than a loud failure.
+		if taskLinked {
+			return nil, rpcErr
+		}
+		warning = "not tracked (" + rpcErr.Message + "): recorded on the board only"
+	case status == 0 || doc["status"] == "unpaired":
+		if taskLinked {
+			return nil, &rpcError{Code: codeServer, Message: "coordinator unpaired: cannot file a blocking host request"}
+		}
+		warning = "not tracked (coordinator unpaired): recorded on the board only"
+	case status >= 400:
+		return nil, coordErr(status, doc)
+	default:
+		// A task-linked ask answers with the task's own id plus humanActionId
+		// (mutate_worker's response shape); the untasked create answers with
+		// the ask's id. Prefer the explicit field so the timeline row points at
+		// the ask and not at the task.
+		askID, _ = doc["humanActionId"].(string)
+		if askID == "" {
+			askID, _ = doc["id"].(string)
+		}
+		waitID, _ = doc["waitId"].(string)
+	}
+
+	// Budget for insertBoardAsk's 500-char cap: command + " · result → " + path +
+	// " · ask <36-char id>" has to fit, or the ask link is what gets truncated.
+	text := store.SanitizeLabel(command, 240) + " · result → " + store.SanitizeLabel(resultPath, 120)
+	if askID != "" {
+		text += " · ask " + askID
+	}
+	board, boardErr := h.insertBoardAsk(caller, store.ActivityKindHost, text, "", askID)
+	if boardErr != nil {
+		if taskLinked || askID != "" {
+			// The ask landed (and the lease ended); losing the timeline trace
+			// must not turn that into a failure the worker retries.
+			warning = "board line failed: " + boardErr.Message
+		} else {
+			return nil, boardErr
+		}
+	}
+
+	out := map[string]any{"kind": store.ActivityKindHost, "command": command, "resultPath": resultPath}
+	if askID != "" {
+		out["humanActionId"] = askID
+		out["status"] = "requested"
+	} else {
+		out["status"] = "untracked"
+	}
+	if waitID != "" {
+		out["waitId"] = waitID
+	}
+	if taskLinked {
+		// The coordinator already echoed it, but taking it from the request
+		// keeps the response honest even on a replayed receipt.
+		out["taskId"] = strings.TrimSpace(in.TaskID)
+	}
+	if v, ok := board.(map[string]any); ok {
+		out["activityId"] = v["id"]
+		out["ts"] = v["ts"]
+	}
+	if warning != "" {
+		out["warning"] = warning
+	}
+	return out, nil
 }
 
 func (h *Handler) toolActivityFeed(caller store.WorkerRec, args json.RawMessage) (any, *rpcError) {

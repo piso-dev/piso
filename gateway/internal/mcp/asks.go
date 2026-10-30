@@ -133,20 +133,36 @@ func (h *Handler) toolHumanActionList(caller store.WorkerRec, args json.RawMessa
 	return h.listCoord(caller, args, "/api/v1/human-actions", "humanActions")
 }
 
+// taskAskFields are the fields a task-linked ask must carry, because that ask
+// is what ends the worker's lease: without them the coordinator cannot prove
+// which attempt is stopping, cannot dedupe a retry, and cannot leave the task
+// a checkpoint to resume from.
+var taskAskFields = []string{"attemptId", "requestId", "summary", "checkpoint"}
+
+// requireTaskAskFields enforces the task-linked contract on a parsed body.
+// Shared by every ask tool so no single tool can drift into a weaker guarantee
+// than the others (host_request used to be exactly that drift).
+func requireTaskAskFields(body map[string]any) *rpcError {
+	id, _ := body["taskId"].(string)
+	if strings.TrimSpace(id) == "" {
+		return nil
+	}
+	for _, key := range taskAskFields {
+		value, _ := body[key].(string)
+		if strings.TrimSpace(value) == "" {
+			return &rpcError{Code: codeInvalidParams, Message: key + " required for task-linked ask"}
+		}
+	}
+	return nil
+}
+
 func (h *Handler) postAsk(caller store.WorkerRec, args json.RawMessage, path string) (any, *rpcError) {
 	if err := rejectWorkerArg(args); err != nil { return nil, err }
 	var body map[string]any
 	if err := json.Unmarshal(args, &body); err != nil || body == nil {
 		return nil, &rpcError{Code: codeInvalidParams, Message: "object required"}
 	}
-	if id, _ := body["taskId"].(string); id != "" {
-		for _, key := range []string{"attemptId", "requestId", "summary", "checkpoint"} {
-			value, _ := body[key].(string)
-			if strings.TrimSpace(value) == "" {
-				return nil, &rpcError{Code: codeInvalidParams, Message: key + " required for task-linked ask"}
-			}
-		}
-	}
+	if rpcErr := requireTaskAskFields(body); rpcErr != nil { return nil, rpcErr }
 	status, doc, rpcErr := h.coord(caller, http.MethodPost, path, nil, args)
 	if rpcErr != nil { return nil, rpcErr }
 	if status >= 400 { return nil, coordErr(status, doc) }

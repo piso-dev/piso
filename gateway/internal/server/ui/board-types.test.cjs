@@ -114,3 +114,58 @@ test('preview and credential requests keep their own types', async t => {
   assert.equal(access.dataset.type, 'access');
   assert.equal(chipOf(access), 'Access');
 });
+
+test('a host request shows the command to run, not a paragraph about it', async t => {
+  const h = await harness(t, {
+    tasks: [task('Paused on the host', 'waiting', {waitReasons: ['human_action']})],
+    asks: [
+      // A human action carries its detail in ``instructions``, so a board that
+      // only reads ``question``/``detail`` would show this card with no body at
+      // all — and the one thing a person needs is the command.
+      {
+        id: 'h1', kind: 'human', category: 'host', taskId: 'Paused on the host',
+        title: 'Host: docker build', instructions: 'docker build -t piso .',
+        verification: '/workspace/build.log',
+      },
+      // A host ask with no task is what a worker files mid-investigation.
+      {
+        id: 'h2', kind: 'human', category: 'host', title: 'Host: pair the rack key',
+        instructions: 'piso-pair --token abc', verification: '/workspace/pair.txt',
+      },
+      // Non-host human asks keep the prose treatment: their text is a question
+      // to a person, not a command to paste.
+      {id: 'h3', kind: 'human', category: 'dns', title: 'Prove the domain', instructions: 'Add the TXT record.'},
+    ],
+  });
+  const linked = cardByTitle(h.doc, 'Paused on the host');
+  assert.equal(linked.dataset.type, 'action');
+  assert.equal(linked.querySelector('.card-command code').textContent, 'docker build -t piso .');
+  assert.match(linked.querySelector('.card-result').textContent, /\/workspace\/build\.log/);
+  const loose = cardByTitle(h.doc, 'Host: pair the rack key');
+  assert.equal(loose.querySelector('.card-command code').textContent, 'piso-pair --token abc');
+  assert.match(loose.querySelector('.card-result').textContent, /\/workspace\/pair\.txt/);
+  // The verbs are the ones a human ask already has: a host request adds no new
+  // way to say no.
+  const verbs = [...loose.querySelectorAll('.card-actions button')].map(b => b.dataset.action);
+  assert.deepEqual(verbs, ['ask-completed', 'ask-deferred', 'ask-rejected']);
+  const prose = cardByTitle(h.doc, 'Prove the domain');
+  assert.equal(prose.querySelector('.card-command'), null);
+  assert.match(prose.querySelector('.card-note').textContent, /Add the TXT record\./);
+});
+
+test('a host command is escaped and keeps its newlines', async t => {
+  const h = await harness(t, {
+    tasks: [],
+    asks: [{
+      id: 'h4', kind: 'human', category: 'host', title: 'Host: two steps',
+      instructions: 'git fetch origin\n<script>alert(1)</script>',
+      verification: '/workspace/fetch.log',
+    }],
+  });
+  const card = cardByTitle(h.doc, 'Host: two steps');
+  const code = card.querySelector('.card-command code');
+  // A command is untrusted text from a worker: it must land as text, never as
+  // markup, and the newline that separates two steps must survive.
+  assert.equal(code.querySelector('script'), null);
+  assert.equal(code.textContent, 'git fetch origin\n<script>alert(1)</script>');
+});

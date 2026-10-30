@@ -131,3 +131,36 @@ test("other approvals keep the single decision note", async (t) => {
   await tick();
   assert.deepEqual(labels(doc), ["Instructions for the worker (optional)"]);
 });
+
+// A host request is resolved by reporting what the command printed, so the one
+// field asks for output rather than guidance, and the prompt repeats the command
+// with the rendezvous path the worker will read.
+test("resolving a host request asks what the command printed", async (t) => {
+  const { w, doc } = await harness(t, [
+    {
+      kind: "human",
+      id: "h-1",
+      category: "host",
+      title: "Host: docker build",
+      instructions: "docker build -t piso .",
+      verification: "/workspace/build.log",
+    },
+  ]);
+  await w.t.decideAsk("completed", "h-1");
+  await tick();
+  assert.deepEqual(labels(doc), ["What did the command print?"]);
+  assert.equal(inputs(doc).summary.required, true, "the worker resumes on a verdict");
+  const intro = doc.querySelector("#dialogContent").textContent;
+  assert.match(intro, /docker build -t piso \./);
+  assert.match(intro, /\/workspace\/build\.log/);
+});
+
+test("resolving a non-host human action keeps its own wording", async (t) => {
+  const { w, doc } = await harness(t, [
+    { kind: "human", id: "h-2", category: "dns", title: "Prove the domain", instructions: "Add the TXT record." },
+  ]);
+  await w.t.decideAsk("completed", "h-2");
+  await tick();
+  assert.deepEqual(labels(doc), ["What you did (optional)"]);
+  assert.match(doc.querySelector("#dialogContent").textContent, /Add the TXT record\./);
+});

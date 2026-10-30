@@ -1571,6 +1571,34 @@
         font-size: 12px;
         overflow-wrap: anywhere;
       }
+      /* A host request is a command a person copies and runs, so it gets a
+         selectable block instead of the clamped prose a question gets. It
+         scrolls rather than clamping: truncating the middle of a command is
+         how someone runs half of it. */
+      .card-command {
+        margin: 0;
+        padding: 9px 11px;
+        border-radius: 6px;
+        border: 1px solid var(--line);
+        background: var(--inset);
+        overflow-x: auto;
+        white-space: pre;
+      }
+      .card-command code {
+        white-space: pre;
+      }
+      .card-result {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        gap: 6px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .card-result code {
+        min-width: 0;
+        overflow-wrap: anywhere;
+      }
       .dialog-content .form-grid textarea {
         min-height: 96px;
       }
@@ -3574,6 +3602,20 @@
         beat();
         viewBeat.timer = setInterval(beat, GRACE_HEARTBEAT_MS);
       }
+      // A host request and a human action are the same ask row with different
+      // bodies. The command half is mechanical (copy it, run it, the output
+      // lands here), so it leaves the clamped prose treatment and becomes a
+      // block a person can actually select.
+      function askBody(a) {
+        const text = a.instructions || a.question || a.detail || "";
+        if (!text) return "";
+        const host = a.kind === "human" && a.category === "host";
+        if (!host) return `<p class="card-note">${esc(text)}</p>`;
+        const result = a.verification
+          ? `<p class="card-result"><span>Result</span><code>${esc(a.verification)}</code></p>`
+          : "";
+        return `<pre class="card-command"><code>${esc(text)}</code></pre>${result}`;
+      }
       function taskCard(t, inbox = false) {
         const ask = askForTask(t.id);
         const type = taskType(t, ask);
@@ -3587,11 +3629,16 @@
         // A human's own words are the most useful line on a paused or released
         // card, so they outrank the ask text.
         const note = t.resumeReason || ask?.question || ask?.detail || "";
+        // A human ask carries its detail in ``instructions``, not in
+        // ``question``, so it needs its own line: a waiting task whose blocker
+        // is a host request should say which command to run.
+        const askLine = ask?.kind === "human" ? askBody(ask) : "";
         return `<article class="card${inbox ? " inbox" : ""}" data-type="${esc(type)}" data-key="task-${esc(t.id)}">
           <div class="card-top"><a class="card-title" href="#/tasks/${enc(t.id)}">${esc(t.title)}</a></div>
           <div class="card-kicker">${bits.join("")}</div>
           ${gracePanel(t)}
           ${note ? `<p class="card-note">${esc(note)}</p>` : ""}
+          ${askLine}
           <div class="card-actions">${taskVerbs(t)}</div>
         </article>`;
       }
@@ -3609,11 +3656,10 @@
         const kicker = [typeChip(taskType(null, a))];
         if (a.from) kicker.push(`<span>${esc(a.from)}</span>`);
         if (a.createdAt) kicker.push(`<span>${esc(age(a.createdAt))}</span>`);
-        const text = a.instructions || a.question || a.detail || "";
         return `<article class="card inbox" data-type="${esc(taskType(null, a))}" data-key="ask-${esc(a.id)}">
           <div class="card-top"><a class="card-title" href="#/tasks/${enc(a.taskId || "")}">${esc(a.title || "Request")}</a></div>
           <div class="card-kicker">${kicker.join("")}</div>
-          ${text ? `<p class="card-note">${esc(text)}</p>` : ""}
+          ${askBody(a)}
           <div class="card-actions">${verbs}</div>
         </article>`;
       }
@@ -4589,6 +4635,10 @@
         const spec = DECISION_SPECS[decision];
         if (!spec) throw new Error("Unknown decision; the board was refreshed.");
         const proposal = a.kind === "approval" && a.action === "task.propose";
+        // A host request is the one human ask whose answer is evidence rather
+        // than instruction: the worker resumes reading a verdict, and the full
+        // output is already waiting at the rendezvous path.
+        const hostAsk = a.kind === "human" && a.category === "host";
         // The ask carries only an excerpt of a proposal, so the full text is
         // fetched before the dialog opens rather than after it is submitted.
         const task =
@@ -4608,13 +4658,15 @@
           });
         const fields = task
           ? taskDraftFields(task) + note("Further instructions for the worker (optional)", false)
-          : note(spec.label, true);
+          : note(hostAsk ? "What did the command print?" : spec.label, true);
         formDialog(
           spec.title,
           proposal
             ? `${a.from || "A worker"} proposed this. ${a.detail || ""} Approving queues it like any other task; rejecting cancels it.`.trim()
             : a.kind === "human"
-              ? a.instructions || a.title || "The worker needs a person to do this."
+              ? hostAsk
+                ? `${a.instructions || ""}${a.verification ? `\n\nThe output goes to ${a.verification}.` : ""}`
+                : a.instructions || a.title || "The worker needs a person to do this."
               : a.question || "The worker stopped and is waiting for you.",
           fields,
           spec.submit,

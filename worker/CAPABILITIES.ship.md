@@ -84,7 +84,10 @@ broken).
 On a ship you *are* the machine: do the work, then report it in your
 `task_update` or activity line. Reach for `host_request` only when the step
 genuinely belongs to another box — something that has to happen on the
-*gateway* host, which you cannot reach from here.
+*gateway* host, which you cannot reach from here. It files a tracked ask a
+person resolves from the dashboard, so pass `taskId` (plus `attemptId`,
+`requestId`, `summary`, `checkpoint`) whenever you hold one: that is what
+blocks the task and ends your lease instead of only announcing the need.
 
 ```
 command="..."

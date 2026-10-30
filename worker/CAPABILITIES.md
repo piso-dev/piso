@@ -122,13 +122,22 @@ command="cd /abs/path && git clone git@github.com:org/repo.git"
 resultPath="/workspace/repo"
 ```
 
-Then say so in one short sentence in your own words ("waiting on the host to
-clone X into `/workspace/repo`"), or post `activity_post` with `kind=host`.
-That sentence is a status note; the tool call is the request.
+That call files a durable request a person resolves from the dashboard — it is
+the same ask `human_action_request` files, in a machine-shaped body — and it
+also lands a `host` row on the board timeline. Say so in one short sentence in
+your own words ("waiting on the host to clone X into `/workspace/repo`"); the
+tool call is the request, the sentence is the status note.
+
+**Pass `taskId` (plus `attemptId`, `requestId`, `summary`, `checkpoint`)
+whenever you hold a task.** That turns the request into a blocking ask: the task
+goes to `waiting` and your lease ends. Without `taskId` the ask is tracked on
+the board but does not stop anything, so nothing will wake you when it is
+answered.
 
 Later, check the result path. If it is there, continue from it. If it is not,
-the host has not done it yet — file a new `host_request`, or `poke` the
-project. Never block, and never retry the failing attempt yourself.
+the human has not resolved the ask yet — wait to be resumed; do not file a
+second `host_request` for the same command (pass the same `requestId` if you
+must retry one) and never retry the failing attempt yourself.
 
 ## Live boundaries (fetch once per session)
 
