@@ -57,12 +57,29 @@ A newly created task is held for a grace period, and the hold is drawn as one
 panel rather than a badge plus a loose verb: a green-bordered, green-tinted
 block with white text, the countdown at its top left and "Make available now"
 at its bottom right. State and action in one object means they cannot drift into
-different corners of the card. Green is the only cheerful colour on the board —
-the hold expires by itself, so it is not a warning — and the panel turns blue
-with "Held open by …" when somebody reading the task is what is holding it,
+different corners of the card. Green is the panel's colour because the hold
+expires by itself, so it is not a warning, and the panel turns blue with
+"Held open by …" when somebody reading the task is what is holding it,
 because then nothing is counting down. The same panel renders on the board card
 and on the detail page; the timer patches only the clock's text node once a
 second so a tick cannot steal focus or scroll position.
+
+The board colours what a card *is*, not how far along it is: state is already
+said twice, by the column and by the status badge, so the hue is spent on type
+instead. Each card carries a 3px left rule in its type's colour and, above the
+status, a tinted pill naming that type in words. Blue is plain work; violet is
+a proposal or a decision (approve or reject); teal is a review (accept or send
+back); amber is a question or a human action, both of which wait on the same
+thing, someone answering; moss is a preview to publish; and grey is an access
+grant, the one request that is a credential rather than a piece of work. Plain
+work carries no chip: it is the default, and its blue rule is the only label it
+needs. The hue is never the only cue, and two types share a hue only when the
+operator owes them the same verb, so the chip still names the exact type.
+Columns stay neutral, so the board has one colour legend rather than two.
+Red and green stay out of that legend: they already mean failure and health.
+The detail page repeats the same rule and chip in its header, so a card and its
+detail cannot disagree about what the thing is. The grace panel keeps its
+stronger solid green border, so a hold still reads as an object inside a card.
 
 ## Live connection
 
@@ -100,6 +117,10 @@ a read-only summary of the paired gateway. The terminal equivalent stays one
 - JavaScript syntax parsed successfully after formatting.
 - The piso mark ships as an embedded `ui/favicon.svg`, served same-origin at `/favicon.svg` and `/favicon.ico` with the dashboard. No remote asset is fetched; the single embedded page still has no build step.
 - `go test ./gateway/internal/server` passes with the replacement embedded UI.
+- Board type test: `node --test gateway/internal/server/ui/board-types.test.cjs`
+  checks that colour follows the item type rather than the status (five states
+  of plain work share one rule and no chip), and that every request type gets
+  its chip from the ask it carries.
 - `git diff --check` passes.
 - Browser verification runs in a real Chromium from `.tools/pw` (see
   `.tools/board-visual.sh` and `.tools/grace-visual.py`): geometry, computed

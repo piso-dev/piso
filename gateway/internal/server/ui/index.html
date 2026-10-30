@@ -18,6 +18,12 @@
         --amber: #efc078;
         --red: #f29b9b;
         --green: #99cbb2;
+        /* Type identity needs more hues than status did, and it must not borrow
+           the two that already mean something: red is blocked/error and green
+           is healthy/success, so an item's type never arrives in either. */
+        --violet: #c3aef0;
+        --teal: #86cdc4;
+        --moss: #bcc98b;
         --rail: 220px;
         font-family: "Segoe UI", system-ui, sans-serif;
         color: var(--text);
@@ -1086,7 +1092,7 @@
       .task-row strong { overflow-wrap: anywhere; min-width: 0; }
       .task-pagination { padding-top: 24px; }
       .task-pagination button:disabled { cursor: default; }
-      .task-detail { max-width: 76ch; }
+      .task-detail { max-width: 76ch; border-left: 3px solid var(--type, var(--line)); padding-left: 20px; }
       .task-detail section, .task-update { margin-top: 24px; }
       /* Updates is a section like any other, but its heading used to sit flush
          against whatever came before it — acceptance criteria ended and the
@@ -1112,6 +1118,13 @@
         align-items: flex-start;
         gap: 10px;
         padding: 4px 0 18px;
+      }
+      .task-detail > header .detail-tags {
+        /* The type and the status are one row of labels, not two paragraphs. */
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 10px;
       }
       .task-detail > .card-actions {
         gap: 12px;
@@ -1323,6 +1336,9 @@
         flex-direction: column;
         gap: 16px;
         min-width: 0;
+        /* Columns stay neutral. Colour on this board names what a card is, and
+           a column already names where it is, so tinting both would put two
+           legends on one screen. */
         background: var(--inset);
         border: 1px solid var(--line);
         border-radius: 8px;
@@ -1378,13 +1394,46 @@
         gap: 14px;
         background: var(--panel);
         border: 1px solid var(--line);
+        /* The left rule is the item's type, and the only place a card wears
+           colour. State is already said twice — by the column and by the
+           badge — so the hue is spent on what the thing *is*. Written as
+           longhands so the width survives a browser that resolves var()
+           lazily. */
+        border-left-width: 3px;
+        border-left-color: var(--type, var(--line));
         border-radius: 6px;
         padding: 18px 16px;
         min-width: 0;
       }
-      /* No accent stripe on a card. What a card is waiting for is already said
-         by its column and its badge; a left border in three colours made the
-         board look like a legend you had to learn. */
+      /* One palette for item types, read by the board card and by the detail
+         page. Two types share a hue only when the operator owes them the same
+         verb (decide / respond); the chip still names the exact type, so the
+         hue is a hint and the word is the answer. */
+      [data-type="work"] { --type: var(--blue); }
+      [data-type="proposal"],
+      [data-type="decision"] { --type: var(--violet); }
+      [data-type="review"] { --type: var(--teal); }
+      [data-type="question"],
+      [data-type="action"] { --type: var(--amber); }
+      [data-type="preview"] { --type: var(--moss); }
+      [data-type="access"] { --type: var(--muted); }
+      /* The chip is the type in words, on the same tint, so the two cues cannot
+         disagree and neither one alone carries the meaning. */
+      .type-chip {
+        display: inline-flex;
+        align-items: center;
+        padding: 2px 8px;
+        border-radius: 999px;
+        color: var(--type, var(--muted));
+        background: color-mix(in srgb, currentColor 13%, transparent);
+        box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 32%, transparent);
+        font-size: 11px;
+        letter-spacing: 0.02em;
+        white-space: nowrap;
+      }
+      /* No accent stripe for status: a left border in three colours per state
+         made the board look like a legend you had to learn. One rule, one axis,
+         and the axis is type. */
       .card-top {
         display: flex;
         align-items: flex-start;
@@ -1410,6 +1459,7 @@
       .card-kicker {
         display: flex;
         flex-wrap: wrap;
+        align-items: center;
         gap: 12px;
         color: var(--muted);
         font-size: 12px;
@@ -3363,6 +3413,31 @@
         {key: "finished", title: "Finished", note: "Most recently finished first."},
       ];
       const allBoardTasks = () => [...taskUI.active, ...taskUI.finished];
+      // A card's colour names what kind of thing it is, not how far along it is:
+      // the column and the badge already carry state. A plain task is work; a
+      // proposed task and an approval ask are both something to decide; a wait
+      // is a review or an open question; a human action is a thing only a
+      // person can do. Types share a hue only when the operator owes them the
+      // same verb, and the chip still names the exact type.
+      const TYPE_LABEL = {
+        work: "", proposal: "Proposal", decision: "Decision", review: "Review",
+        question: "Question", action: "Action", preview: "Preview", access: "Access",
+      };
+      // The coordinator's action type for an approval that carries a proposal:
+      // that card is labelled "Proposal" rather than "Decision" because the
+      // human is accepting new work, not approving work already described.
+      const PROPOSAL_ACTION = "task.propose";
+      function taskType(t, ask) {
+        if (t?.status === "proposed" || ask?.action === PROPOSAL_ACTION) return "proposal";
+        if (!ask) return "work";
+        if (ask.kind === "human") return "action";
+        if (ask.kind === "approval") return "decision";
+        return ask.reason === "review" ? "review" : "question";
+      }
+      function typeChip(type) {
+        const label = TYPE_LABEL[type];
+        return label ? `<span class="type-chip">${esc(label)}</span>` : "";
+      }
       // One ask drives a card's verbs: a task is waiting on a wait, a proposal
       // decision, or a human action, and each of those has exactly one verb set.
       function askForTask(taskId) {
@@ -3499,7 +3574,8 @@
       }
       function taskCard(t, inbox = false) {
         const ask = askForTask(t.id);
-        const bits = [badge(taskStatus(t), taskTone(t))];
+        const type = taskType(t, ask);
+        const bits = [typeChip(type), badge(taskStatus(t), taskTone(t))];
         if (t.assignee) bits.push(`<span>Held by ${esc(t.assignee)}</span>`);
         if (t.priority) bits.push(`<span>Priority ${esc(t.priority)}</span>`);
         if (t.status === "working" && t.leaseExpiresAt) bits.push(`<span>Lease ends ${esc(time(t.leaseExpiresAt))}</span>`);
@@ -3509,7 +3585,7 @@
         // A human's own words are the most useful line on a paused or released
         // card, so they outrank the ask text.
         const note = t.resumeReason || ask?.question || ask?.detail || "";
-        return `<article class="card${inbox ? " inbox" : ""}${t.status === "proposed" ? " fresh" : ""}" data-key="task-${esc(t.id)}">
+        return `<article class="card${inbox ? " inbox" : ""}" data-type="${esc(type)}" data-key="task-${esc(t.id)}">
           <div class="card-top"><a class="card-title" href="#/tasks/${enc(t.id)}">${esc(t.title)}</a></div>
           <div class="card-kicker">${bits.join("")}</div>
           ${gracePanel(t)}
@@ -3528,11 +3604,11 @@
             : a.reason === "review"
               ? button("Accept", "ask-accept", a.id, "primary") + button("Request changes", "ask-request_changes", a.id)
               : button("Resolve", "ask-resolve", a.id, "primary");
-        const kicker = [badge(a.kind === "human" ? "Needs doing" : a.kind === "approval" ? "Decision" : "Blocked", "warn")];
+        const kicker = [typeChip(taskType(null, a))];
         if (a.from) kicker.push(`<span>${esc(a.from)}</span>`);
         if (a.createdAt) kicker.push(`<span>${esc(age(a.createdAt))}</span>`);
         const text = a.instructions || a.question || a.detail || "";
-        return `<article class="card inbox" data-key="ask-${esc(a.id)}">
+        return `<article class="card inbox" data-type="${esc(taskType(null, a))}" data-key="ask-${esc(a.id)}">
           <div class="card-top"><a class="card-title" href="#/tasks/${enc(a.taskId || "")}">${esc(a.title || "Request")}</a></div>
           <div class="card-kicker">${kicker.join("")}</div>
           ${text ? `<p class="card-note">${esc(text)}</p>` : ""}
@@ -3554,21 +3630,22 @@
         for (const t of taskUI.active)
           if (t.status === "proposed" && !seen.has(t.id)) cards.push(taskCard(t, true));
         for (const p of list("plans"))
-          cards.push(`<article class="card inbox" data-key="plan-${esc(p.id)}">
-            <div class="card-top"><span class="card-title">Open preview ${esc(p.name || p.worker || "")}</span>${badge("Preview", "info")}</div>
+          cards.push(`<article class="card inbox" data-type="preview" data-key="plan-${esc(p.id)}">
+            <div class="card-top"><span class="card-title">Open preview ${esc(p.name || p.worker || "")}</span></div>
             <p class="card-note">Publishes the worker’s web interface through the gateway. It says nothing about the plan’s contents.</p>
-            <div class="card-kicker"><code>${esc(p.url || routeURL(p.name || p.worker || ""))}</code></div>
+            <div class="card-kicker">${typeChip("preview")}<code>${esc(p.url || routeURL(p.name || p.worker || ""))}</code></div>
             <div class="card-actions">${button("Publish and open", "publish", p.id, "primary")}${button("Dismiss", "dismiss", p.id)}</div>
           </article>`);
         for (const m of list("mcpPending"))
-          cards.push(`<article class="card inbox" data-key="mcp-${esc(m.name || m.url || "")}">
-            <div class="card-top"><span class="card-title">Authorize MCP server ${esc(m.name || "")}</span>${badge("Access", "warn")}</div>
-            <div class="card-kicker"><code>${esc(m.url || "")}</code></div>
+          cards.push(`<article class="card inbox" data-type="access" data-key="mcp-${esc(m.name || m.url || "")}">
+            <div class="card-top"><span class="card-title">Authorize MCP server ${esc(m.name || "")}</span></div>
+            <div class="card-kicker">${typeChip("access")}<code>${esc(m.url || "")}</code></div>
             <p class="card-note">Approve it on the dashboard’s MCP tab; this clears once the server is connected.</p>
           </article>`);
         for (const g of list("githubPending"))
-          cards.push(`<article class="card inbox" data-key="github-${esc(g.id || g.account || "")}">
-            <div class="card-top"><span class="card-title">${esc(g.title || "GitHub access needed")}</span>${badge("Access", "warn")}</div>
+          cards.push(`<article class="card inbox" data-type="access" data-key="github-${esc(g.id || g.account || "")}">
+            <div class="card-top"><span class="card-title">${esc(g.title || "GitHub access needed")}</span></div>
+            <div class="card-kicker">${typeChip("access")}</div>
             ${g.detail || g.instructions ? `<p class="card-note">${esc(g.detail || g.instructions)}</p>` : ""}
             <div class="card-actions">${g.action === "install" ? button("Install app", "github-install", g.id || "", "primary") : button("Connect GitHub", "github-connect", g.id || "", "primary")}</div>
           </article>`);
@@ -3634,7 +3711,8 @@
         // The newest instruction from a human is hoisted: a resuming worker reads
         // this instead of scanning the whole trail for the last thing said.
         const note = t.humanInstructions;
-        return `<article class="task-detail"><header><h2>${esc(t.title)}</h2>${badge(taskStatus(t), taskTone(t))}</header>
+        const type = taskType(t, askForTask(t.id));
+        return `<article class="task-detail" data-type="${esc(type)}"><header><h2>${esc(t.title)}</h2><div class="detail-tags">${typeChip(type)}${badge(taskStatus(t), taskTone(t))}</div></header>
           <div class="card-actions">${taskVerbs(t)}</div>
           ${gracePanel(t)}
           ${t.pausedAt ? `<p class="card-note">Paused ${esc(age(t.pausedAt))}. Nothing claims it until you resume.</p>` : ""}
