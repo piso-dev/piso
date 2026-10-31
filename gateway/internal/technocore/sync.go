@@ -628,6 +628,14 @@ func applySecretEnvelope(st *store.Store, id tc.Identity, obj envelope) (applied
 
 	local, found := matchLocalSecret(st, obj.ResourceID, secretID, placeholder, plain)
 	if found {
+		// A rename the coordinator has not accepted yet is the metadata twin of
+		// an unpublished plaintext edit: at the same content_version the
+		// coordinator cannot have seen it, so adopting its env_key below would
+		// undo a dashboard edit on the next reconcile pass. An envelope that
+		// carries no env_key at all (older coordinator) must likewise not blank
+		// a working name. A rename that did reach the coordinator arrives with a
+		// bumped version, so it is not mistaken for a local edit.
+		envKeyPending := local.EnvKey != "" && local.EnvKey != envKey && obj.ContentVersion == local.ContentVersion
 		if obj.Status == statusRevoked {
 			// A tombstone is an ordinary version-ordered change: it wins unless
 			// the local copy is strictly ahead, which means this envelope is
@@ -671,8 +679,14 @@ func applySecretEnvelope(st *store.Store, id tc.Identity, obj envelope) (applied
 			// Coordinator-owned row: refresh identity metadata too.
 			local.Name = obj.Name
 			local.Placeholder = placeholder
-			local.EnvKey = envKey
+			if !envKeyPending {
+				local.EnvKey = envKey
+			}
 		}
+		// PublishedEnvKey records what the coordinator holds, not what this
+		// gateway wants: it is the base the next publish pass diffs EnvKey
+		// against to notice a rename the coordinator has not seen yet.
+		local.PublishedEnvKey = envKey
 		local.Revoked = false
 		// Local-origin rows keep their id and placeholder so workers and rules stay valid.
 		if local.TechnocoreID == "" {
@@ -693,18 +707,21 @@ func applySecretEnvelope(st *store.Store, id tc.Identity, obj envelope) (applied
 	}
 
 	rec := store.SecretRec{
-		ID:             secretID,
-		Name:           obj.Name,
-		Kind:           kind,
-		Placeholder:    placeholder,
-		Value:          plain,
-		EnvKey:         envKey,
-		AllowedHosts:   hosts,
-		GatewayOnly:    gatewayOnly,
-		CreatedAt:      time.Now().UTC(),
-		TechnocoreID:   obj.ResourceID,
-		PublishedHash:  hash,
-		ContentVersion: obj.ContentVersion,
+		ID:          secretID,
+		Name:        obj.Name,
+		Kind:        kind,
+		Placeholder: placeholder,
+		Value:       plain,
+		EnvKey:      envKey,
+		// The envelope is the coordinator's state, so its env_key is already
+		// confirmed: no publish is owed for this row.
+		PublishedEnvKey: envKey,
+		AllowedHosts:    hosts,
+		GatewayOnly:     gatewayOnly,
+		CreatedAt:       time.Now().UTC(),
+		TechnocoreID:    obj.ResourceID,
+		PublishedHash:   hash,
+		ContentVersion:  obj.ContentVersion,
 	}
 	if obj.Status == statusRevoked {
 		rec.Value = ""

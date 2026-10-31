@@ -196,6 +196,13 @@ type SecretRec struct {
 	PublishedHash string `json:"publishedHash,omitempty"`
 	// PublishedRecipients are principal IDs wrapped on the last share.
 	PublishedRecipients []string `json:"publishedRecipients,omitempty"`
+	// PublishedEnvKey is the worker env name the coordinator is holding, which
+	// is not necessarily EnvKey: a rename is local metadata, so it neither
+	// changes the plaintext nor bumps ContentVersion. Empty means never
+	// confirmed (a row that predates this field), which is why a divergence is
+	// only treated as an unpublished rename once the coordinator has answered
+	// at least once.
+	PublishedEnvKey string `json:"publishedEnvKey,omitempty"`
 }
 
 type RuleRec struct {
