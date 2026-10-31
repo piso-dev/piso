@@ -14,7 +14,7 @@ func TestModelOverrideSetReplacesAndDeletes(t *testing.T) {
 	if got := st.ModelOverrideProviderID("demo"); got != "" {
 		t.Fatalf("unset override: %q", got)
 	}
-	if _, err := st.SetModelOverride("demo", "piso"); err != nil {
+	if _, err := st.SetModelOverride("demo", "piso", ""); err != nil {
 		t.Fatal(err)
 	}
 	if got := st.ModelOverrideProviderID("demo"); got != "piso" {
@@ -22,7 +22,7 @@ func TestModelOverrideSetReplacesAndDeletes(t *testing.T) {
 	}
 	// A second set replaces rather than appends: the list must never say
 	// "demo on A and on B".
-	if _, err := st.SetModelOverride("demo", "piso-two"); err != nil {
+	if _, err := st.SetModelOverride("demo", "piso-two", ""); err != nil {
 		t.Fatal(err)
 	}
 	if rows := st.ModelOverrides(); len(rows) != 1 || rows[0].ProviderID != "piso-two" {
@@ -30,7 +30,7 @@ func TestModelOverrideSetReplacesAndDeletes(t *testing.T) {
 	}
 	// A blank provider is never stored; deleting the row is the only way to
 	// mean "follow the account default".
-	if _, err := st.SetModelOverride("demo", "  "); err == nil {
+	if _, err := st.SetModelOverride("demo", "  ", ""); err == nil {
 		t.Fatal("blank provider accepted")
 	}
 	if err := st.DeleteModelOverride("demo"); err != nil {
@@ -52,7 +52,7 @@ func TestModelOverridePersists(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.SetModelOverride("demo", "piso-two"); err != nil {
+	if _, err := st.SetModelOverride("demo", "piso-two", ""); err != nil {
 		t.Fatal(err)
 	}
 	raw, err := os.ReadFile(path)
@@ -84,7 +84,7 @@ func TestModelOverridePrunedWithWorker(t *testing.T) {
 	if _, err := st.UpsertWorker(WorkerRec{Name: "piso-worker-demo", Slug: "demo"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.SetModelOverride("demo", "piso"); err != nil {
+	if _, err := st.SetModelOverride("demo", "piso", ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := st.DeleteWorker("piso-worker-demo"); err != nil {

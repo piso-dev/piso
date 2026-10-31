@@ -94,13 +94,78 @@ type PiProviderRec struct {
 	// catalog, and that must not depend on string comparison against a
 	// constant that lives in another file.
 	Kind string `json:"kind,omitempty"`
+	// ApprovedModels is the closed set of model ids this provider may serve: a
+	// generation request through it must name one of these, and a worker's
+	// /model list is built from them. Empty means "only DefaultModel", never
+	// "anything the catalog returns", so an unset list keeps the behaviour of
+	// a pin to one model and cannot widen by omission. DefaultModel is always
+	// usable in addition to this list (see AllowedModelIDs).
+	ApprovedModels []string `json:"approvedModels,omitempty"`
 	// Models is the last successfully fetched catalog. It is advisory: it
 	// feeds the dashboard autocomplete and lazy default resolution, never the
 	// save path. CatalogError holds the last failure for display.
 	Models           []string  `json:"models,omitempty"`
 	CatalogCheckedAt time.Time `json:"catalogCheckedAt,omitempty"`
 	CatalogError     string    `json:"catalogError,omitempty"`
-	UpdatedAt        time.Time `json:"updatedAt,omitempty"`
+	// CatalogSuspect marks a catalog that is too much smaller than the one it
+	// replaced to be believed: an endpoint being reindexed answers with a
+	// partial list, and treating that as truth would declare every approved
+	// model missing at once. Drift verdicts are suppressed for a suspect
+	// catalog; the next fetch that agrees with it clears the flag, so a real
+	// mass deprecation is confirmed once and then reported as drift.
+	CatalogSuspect bool      `json:"catalogSuspect,omitempty"`
+	UpdatedAt      time.Time `json:"updatedAt,omitempty"`
+}
+
+// DefaultModelID is the model this provider's sessions start on: its configured
+// default, else the first approved model, else the first catalog entry. The
+// dashboard, the worker view, and the proxy's model pin all read this one
+// fallback chain.
+func (p *PiProviderRec) DefaultModelID() string {
+	if p == nil {
+		return ""
+	}
+	if m := strings.TrimSpace(p.DefaultModel); m != "" {
+		return m
+	}
+	for _, m := range p.ApprovedModels {
+		if m = strings.TrimSpace(m); m != "" {
+			return m
+		}
+	}
+	for _, m := range p.Models {
+		if m = strings.TrimSpace(m); m != "" {
+			return m
+		}
+	}
+	return ""
+}
+
+// AllowedModelIDs is the closed set of model ids a generation request through
+// this provider may name, in stored order: the approved list, then the default
+// model if the list omitted it. The default is always usable because it is the
+// model new sessions start on — a list that excluded it would leave the
+// provider unable to serve its own start state, which is a contradiction rather
+// than a policy. An empty result means nothing can be resolved yet (no list, no
+// default, no catalog); the pin reports that as unresolved, not as a rejection.
+func (p *PiProviderRec) AllowedModelIDs() []string {
+	if p == nil {
+		return nil
+	}
+	out := make([]string, 0, len(p.ApprovedModels)+1)
+	seen := make(map[string]bool, len(p.ApprovedModels)+1)
+	for _, m := range p.ApprovedModels {
+		m = strings.TrimSpace(m)
+		if m == "" || seen[m] {
+			continue
+		}
+		seen[m] = true
+		out = append(out, m)
+	}
+	if def := p.DefaultModelID(); def != "" && !seen[def] {
+		out = append(out, def)
+	}
+	return out
 }
 
 // JSON-friendly records (this package owns persistence shape).
@@ -131,6 +196,13 @@ type SecretRec struct {
 	PublishedHash string `json:"publishedHash,omitempty"`
 	// PublishedRecipients are principal IDs wrapped on the last share.
 	PublishedRecipients []string `json:"publishedRecipients,omitempty"`
+	// PublishedEnvKey is the worker env name the coordinator is holding, which
+	// is not necessarily EnvKey: a rename is local metadata, so it neither
+	// changes the plaintext nor bumps ContentVersion. Empty means never
+	// confirmed (a row that predates this field), which is why a divergence is
+	// only treated as an unpublished rename once the coordinator has answered
+	// at least once.
+	PublishedEnvKey string `json:"publishedEnvKey,omitempty"`
 }
 
 type RuleRec struct {
@@ -730,6 +802,7 @@ func copyPiProviderRec(rec *PiProviderRec) *PiProviderRec {
 	}
 	cp := *rec
 	cp.Models = append([]string(nil), rec.Models...)
+	cp.ApprovedModels = append([]string(nil), rec.ApprovedModels...)
 	return &cp
 }
 
@@ -838,8 +911,14 @@ func (s *Store) ActivatePiProvider(id string) error {
 	return fmt.Errorf("pi provider %s not found", id)
 }
 
-// SetPiProviderCatalog records the last catalog fetch for one profile. A
-// fingerprint of the base URL is not stored; callers pass the profile id.
+// SetPiProviderCatalog records the last catalog fetch for one profile.
+//
+// A list less than half the size of the stored one is stored but flagged
+// suspect: providers answer with partial lists while reindexing, and one such
+// answer would otherwise declare every approved model missing at once. A
+// suspect catalog suppresses drift verdicts while still feeding the picker, and
+// the flag clears as soon as a fetch agrees with it — so a real mass
+// deprecation costs one quiet refresh, and a one-off glitch costs nothing.
 func (s *Store) SetPiProviderCatalog(id string, models []string, fetchErr string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -847,14 +926,56 @@ func (s *Store) SetPiProviderCatalog(id string, models []string, fetchErr string
 		if s.state.PiProviders[i].ID != id {
 			continue
 		}
-		s.state.PiProviders[i].CatalogCheckedAt = time.Now().UTC()
-		s.state.PiProviders[i].CatalogError = fetchErr
-		if fetchErr == "" {
-			s.state.PiProviders[i].Models = append([]string(nil), models...)
+		rec := &s.state.PiProviders[i]
+		if fetchErr != "" {
+			// A failed fetch records the failure and keeps the cached list so
+			// the picker still works; the drift report renders every id
+			// unknown rather than treating the cache as current.
+			if rec.CatalogError == fetchErr {
+				return nil
+			}
+			rec.CatalogError = fetchErr
+			rec.CatalogCheckedAt = time.Now().UTC()
+			return s.save()
 		}
+		next := append([]string(nil), models...)
+		suspect := newCatalogLooksTruncated(rec.Models, next)
+		if suspect == rec.CatalogSuspect && rec.CatalogError == "" &&
+			!rec.CatalogCheckedAt.IsZero() && equalModelLists(rec.Models, next) {
+			// Re-fetching an identical catalog is the common case once the
+			// dashboard refreshes on every visit. Bumping the timestamp would
+			// rewrite state.json each time for no new information.
+			return nil
+		}
+		rec.Models = next
+		rec.CatalogSuspect = suspect
+		rec.CatalogError = ""
+		rec.CatalogCheckedAt = time.Now().UTC()
 		return s.save()
 	}
 	return nil
+}
+
+// newCatalogLooksTruncated reports whether next is too much smaller than the
+// list it would replace to be believed. A provider with no stored catalog has
+// nothing to compare against, so a first fetch is always trusted.
+func newCatalogLooksTruncated(prev, next []string) bool {
+	if len(prev) < 4 {
+		return false
+	}
+	return len(next)*2 < len(prev)
+}
+
+func equalModelLists(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // ReplaceSecret overwrites a secret by ID and rewrites worker env files.

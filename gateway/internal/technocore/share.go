@@ -289,14 +289,20 @@ func publishAllSecrets(st *store.Store, dataDir string) error {
 			continue
 		}
 		hash := plaintextHash(plain)
-		if rec.TechnocoreID != "" && rec.PublishedHash == hash && sameRecipients(rec.PublishedRecipients, recipients) {
+		// An env rename is metadata only: it changes neither the plaintext nor
+		// content_version, so the hash test alone would skip it and leave the
+		// coordinator holding the old name, which the next pull would hand back.
+		// PublishedEnvKey is empty only for rows that predate it; the first pull
+		// fills it, so an upgrade does not republish the whole vault.
+		renamed := rec.PublishedEnvKey != "" && rec.EnvKey != rec.PublishedEnvKey
+		if rec.TechnocoreID != "" && rec.PublishedHash == hash && sameRecipients(rec.PublishedRecipients, recipients) && !renamed {
 			continue
 		}
 		method := http.MethodPost
 		url := strings.TrimRight(id.ServerURL, "/") + "/api/v1/secrets"
-		// A stamped row whose plaintext changed must update that resource.
-		// POST would 409 on the same placeholder and stall reconcile.
-		if rec.TechnocoreID != "" && rec.PublishedHash != "" && rec.PublishedHash != hash {
+		// A stamped row whose plaintext or env_key changed must update that
+		// resource. POST would 409 on the same placeholder and stall reconcile.
+		if rec.TechnocoreID != "" && rec.PublishedHash != "" && (rec.PublishedHash != hash || renamed) {
 			method = http.MethodPut
 			url += "/" + rec.TechnocoreID
 		}
@@ -485,6 +491,9 @@ func stampAfterShare(st *store.Store, in ShareInput, out map[string]any, recipie
 	rec.TechnocoreID = rid
 	rec.PublishedHash = plaintextHash(in.Plaintext)
 	rec.PublishedRecipients = ids
+	// The coordinator has now accepted this env name, which is what stops
+	// publishAllSecrets from sending the same rename on every pass.
+	rec.PublishedEnvKey = in.EnvKey
 	rec.Revoked = false
 	if v, ok := out["content_version"].(float64); ok {
 		rec.ContentVersion = int(v)

@@ -367,3 +367,65 @@ func TestSameRecipientsIgnoresOrder(t *testing.T) {
 		t.Fatal("expected unequal")
 	}
 }
+
+// An env rename does not change the plaintext, so the hash test skipped it and
+// the coordinator kept the old name — which the next pull then handed back.
+func TestPublishAllSecretsPushesEnvKeyRename(t *testing.T) {
+	coord := &fakeCoord{resourceID: "rid-stable"}
+	srv := httptest.NewServer(coord.handler())
+	defer srv.Close()
+
+	st, dataDir, id := enrolledShareEnv(t, srv.URL)
+	coord.setGateways([]remoteGateway{{
+		PrincipalID:      id.PrincipalID,
+		Name:             "gw",
+		Status:           "active",
+		EncryptionPubKey: id.EncryptionPublicKey,
+		Fingerprint:      id.Fingerprint(),
+	}})
+
+	old := serverHTTP
+	serverHTTP = srv.Client()
+	defer func() { serverHTTP = old }()
+
+	// Already published: hash and recipient set match, only the env name moved.
+	if err := st.AddSecret(store.SecretRec{
+		ID:                  "local1",
+		Name:                "openrouter",
+		Placeholder:         "piso_openrouter",
+		Value:               "ghp_secret",
+		EnvKey:              "PISO_OPENROUTER_API_KEY",
+		PublishedEnvKey:     "OPENROUTER_API_KEY",
+		TechnocoreID:        "rid-stable",
+		PublishedHash:       plaintextHash("ghp_secret"),
+		PublishedRecipients: []string{id.PrincipalID},
+		ContentVersion:      2,
+		CreatedAt:           time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := publishAllSecrets(st, dataDir); err != nil {
+		t.Fatal(err)
+	}
+	_, puts := coord.counts()
+	if puts != 1 {
+		t.Fatalf("rename should PUT the resource, puts=%d posts=%d", puts, coord.postCount())
+	}
+	meta, _ := coord.lastBody(t)["metadata"].(map[string]any)
+	if meta["envKey"] != "PISO_OPENROUTER_API_KEY" {
+		t.Fatalf("published env key = %v", meta["envKey"])
+	}
+	got, _ := st.SecretByID("local1")
+	if got.PublishedEnvKey != "PISO_OPENROUTER_API_KEY" {
+		t.Fatalf("rename not stamped as confirmed: %q", got.PublishedEnvKey)
+	}
+
+	// Stamped, so a second pass must not republish.
+	if err := publishAllSecrets(st, dataDir); err != nil {
+		t.Fatal(err)
+	}
+	if _, puts := coord.counts(); puts != 1 {
+		t.Fatalf("rename republished on an unchanged pass: puts=%d", puts)
+	}
+}

@@ -218,3 +218,180 @@ func TestPiProviderKindRoundTrip(t *testing.T) {
 		t.Fatalf("kind lost in sync: %+v", got)
 	}
 }
+
+// syncFrom serves one coordinator document to a gateway and returns the store
+// afterwards. Each call gets a fresh identity so a test can replay several
+// documents in a row, which is what a reconcile does on a timer.
+func syncFrom(t *testing.T, st *store.Store, dir, doc string) {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, doc)
+	}))
+	defer srv.Close()
+	old := serverHTTP
+	serverHTTP = srv.Client()
+	defer func() { serverHTTP = old }()
+	id, err := tc.Generate(srv.URL, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := syncPiProvider(st, dir, id); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The approved list is account configuration: it must survive the coordinator,
+// both ways, or a paired gateway silently narrows every provider back to its
+// default model on the next reconcile.
+func TestPiProviderApprovedModelsRoundTrip(t *testing.T) {
+	st := testStore(t)
+	if err := st.AddSecret(store.SecretRec{ID: "sec1", Placeholder: "piso_one", Value: "fake"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpsertPiProviderActive(store.PiProviderRec{
+		ID:             "piso-one",
+		Name:           "One",
+		SecretID:       "sec1",
+		BaseURL:        "https://one.test/v1",
+		DefaultModel:   "m1",
+		APIType:        "anthropic-messages",
+		ApprovedModels: []string{"m1", "m2"},
+		Models:         []string{"m1", "m2", "m3"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Publish: the list is in the payload, and an unset list is sent as [] so a
+	// clear can travel (null would read as "omitted").
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode: %v", err)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	old := serverHTTP
+	serverHTTP = srv.Client()
+	pubID, err := tc.Generate(srv.URL, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := publishPiProvider(st, pubID); err != nil {
+		t.Fatal(err)
+	}
+	serverHTTP = old
+	meta, _ := body["metadata"].(map[string]any)
+	providers, _ := meta["providers"].([]any)
+	if len(providers) != 1 {
+		t.Fatalf("providers: %+v", meta["providers"])
+	}
+	first, _ := providers[0].(map[string]any)
+	if got, _ := first["approvedModels"].([]any); len(got) != 2 || got[0] != "m1" || got[1] != "m2" {
+		t.Fatalf("published approvedModels: %+v", first["approvedModels"])
+	}
+	if first["api"] != "anthropic-messages" {
+		t.Fatalf("published api: %+v", first["api"])
+	}
+	// The catalog is fetched per gateway and is not account configuration.
+	if _, ok := first["models"]; ok {
+		t.Fatalf("catalog should not be published: %+v", first)
+	}
+
+	// A fresh gateway that receives that document ends up with the same policy.
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	peer := testStore(t)
+	peerDir := t.TempDir()
+	t.Setenv("PISO_PI_PROFILE", filepath.Join(peerDir, "pi-profile"))
+	if err := peer.AddSecret(store.SecretRec{ID: "sec1", Placeholder: "piso_one", Value: "fake"}); err != nil {
+		t.Fatal(err)
+	}
+	syncFrom(t, peer, peerDir, string(raw))
+	got := peer.PiProviderByID("piso-one")
+	if got == nil {
+		t.Fatal("provider not synced")
+	}
+	if strings.Join(got.ApprovedModels, ",") != "m1,m2" {
+		t.Fatalf("approvedModels lost in sync: %+v", got)
+	}
+	if got.APIType != "anthropic-messages" {
+		t.Fatalf("api lost in sync: %+v", got)
+	}
+}
+
+// An older coordinator omits approvedModels, kind, and api. Absence is not a
+// clear: the local record keeps its policy instead of being narrowed to the
+// default model on every reconcile.
+func TestSyncPiProviderPreservesLocalPolicy(t *testing.T) {
+	st := testStore(t)
+	dir := t.TempDir()
+	t.Setenv("PISO_PI_PROFILE", filepath.Join(dir, "pi-profile"))
+	if err := st.AddSecret(store.SecretRec{ID: "sec1", Placeholder: "piso_one", Value: "fake"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpsertPiProviderActive(store.PiProviderRec{
+		ID:             "piso-one",
+		Name:           "One",
+		SecretID:       "sec1",
+		BaseURL:        "https://one.test/v1",
+		Kind:           "tinfoil",
+		APIType:        "anthropic-messages",
+		DefaultModel:   "m1",
+		ApprovedModels: []string{"m1", "m2"},
+		// Older than the document below, so the sync pulls instead of
+		// publishing the local copy back.
+		UpdatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	syncFrom(t, st, dir, `{"metadata":{"activeId":"piso-one","providers":[{"id":"piso-one","name":"One","secretId":"sec1","baseUrl":"https://one.test/v1","defaultModel":"m1"}]},"updated_at":"2026-01-02T00:00:00Z"}`)
+	if want := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC); !st.PiProviderByID("piso-one").UpdatedAt.Equal(want) {
+		t.Fatalf("the document was not merged: %+v", st.PiProviderByID("piso-one"))
+	}
+	got := st.PiProviderByID("piso-one")
+	if got == nil {
+		t.Fatal("provider missing after sync")
+	}
+	if strings.Join(got.ApprovedModels, ",") != "m1,m2" {
+		t.Fatalf("sync without the field erased the list: %+v", got)
+	}
+	if got.Kind != "tinfoil" || got.APIType != "anthropic-messages" {
+		t.Fatalf("sync without the field erased the transport: %+v", got)
+	}
+}
+
+// An explicit empty list is a decision — "only the default model" — and it
+// travels, so clearing it on one gateway clears it on the rest.
+func TestSyncPiProviderAppliesExplicitEmptyList(t *testing.T) {
+	st := testStore(t)
+	dir := t.TempDir()
+	t.Setenv("PISO_PI_PROFILE", filepath.Join(dir, "pi-profile"))
+	if err := st.AddSecret(store.SecretRec{ID: "sec1", Placeholder: "piso_one", Value: "fake"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpsertPiProviderActive(store.PiProviderRec{
+		ID:             "piso-one",
+		Name:           "One",
+		SecretID:       "sec1",
+		BaseURL:        "https://one.test/v1",
+		DefaultModel:   "m1",
+		ApprovedModels: []string{"m1", "m2"},
+		UpdatedAt:      time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	syncFrom(t, st, dir, `{"metadata":{"activeId":"piso-one","providers":[{"id":"piso-one","name":"One","secretId":"sec1","baseUrl":"https://one.test/v1","defaultModel":"m1","approvedModels":[]}]},"updated_at":"2026-01-02T00:00:00Z"}`)
+	got := st.PiProviderByID("piso-one")
+	if got == nil {
+		t.Fatal("provider missing after sync")
+	}
+	if len(got.ApprovedModels) != 0 {
+		t.Fatalf("explicit clear ignored: %+v", got)
+	}
+	if strings.Join(got.AllowedModelIDs(), ",") != "m1" {
+		t.Fatalf("allowed set: %+v", got.AllowedModelIDs())
+	}
+}

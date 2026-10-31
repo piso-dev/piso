@@ -400,3 +400,79 @@ func TestApplyEnvelopeGatewayOnlyKeepsNoPlaceholder(t *testing.T) {
 		t.Fatalf("invented a placeholder for a gateway-only secret: %q", got.Placeholder)
 	}
 }
+
+// A dashboard rename is local metadata: it changes neither the plaintext nor
+// content_version. Adopting the envelope's env_key at the same version undid
+// the rename on the next reconcile pass, 45s after it was saved.
+func TestApplyEnvelopeKeepsUnpublishedEnvKeyRename(t *testing.T) {
+	st := testStore(t)
+	id, err := tc.Generate("https://s", "gw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AddSecret(store.SecretRec{
+		ID:              "tc_rid-1",
+		Name:            "openrouter",
+		Placeholder:     "piso_openrouter",
+		Value:           "secret-value",
+		EnvKey:          "PISO_OPENROUTER_API_KEY",
+		PublishedEnvKey: "OPENROUTER_API_KEY",
+		TechnocoreID:    "rid-1",
+		PublishedHash:   plaintextHash("secret-value"),
+		ContentVersion:  3,
+		CreatedAt:       time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	obj := testEnvelope(t, id, "rid-1", "openrouter", "piso_openrouter", "secret-value")
+	obj.ContentVersion = 3
+	obj.Metadata["envKey"] = "OPENROUTER_API_KEY"
+	if _, err := applyEnvelope(st, id, obj); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := st.SecretByID("tc_rid-1")
+	if got.EnvKey != "PISO_OPENROUTER_API_KEY" {
+		t.Fatalf("same-version envelope clobbered the rename: %q", got.EnvKey)
+	}
+	if got.PublishedEnvKey != "OPENROUTER_API_KEY" {
+		t.Fatalf("PublishedEnvKey should record what the coordinator holds: %q", got.PublishedEnvKey)
+	}
+}
+
+// A rename that did reach the coordinator arrives with a bumped version, so it
+// must win — otherwise the pending-rename guard would freeze the first rename
+// forever.
+func TestApplyEnvelopeNewerVersionAdoptsEnvKeyRename(t *testing.T) {
+	st := testStore(t)
+	id, err := tc.Generate("https://s", "gw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AddSecret(store.SecretRec{
+		ID:              "tc_rid-1",
+		Name:            "openrouter",
+		Placeholder:     "piso_openrouter",
+		Value:           "secret-value",
+		EnvKey:          "PISO_OPENROUTER_API_KEY",
+		PublishedEnvKey: "OPENROUTER_API_KEY",
+		TechnocoreID:    "rid-1",
+		PublishedHash:   plaintextHash("secret-value"),
+		ContentVersion:  3,
+		CreatedAt:       time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	obj := testEnvelope(t, id, "rid-1", "openrouter", "piso_openrouter", "secret-value")
+	obj.ContentVersion = 4
+	obj.Metadata["envKey"] = "COORDINATOR_RENAMED"
+	if _, err := applyEnvelope(st, id, obj); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := st.SecretByID("tc_rid-1")
+	if got.EnvKey != "COORDINATOR_RENAMED" {
+		t.Fatalf("newer version should win: %q", got.EnvKey)
+	}
+	if got.PublishedEnvKey != "COORDINATOR_RENAMED" {
+		t.Fatalf("adopted value is confirmed, so it must be stamped: %q", got.PublishedEnvKey)
+	}
+}

@@ -222,8 +222,20 @@ export async function loadProfiles(dir = agentDir()): Promise<ProviderProfile[]>
 }
 
 // ModelOverride is the gateway's answer to "which provider should this worker
-// start on". An empty provider means the worker follows the account default.
-type ModelOverride = { provider: string; model: string };
+// start on", plus what this worker may run on every provider in the stack. An
+// empty provider means the worker follows the account default. allowed is the
+// closed set of model ids the gateway will accept from this worker on that
+// provider; providers carries the same answer for the rest of the stack, which
+// is what lets /model mirror the Model providers tab instead of a provider's
+// whole catalog. The gateway decides usability — the pin is per worker, so only
+// the pinned provider (and a local one, which the proxy never sees) may come
+// back non-empty — and the worker only applies what it is told.
+type ModelOverride = {
+	provider: string;
+	model: string;
+	allowed: string[];
+	providers: Map<string, string[]>;
+};
 
 function overrideCachePath(dir: string): string {
 	return join(dir, OVERRIDE_CACHE_FILE);
@@ -239,7 +251,41 @@ function parseOverride(payload: unknown): ModelOverride | undefined {
 	return {
 		provider: raw ? normalizeProviderId(raw) : "",
 		model: typeof payload.model === "string" ? payload.model.trim() : "",
+		allowed: stringArray(payload.allowedModels) ?? [],
+		providers: parseAllowlists(payload.providers),
 	};
+}
+
+// parseAllowlists reads the per-provider answer. The two shapes it can produce
+// must stay distinguishable: an id mapped to an empty list is a provider the tab
+// configured with nothing usable, while an id that is absent was not answered
+// for at all and must not narrow anything.
+function parseAllowlists(value: unknown): Map<string, string[]> {
+	const out = new Map<string, string[]>();
+	if (!isObject(value)) return out;
+	for (const [rawId, raw] of Object.entries(value)) {
+		if (!managedProviderId(rawId)) continue;
+		const ids = stringArray(raw);
+		if (!ids) continue;
+		out.set(
+			normalizeProviderId(rawId),
+			ids.map((id) => id.trim()).filter((id) => id !== ""),
+		);
+	}
+	return out;
+}
+
+function allowlistsJson(providers: Map<string, string[]>): Record<string, string[]> | undefined {
+	return providers.size === 0 ? undefined : Object.fromEntries(providers);
+}
+
+function sameAllowlists(a: Map<string, string[]>, b: Map<string, string[]>): boolean {
+	if (a.size !== b.size) return false;
+	for (const [id, ids] of a) {
+		const other = b.get(id);
+		if (!other || !sameModelIds(ids, other)) return false;
+	}
+	return true;
 }
 
 // refreshOverrideCache asks the gateway which provider this worker is pinned to
@@ -268,15 +314,133 @@ async function refreshOverrideCache(dir = agentDir()): Promise<void> {
 	}
 	if (!next) return;
 	const current = parseOverride(await readJson(overrideCachePath(dir)));
-	if (current && current.provider === next.provider && current.model === next.model) return;
+	if (
+		current &&
+		current.provider === next.provider &&
+		current.model === next.model &&
+		sameModelIds(current.allowed, next.allowed) &&
+		sameAllowlists(current.providers, next.providers)
+	) return;
 	try {
 		await writeFile(
 			overrideCachePath(dir),
-			`${JSON.stringify({ provider: next.provider, model: next.model })}\n`,
+			`${JSON.stringify({
+				provider: next.provider,
+				model: next.model,
+				allowedModels: next.allowed,
+				providers: allowlistsJson(next.providers),
+			})}\n`,
 		);
 	} catch {
 		// A read-only or full agent dir must not break the session.
 	}
+}
+
+function sameModelIds(a: string[], b: string[]): boolean {
+	return a.length === b.length && a.every((id, i) => id === b[i]);
+}
+
+// Allowance is what the Model providers tab allows on one provider. known is the
+// part that carries the meaning: an absent answer (an older gateway, or an
+// unreachable one and no cache) is not the same as an empty list, and only an
+// answered empty list may narrow a menu to nothing.
+type Allowance = { known: boolean; ids: string[] };
+
+const NO_OPINION: Allowance = { known: false, ids: [] };
+
+function allowanceOf(allowlists: Map<string, string[]>, providerId: string): Allowance {
+	const ids = allowlists.get(providerId);
+	return ids ? { known: true, ids } : NO_OPINION;
+}
+
+// isLoopback reports whether a provider's base URL is served by a proxy inside
+// this worker rather than through the gateway. The tinfoil enclave proxy is the
+// case: NO_PROXY keeps 127.0.0.1 off the proxy, so the gateway's model pin never
+// sees the request and cannot refuse it.
+function isLoopback(baseUrl: string): boolean {
+	try {
+		const host = new URL(baseUrl).hostname.replace(/^\[|\]$/g, "");
+		return host === "127.0.0.1" || host === "localhost" || host === "::1";
+	} catch {
+		return false;
+	}
+}
+
+// allowanceFor is the per-provider answer with the pin's boundary applied: a
+// provider that is neither the pin nor loopback-local cannot serve a request at
+// all, because the gateway refuses every host but the pinned one. Offering its
+// models is how a dashboard policy became a mid-session 403 (a second provider
+// keeps its own default model, so it looked approved and still failed on
+// model-provider-mismatch), so no list from the gateway can re-enable it here.
+//
+// An unknown pin narrows nothing: before the first successful poll a worker has
+// no answer yet, and blanking the menu on a cold start is worse than showing the
+// catalog it always showed.
+function allowanceFor(
+	providerId: string,
+	baseUrl: string,
+	pinned: string,
+	allowlists: Map<string, string[]>,
+): Allowance {
+	if (pinned && providerId !== pinned && !isLoopback(baseUrl)) {
+		return { known: true, ids: [] };
+	}
+	return allowanceOf(allowlists, providerId);
+}
+
+// approvedModelsFor answers for one provider at load time.
+async function approvedModelsFor(providerId: string, dir = agentDir()): Promise<Allowance> {
+	return allowanceOf(await readAllowances(dir), providerId);
+}
+
+// readAllowances reads the cached answer once per pass: every provider in the
+// stack needs it, and the profile is polled every 15s. A cache written before the
+// per-provider map existed carries one answer for the provider it pins, and only
+// when it names models: its empty list kept the old meaning of "the gateway did
+// not say", so an older gateway's answer cannot blank a menu.
+async function readAllowances(dir = agentDir()): Promise<Map<string, string[]>> {
+	const cached = parseOverride(await readJson(overrideCachePath(dir)));
+	if (!cached) return new Map();
+	const out = new Map(cached.providers);
+	if (cached.provider && cached.allowed.length > 0 && !out.has(cached.provider)) {
+		out.set(cached.provider, cached.allowed);
+	}
+	return out;
+}
+
+// shapeCatalog makes a catalog equal to the allowlist the gateway published for
+// this provider: the same ids in that order, each carrying the best metadata
+// known for it. An approved id the
+// provider's discovery has not returned yet is still offered — the tab is the
+// authority here, and a menu that silently dropped it would make the tab a lie.
+// Without an answer this is the identity function, so a worker talking to an
+// older gateway registers exactly what it did before.
+function shapeCatalog(models: ProviderModelConfig[], allowance: Allowance): ProviderModelConfig[] {
+	if (!allowance.known) return models;
+	const byId = new Map(models.map((model) => [model.id, model]));
+	const out: ProviderModelConfig[] = [];
+	const seen = new Set<string>();
+	for (const id of allowance.ids) {
+		if (seen.has(id)) continue;
+		seen.add(id);
+		const known = byId.get(id);
+		if (known) {
+			out.push(known);
+			continue;
+		}
+		const synthesized = normalizeModel({ id });
+		if (synthesized) out.push(synthesized);
+	}
+	return out;
+}
+
+// keepModel copies a registry model back into a registration config. The two
+// shapes are structurally the same — ProviderModelConfig is a Model without the
+// provider id — so the copy keeps the type discriminator and every limit that a
+// chat-only filter would quietly drop.
+function keepModel(model: Model<Api>): ProviderModelConfig {
+	const { provider: _provider, ...rest } = model as Model<Api> & { provider?: string };
+	return rest as unknown as ProviderModelConfig;
 }
 
 async function loadActiveDefault(dir = agentDir()): Promise<ActiveDefault> {
@@ -338,7 +502,10 @@ async function loadStartupModels(profile: ProviderProfile): Promise<ProviderMode
 // models.json fallback, then a bounded cold-start discovery. A failed
 // discovery leaves the provider registered with an empty catalog so the
 // session still starts and the default can resolve later.
-async function buildProviderConfig(profile: ProviderProfile): Promise<ProviderConfig> {
+async function buildProviderConfig(
+	profile: ProviderProfile,
+	allowance: Allowance = NO_OPINION,
+): Promise<ProviderConfig> {
 	const fallback = (profile.models ?? []).flatMap((model) => {
 		const normalized = configModel(model);
 		return normalized ? [normalized] : [];
@@ -350,7 +517,11 @@ async function buildProviderConfig(profile: ProviderProfile): Promise<ProviderCo
 	// Await discovery only on a cold start, using the dashboard's literal scoped
 	// placeholder. Do not interpret arbitrary credential commands here; normal
 	// refresh below continues to use Pi's credential resolution.
-	if (startupModels.length === 0 && !process.env.PI_OFFLINE) {
+	if (allowance.known && allowance.ids.length === 0) {
+		// The tab allows nothing here, so /model must offer nothing and no request
+		// is worth making: discovery could only return ids the gateway refuses.
+		startupModels = [];
+	} else if (startupModels.length === 0 && !process.env.PI_OFFLINE) {
 		try {
 			if (!profile.apiKey.startsWith("piso_")) throw new Error("unsupported bootstrap credential");
 			const response = await fetch(modelsUrl(profile.baseUrl), {
@@ -366,6 +537,9 @@ async function buildProviderConfig(profile: ProviderProfile): Promise<ProviderCo
 			console.warn("Piso: initial model discovery failed (10s limit). Check the dashboard API connection, then use /model or retry attach.");
 		}
 	}
+	// Shape on every path, discovery included: one unshaped path would put the
+	// provider's whole catalog back in /model.
+	startupModels = shapeCatalog(startupModels, allowance);
 
 	const config: ProviderConfig = {
 		name: profile.name ?? "Piso",
@@ -373,9 +547,15 @@ async function buildProviderConfig(profile: ProviderProfile): Promise<ProviderCo
 		baseUrl: profile.baseUrl,
 		api: profile.api ?? "openai-completions",
 		async refreshModels(context: RefreshModelsContext): Promise<ProviderModelConfig[]> {
-			const cached = (context.stored?.models ?? [])
-				.filter((model) => model.provider === profile.id && model.baseUrl === profile.baseUrl)
-				.map(storedModel);
+			// Nothing is approved, so there is nothing to refresh. Returning before
+			// the network check keeps a poll from reintroducing a refused catalog.
+			if (allowance.known && allowance.ids.length === 0) return [];
+			const cached = shapeCatalog(
+				(context.stored?.models ?? [])
+					.filter((model) => model.provider === profile.id && model.baseUrl === profile.baseUrl)
+					.map(storedModel),
+				allowance,
+			);
 			const current = cached.length > 0 ? cached : startupModels;
 			if (!context.allowNetwork) return current;
 			if (context.credential?.type !== "api_key" || !context.credential.key) return current;
@@ -397,9 +577,15 @@ async function buildProviderConfig(profile: ProviderProfile): Promise<ProviderCo
 			}
 			if (!response.ok) throw new Error(`Piso model discovery failed: HTTP ${response.status}`);
 
-			const refreshed = mergeCatalog(catalogEntries(await response.json()), fallback, cached);
+			const refreshed = shapeCatalog(
+				mergeCatalog(catalogEntries(await response.json()), fallback, cached),
+				allowance,
+			);
 			if (refreshed.length === 0) throw new Error("Piso model discovery returned no models");
 			const entry: ModelsStoreEntry = {
+				// Persist the filtered list: the cache is read back as the catalog
+				// on the next start, so storing every discovered id would put the
+				// models the gateway refuses back into /model one session later.
 				models: persistedModels(profile, refreshed),
 				checkedAt: Date.now(),
 				etag: response.headers.get("etag") ?? undefined,
@@ -415,33 +601,122 @@ async function buildProviderConfig(profile: ProviderProfile): Promise<ProviderCo
 export default async function pisoModels(pi: ExtensionAPI): Promise<void> {
 	const profiles = await loadProfiles();
 	if (profiles.length === 0) return;
+	const allowlists = await readAllowances();
+	const { provider: pinned } = await loadActiveDefault();
 	for (const profile of profiles) {
-		pi.registerProvider(profile.id, await buildProviderConfig(profile));
+		const allowance = allowanceFor(profile.id, profile.baseUrl, pinned, allowlists);
+		pi.registerProvider(profile.id, await buildProviderConfig(profile, allowance));
 	}
 	if (typeof pi.on === "function") wireLiveApply(pi, profiles);
 }
 
 // A snapshot signature covers everything the shared profile can change about
-// model selection. Comparing it avoids re-applying on every poll tick.
-function snapshotKey(profiles: ProviderProfile[], active: ActiveDefault): string {
+// model selection. Comparing it avoids re-applying on every poll tick. The
+// allowlists belong here: approving or revoking a model changes which model this
+// session should run, even when no provider or default moved.
+function snapshotKey(
+	profiles: ProviderProfile[],
+	active: ActiveDefault,
+	allowlists: Map<string, string[]>,
+): string {
 	return JSON.stringify([
 		profiles.map((p) => [p.id, p.baseUrl, p.api ?? "", p.models.map((m) => m.id)]),
 		active.provider,
 		active.model,
+		[...allowlists].sort(([a], [b]) => a.localeCompare(b)),
 	]);
 }
 
-function providerConfigKey(profile: ProviderProfile): string {
-	return JSON.stringify([profile.baseUrl, profile.api ?? "", profile.models.map((m) => m.id)]);
+// providerConfigKey covers everything that changes a registered provider. The
+// allowance belongs here: approving one more model, or narrowing a provider to
+// nothing, must rebuild its catalog, or /model keeps offering what the tab no
+// longer allows until the next restart.
+function providerConfigKey(profile: ProviderProfile, allowance: Allowance = NO_OPINION): string {
+	return JSON.stringify([
+		profile.baseUrl,
+		profile.api ?? "",
+		profile.models.map((m) => m.id),
+		allowance.known,
+		allowance.ids,
+	]);
 }
 
+// Note on the initial keys: they carry no allowance, so the first apply pass
+// rebuilds each provider once with the real one. That pass runs at session start
+// before any model is chosen, and it keeps this function synchronous for the
+// callers and tests that treat registration as a load-time side effect.
 type LiveState = {
 	signature: string;
 	configs: Map<string, string>;
+	// hidden maps a provider the tab does not own to the non-chat catalog we
+	// registered for it, so a change is applied once and a stack that disappears
+	// can put the provider back.
+	hidden: Map<string, string>;
 	applied: string;
 	timer?: ReturnType<typeof setInterval>;
 	pending: boolean;
 };
+
+// hideUnconfigured makes the Model providers tab the only source of a chat model
+// in /model. Every provider the registry knows that the tab does not own — a
+// built-in family whose API key happens to be exported into the worker, a
+// models.json entry left behind by an older namespace — is registered with only
+// its non-chat models, so its chat catalog cannot reappear behind the dashboard's
+// back. Non-chat models survive because the tab only ever speaks about chat
+// models, and codemode still needs its classifiers and image models.
+//
+// Nothing is hidden while the stack is empty: an install with no providers tab
+// keeps the catalog pi shipped with rather than losing every provider at once.
+function hideUnconfigured(
+	ctx: ExtensionContext,
+	pi: ExtensionAPI,
+	profiles: ProviderProfile[],
+	state: LiveState,
+): void {
+	if (profiles.length === 0) {
+		for (const id of [...state.hidden.keys()]) {
+			try {
+				pi.unregisterProvider(id);
+			} catch {
+				// Ignore: unloading our registration restores what pi composed.
+			}
+			state.hidden.delete(id);
+		}
+		return;
+	}
+	const managed = new Set(profiles.map((profile) => profile.id));
+	// A provider that became managed was re-registered from the tab, which replaced
+	// the registration this map remembers; drop the stale mark so removing it from
+	// the tab hides it again instead of skipping on a key that no longer describes
+	// what is registered.
+	for (const id of [...state.hidden.keys()]) {
+		if (managed.has(id)) state.hidden.delete(id);
+	}
+	// Seed with chat providers so one with nothing left to keep is still hidden.
+	const kept = new Map<string, ProviderModelConfig[]>();
+	for (const model of ctx.modelRegistry.getModelsOfType("chat")) {
+		if (managed.has(model.provider)) continue;
+		if (!kept.has(model.provider)) kept.set(model.provider, []);
+	}
+	for (const type of ["image", "classifier"] as const) {
+		for (const model of ctx.modelRegistry.getModelsOfType(type)) {
+			if (managed.has(model.provider)) continue;
+			const list = kept.get(model.provider) ?? [];
+			list.push(keepModel(model));
+			kept.set(model.provider, list);
+		}
+	}
+	for (const [id, models] of kept) {
+		const key = JSON.stringify(models.map((model) => [model.id, (model as { type?: string }).type ?? "chat"]));
+		if (state.hidden.get(id) === key) continue;
+		try {
+			pi.registerProvider(id, { models });
+			state.hidden.set(id, key);
+		} catch {
+			// A provider we cannot re-register keeps whatever pi composed for it.
+		}
+	}
+}
 
 // wireLiveApply re-reads the shared profile and applies changes to a running
 // session at an idle boundary. No restart or manual /reload is needed. It
@@ -452,7 +727,13 @@ export function wireLiveApply(
 	pi: ExtensionAPI,
 	initialProfiles: ProviderProfile[] = [],
 ): (ctx: ExtensionContext, force: boolean) => Promise<void> {
-	const state: LiveState = { signature: "", configs: new Map(), applied: "", pending: false };
+	const state: LiveState = {
+		signature: "",
+		configs: new Map(),
+		hidden: new Map(),
+		applied: "",
+		pending: false,
+	};
 	for (const profile of initialProfiles) state.configs.set(profile.id, providerConfigKey(profile));
 
 	const apply = async (ctx: ExtensionContext, force: boolean): Promise<void> => {
@@ -461,17 +742,19 @@ export function wireLiveApply(
 		await refreshOverrideCache();
 		const profiles = await loadProfiles();
 		const active = await loadActiveDefault();
-		const signature = snapshotKey(profiles, active);
+		const allowlists = await readAllowances();
+		const signature = snapshotKey(profiles, active, allowlists);
 
 		// Reconcile providers even while busy: registration is safe and does
 		// not disturb the in-flight request.
 		const seen = new Set<string>();
 		for (const profile of profiles) {
 			seen.add(profile.id);
-			const key = providerConfigKey(profile);
+			const allowance = allowanceFor(profile.id, profile.baseUrl, active.provider, allowlists);
+			const key = providerConfigKey(profile, allowance);
 			if (state.configs.get(profile.id) === key) continue;
 			try {
-				pi.registerProvider(profile.id, await buildProviderConfig(profile));
+				pi.registerProvider(profile.id, await buildProviderConfig(profile, allowance));
 				state.configs.set(profile.id, key);
 			} catch {
 				// A registration failure must not take down the session.
@@ -486,6 +769,7 @@ export function wireLiveApply(
 			}
 			state.configs.delete(id);
 		}
+		hideUnconfigured(ctx, pi, profiles, state);
 
 		if (signature === state.signature && !force) return;
 
@@ -505,10 +789,42 @@ export function wireLiveApply(
 		// that is the arbitrary-model symptom. The first-model fallback stays
 		// only for the documented case where the dashboard saved no model
 		// (its catalog fetch failed).
+		// The pinned provider always speaks for itself, so its own list applies
+		// whether or not the provider list even mentions it.
+		const allowance = allowanceOf(allowlists, active.provider);
+		if (allowance.known && allowance.ids.length === 0) {
+			// The tab configured this provider with nothing usable, so there is no
+			// model to switch to. Saying so once beats a /model menu that offers the
+			// provider's whole catalog while every request through it is refused.
+			warnOnce(
+				`no-approved:${active.provider}`,
+				`Piso: ${active.provider} has no approved model in the Model providers tab, so /model has nothing to offer; ` +
+					"set a default model or approve one for it and this session switches over on its own.",
+			);
+			state.signature = signature;
+			return;
+		}
 		const catalog = ctx.modelRegistry.getModelsOfType("chat", active.provider);
-		const model = modelId
+		const offered = shapeCatalog(catalog as ProviderModelConfig[], allowance);
+		let model = modelId
 			? ctx.modelRegistry.find(active.provider, modelId) ?? (active.model ? undefined : catalog[0])
 			: undefined;
+		// The tab is the authority, so a saved or pinned model it does not allow
+		// cannot stay active — not even when the registry still holds it, which is
+		// the case that used to 403 every request until restart. Switching to an
+		// offered model is the same move the shrinking-list case already made.
+		if (allowance.known && modelId && !allowance.ids.includes(modelId)) {
+			const fallback = offered[0];
+			const replacement = fallback
+				? ctx.modelRegistry.find(active.provider, fallback.id) ?? fallback
+				: undefined;
+			warnOnce(
+				`revoked:${active.provider}/${modelId}`,
+				`Piso: model ${active.provider}/${modelId} is no longer approved for this worker; ` +
+					(replacement ? `switching to ${replacement.id}.` : "no approved model is registered yet."),
+			);
+			model = replacement;
+		}
 		if (!model) {
 			if (active.model) {
 				const key = `unresolved:${active.provider}/${active.model}`;

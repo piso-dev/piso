@@ -15,9 +15,14 @@ import (
 // absence of an override, so deleting the row is the only way to express it
 // and there is exactly one source of truth for it.
 type ModelOverrideRec struct {
-	Slug       string    `json:"slug"`
-	ProviderID string    `json:"providerId"`
-	UpdatedAt  time.Time `json:"updatedAt,omitempty"`
+	Slug       string `json:"slug"`
+	ProviderID string `json:"providerId"`
+	// Model pins one model id within the override's provider. Empty means
+	// "that provider's default", so a row keeps resolving if the provider's
+	// default later moves — which is what makes the field optional rather
+	// than a second, silently stale copy of the default.
+	Model     string    `json:"model,omitempty"`
+	UpdatedAt time.Time `json:"updatedAt,omitempty"`
 }
 
 // ModelOverrides returns every override in insertion order. The slice is a
@@ -57,12 +62,24 @@ func (s *Store) ModelOverrideProviderID(slug string) string {
 	return rec.ProviderID
 }
 
+// ModelOverrideModel returns the model pinned to slug within its provider, or
+// "" when the worker follows that provider's default.
+func (s *Store) ModelOverrideModel(slug string) string {
+	rec, ok := s.ModelOverrideBySlug(slug)
+	if !ok {
+		return ""
+	}
+	return rec.Model
+}
+
 // SetModelOverride pins slug to providerID, replacing any existing override
 // for that worker. A blank slug or provider is an error: use
-// DeleteModelOverride to return a worker to the account default.
-func (s *Store) SetModelOverride(slug, providerID string) (ModelOverrideRec, error) {
+// DeleteModelOverride to return a worker to the account default. A blank model
+// means "the provider's default model".
+func (s *Store) SetModelOverride(slug, providerID, model string) (ModelOverrideRec, error) {
 	slug = strings.TrimSpace(slug)
 	providerID = strings.TrimSpace(providerID)
+	model = strings.TrimSpace(model)
 	if slug == "" {
 		return ModelOverrideRec{}, ErrWorkerNotFound
 	}
@@ -73,7 +90,7 @@ func (s *Store) SetModelOverride(slug, providerID string) (ModelOverrideRec, err
 	defer s.mu.Unlock()
 	old := s.state.ModelOverrides
 	next := make([]ModelOverrideRec, 0, len(old)+1)
-	rec := ModelOverrideRec{Slug: slug, ProviderID: providerID, UpdatedAt: time.Now().UTC()}
+	rec := ModelOverrideRec{Slug: slug, ProviderID: providerID, Model: model, UpdatedAt: time.Now().UTC()}
 	replaced := false
 	for _, e := range old {
 		if e.Slug == slug {

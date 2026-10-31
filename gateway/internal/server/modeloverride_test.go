@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -208,5 +209,280 @@ func TestWorkerModelEndpoint(t *testing.T) {
 	// The response is the worker-facing shape: no host paths, no secrets.
 	if strings.Contains(rec.Body.String(), "sk-test") || strings.Contains(rec.Body.String(), s.DataDir) {
 		t.Fatalf("leaked: %s", rec.Body.String())
+	}
+}
+
+// A remote provider with no default and no approved models has nothing to pin
+// to: every generation through it answers 403 model-pin-unresolved, so the
+// override is refused up front with the fix named.
+func TestModelOverrideRejectsProviderWithNoModels(t *testing.T) {
+	s := overrideTestServer(t)
+	if err := s.Store.UpsertPiProvider(store.PiProviderRec{
+		ID: "piso-empty", Name: "Empty", SecretID: "sec_aiml",
+		BaseURL: "https://empty.example.test/v1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rec := putOverride(t, s, "demo", "piso-empty")
+	if rec.Code != 400 {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "default model") {
+		t.Fatalf("error should name the fix: %s", rec.Body.String())
+	}
+	if rows := s.Store.ModelOverrides(); len(rows) != 0 {
+		t.Fatalf("rejected override was stored: %+v", rows)
+	}
+
+	// Approving one model is the documented fix, and the retry then succeeds.
+	if err := s.Store.UpsertPiProvider(store.PiProviderRec{
+		ID: "piso-empty", Name: "Empty", SecretID: "sec_aiml",
+		BaseURL: "https://empty.example.test/v1", ApprovedModels: []string{"model-e"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if rec := putOverride(t, s, "demo", "piso-empty"); rec.Code != 200 {
+		t.Fatalf("after approving a model: status %d body %s", rec.Code, rec.Body.String())
+	}
+}
+
+// A local (Tinfoil) provider is exempt: the enclave proxy inside the worker
+// serves it, so the gateway never judges the model and the worker still starts
+// on whatever the profile offers.
+func TestModelOverrideAllowsLocalProviderWithoutModels(t *testing.T) {
+	s := overrideTestServer(t)
+	if err := s.Store.UpsertPiProvider(store.PiProviderRec{
+		ID: "piso-tinfoil", Name: "Tinfoil", SecretID: "sec_aiml",
+		BaseURL: tinfoilProxyBaseURL, Kind: piProviderKindTinfoil,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if rec := putOverride(t, s, "demo", "piso-tinfoil"); rec.Code != 200 {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	if got := s.Store.ModelOverrideProviderID("demo"); got != "piso-tinfoil" {
+		t.Fatalf("stored id: %q", got)
+	}
+}
+
+// The override list is what the dashboard renders the add/edit dialog from, so
+// it has to carry enough to recognise a local provider and to disable a pick
+// that the save path would refuse.
+func TestModelOverrideListDescribesProviders(t *testing.T) {
+	s := overrideTestServer(t)
+	if err := s.Store.UpsertPiProvider(store.PiProviderRec{
+		ID: "piso-tinfoil", Name: "Tinfoil", SecretID: "sec_aiml",
+		BaseURL: tinfoilProxyBaseURL, Kind: piProviderKindTinfoil,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Store.UpsertPiProvider(store.PiProviderRec{
+		ID: "piso-empty", Name: "Empty", SecretID: "sec_aiml",
+		BaseURL: "https://empty.example.test/v1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	s.handleGetModelOverrides(rec, httptest.NewRequest(http.MethodGet, "/api/v1/model-overrides", nil))
+	var out modelOverrideListView
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]modelOverrideProviderView{}
+	for _, p := range out.Providers {
+		byID[p.ID] = p
+	}
+	if p := byID["piso-tinfoil"]; p.Kind != piProviderKindTinfoil || !p.Pinnable {
+		t.Fatalf("local provider: %+v", p)
+	}
+	if p := byID["piso-empty"]; p.Pinnable {
+		t.Fatalf("provider with no models must report not pinnable: %+v", p)
+	}
+	// The remote provider the tests pin to is usable, and says so.
+	if p := byID["piso-aiml"]; !p.Pinnable || p.BaseURL != "https://aiml.example.test/v1" {
+		t.Fatalf("aiml provider: %+v", p)
+	}
+	if got := byID["piso-aiml"].AllowedModels; len(got) != 1 || got[0] != "model-a" {
+		t.Fatalf("allowed models: %+v", got)
+	}
+}
+
+// A pin saved against a usable provider can outlive that provider's models: the
+// default is cleared, the approved list emptied. Drift is reported, never
+// repaired, so the row stays and names the 403 it now produces instead of
+// disappearing or reading as healthy.
+func TestModelOverrideListWarnsWhenProviderLostItsModels(t *testing.T) {
+	s := overrideTestServer(t)
+	if rec := putOverride(t, s, "demo", "piso-aiml"); rec.Code != 200 {
+		t.Fatalf("pin: status %d body %s", rec.Code, rec.Body.String())
+	}
+	if err := s.Store.UpsertPiProvider(store.PiProviderRec{
+		ID: "piso-aiml", Name: "AIML", SecretID: "sec_aiml",
+		BaseURL: "https://aiml.example.test/v1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	s.handleGetModelOverrides(rec, httptest.NewRequest(http.MethodGet, "/api/v1/model-overrides", nil))
+	var out modelOverrideListView
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Overrides) != 1 {
+		t.Fatalf("overrides: %+v", out.Overrides)
+	}
+	row := out.Overrides[0]
+	if row.Slug != "demo" || row.ProviderID != "piso-aiml" {
+		t.Fatalf("row kept: %+v", row)
+	}
+	if !strings.Contains(row.Warning, "no usable model now") {
+		t.Fatalf("warning: %q", row.Warning)
+	}
+}
+
+// /model may only offer what the pin will accept. The pin is a per-worker
+// boundary: modelPin compares the request host against the one provider the
+// worker is pinned to, so a model approved on a *different* remote provider is
+// still refused as model-provider-mismatch. Publishing that provider's allowlist
+// would move a dashboard policy into a mid-session 403, which is the bug this
+// test exists for.
+//
+// The two shapes have to stay distinguishable over the wire: a provider this
+// worker cannot use is present and empty, while a provider the gateway never
+// answered for is absent.
+func TestWorkerModelPublishesOnlyUsableProviders(t *testing.T) {
+	s := overrideTestServer(t)
+	for _, rec := range []store.PiProviderRec{
+		{
+			ID: "piso-empty", Name: "Empty", SecretID: "sec_aiml",
+			BaseURL: "https://empty.example.test/v1",
+		},
+		{
+			// Has its own default model, so the tab genuinely allows one id —
+			// and this worker still cannot run it, because it is not pinned
+			// here. Offering it was the reported 403.
+			ID: "piso-approved", Name: "Approved", SecretID: "sec_aiml",
+			BaseURL:      "https://approved.example.test/v1",
+			DefaultModel: "model-x", ApprovedModels: []string{"model-y"},
+		},
+	} {
+		if err := s.Store.UpsertPiProvider(rec); err != nil {
+			t.Fatal(err)
+		}
+	}
+	view := func() workerModelView {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		s.handleWorkerGetModel(rec, httptest.NewRequest(http.MethodGet, "/api/v1/worker/model?worker=piso-worker-demo", nil))
+		if rec.Code != 200 {
+			t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+		}
+		var out workerModelView
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+
+	// The account default is piso-scoped, so that is where this worker's
+	// requests go and the only remote catalog it may see.
+	out := view()
+	if out.Provider != "piso-scoped" {
+		t.Fatalf("account default should pin the worker: %+v", out)
+	}
+	if got := out.Providers["piso-scoped"]; len(got) != 1 || got[0] != "model-s" {
+		t.Fatalf("pinned provider must keep its allowlist: %#v", got)
+	}
+	for _, id := range []string{"piso-aiml", "piso-approved", "piso-empty"} {
+		got, present := out.Providers[id]
+		if !present || got == nil || len(got) != 0 {
+			t.Fatalf("%s is configured but unpinned, so it must be present and empty: %#v (present %v)", id, got, present)
+		}
+	}
+	// The map and the older single-provider field must never disagree.
+	if !slices.Equal(out.Providers[out.Provider], out.AllowedModels) {
+		t.Fatalf("allowedModels %#v disagrees with providers[%s] %#v", out.AllowedModels, out.Provider, out.Providers[out.Provider])
+	}
+	// A provider outside the stack is not answered for at all.
+	if _, present := out.Providers["piso-not-in-the-stack"]; present {
+		t.Fatal("a provider outside the stack must not be answered for")
+	}
+
+	// Pinning this worker elsewhere moves the usable catalog with it, in both
+	// fields and in one answer.
+	if rec := putOverride(t, s, "demo", "piso-approved"); rec.Code != 200 {
+		t.Fatalf("pin: status %d body %s", rec.Code, rec.Body.String())
+	}
+	out = view()
+	if out.Provider != "piso-approved" {
+		t.Fatalf("override should win: %+v", out)
+	}
+	if got := out.Providers["piso-approved"]; len(got) != 2 || got[0] != "model-y" || got[1] != "model-x" {
+		t.Fatalf("newly pinned provider: %#v", got)
+	}
+	if got := out.Providers["piso-scoped"]; len(got) != 0 {
+		t.Fatalf("the previously pinned provider must go empty: %#v", got)
+	}
+
+	// The worker only sees JSON, so an empty answer has to survive as [] rather
+	// than null or an omitted key.
+	var raw map[string]any
+	rec := httptest.NewRecorder()
+	s.handleWorkerGetModel(rec, httptest.NewRequest(http.MethodGet, "/api/v1/worker/model?worker=piso-worker-demo", nil))
+	if err := json.Unmarshal(rec.Body.Bytes(), &raw); err != nil {
+		t.Fatal(err)
+	}
+	providers, ok := raw["providers"].(map[string]any)
+	if !ok {
+		t.Fatalf("providers missing from the wire: %s", rec.Body.String())
+	}
+	if list, ok := providers["piso-empty"].([]any); !ok || len(list) != 0 {
+		t.Fatalf("empty allowlist must marshal as []: %#v", providers["piso-empty"])
+	}
+}
+
+// A local provider's requests never reach the proxy — its base URL is loopback,
+// which NO_PROXY keeps off it — so modelPin cannot judge it and its approved
+// list is the whole boundary. It stays in the menu while unpinned.
+func TestWorkerModelKeepsLocalProvidersWhenUnpinned(t *testing.T) {
+	s := overrideTestServer(t)
+	if err := s.Store.UpsertPiProvider(store.PiProviderRec{
+		ID: "piso-tinfoil", Name: "Tinfoil", SecretID: "sec_aiml",
+		BaseURL: tinfoilProxyBaseURL, Kind: piProviderKindTinfoil,
+		DefaultModel: "llama-local",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	s.handleWorkerGetModel(rec, httptest.NewRequest(http.MethodGet, "/api/v1/worker/model?worker=piso-worker-demo", nil))
+	var out workerModelView
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Provider == "piso-tinfoil" {
+		t.Fatalf("the account default is remote, not tinfoil: %+v", out)
+	}
+	if got := out.Providers["piso-tinfoil"]; len(got) != 1 || got[0] != "llama-local" {
+		t.Fatalf("an unpinned local provider must keep its allowlist: %#v", got)
+	}
+}
+
+// With no providers tab there is nothing to mirror, so the field is omitted and
+// a worker keeps the behaviour it had before the field existed.
+func TestWorkerModelOmitsProvidersWithoutAStack(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.New(filepath.Join(dir, "state.json"), filepath.Join(dir, "log.jsonl"),
+		filepath.Join(dir, "patterns.json"), filepath.Join(dir, "activities.db"), 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{Store: st, DataDir: dir}
+	rec := httptest.NewRecorder()
+	s.handleWorkerGetModel(rec, httptest.NewRequest(http.MethodGet, "/api/v1/worker/model?worker=piso-worker-demo", nil))
+	if rec.Code != 200 {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), `"providers"`) {
+		t.Fatalf("an empty stack must omit providers: %s", rec.Body.String())
 	}
 }

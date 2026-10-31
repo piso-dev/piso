@@ -248,15 +248,18 @@ func (h *Handler) handlePlainHTTP(w http.ResponseWriter, r *http.Request) {
 		out.StatusCode = http.StatusOK
 	}
 	copyHeader(w.Header(), out.Header)
-	w.WriteHeader(out.StatusCode)
-	io.Copy(w, out.Body)
+	// Ask net/http to close after this response instead of hijacking the
+	// connection to do it. Hijacking hands the socket away from the response
+	// writer, which is what used to lose the response: the body sat in
+	// net/http's 4KB buffer and the terminating chunk was never written, so
+	// every body smaller than the buffer arrived as a truncated response.
+	// Setting the header closes the same connection, with the framing finished
+	// and flushed by the server.
 	if out.Close || !keepAlive {
-		if hj, ok := w.(http.Hijacker); ok {
-			if c, _, err := hj.Hijack(); err == nil {
-				c.Close()
-			}
-		}
+		w.Header().Set("Connection", "close")
 	}
+	w.WriteHeader(out.StatusCode)
+	_, _ = io.Copy(w, out.Body)
 }
 
 // Replay re-runs the full policy on a captured request and forwards it. This
@@ -366,15 +369,15 @@ func (h *Handler) process(ctx context.Context, req *http.Request, scheme string)
 		RequestID: reqID,
 	}
 	rec.Findings = toStoreFindings(scan)
-	requestedModel, pinReason := h.modelPin(req, body)
-	if requestedModel != "" {
-		rec.Model = requestedModel
+	pin := h.modelPin(req, body)
+	if pin.Model != "" {
+		rec.Model = pin.Model
 	}
-	if pinReason != "" && dec.Action != model.ActionBlock {
+	if pin.Refused() && dec.Action != model.ActionBlock {
 		rec.Action, rec.Status = string(model.ActionBlock), http.StatusForbidden
-		rec.Reasons = []string{pinReason}
+		rec.Reasons = []string{pin.Reason}
 		h.Store.AppendLog(rec)
-		return &http.Response{StatusCode: http.StatusForbidden, Status: "403 Forbidden", Proto: "HTTP/1.1", ProtoMajor: 1, ProtoMinor: 1, Header: http.Header{"X-Piso-Reason": {pinReason}}, Body: io.NopCloser(strings.NewReader(pinReason)), Request: req, Close: true}, false
+		return &http.Response{StatusCode: http.StatusForbidden, Status: "403 Forbidden", Proto: "HTTP/1.1", ProtoMajor: 1, ProtoMinor: 1, Header: pin.Header(), Body: io.NopCloser(strings.NewReader(pin.Message)), Request: req, Close: true}, false
 	}
 
 	switch dec.Action {

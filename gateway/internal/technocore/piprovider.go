@@ -34,8 +34,15 @@ type piProviderDoc struct {
 			Name         string `json:"name"`
 			SecretID     string `json:"secretId"`
 			BaseURL      string `json:"baseUrl"`
-			Kind         string `json:"kind"`
 			DefaultModel string `json:"defaultModel"`
+			// The coordinator mirrors the profile's policy fields. They are
+			// pointers because absence and an empty value mean different
+			// things: a coordinator that predates the field omits it (keep the
+			// local value), while an explicit "" or [] is a decision the
+			// operator made on a gateway and must travel.
+			Kind           *string   `json:"kind"`
+			APIType        *string   `json:"api"`
+			ApprovedModels *[]string `json:"approvedModels"`
 		} `json:"providers"`
 	} `json:"metadata"`
 	UpdatedAt string `json:"updated_at"`
@@ -85,19 +92,15 @@ func syncPiProvider(st *store.Store, dataDir string, id tc.Identity) error {
 			if strings.TrimSpace(rp.ID) == "" || rp.SecretID == "" || rp.BaseURL == "" {
 				continue
 			}
-			// Kind travels with the record. A coordinator that predates it
-			// omits the field, which reads as remote: the decider must never be
-			// re-derived from the URL, so such a profile is treated as an
-			// endpoint this gateway may try (and report as unavailable).
-			if err := st.UpsertPiProvider(store.PiProviderRec{
+			rec := mergePiProvider(st.PiProviderByID(rp.ID), store.PiProviderRec{
 				ID:           rp.ID,
 				Name:         rp.Name,
 				SecretID:     rp.SecretID,
 				BaseURL:      rp.BaseURL,
-				Kind:         rp.Kind,
 				DefaultModel: rp.DefaultModel,
 				UpdatedAt:    remoteAt,
-			}); err != nil {
+			}, rp.Kind, rp.APIType, rp.ApprovedModels)
+			if err := st.UpsertPiProvider(rec); err != nil {
 				return err
 			}
 		}
@@ -162,18 +165,38 @@ func PublishPiProvider(st *store.Store, dataDir string) error {
 // the active profile so an older coordinator still works.
 func publishPiProvider(st *store.Store, id tc.Identity) error {
 	profiles := st.PiProviderStack()
-	providers := make([]map[string]string, 0, len(profiles))
+	// The published profile is the account-wide shape of one stack entry. The
+	// approved list travels with it, and is always present (possibly empty) so a
+	// list cleared on this gateway clears on the others; a peer that predates the
+	// field simply ignores it. The catalog does not travel: it is fetched by each
+	// gateway and is not account configuration.
+	type publishedProvider struct {
+		ID             string   `json:"id"`
+		Name           string   `json:"name"`
+		SecretID       string   `json:"secretId"`
+		BaseURL        string   `json:"baseUrl"`
+		Kind           string   `json:"kind"`
+		APIType        string   `json:"api"`
+		DefaultModel   string   `json:"defaultModel"`
+		ApprovedModels []string `json:"approvedModels"`
+	}
+	providers := make([]publishedProvider, 0, len(profiles))
 	for _, p := range profiles {
 		if p.SecretID == "" || p.BaseURL == "" {
 			continue
 		}
-		providers = append(providers, map[string]string{
-			"id":           p.ID,
-			"name":         p.Name,
-			"secretId":     p.SecretID,
-			"baseUrl":      p.BaseURL,
-			"kind":         p.Kind,
-			"defaultModel": p.DefaultModel,
+		// A nil slice marshals as null, which a reader takes for an omitted
+		// field. Normalize to an empty list so "only the default" is a value.
+		approved := cleanedModelIDs(p.ApprovedModels)
+		providers = append(providers, publishedProvider{
+			ID:             p.ID,
+			Name:           p.Name,
+			SecretID:       p.SecretID,
+			BaseURL:        p.BaseURL,
+			Kind:           p.Kind,
+			APIType:        p.APIType,
+			DefaultModel:   p.DefaultModel,
+			ApprovedModels: approved,
 		})
 	}
 	if len(providers) == 0 {
@@ -208,6 +231,57 @@ func publishPiProvider(st *store.Store, id tc.Identity) error {
 		return fmt.Errorf("pi-provider publish HTTP %d: %s", res.StatusCode, raw)
 	}
 	return nil
+}
+
+// mergePiProvider folds a coordinator's copy of one profile into the local
+// record. The coordinator mirrors the account-wide fields — endpoint, secret,
+// default model — plus, when it understands them, the kind, the pi api adapter,
+// and the approved-model list.
+//
+// Two rules keep a round trip from destroying local state. Fields the payload
+// carries are authoritative, so a list cleared on one gateway reaches the
+// others. Fields it does not carry are left as this gateway has them: the model
+// catalog is fetched here (never published), and a coordinator that predates a
+// field omits it, which must not read as "clear it" — that is what erased an
+// approved list on every reconcile.
+func mergePiProvider(local *store.PiProviderRec, remote store.PiProviderRec, kind, api *string, approved *[]string) store.PiProviderRec {
+	rec := remote
+	if local != nil {
+		rec.Kind = local.Kind
+		rec.APIType = local.APIType
+		rec.ApprovedModels = append([]string(nil), local.ApprovedModels...)
+		rec.Models = append([]string(nil), local.Models...)
+		rec.CatalogCheckedAt = local.CatalogCheckedAt
+		rec.CatalogError = local.CatalogError
+		rec.CatalogSuspect = local.CatalogSuspect
+	}
+	if kind != nil {
+		rec.Kind = *kind
+	}
+	if api != nil {
+		rec.APIType = *api
+	}
+	if approved != nil {
+		rec.ApprovedModels = cleanedModelIDs(*approved)
+	}
+	return rec
+}
+
+// cleanedModelIDs trims and de-duplicates a synced approved list, keeping the
+// stored order (that order is what /model shows). A list that cleans down to
+// nothing is still a real value: it means "only the default model".
+func cleanedModelIDs(values []string) []string {
+	out := make([]string, 0, len(values))
+	seen := make(map[string]bool, len(values))
+	for _, v := range values {
+		id := strings.TrimSpace(v)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	return out
 }
 
 // applyProviderPointer writes models.json when the pointed-at secret is

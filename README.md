@@ -151,6 +151,34 @@ The shared profile is a read-only mount. A running session re-reads it every
 15 seconds and applies provider or default changes at its next idle boundary,
 so selecting a provider does not require a restart or `/reload`.
 
+#### Approved models
+
+Each profile has a default model and an optional list of approved model ids.
+The list is what the gateway's model pin enforces: a generation request through
+that provider must name one of them. An empty list means **only the default
+model**, never "whatever the catalog returns", so a profile saved without a list
+behaves exactly as it did before the list existed.
+
+The default model is always usable in addition to the list, because it is the
+model new sessions start on: a list that excluded it would leave the provider
+unable to serve its own start state. Saving a list that omits the default says
+so on the provider card, and the resolved set is reported as `allowedModels`
+next to the stored `approvedModels`, and as `providers[<id>]` for every provider
+in the stack at once. An approved id the provider's last known
+catalog does not list is saved with a warning rather than refused — a catalog
+change must not lock the operator out of editing the list that fixes it.
+
+Saving a provider without the `approvedModels` field keeps the stored list; an
+explicit empty array clears it. That split is what stops a dashboard older than
+the field from erasing a list configured through the API every time the
+provider is edited.
+
+A refused request answers **403** with a body that names the requested model and
+the ids that would have been accepted, plus `X-Piso-Reason` (`model-not-allowed`,
+`model-required`, `model-provider-mismatch`, or `model-pin-unresolved`) and
+`X-Piso-Allowed-Models`. `model-not-allowed` replaces the former
+`model-mismatch`, which answered with a bare code and no expected model.
+
 ### Per-worker overrides
 
 The active provider is the default for every worker. When one worker needs a
@@ -174,12 +202,114 @@ while the gateway is down still starts on its pinned provider and corrects
 itself on the next successful poll. Precedence is override → active provider →
 first registered model, resolved in one place on the gateway.
 
+That answer also carries, per provider, what this worker may actually run
+(`providers`), and the pi extension builds each provider's `/model` catalog from
+it: the ids in tab order, with the catalog supplying metadata only, so an
+approved id discovery has not returned yet is still offered. `models.json` is one
+shared read-only mount, so it lists a provider's whole catalog for every worker;
+showing all of it would offer ids the gateway refuses, turning a policy into a
+403 mid-session.
+
+"What this worker may run" is narrower than the tab, because the pin is a
+per-worker boundary rather than a per-provider preference. A worker's generation
+requests are judged against the one provider it is pinned to and any other host
+is refused as `model-provider-mismatch`, so a model approved on a second remote
+provider is a model this worker cannot use: the tab keeps that provider's list
+for whichever worker is pinned to it, and this one is told nothing is usable
+there. Pinning the worker to that provider in **Model overrides** moves the menu
+with it on the next poll. A local (Tinfoil) provider is the exception — its base
+URL is loopback, which `NO_PROXY` keeps off the proxy, so the pin never sees it
+and its approved list is the only boundary — and it stays in the menu while
+unpinned. The shaping is applied wherever the catalog is assembled — the cached
+`models-store.json`, the `models.json` fallback, and both branches of a refresh —
+and the result is what gets persisted, so a stale cache cannot put removed models
+back one session later.
+
+Two absences are deliberately different. A provider **present with an empty
+list** is the gateway saying "nothing usable here for this worker": it registers
+no models, and its `refreshModels` returns nothing before any network call. A
+provider **absent from the map** is a gateway that did not answer for it — an
+older gateway, or an unreachable one with no cache — and the catalog is
+registered as before, so an upgrade in either direction never blanks a menu. For
+the same reason a legacy cached answer, which predates the map, speaks only for
+the provider it pins and only when it names models. Providers the tab does not
+own at all (a built-in family whose API key reached the worker, a `models.json`
+entry from an older namespace) are registered with only their non-chat models,
+so a stray credential cannot put 400 models back in `/model`. If the list shrinks
+under a running session, the extension switches to an approved model and says so
+once rather than leaving every request to 403 until restart.
+
 The provider must already be in the stack, and its secret must be granted to
 that worker: an override whose placeholder the worker never receives could
 only fail with a 403, so the dashboard refuses the pick and names the fix
-(**Access → Secrets**). If a pinned provider is later deleted the row stays
+(**Access → Secrets**). A provider with nothing to pin to is refused the same
+way: with no default model and no approved model, every request through it
+would 403 as `model-pin-unresolved`, so the dashboard disables the option and
+says which fix unlocks it. If a pinned provider is later deleted the row stays
 visible and marked, and the worker falls back to the active provider until the
 provider is recreated or the override is removed.
+
+A row is edited in place from the list: the worker is the key, so the dialog
+shows it as fixed text instead of a second chance to change it. A row whose
+provider was deleted reopens on an explicit **Provider removed — choose one**
+entry rather than a `<select>` that silently reports the first provider and
+repoints the worker on save. Editing prefills the row's **pinned** model, not
+the substitute a drifted worker is currently running, so saving a drifted row
+records what was intended rather than quietly rewriting it.
+
+An override pins a provider and, optionally, one model within it. A worker may
+use any model on that provider's approved list; the override's `model` narrows
+that to a single id. An empty `model` means "that provider's default", which
+is why it is optional: the row keeps resolving if the default later moves
+instead of freezing a copy of it. A pin outside the approved list is refused
+when it is saved, with the allowed ids named, rather than stored as a 403
+waiting for the worker's next poll.
+
+#### Model drift
+
+A provider's catalog is a moving target, so the dashboard compares the ids it
+is configured with — the default, each approved model, each worker's pinned
+model — against the last catalog the gateway fetched, and shows what is no
+longer listed. **Drift is a report, never a repair**: nothing on the read path
+edits a provider or removes an approved model, because a model that left a
+catalog may be a deprecation, a rename, or a bad fetch, and only a human can
+tell which.
+
+Three states, and the difference between the first two is the whole feature:
+
+- **`missing`** — absent from a catalog we hold, with no recorded fetch error.
+  Real drift, and the only state that is rendered as a problem.
+- **`unknown`** — no catalog yet, the last fetch failed, the provider is local
+  (its catalog is served inside the worker, so the gateway cannot check it),
+  or the catalog looks truncated. "We did not look" is not "it is gone", and
+  rendering it as drift would paint a working provider red.
+- **`ok`** — listed.
+
+Severity follows the role rather than the list. A missing **default model** is
+the loud one: every new session on that provider starts on a model the provider
+no longer serves. Missing **approved** models are a shrinking menu, reported as
+a count. A missing **pinned** model is the sharp case, and it falls back: the
+worker runs the provider's default, the override row shows `pinned → running`
+with a `drifted` badge, and the resolved answer carries a warning. A worker
+that refuses to start is worse than one running a documented substitute that
+the dashboard is already flagging, and only ever the provider's default is used
+— never "the first model the catalog listed", which is the arbitrary-model
+symptom this pin exists to prevent.
+
+A catalog less than half the size of the one before it is stored but flagged
+`suspect`, and suppresses drift verdicts: providers answer with partial lists
+while reindexing, and one such response would otherwise declare every approved
+model missing at once. The next fetch that agrees with it clears the flag, so a
+real mass deprecation costs one quiet refresh and a one-off glitch costs
+nothing. Every report carries the catalog's age, so the claim is always "not in
+the catalog checked 12m ago" rather than "invalid". When a missing id differs
+from a listed one only by case, the report names the listed id: a renamed case
+is the most common "deleted" model.
+
+The dashboard re-reads every provider's catalog each time the provider view is
+displayed, so drift is judged against what the provider serves now. The
+finished refresh loads the provider list once more (that is what recomputes the
+verdicts server-side), and the resulting render does not start another one.
 
 ### Windows
 
