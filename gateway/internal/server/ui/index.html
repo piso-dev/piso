@@ -1825,6 +1825,40 @@
       .override-worker { font-weight: 600; }
       .override-provider { color: var(--muted); font-size: 13px; }
       .override-model { margin-left: auto; font-family: monospace; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+      .override-actions { display: flex; gap: 6px; }
+      /* Approved-model chips. The list is the field: each id is a removable
+         token, and the text input below it is where the next one is typed. */
+      .chips {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin-bottom: 8px;
+      }
+      .chips:empty { display: none; }
+      .chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        max-width: 100%;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        background: var(--inset);
+        padding: 3px 4px 3px 10px;
+        font-family: var(--mono, monospace);
+        font-size: 12px;
+      }
+      .chip-id { overflow-wrap: anywhere; }
+      .chip-x {
+        border: 0;
+        background: none;
+        color: var(--muted);
+        font: inherit;
+        line-height: 1;
+        padding: 2px 6px;
+        border-radius: 999px;
+        cursor: pointer;
+      }
+      .chip-x:hover, .chip-x:focus-visible { color: var(--text); background: var(--line); }
       .override-warning { flex: 1 1 100%; color: var(--amber); font-size: 13px; }
       .override-pinned { text-decoration: line-through; opacity: 0.7; }
       /* Drift on a provider card. The alert is for a default model that is gone
@@ -5223,6 +5257,193 @@
         };
       }
 
+      // attachSuggest is the one combobox implementation: typing filters, arrows
+      // move, Enter or a click picks, Escape and blur close. The provider's
+      // default-model field, the override's model field and the approved-model
+      // chips all share it, because three copies would drift apart on the next
+      // keyboard fix.
+      //
+      // getItems is called on every keystroke rather than captured once: a
+      // catalog arrives asynchronously, so a snapshot taken at wiring time would
+      // be empty forever.
+      function attachSuggest(input, listbox, options = {}) {
+        const { getItems = () => [], limit = 8, onPick } = options;
+        if (!input || !listbox) return { close() {}, pick() {} };
+        const prefix = (listbox.id || "suggestions") + "Opt";
+        let active = -1;
+        const items = () => {
+          const all = getItems();
+          return Array.isArray(all) ? all : [];
+        };
+        const close = () => {
+          active = -1;
+          listbox.innerHTML = "";
+          listbox.hidden = true;
+          input.setAttribute("aria-expanded", "false");
+          input.removeAttribute("aria-activedescendant");
+        };
+        const show = (entries) => {
+          active = -1;
+          listbox.innerHTML = entries
+            .map(
+              (id, i) =>
+                `<li role="option" id="${esc(prefix + i)}" data-model="${esc(id)}">${esc(id)}</li>`,
+            )
+            .join("");
+          const open = entries.length > 0;
+          listbox.hidden = !open;
+          input.setAttribute("aria-expanded", String(open));
+          input.removeAttribute("aria-activedescendant");
+        };
+        const move = (by) => {
+          const options = [...listbox.querySelectorAll("li")];
+          if (!options.length) return;
+          active = (active + by + options.length) % options.length;
+          options.forEach((o, i) => o.classList.toggle("active", i === active));
+          input.setAttribute("aria-activedescendant", prefix + active);
+          options[active].scrollIntoView({ block: "nearest" });
+        };
+        const pick = (id) => {
+          input.value = id;
+          close();
+          if (onPick) onPick(id);
+        };
+        input.addEventListener("input", () => {
+          const q = input.value.trim().toLowerCase();
+          show(items().filter((id) => id.toLowerCase().includes(q)).slice(0, limit));
+        });
+        input.addEventListener("keydown", (e) => {
+          if (listbox.hidden) return;
+          if (e.key === "ArrowDown") {
+            e.preventDefault();
+            move(1);
+          } else if (e.key === "ArrowUp") {
+            e.preventDefault();
+            move(-1);
+          } else if (e.key === "Enter" && active >= 0) {
+            e.preventDefault();
+            pick(listbox.children[active].dataset.model);
+          } else if (e.key === "Escape") {
+            close();
+          }
+        });
+        input.addEventListener("blur", () => setTimeout(close, 150));
+        listbox.addEventListener("mousedown", (e) => {
+          const option = e.target.closest("li");
+          if (!option) return;
+          e.preventDefault();
+          pick(option.dataset.model);
+        });
+        return { close, pick };
+      }
+
+      // setFieldHint writes the line under a suggestField. Hiding it when empty
+      // rather than leaving a blank row keeps dialogs from reserving space for
+      // a hint that does not exist yet.
+      function setFieldHint(name, text) {
+        const hint = $(`#f-${name}-hint`);
+        if (!hint) return;
+        hint.textContent = text || "";
+        hint.hidden = !text;
+      }
+
+      // suggestField is a text input with its own listbox, its own hint, and ids
+      // derived from the field name: the page script is one scope, so the
+      // provider dialog's fixed #modelList cannot be reused by a second field.
+      function suggestField(name, label, value, options = {}) {
+        const { hint = "", placeholder = "", required = false } = options;
+        const id = `f-${name}`;
+        return `<label class="field full" for="${id}"><span>${esc(label)}</span><input name="${esc(name)}" id="${id}" type="text" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="${id}-list" autocomplete="off"${required ? " required" : ""} placeholder="${esc(placeholder)}" value="${esc(value)}"><ul id="${id}-list" class="suggestions" role="listbox" hidden></ul><small id="${id}-hint"${hint ? "" : " hidden"}>${esc(hint)}</small></label>`;
+      }
+
+      // modelChipsField renders a list field as removable chips. The submitted
+      // value stays a hidden input, newline-joined, so the form and the API
+      // payload are exactly what the textarea this replaced used to send.
+      function modelChipsField(name, label, options = {}) {
+        const { hint = "" } = options;
+        const id = `f-${name}`;
+        return `<div class="field full" role="group" aria-labelledby="${id}-label"><span id="${id}-label">${esc(label)}</span><input type="hidden" name="${esc(name)}" id="${id}" value=""><div class="chips" id="${id}-chips" role="list"></div><input id="${id}-input" type="text" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="${id}-list" autocomplete="off" placeholder="Type a model id and press Enter"><ul id="${id}-list" class="suggestions" role="listbox" hidden></ul><small id="${id}-hint"${hint ? "" : " hidden"}>${esc(hint)}</small></div>`;
+      }
+
+      // wireModelChips owns the approved-model chips: adding from a suggestion,
+      // from typed text, or from a pasted comma list; removing one with its x;
+      // and keeping the hidden input in step. Entries are deduped and kept in
+      // the order they were added, because that order is what /model shows.
+      function wireModelChips(name, initial, options = {}) {
+        const { getItems = () => [] } = options;
+        const store = $(`#f-${name}`);
+        const holder = $(`#f-${name}-chips`);
+        const input = $(`#f-${name}-input`);
+        const box = $(`#f-${name}-list`);
+        if (!store || !holder || !input || !box) return () => [];
+        let chosen = (Array.isArray(initial) ? initial : []).filter(Boolean);
+        const commit = () => {
+          store.value = chosen.join("\n");
+        };
+        const render = () => {
+          holder.innerHTML = chosen
+            .map(
+              (id) =>
+                `<span class="chip" role="listitem"><span class="chip-id">${esc(id)}</span><button type="button" class="chip-x" data-chip="${esc(id)}" aria-label="Remove ${esc(id)}">\u00d7</button></span>`,
+            )
+            .join("");
+          commit();
+        };
+        const add = (raw) => {
+          const ids = String(raw || "")
+            .split(/[\n,]/)
+            .map((id) => id.trim())
+            .filter(Boolean);
+          let grew = false;
+          for (const id of ids) {
+            if (chosen.includes(id)) continue;
+            chosen.push(id);
+            grew = true;
+          }
+          if (grew) render();
+          commit();
+          return grew;
+        };
+        holder.addEventListener("click", (e) => {
+          const x = e.target.closest("[data-chip]");
+          if (!x) return;
+          e.preventDefault();
+          chosen = chosen.filter((id) => id !== x.dataset.chip);
+          render();
+          input.focus();
+        });
+        const suggest = attachSuggest(input, box, {
+          getItems,
+          onPick: (id) => {
+            add(id);
+            input.value = "";
+          },
+        });
+        input.addEventListener("keydown", (e) => {
+          if (e.key !== "Enter" && e.key !== ",") return;
+          e.preventDefault();
+          // A pick handled by the combobox has already emptied the input, so
+          // this is a no-op in that case and a typed id otherwise.
+          add(input.value);
+          input.value = "";
+          suggest.close();
+        });
+        input.addEventListener("paste", (e) => {
+          const text = e.clipboardData ? e.clipboardData.getData("text") : "";
+          if (!/[\n,]/.test(text)) return;
+          e.preventDefault();
+          add(text);
+        });
+        // Typing an id and clicking Save — or anywhere else — must not lose it.
+        input.addEventListener("blur", () => {
+          if (!input.value.trim()) return;
+          add(input.value);
+          input.value = "";
+        });
+        render();
+        return () => (Array.isArray(chosen) ? chosen.slice() : []);
+      }
+
       // A worker override pins one worker to one provider in the shared stack.
       // The stack stays exactly as it is; only the starting selection differs,
       // so an override needs no container recreate and no second profile.
@@ -5255,7 +5476,7 @@
               <span class="override-worker">${esc(o.slug)}</span>
               <span class="override-provider">${esc(o.providerName || o.providerId || "provider removed")}</span>
               <span class="override-model">${shown}</span>
-              ${button("Remove", "override-remove", o.slug, "small danger")}
+              <span class="override-actions">${button("Edit", "override-edit", o.slug, "small")}${button("Remove", "override-remove", o.slug, "small danger")}</span>
               ${warning}
             </li>`;
           })
@@ -5272,83 +5493,150 @@
         </section>`;
       }
 
-      function overrideForm() {
+      // overrideForm pins a worker, or edits a pin in place. An override is
+      // keyed by slug, so an edit cannot move a pin to another worker: the row
+      // is replaced, not relocated. The dialog therefore shows the slug as text
+      // instead of a dropdown whose only valid answer is the value it already
+      // has.
+      function overrideForm(slug) {
         const { overrides, providers } = overrideData();
-        const pinned = new Set(overrides.map((o) => o.slug));
-        const free = list("workers").filter((w) => w.slug && !pinned.has(w.slug));
+        const editing = slug ? overrides.find((o) => o.slug === slug) : undefined;
         if (!providers.length) {
           notify("Add a provider before overriding a worker.", true);
           return;
         }
-        if (!free.length) {
+        const pinned = new Set(overrides.map((o) => o.slug));
+        const free = list("workers").filter((w) => w.slug && !pinned.has(w.slug));
+        if (!editing && !free.length) {
           notify(
             overrides.length
-              ? "Every worker already has an override. Remove one to change it."
+              ? "Every worker already has an override. Edit one to change its model."
               : "No workers have registered yet.",
             true,
           );
           return;
         }
+        // Nothing to pin to: the server refuses this, so say it here rather than
+        // open a dialog whose only possible save is an error.
+        if (!editing && !providers.some((p) => p.pinnable !== false)) {
+          notify(
+            "No provider can be pinned to yet: each one needs a default model or at least one approved model.",
+            true,
+          );
+          return;
+        }
+        const current = editing ? editing.providerId : (providers.find((p) => p.pinnable !== false) || providers[0]).id;
+        const providerOf = (id) => providers.find((p) => p.id === id) || {};
+        // A Tinfoil provider is served by the enclave proxy inside the worker,
+        // so the gateway never sees the request and cannot judge the model. Its
+        // model field is optional for that reason, not as a UI allowance.
+        // BaseURL is part of the test because a provider saved before kinds
+        // existed is local by URL alone.
+        const isLocal = (p) =>
+          p.kind === "tinfoil" || (!p.kind && p.baseUrl === TINFOIL_BASE_URL);
+        const allowedOf = (id) => {
+          const p = providerOf(id);
+          return Array.isArray(p.allowedModels) ? p.allowedModels : [];
+        };
         const scopeNote = (p) =>
           Array.isArray(p.workers) && p.workers.length
             ? ` (secret granted to ${p.workers.length === 1 ? "one worker" : p.workers.length + " workers"})`
             : "";
-        formDialog(
-          "Override a worker's provider",
-          "The worker starts on this provider instead of the account default. The shared provider stack is unchanged, and the switch happens at the worker's next idle boundary — no reload is needed. A provider whose secret is not granted to the worker cannot be chosen: the worker would receive a placeholder it has no value for. The model is optional and limited to the provider's approved models: leaving it empty follows the provider's default, so the row keeps working if that default later moves.",
-          field("slug", "Worker", free[0].slug, {
-            required: true,
-            full: true,
-            choices: free.map((w) => [w.slug, w.slug]),
-          }) +
-            field("providerId", "Provider", providers[0].id, {
+        // A provider with nothing to pin to can only 403 every request, so the
+        // server refuses it; the option says why instead of letting the pick
+        // land and the save explain it. The current value stays selectable so an
+        // older row still opens on what it actually says.
+        const providerOptions = providers
+          .map((p) => {
+            const label =
+              (p.name || p.id) +
+              (p.defaultModel ? " · " + p.defaultModel : "") +
+              scopeNote(p) +
+              (p.pinnable === false ? " — no usable model yet" : "");
+            const disabled = p.pinnable === false && p.id !== current;
+            return `<option value="${esc(p.id)}"${p.id === current ? " selected" : ""}${disabled ? " disabled" : ""}>${esc(label)}</option>`;
+          })
+          .join("");
+        // A row whose provider was deleted has no option to select, and a
+        // <select> with no matching option silently reports the first one —
+        // which would repoint the worker on save. Name the gap instead.
+        const gone = current && !providers.some((p) => p.id === current);
+        const providerField = `<label class="field full" for="f-providerId"><span>Provider</span><select name="providerId" id="f-providerId" required>${
+          gone ? `<option value="" selected>Provider removed — choose one</option>` : ""
+        }${providerOptions}</select></label>`;
+        const workerField = editing
+          ? `<div class="field full"><span>Worker</span><p class="fixed-url">${esc(editing.slug)}</p><input type="hidden" name="slug" value="${esc(editing.slug)}"></div>`
+          : field("slug", "Worker", free[0].slug, {
               required: true,
               full: true,
-              choices: providers.map((p) => [
-                p.id,
-                (p.name || p.id) + (p.defaultModel ? " · " + p.defaultModel : "") + scopeNote(p),
-              ]),
-            }) +
-            field("model", "Model", "", {
-              full: true,
-              choices: modelChoices(providers, providers[0].id),
-              hint: "Only the provider's approved models are offered; the gateway refuses anything else at save time.",
-            }),
-          "Pin worker",
+              choices: free.map((w) => [w.slug, w.slug]),
+            });
+        formDialog(
+          editing ? "Edit worker override" : "Override a worker's provider",
+          editing
+            ? "The worker starts on this provider instead of the account default. The shared provider stack is unchanged, and the switch happens at the worker's next idle boundary — no reload is needed. Leaving the model empty follows the provider's default, so the row keeps resolving if that default later moves."
+            : "The worker starts on this provider instead of the account default. The shared provider stack is unchanged, and the switch happens at the worker's next idle boundary — no reload is needed. A provider whose secret is not granted to the worker cannot be chosen: the worker would receive a placeholder it has no value for. The model is optional and limited to the provider's approved models: leaving it empty follows the provider's default, so the row keeps working if that default later moves.",
+          workerField +
+            providerField +
+            suggestField("model", "Model (optional)", editing ? editing.pinnedModel || "" : ""),
+          editing ? "Save override" : "Pin worker",
           async (f) => {
+            const model = String(f.model || "").trim();
+            if (!f.providerId)
+              throw new Error(
+                "Choose a provider: the one this worker was pinned to is no longer in the stack.",
+              );
             await api("model-overrides", "PUT", {
-              slug: f.slug,
+              slug: editing ? editing.slug : f.slug,
               providerId: f.providerId,
-              model: f.model,
+              model,
             });
             await changed(["modelOverrides"]);
             return "Override saved. The worker switches at its next idle boundary.";
           },
         );
-        // The approved list belongs to the chosen provider, so the option list
-        // is rebuilt when the provider changes rather than filtered from the
-        // whole catalog: offering a model the gateway will refuse turns a
-        // policy into a 403 at save time.
-        const providerField = $("#f-providerId");
-        const modelField = $("#f-model");
-        if (providerField && modelField)
-          providerField.addEventListener("change", () => {
-            modelField.innerHTML = modelChoices(providers, providerField.value)
-              .map(([v, t]) => `<option value="${esc(v)}">${esc(t)}</option>`)
-              .join("");
+        const select = $("#f-providerId");
+        const modelInput = $("#f-model");
+        const describe = (id) => {
+          const p = providerOf(id);
+          if (isLocal(p)) {
+            modelInput.placeholder = "Model id (optional)";
+            return "Optional: the enclave proxy inside the worker picks the model, so the gateway cannot check it. Leave empty unless the profile needs a specific id.";
+          }
+          const def = p.defaultModel || "";
+          // The placeholder carries the same promise the hint does, so an empty
+          // field reads as a choice rather than a gap.
+          modelInput.placeholder = def ? `Provider default (${def})` : "Provider default";
+          const allowed = allowedOf(id);
+          if (!allowed.length)
+            return "This provider has no usable model yet; set a default model or approve one in the provider settings before pinning to it.";
+          return (
+            (def ? `Leave empty to follow the provider's default (${def}). ` : "Leave empty to follow the provider's default. ") +
+            "Only approved models are offered; the gateway refuses anything else at save time."
+          );
+        };
+        if (select && modelInput) {
+          setFieldHint("model", describe(select.value));
+          attachSuggest(modelInput, $("#f-model-list"), {
+            getItems: () => allowedOf(select.value),
           });
-      }
-
-      // modelChoices is "provider default" plus the provider's approved models.
-      // The empty value is what the store treats as "follow the default".
-      function modelChoices(providers, providerId) {
-        const p = providers.find((x) => x.id === providerId) || {};
-        const allowed = Array.isArray(p.allowedModels) ? p.allowedModels : [];
-        const def = p.defaultModel || "";
-        return [
-          ["", def ? `Provider default (${def})` : "Provider default"],
-          ...allowed.filter((id) => id !== def).map((id) => [id, id]),
-        ];
+          select.addEventListener("change", () => {
+            const allowed = allowedOf(select.value);
+            const local = isLocal(providerOf(select.value));
+            setFieldHint("model", describe(select.value));
+            // A model approved by the old provider is not approved by the new
+            // one, so keeping it would be a save that can only fail. Clearing is
+            // not a silent policy change: it is the same "follow the default"
+            // the empty field already means.
+            if (modelInput.value.trim() && !local && !allowed.includes(modelInput.value.trim())) {
+              setFieldHint(
+                "model",
+                `${modelInput.value.trim()} is not approved by this provider, so it was cleared. ${describe(select.value)}`,
+              );
+              modelInput.value = "";
+            }
+          });
+        }
       }
 
       function providerForm(id) {
@@ -5426,16 +5714,12 @@
         // worker on this provider, and what /model offers inside a session.
         // Empty keeps the narrow default: only the default model, which is
         // what a provider saved before this field existed already behaves like.
-        const approvedField = field(
-          "approvedModels",
-          "Approved models (one per line, optional)",
-          (Array.isArray(p.approvedModels) ? p.approvedModels : []).join("\n"),
-          {
-            type: "textarea",
-            full: true,
-            hint: "The only models a worker may use on this provider. Leave empty for just the default model. The default is always usable, and a model the provider no longer lists is reported rather than removed.",
-          },
-        );
+        // Chips rather than a textarea because the list is edited one id at a
+        // time far more often than it is retyped; the submitted value is still
+        // the same newline-joined string.
+        const approvedField = modelChipsField("approvedModels", "Approved models (optional)", {
+          hint: "The only models a worker may use on this provider. Leave empty for just the default model. The default is always usable, and a model the provider no longer lists is reported rather than removed.",
+        });
         formDialog(
           id ? "Edit provider" : "Add provider",
           "A provider is a secret, an API base URL, and an optional default model. Saving writes it to the shared pi profile; activating it makes it the startup default for new sessions. The model list is optional: a provider saves even when its catalog cannot be reached.",
@@ -5499,9 +5783,10 @@
             try {
               out = await api("pi-provider", "PUT", {
                 ...providerFields,
-                // Split here rather than sending the raw textarea: the field is
-                // a list, and the API takes a list. Blank lines and stray commas
-                // are the operator's formatting, not model ids.
+                // Split here rather than trusting the field's shape: the chips
+                // keep a newline-joined string, and the API takes a list. Blank
+                // lines and stray commas are the operator's formatting, not
+                // model ids.
                 approvedModels: String(providerFields.approvedModels || "")
                   .split(/[\n,]/)
                   .map((id) => id.trim())
@@ -5658,6 +5943,12 @@
         );
         reloadModels = () =>
           $("#f-secretId")?.dispatchEvent(new Event("change"));
+        // The approved list is a subset of the same catalog, so its suggestions
+        // read the shared `catalog` object lazily: the list arrives after this
+        // wiring runs, and a captured snapshot would be empty forever.
+        wireModelChips("approvedModels", Array.isArray(p.approvedModels) ? p.approvedModels : [], {
+          getItems: () => catalog.models || [],
+        });
       }
 
       // Suggest model ids from the provider's live catalog. The gateway holds
@@ -5677,62 +5968,16 @@
         const readBaseUrl = getBaseUrl || (() => (baseUrlField ? baseUrlField.value.trim() : ""));
         const readKind = getKind || (() => "");
         let models = [];
-        let active = -1;
         let loadedKey = "";
         let loadingKey = "";
         let seq = 0;
         let timer;
         const pairKey = () =>
           readBaseUrl() + "\u0000" + (secretField.value || "");
-        const show = (items) => {
-          active = -1;
-          listbox.innerHTML = items
-            .map(
-              (id, i) =>
-                `<li role="option" id="modelOpt${i}" data-model="${esc(id)}">${esc(id)}</li>`,
-            )
-            .join("");
-          const open = items.length > 0;
-          listbox.hidden = !open;
-          input.setAttribute("aria-expanded", String(open));
-          input.removeAttribute("aria-activedescendant");
-        };
-        const move = (by) => {
-          const options = [...listbox.querySelectorAll("li")];
-          if (!options.length) return;
-          active = (active + by + options.length) % options.length;
-          options.forEach((o, i) => o.classList.toggle("active", i === active));
-          input.setAttribute("aria-activedescendant", "modelOpt" + active);
-          options[active].scrollIntoView({ block: "nearest" });
-        };
-        input.addEventListener("input", () => {
-          const q = input.value.trim().toLowerCase();
-          show(models.filter((id) => id.toLowerCase().includes(q)).slice(0, 8));
-        });
-        input.addEventListener("keydown", (e) => {
-          if (listbox.hidden) return;
-          if (e.key === "ArrowDown") {
-            e.preventDefault();
-            move(1);
-          } else if (e.key === "ArrowUp") {
-            e.preventDefault();
-            move(-1);
-          } else if (e.key === "Enter" && active >= 0) {
-            e.preventDefault();
-            input.value = listbox.children[active].dataset.model;
-            show([]);
-          } else if (e.key === "Escape") {
-            show([]);
-          }
-        });
-        input.addEventListener("blur", () => setTimeout(() => show([]), 150));
-        listbox.addEventListener("mousedown", (e) => {
-          const option = e.target.closest("li");
-          if (!option) return;
-          e.preventDefault();
-          input.value = option.dataset.model;
-          show([]);
-        });
+        // The combobox itself is shared with the override dialog and the
+        // approved-model chips; only the catalog loading below is specific to
+        // this field.
+        attachSuggest(input, listbox, { getItems: () => models });
         const setModels = (items) => {
           models = Array.isArray(items) ? items : [];
           catalog.models = models;
@@ -6362,6 +6607,7 @@
         if (name === "github-user-signout") return githubUserStop();
         if (name === "provider-edit") return providerForm(id);
         if (name === "override-add") return overrideForm();
+        if (name === "override-edit") return overrideForm(id);
         if (name === "override-remove") {
           if (!id) return;
           return confirmAction(

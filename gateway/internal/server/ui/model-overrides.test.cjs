@@ -22,6 +22,10 @@ const helpers = [
   [at("function mountDialog("), at("function closeDialog(")],
   [at("function closeDialog("), at("function field(")],
   [at("function formDialog("), at("function confirmAction(")],
+  // The Tinfoil constants and hostOf, which the override dialog reads to decide
+  // whether a provider's model field is optional.
+  [at("const TINFOIL_BASE_URL ="), at("function overrideData(")],
+  // overrideData + the combobox/field helpers + the section and dialog.
   [at("function overrideData("), at("function providerForm(")],
 ]
   .map(([from, to]) => script.slice(from, to))
@@ -137,10 +141,183 @@ test("adding an override sends the slug and provider, then refreshes the list", 
     assert.deepEqual(JSON.parse(JSON.stringify(put)), {
       path: "model-overrides",
       method: "PUT",
-      body: { slug: "alpha", providerId: "piso-two" },
+      // An empty model is the documented "follow the provider's default", so it
+      // is sent explicitly rather than omitted.
+      body: { slug: "alpha", providerId: "piso-two", model: "" },
     });
     assert.ok(h.calls.some((c) => c.path === "changed:modelOverrides"));
   });
+});
+
+test("every row offers an edit action that opens the same dialog", (t) => {
+  const h = harness(t, [{ slug: "alpha", providerId: "piso", providerName: "AIML" }]);
+  const markup = h.run("overrideSection()");
+  assert.match(markup, /data-action="override-edit" data-id="alpha"/);
+});
+
+test("editing shows the pinned model, not the substitute the worker is running", (t) => {
+  // A drifted row: model is what the worker actually runs, pinnedModel is what
+  // the operator asked for. Prefilling the substitute would rewrite the intent
+  // on save without ever showing that it changed.
+  const h = harness(t, [
+    {
+      slug: "alpha",
+      providerId: "piso-two",
+      providerName: "Second",
+      model: "model-b-substitute",
+      pinnedModel: "model-b",
+      drifted: true,
+      driftState: "missing",
+    },
+  ]);
+  h.run("overrideForm(\"alpha\")");
+  const doc = h.window.document;
+
+  // The worker is the key, so the dialog states it instead of offering a
+  // dropdown whose only correct answer is the value it already has.
+  assert.equal(doc.querySelector("#f-slug"), null);
+  assert.equal(doc.querySelector('input[name="slug"]').value, "alpha");
+  assert.match(doc.querySelector("#dialogContent").textContent, /alpha/);
+
+  assert.equal(doc.querySelector("#f-providerId").value, "piso-two");
+  assert.equal(doc.querySelector("#f-model").value, "model-b");
+
+  const form = doc.querySelector("#dialogContent form");
+  form.dispatchEvent(new h.window.Event("submit", { bubbles: true, cancelable: true }));
+  return new Promise((resolve) => setTimeout(resolve, 20)).then(() => {
+    const put = h.calls.find((c) => c.method === "PUT");
+    assert.deepEqual(JSON.parse(JSON.stringify(put)), {
+      path: "model-overrides",
+      method: "PUT",
+      body: { slug: "alpha", providerId: "piso-two", model: "model-b" },
+    });
+  });
+});
+
+test("a removed provider is named, not silently replaced by the first one", (t) => {
+  const h = harness(t, [
+    { slug: "alpha", providerId: "piso-gone", providerName: "", source: "account" },
+  ]);
+  h.run("overrideForm(\"alpha\")");
+  const doc = h.window.document;
+
+  // A <select> with no matching option reports the first provider, so saving
+  // would repoint the worker at a provider nobody chose.
+  assert.equal(doc.querySelector("#f-providerId").value, "");
+  assert.match(doc.querySelector("#f-providerId option").textContent, /Provider removed/);
+
+  const form = doc.querySelector("#dialogContent form");
+  form.dispatchEvent(new h.window.Event("submit", { bubbles: true, cancelable: true }));
+  return new Promise((resolve) => setTimeout(resolve, 20)).then(() => {
+    assert.equal(h.calls.find((c) => c.method === "PUT"), undefined);
+    assert.match(doc.querySelector("#formError").textContent, /no longer in the stack/);
+  });
+});
+
+test("a provider with nothing to pin to is disabled, with the reason in its label", (t) => {
+  const h = harness(t, [], {
+    providers: [
+      { id: "piso", name: "AIML", defaultModel: "model-a", pinnable: true },
+      { id: "piso-empty", name: "Empty", defaultModel: "", pinnable: false },
+    ],
+  });
+  h.run("overrideForm()");
+  const options = [...h.window.document.querySelectorAll("#f-providerId option")];
+  assert.equal(options[1].disabled, true);
+  assert.match(options[1].textContent, /no usable model yet/);
+  assert.equal(options[0].disabled, false);
+});
+
+test("a tinfoil provider makes the model optional and says why", (t) => {
+  const h = harness(t, [], {
+    providers: [
+      {
+        id: "piso-tinfoil",
+        name: "Tinfoil",
+        kind: "tinfoil",
+        baseUrl: "http://127.0.0.1:3301/v1",
+        pinnable: true,
+      },
+    ],
+  });
+  h.run("overrideForm()");
+  const doc = h.window.document;
+  // The enclave proxy inside the worker serves these requests, so the gateway
+  // never judges the model. Saying that is the difference between "optional"
+  // and "unchecked".
+  assert.match(doc.querySelector("#f-model-hint").textContent, /enclave proxy/);
+  assert.equal(doc.querySelector("#f-model-hint").hidden, false);
+
+  const form = doc.querySelector("#dialogContent form");
+  form.querySelector("#f-slug").value = "alpha";
+  form.dispatchEvent(new h.window.Event("submit", { bubbles: true, cancelable: true }));
+  return new Promise((resolve) => setTimeout(resolve, 20)).then(() => {
+    const put = h.calls.find((c) => c.method === "PUT");
+    assert.deepEqual(JSON.parse(JSON.stringify(put.body)), {
+      slug: "alpha",
+      providerId: "piso-tinfoil",
+      model: "",
+    });
+  });
+});
+
+test("changing the provider clears a model it does not approve", (t) => {
+  const h = harness(t, [], {
+    providers: [
+      { id: "piso", name: "AIML", defaultModel: "model-a", allowedModels: ["model-a"] },
+      { id: "piso-two", name: "Second", defaultModel: "model-b", allowedModels: ["model-b"] },
+    ],
+  });
+  h.run("overrideForm()");
+  const doc = h.window.document;
+  const model = doc.querySelector("#f-model");
+  model.value = "model-a";
+
+  const select = doc.querySelector("#f-providerId");
+  select.value = "piso-two";
+  select.dispatchEvent(new h.window.Event("change", { bubbles: true }));
+
+  // Keeping it would be a save that can only 400; empty already means "follow
+  // the default", so the dialog says what it dropped.
+  assert.equal(model.value, "");
+  assert.match(doc.querySelector("#f-model-hint").textContent, /not approved by this provider, so it was cleared/);
+});
+
+test("the model field suggests the provider's approved models, not its catalog", (t) => {
+  const h = harness(t, [], {
+    providers: [
+      { id: "piso", name: "AIML", defaultModel: "model-a", allowedModels: ["model-a", "model-z"] },
+    ],
+  });
+  h.run("overrideForm()");
+  const doc = h.window.document;
+  const model = doc.querySelector("#f-model");
+  model.value = "model";
+  model.dispatchEvent(new h.window.Event("input", { bubbles: true }));
+  const offered = [...doc.querySelectorAll("#f-model-list li")].map((li) => li.dataset.model);
+  assert.deepEqual(offered, ["model-a", "model-z"]);
+});
+
+test("adding skips a provider with no usable model instead of opening on it", (t) => {
+  const h = harness(t, [], {
+    providers: [
+      { id: "piso-empty", name: "Empty", defaultModel: "", pinnable: false },
+      { id: "piso", name: "AIML", defaultModel: "model-a", pinnable: true },
+    ],
+  });
+  h.run("overrideForm()");
+  const select = h.window.document.querySelector("#f-providerId");
+  assert.equal(select.value, "piso");
+});
+
+test("adding says so when no provider can be pinned to", (t) => {
+  const h = harness(t, [], {
+    providers: [{ id: "piso-empty", name: "Empty", defaultModel: "", pinnable: false }],
+  });
+  h.run("overrideForm()");
+  // No dialog whose only possible save is a 400: the reason is the message.
+  assert.equal(h.window.document.querySelector("#dialogContent").innerHTML, "");
+  assert.match(h.window.document.querySelector("#toast").textContent, /needs a default model or at least one approved model/);
 });
 
 test("the dialog refuses to open when there is nothing to override", (t) => {

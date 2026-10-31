@@ -62,6 +62,17 @@ type modelOverrideProviderView struct {
 	// dropdown offers exactly what the gateway will accept instead of the
 	// provider's whole catalog.
 	AllowedModels []string `json:"allowedModels,omitempty"`
+	// Kind and BaseURL let the override form recognise a local (Tinfoil)
+	// provider without loading the whole provider list: its model field is
+	// optional because the enclave proxy inside the worker picks the model and
+	// the gateway's pin never sees the request. BaseURL is carried because a
+	// provider saved before kinds existed is local by URL alone.
+	Kind    string `json:"kind,omitempty"`
+	BaseURL string `json:"baseUrl,omitempty"`
+	// Pinnable is false when the provider has nothing to pin to: no default, no
+	// approved model, no catalog. A pin there would 403 every generation, so
+	// the save path refuses it and the dashboard greys the option out.
+	Pinnable bool `json:"pinnable"`
 }
 
 type modelOverrideListView struct {
@@ -231,6 +242,9 @@ func (s *Server) modelOverrideListView() modelOverrideListView {
 			DefaultModel:  effectivePiModel(&rec),
 			Workers:       s.providerWorkers(&rec),
 			AllowedModels: rec.AllowedModelIDs(),
+			Kind:          rec.Kind,
+			BaseURL:       rec.BaseURL,
+			Pinnable:      piProviderPinnable(&rec),
 		})
 	}
 	for _, rec := range s.Store.ModelOverrides() {
@@ -249,6 +263,16 @@ func (s *Server) modelOverrideListView() modelOverrideListView {
 			row.Model = effectivePiModel(p)
 			if ok, why := s.providerReachableFrom(p, rec.Slug); !ok {
 				row.Warning = why
+			}
+			// The provider was pinnable when this row was saved and has lost its
+			// models since (the default was cleared, the approved list emptied).
+			// Keeping the row and saying so is the same choice made for a removed
+			// provider: a report, never a repair — the fix is a provider edit, and
+			// deleting the override would only hide the 403.
+			if !piProviderPinnable(p) && row.Warning == "" {
+				row.Warning = fmt.Sprintf(
+					"%s has no usable model now, so every request through this override is refused; "+
+						"set a default model or approve one for it", piProviderLabel(p))
 			}
 			// The resolved answer and the drift verdict come from the same
 			// resolver the worker uses, so a row can never claim a model the
@@ -313,6 +337,17 @@ func (s *Server) handlePutModelOverride(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, 400, map[string]string{"error": why})
 		return
 	}
+	// A pin to a provider with nothing to pin to is an outage rather than a
+	// preference: every generation answers 403 model-pin-unresolved and the
+	// worker starts on no model at all. Unlike a drifting catalog this is
+	// entirely knowable here, so it is refused with the fix named instead of
+	// stored and left for the worker's next poll to discover.
+	if !piProviderPinnable(p) {
+		writeJSON(w, 400, map[string]string{"error": fmt.Sprintf(
+			"%s has no usable model yet, so every request through it would be refused; "+
+				"set a default model or approve at least one model for it first", piProviderLabel(p))})
+		return
+	}
 	// A pin outside the provider's approved set is refused rather than saved
 	// with a warning: the worker would 403 the moment it switched, and unlike
 	// the catalog this set is right here in the request. The extra model is a
@@ -339,6 +374,21 @@ func (s *Server) handlePutModelOverride(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 	writeJSON(w, 200, modelOverrideView{Slug: slug, ProviderID: id})
+}
+
+// piProviderPinnable reports whether a worker may pin to this provider. A local
+// provider always may: its traffic goes to the enclave proxy on the worker's own
+// loopback, so the gateway never judges the model and an empty set costs
+// nothing. A remote one needs at least one usable id, or the pin can only ever
+// answer model-pin-unresolved.
+func piProviderPinnable(p *store.PiProviderRec) bool {
+	if p == nil {
+		return false
+	}
+	if piProviderIsLocal(p) {
+		return true
+	}
+	return len(p.AllowedModelIDs()) > 0
 }
 
 // handleDeleteModelOverride returns a worker to the account default.

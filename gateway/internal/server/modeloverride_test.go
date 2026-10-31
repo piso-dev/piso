@@ -210,3 +210,131 @@ func TestWorkerModelEndpoint(t *testing.T) {
 		t.Fatalf("leaked: %s", rec.Body.String())
 	}
 }
+
+// A remote provider with no default and no approved models has nothing to pin
+// to: every generation through it answers 403 model-pin-unresolved, so the
+// override is refused up front with the fix named.
+func TestModelOverrideRejectsProviderWithNoModels(t *testing.T) {
+	s := overrideTestServer(t)
+	if err := s.Store.UpsertPiProvider(store.PiProviderRec{
+		ID: "piso-empty", Name: "Empty", SecretID: "sec_aiml",
+		BaseURL: "https://empty.example.test/v1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rec := putOverride(t, s, "demo", "piso-empty")
+	if rec.Code != 400 {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "default model") {
+		t.Fatalf("error should name the fix: %s", rec.Body.String())
+	}
+	if rows := s.Store.ModelOverrides(); len(rows) != 0 {
+		t.Fatalf("rejected override was stored: %+v", rows)
+	}
+
+	// Approving one model is the documented fix, and the retry then succeeds.
+	if err := s.Store.UpsertPiProvider(store.PiProviderRec{
+		ID: "piso-empty", Name: "Empty", SecretID: "sec_aiml",
+		BaseURL: "https://empty.example.test/v1", ApprovedModels: []string{"model-e"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if rec := putOverride(t, s, "demo", "piso-empty"); rec.Code != 200 {
+		t.Fatalf("after approving a model: status %d body %s", rec.Code, rec.Body.String())
+	}
+}
+
+// A local (Tinfoil) provider is exempt: the enclave proxy inside the worker
+// serves it, so the gateway never judges the model and the worker still starts
+// on whatever the profile offers.
+func TestModelOverrideAllowsLocalProviderWithoutModels(t *testing.T) {
+	s := overrideTestServer(t)
+	if err := s.Store.UpsertPiProvider(store.PiProviderRec{
+		ID: "piso-tinfoil", Name: "Tinfoil", SecretID: "sec_aiml",
+		BaseURL: tinfoilProxyBaseURL, Kind: piProviderKindTinfoil,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if rec := putOverride(t, s, "demo", "piso-tinfoil"); rec.Code != 200 {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	if got := s.Store.ModelOverrideProviderID("demo"); got != "piso-tinfoil" {
+		t.Fatalf("stored id: %q", got)
+	}
+}
+
+// The override list is what the dashboard renders the add/edit dialog from, so
+// it has to carry enough to recognise a local provider and to disable a pick
+// that the save path would refuse.
+func TestModelOverrideListDescribesProviders(t *testing.T) {
+	s := overrideTestServer(t)
+	if err := s.Store.UpsertPiProvider(store.PiProviderRec{
+		ID: "piso-tinfoil", Name: "Tinfoil", SecretID: "sec_aiml",
+		BaseURL: tinfoilProxyBaseURL, Kind: piProviderKindTinfoil,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Store.UpsertPiProvider(store.PiProviderRec{
+		ID: "piso-empty", Name: "Empty", SecretID: "sec_aiml",
+		BaseURL: "https://empty.example.test/v1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	s.handleGetModelOverrides(rec, httptest.NewRequest(http.MethodGet, "/api/v1/model-overrides", nil))
+	var out modelOverrideListView
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]modelOverrideProviderView{}
+	for _, p := range out.Providers {
+		byID[p.ID] = p
+	}
+	if p := byID["piso-tinfoil"]; p.Kind != piProviderKindTinfoil || !p.Pinnable {
+		t.Fatalf("local provider: %+v", p)
+	}
+	if p := byID["piso-empty"]; p.Pinnable {
+		t.Fatalf("provider with no models must report not pinnable: %+v", p)
+	}
+	// The remote provider the tests pin to is usable, and says so.
+	if p := byID["piso-aiml"]; !p.Pinnable || p.BaseURL != "https://aiml.example.test/v1" {
+		t.Fatalf("aiml provider: %+v", p)
+	}
+	if got := byID["piso-aiml"].AllowedModels; len(got) != 1 || got[0] != "model-a" {
+		t.Fatalf("allowed models: %+v", got)
+	}
+}
+
+// A pin saved against a usable provider can outlive that provider's models: the
+// default is cleared, the approved list emptied. Drift is reported, never
+// repaired, so the row stays and names the 403 it now produces instead of
+// disappearing or reading as healthy.
+func TestModelOverrideListWarnsWhenProviderLostItsModels(t *testing.T) {
+	s := overrideTestServer(t)
+	if rec := putOverride(t, s, "demo", "piso-aiml"); rec.Code != 200 {
+		t.Fatalf("pin: status %d body %s", rec.Code, rec.Body.String())
+	}
+	if err := s.Store.UpsertPiProvider(store.PiProviderRec{
+		ID: "piso-aiml", Name: "AIML", SecretID: "sec_aiml",
+		BaseURL: "https://aiml.example.test/v1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	s.handleGetModelOverrides(rec, httptest.NewRequest(http.MethodGet, "/api/v1/model-overrides", nil))
+	var out modelOverrideListView
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Overrides) != 1 {
+		t.Fatalf("overrides: %+v", out.Overrides)
+	}
+	row := out.Overrides[0]
+	if row.Slug != "demo" || row.ProviderID != "piso-aiml" {
+		t.Fatalf("row kept: %+v", row)
+	}
+	if !strings.Contains(row.Warning, "no usable model now") {
+		t.Fatalf("warning: %q", row.Warning)
+	}
+}

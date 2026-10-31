@@ -20,7 +20,12 @@ const helpers = [
   [at("function mountDialog("), at("function closeDialog(")],
   [at("function closeDialog("), at("function field(")],
   [at("function formDialog("), at("function confirmAction(")],
+  // providerDriftLines renders inside a card, which lives outside the
+  // card/dialog pair this slice used to cover.
+  [at("function providerDriftLines("), at("function providerCard(")],
   [at("function providerCard("), at("function providerForm(")],
+  // providerCard..providerForm already carries the override dialog and the
+  // combobox/chip helpers it wires, so only the tail is still needed here.
   [at("function providerForm("), at("function addPolicy(")],
 ]
   .map(([from, to]) => script.slice(from, to))
@@ -33,14 +38,19 @@ function formHarness(t, { catalog, fail = false, baseUrl = "https://api.example.
   t.after(() => dom.window.close());
   const { window } = dom;
   const calls = [];
+  const payloads = [];
   const sandbox = {
     document: window.document,
     setTimeout: window.setTimeout,
     clearTimeout: window.clearTimeout,
     KeyboardEvent: window.KeyboardEvent,
     Event: window.Event,
-    api: async (path) => {
+    // formDialog reads the dialog's fields through FormData, so a submit test
+    // needs the page's own constructor.
+    FormData: window.FormData,
+    api: async (path, method, body) => {
       calls.push(path);
+      payloads.push({ path, method, body });
       if (fail) throw new Error("provider model catalog is unavailable");
       return catalog;
     },
@@ -64,7 +74,7 @@ function formHarness(t, { catalog, fail = false, baseUrl = "https://api.example.
   sandbox.$ = (s) => window.document.querySelector(s);
   vm.createContext(sandbox);
   vm.runInContext(`"use strict";\n${helpers}\nproviderForm(${JSON.stringify(formId)});`, sandbox);
-  return { window, calls, dialog: window.document.querySelector("dialog") };
+  return { window, calls, payloads, dialog: window.document.querySelector("dialog") };
 }
 
 // The models request always carries the live form values so an unsaved
@@ -218,7 +228,6 @@ test("provider cards load the same catalog the edit dialog would", async (t) => 
   t.after(() => dom.window.close());
   const calls = [];
   const providers = [{ id: "p-1", catalog: "pending" }];
-  let renders = 0;
   const sandbox = {
     document: dom.window.document,
     data: { provider: { providers } },
@@ -229,21 +238,25 @@ test("provider cards load the same catalog the edit dialog would", async (t) => 
       calls.push(path);
       return { models: ["model-a", "model-b"], catalog: "ok", checkedAt: "2026-01-01T00:00:00Z" };
     },
-    renderContent: () => {
-      renders++;
-    },
+    // A finished refresh asks for the provider list once, because only the
+    // gateway can say which models the new catalog left missing.
+    changed: async (keys) => calls.push("changed:" + keys.join(",")),
   };
   vm.createContext(sandbox);
-  const loader = script.slice(at("function loadProviderCatalogs("), at("function addPolicy("));
+  // The refresh flag is module state the loader reads, so it is carried in
+  // rather than sliced: it lives far above the function under test.
+  const loader =
+    "const catalogRefresh = { inFlight: false, settled: false };\n" +
+    script.slice(at("function loadProviderCatalogs("), at("function addPolicy("));
   vm.runInContext(`"use strict";\n${loader}\nloadProviderCatalogs();`, sandbox);
   await new Promise((r) => setTimeout(r, 20));
-  assert.deepEqual(calls, ["pi-provider/models?id=p-1"]);
+  assert.deepEqual(calls, ["pi-provider/models?id=p-1", "changed:provider"]);
   assert.equal(providers[0].catalog, "ok");
   assert.deepEqual(providers[0].models, ["model-a", "model-b"]);
-  assert.equal(renders, 1);
+  assert.equal(providers[0].checkedAt, "2026-01-01T00:00:00Z");
   vm.runInContext("loadProviderCatalogs();", sandbox);
   await new Promise((r) => setTimeout(r, 10));
-  assert.equal(calls.length, 1, "a provider catalog is fetched once per page");
+  assert.deepEqual(calls, ["pi-provider/models?id=p-1", "changed:provider"], "a provider catalog is fetched once per page");
 });
 
 test("model ids from the catalog are escaped in the suggestion list", async (t) => {
@@ -255,4 +268,92 @@ test("model ids from the catalog are escaped in the suggestion list", async (t) 
   const item = dialog.querySelector("#modelList li");
   assert.equal(item.querySelector("img"), null);
   assert.equal(item.textContent, "<img src=x onerror=alert(1)>");
+});
+
+// Approved models are edited as chips: each id is removable on its own, and the
+// value the form submits is still the newline-joined list the API takes.
+test("approved models are chips that add from the catalog and remove on x", async (t) => {
+  const { window, dialog } = formHarness(
+    t,
+    { catalog: { models: ["model-a", "model-b", "model-c"], catalog: "ok" }, provider: { approvedModels: ["model-b"] } },
+  );
+  await new Promise((r) => setTimeout(r, 20));
+  const holder = dialog.querySelector("#f-approvedModels-chips");
+  const input = dialog.querySelector("#f-approvedModels-input");
+  const store = dialog.querySelector("#f-approvedModels");
+  // The saved list is what the dialog opens on, and it is what a save resends.
+  assert.deepEqual(
+    [...holder.querySelectorAll(".chip-id")].map((c) => c.textContent),
+    ["model-b"],
+  );
+  assert.equal(store.value, "model-b");
+
+  // Typing an id and pressing Enter adds it, and the input is cleared for the
+  // next one so a chip list can be built without touching the mouse.
+  input.value = "model-a";
+  input.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+  assert.deepEqual(
+    [...holder.querySelectorAll(".chip-id")].map((c) => c.textContent),
+    ["model-b", "model-a"],
+  );
+  assert.equal(input.value, "");
+  assert.equal(store.value, "model-b\nmodel-a");
+
+  // A duplicate is ignored rather than rendered twice: the list is a set.
+  input.value = "model-a";
+  input.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+  assert.equal(holder.querySelectorAll(".chip").length, 2);
+
+  // Each chip removes only itself.
+  holder.querySelector('[data-chip="model-b"]').dispatchEvent(new window.Event("click", { bubbles: true }));
+  assert.deepEqual(
+    [...holder.querySelectorAll(".chip-id")].map((c) => c.textContent),
+    ["model-a"],
+  );
+  assert.equal(store.value, "model-a");
+  // Removable chips need a name of their own: "x" alone says nothing.
+  assert.match(holder.querySelector(".chip-x").getAttribute("aria-label"), /Remove model-a/);
+});
+
+test("a pasted comma list becomes one chip per id", async (t) => {
+  const { window, dialog } = formHarness(t, { catalog: { models: [], catalog: "ok" } });
+  const holder = dialog.querySelector("#f-approvedModels-chips");
+  const input = dialog.querySelector("#f-approvedModels-input");
+  const store = dialog.querySelector("#f-approvedModels");
+  // The field this replaced was a one-per-line textarea, so a comma list is
+  // what an operator's fingers produce.
+  const paste = new window.Event("paste", { bubbles: true, cancelable: true });
+  paste.clipboardData = { getData: () => "model-x, model-y\nmodel-z" };
+  input.dispatchEvent(paste);
+  assert.deepEqual(
+    [...holder.querySelectorAll(".chip-id")].map((c) => c.textContent),
+    ["model-x", "model-y", "model-z"],
+  );
+  assert.equal(store.value, "model-x\nmodel-y\nmodel-z");
+});
+
+test("a model id typed and then abandoned is kept, not silently dropped", async (t) => {
+  const { window, dialog } = formHarness(t, { catalog: { models: [], catalog: "ok" } });
+  const input = dialog.querySelector("#f-approvedModels-input");
+  const store = dialog.querySelector("#f-approvedModels");
+  input.value = "model-typed";
+  // No Enter: the operator went straight for Save.
+  input.dispatchEvent(new window.Event("blur"));
+  assert.equal(store.value, "model-typed");
+});
+
+test("the chip field submits the same payload the textarea did", async (t) => {
+  const { window, dialog, payloads } = formHarness(t, {
+    catalog: { models: ["model-a"], catalog: "ok" },
+    provider: { approvedModels: ["model-a", "model-zzz"] },
+  });
+  await new Promise((r) => setTimeout(r, 20));
+  const form = dialog.querySelector("#actionForm");
+  form.dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }));
+  await new Promise((r) => setTimeout(r, 30));
+  const save = payloads.find((p) => p.path === "pi-provider");
+  assert.ok(save, `expected the save call, got ${JSON.stringify(payloads)}`);
+  // The wire format is unchanged: a list of ids, in the order they were added,
+  // so an id the catalog does not list yet (model-zzz) survives the save.
+  assert.deepEqual(JSON.parse(JSON.stringify(save.body.approvedModels)), ["model-a", "model-zzz"]);
 });

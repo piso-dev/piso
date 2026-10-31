@@ -217,9 +217,20 @@ rather than leaving every request to 403 until restart.
 The provider must already be in the stack, and its secret must be granted to
 that worker: an override whose placeholder the worker never receives could
 only fail with a 403, so the dashboard refuses the pick and names the fix
-(**Access → Secrets**). If a pinned provider is later deleted the row stays
+(**Access → Secrets**). A provider with nothing to pin to is refused the same
+way: with no default model and no approved model, every request through it
+would 403 as `model-pin-unresolved`, so the dashboard disables the option and
+says which fix unlocks it. If a pinned provider is later deleted the row stays
 visible and marked, and the worker falls back to the active provider until the
 provider is recreated or the override is removed.
+
+A row is edited in place from the list: the worker is the key, so the dialog
+shows it as fixed text instead of a second chance to change it. A row whose
+provider was deleted reopens on an explicit **Provider removed — choose one**
+entry rather than a `<select>` that silently reports the first provider and
+repoints the worker on save. Editing prefills the row's **pinned** model, not
+the substitute a drifted worker is currently running, so saving a drifted row
+records what was intended rather than quietly rewriting it.
 
 An override pins a provider and, optionally, one model within it. A worker may
 use any model on that provider's approved list; the override's `model` narrows
