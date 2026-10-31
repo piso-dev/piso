@@ -163,7 +163,8 @@ The default model is always usable in addition to the list, because it is the
 model new sessions start on: a list that excluded it would leave the provider
 unable to serve its own start state. Saving a list that omits the default says
 so on the provider card, and the resolved set is reported as `allowedModels`
-next to the stored `approvedModels`. An approved id the provider's last known
+next to the stored `approvedModels`, and as `providers[<id>]` for every provider
+in the stack at once. An approved id the provider's last known
 catalog does not list is saved with a warning rather than refused — a catalog
 change must not lock the operator out of editing the list that fixes it.
 
@@ -201,18 +202,42 @@ while the gateway is down still starts on its pinned provider and corrects
 itself on the next successful poll. Precedence is override → active provider →
 first registered model, resolved in one place on the gateway.
 
-That answer also carries `allowedModels`, and the pi extension (`/model`) builds
-the provider's catalog from it. `models.json` is one shared read-only mount, so
-it lists a provider's whole catalog for every worker; showing all of it would
-offer ids the gateway refuses, turning a policy into a 403 mid-session. The
-filter is applied wherever the catalog is assembled — the cached
-`models-store.json`, the `models.json` fallback, and both branches of a refresh
-— and the filtered list is what gets persisted, so a stale cache cannot put
-removed models back one session later. An empty `allowedModels` means the
-gateway has no opinion (an older gateway, or an unreachable one with no cache)
-and the whole catalog is registered as before. If the list shrinks under a
-running session, the extension switches to an approved model and says so once
-rather than leaving every request to 403 until restart.
+That answer also carries, per provider, what this worker may actually run
+(`providers`), and the pi extension builds each provider's `/model` catalog from
+it: the ids in tab order, with the catalog supplying metadata only, so an
+approved id discovery has not returned yet is still offered. `models.json` is one
+shared read-only mount, so it lists a provider's whole catalog for every worker;
+showing all of it would offer ids the gateway refuses, turning a policy into a
+403 mid-session.
+
+"What this worker may run" is narrower than the tab, because the pin is a
+per-worker boundary rather than a per-provider preference. A worker's generation
+requests are judged against the one provider it is pinned to and any other host
+is refused as `model-provider-mismatch`, so a model approved on a second remote
+provider is a model this worker cannot use: the tab keeps that provider's list
+for whichever worker is pinned to it, and this one is told nothing is usable
+there. Pinning the worker to that provider in **Model overrides** moves the menu
+with it on the next poll. A local (Tinfoil) provider is the exception — its base
+URL is loopback, which `NO_PROXY` keeps off the proxy, so the pin never sees it
+and its approved list is the only boundary — and it stays in the menu while
+unpinned. The shaping is applied wherever the catalog is assembled — the cached
+`models-store.json`, the `models.json` fallback, and both branches of a refresh —
+and the result is what gets persisted, so a stale cache cannot put removed models
+back one session later.
+
+Two absences are deliberately different. A provider **present with an empty
+list** is the gateway saying "nothing usable here for this worker": it registers
+no models, and its `refreshModels` returns nothing before any network call. A
+provider **absent from the map** is a gateway that did not answer for it — an
+older gateway, or an unreachable one with no cache — and the catalog is
+registered as before, so an upgrade in either direction never blanks a menu. For
+the same reason a legacy cached answer, which predates the map, speaks only for
+the provider it pins and only when it names models. Providers the tab does not
+own at all (a built-in family whose API key reached the worker, a `models.json`
+entry from an older namespace) are registered with only their non-chat models,
+so a stray credential cannot put 400 models back in `/model`. If the list shrinks
+under a running session, the extension switches to an approved model and says so
+once rather than leaving every request to 403 until restart.
 
 The provider must already be in the stack, and its secret must be granted to
 that worker: an override whose placeholder the worker never receives could

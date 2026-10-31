@@ -303,7 +303,11 @@ describe("Piso provider stack", () => {
 			},
 		} as any);
 		expect(registrations.map((r) => r.name)).toEqual(["piso", "piso-two"]);
-		expect(registrations[1].config.models[0].id).toBe("m2");
+		// Both are registered — the tab's stack is what gets published — but only
+		// the pinned one carries models: a request to the other would be refused
+		// on its host, so its catalog is registered empty rather than offered.
+		expect(registrations[0].config.models.map((m: any) => m.id)).toEqual(["m1"]);
+		expect(registrations[1].config.models).toEqual([]);
 	});
 
 	test("loadProfiles promotes the legacy routstr namespace", async () => {
@@ -586,13 +590,12 @@ describe("Piso worker model overrides", () => {
 		};
 		await pisoModels(pi as any);
 
-		// piso-two is not this worker's provider, so its catalog is untouched:
-		// the pin only decides what one worker may use on the provider it was
-		// pinned to.
+		// The answer narrows the provider it pins, and the pin itself keeps every
+		// other provider out of the menu — see "Piso /model mirrors the Model
+		// providers tab" for the rest.
 		const piso = registrations.find((r) => r.name === "piso")?.config;
 		expect(piso.models.map((m: any) => m.id)).toEqual(["m1"]);
-		expect(registrations.find((r) => r.name === "piso-two")?.config.models.map((m: any) => m.id))
-			.toEqual(["m2"]);
+		expect(registrations.find((r) => r.name === "piso-two")?.config.models).toEqual([]);
 	});
 
 	test("an approved list that shrinks swaps a running session off the removed model", async () => {
@@ -673,5 +676,294 @@ describe("Piso worker model overrides", () => {
 		await apply(ctx, true);
 		expect(calls).toBe(0);
 		expect(setModels.at(-1)).toEqual({ id: "m1", provider: "piso" });
+	});
+});
+
+describe("Piso /model mirrors the Model providers tab", () => {
+	async function tabDir(providers: unknown, cache?: unknown): Promise<string> {
+		const dir = await mkdtemp(join(process.cwd(), ".piso-model-test-"));
+		tempDirs.push(dir);
+		process.env.PI_AGENT_DIR = dir;
+		process.env.PI_OFFLINE = "1";
+		delete process.env.GATEWAY_URL;
+		delete process.env.PISO_WORKER_NAME;
+		await writeFile(join(dir, "models.json"), JSON.stringify({ providers }));
+		await writeFile(
+			join(dir, "settings.json"),
+			JSON.stringify({ defaultProvider: "piso", defaultModel: "m1" }),
+		);
+		// The answer the gateway gave last, written the way refreshOverrideCache
+		// writes it: the default export reads the cache, not the network.
+		if (cache) await writeFile(join(dir, "piso-model.json"), JSON.stringify(cache));
+		return dir;
+	}
+
+	async function register(): Promise<Array<{ name: string; config: any }>> {
+		const registrations: Array<{ name: string; config: any }> = [];
+		await pisoModels({
+			registerProvider(name: string, config: unknown) {
+				registrations.push({ name, config });
+			},
+			unregisterProvider() {},
+			on() {
+				return () => {};
+			},
+		} as any);
+		return registrations;
+	}
+
+	const stack = {
+		piso: { apiKey: "piso_one", baseUrl: "https://one/v1", models: [{ id: "m1" }, { id: "m2" }] },
+		"piso-two": { apiKey: "piso_two", baseUrl: "https://two/v1", models: [{ id: "m3" }] },
+	};
+
+	test("every provider's menu is its own allowlist, in the tab's order", async () => {
+		await tabDir(stack, {
+			provider: "piso",
+			model: "m1",
+			allowedModels: ["m2", "m1"],
+			providers: { piso: ["m2", "m1"], "piso-two": [] },
+		});
+		const menus = Object.fromEntries(
+			(await register()).map((r) => [r.name, r.config.models.map((m: any) => m.id)]),
+		);
+		// piso follows the tab rather than the catalog's order, and piso-two is
+		// configured with nothing, so it offers nothing instead of its whole
+		// catalog.
+		expect(menus).toEqual({ piso: ["m2", "m1"], "piso-two": [] });
+	});
+
+	test("an approved model the catalog has not returned is still offered", async () => {
+		await tabDir(stack, {
+			provider: "piso",
+			model: "m9",
+			allowedModels: ["m1", "m9"],
+			providers: { piso: ["m1", "m9"] },
+		});
+		const [piso] = await register();
+		// The tab is the authority: hiding an approved id because discovery has
+		// not seen it yet would make the tab a lie.
+		expect(piso.config.models.map((m: any) => m.id)).toEqual(["m1", "m9"]);
+		expect(piso.config.models[1]).toMatchObject({ id: "m9", name: "m9", contextWindow: 128_000 });
+	});
+
+	test("a provider configured with nothing registers no models and never fetches", async () => {
+		await tabDir(stack, { provider: "piso", model: "", allowedModels: [], providers: { piso: [] } });
+		delete process.env.PI_OFFLINE;
+		let calls = 0;
+		globalThis.fetch = (() => {
+			calls++;
+			throw new Error("unexpected network request");
+		}) as typeof fetch;
+		let persisted = false;
+		const [piso] = await register();
+		expect(piso.config.models).toEqual([]);
+		const refreshed = await piso.config.refreshModels({
+			allowNetwork: true,
+			credential: { type: "api_key", key: "piso_one" },
+			signal: new AbortController().signal,
+			publish: async () => {
+				persisted = true;
+				return true;
+			},
+		});
+		expect(refreshed).toEqual([]);
+		expect(calls).toBe(0);
+		expect(persisted).toBe(false);
+	});
+
+	test("the tab's answer survives the cache round trip", async () => {
+		const dir = await tabDir(stack);
+		const answers = [
+			{ provider: "piso", model: "m1", allowedModels: ["m1"], providers: { piso: ["m1"], "piso-two": [] } },
+			{ provider: "piso", model: "m1", allowedModels: ["m1"], providers: { piso: ["m1", "m2"] } },
+		];
+		process.env.GATEWAY_URL = "http://gateway:8083";
+		process.env.PISO_WORKER_NAME = "piso-worker-demo";
+		let next = 0;
+		globalThis.fetch = (async () =>
+			Response.json(answers[Math.min(next++, answers.length - 1)])) as typeof fetch;
+		const pi = {
+			registerProvider() {},
+			unregisterProvider() {},
+			setModel() {
+				return Promise.resolve(true);
+			},
+			on() {
+				return () => {};
+			},
+		};
+		const ctx = {
+			isIdle: () => true,
+			modelRegistry: {
+				find: () => undefined,
+				getModelsOfType: () => [],
+			},
+		};
+		const apply = wireLiveApply(pi as any);
+		await apply(ctx as any, true);
+		expect(JSON.parse(await readFile(join(dir, "piso-model.json"), "utf8")).providers).toEqual({
+			piso: ["m1"],
+			"piso-two": [],
+		});
+		// A later answer that approves one more model is not swallowed by the
+		// "unchanged" check.
+		await apply(ctx as any, false);
+		expect(JSON.parse(await readFile(join(dir, "piso-model.json"), "utf8")).providers).toEqual({
+			piso: ["m1", "m2"],
+		});
+	});
+
+	test("a model approved on a provider this worker is not pinned to is not offered", async () => {
+		// The reported bug: piso (openrouter) carries its own default model, so
+		// the tab's answer for it is one approved id, and the menu offered it. Every
+		// request through it then failed with 403 model-provider-mismatch, because
+		// the pin sends this worker's traffic to piso-two and the proxy refuses any
+		// other host. The pin is a per-worker boundary, so a list from the gateway
+		// cannot re-enable the provider.
+		await tabDir(
+			{
+				piso: { apiKey: "piso_one", baseUrl: "https://openrouter.example/v1", models: [{ id: "m1" }] },
+				"piso-two": { apiKey: "piso_two", baseUrl: "https://aiml.example/v1", models: [{ id: "m2" }] },
+			},
+			{
+				provider: "piso-two",
+				model: "m2",
+				allowedModels: ["m2"],
+				providers: { piso: ["m1"], "piso-two": ["m2"] },
+			},
+		);
+		const menus = Object.fromEntries(
+			(await register()).map((r) => [r.name, r.config.models.map((m: any) => m.id)]),
+		);
+		expect(menus).toEqual({ piso: [], "piso-two": ["m2"] });
+	});
+
+	test("a local provider stays in the menu while the pin is elsewhere", async () => {
+		// A tinfoil provider is served by a proxy inside this worker, which NO_PROXY
+		// keeps off the gateway, so the pin never judges it and its own list is the
+		// whole boundary.
+		await tabDir(
+			{
+				piso: { apiKey: "piso_one", baseUrl: "https://one/v1", models: [{ id: "m1" }] },
+				"piso-tinfoil": { apiKey: "piso_tinfoil", baseUrl: "http://127.0.0.1:3301/v1", models: [{ id: "local-1" }] },
+			},
+			{
+				provider: "piso",
+				model: "m1",
+				allowedModels: ["m1"],
+				providers: { piso: ["m1"], "piso-tinfoil": ["local-1"] },
+			},
+		);
+		const menus = Object.fromEntries(
+			(await register()).map((r) => [r.name, r.config.models.map((m: any) => m.id)]),
+		);
+		expect(menus).toEqual({ piso: ["m1"], "piso-tinfoil": ["local-1"] });
+	});
+
+	test("an unknown pin narrows nothing", async () => {
+		// Before the first successful poll there is no answer yet; blanking the
+		// menu on a cold start would be worse than the catalog it always had. No
+		// saved default either, so nothing names a provider to pin to.
+		const dir = await tabDir({
+			piso: { apiKey: "piso_one", baseUrl: "https://one/v1", models: [{ id: "m1" }] },
+			"piso-two": { apiKey: "piso_two", baseUrl: "https://two/v1", models: [{ id: "m2" }] },
+		});
+		await writeFile(join(dir, "settings.json"), JSON.stringify({}));
+		const menus = Object.fromEntries(
+			(await register()).map((r) => [r.name, r.config.models.map((m: any) => m.id)]),
+		);
+		expect(menus).toEqual({ piso: ["m1"], "piso-two": ["m2"] });
+	});
+
+	test("a saved model the tab does not allow is switched away from, not kept", async () => {
+		await tabDir({ piso: stack.piso }, {
+			provider: "piso",
+			model: "gone",
+			allowedModels: ["m1"],
+			providers: { piso: ["m2", "m1"] },
+		});
+		const setModels: any[] = [];
+		const warnings: string[] = [];
+		console.warn = (message: string) => warnings.push(String(message));
+		const pi = {
+			registerProvider() {},
+			unregisterProvider() {},
+			setModel(model: any) {
+				setModels.push(model);
+				return Promise.resolve(true);
+			},
+			on() {
+				return () => {};
+			},
+		};
+		// The registry still lists the model the tab dropped, so "keep the current
+		// model" would leave the session on a model /model does not offer and the
+		// gateway answers 403 for.
+		const registry: Record<string, string[]> = { piso: ["gone", "m1", "m2"] };
+		const ctx = {
+			isIdle: () => true,
+			modelRegistry: {
+				find: (provider: string, id: string) =>
+					(registry[provider] ?? []).includes(id) ? { id, provider } : undefined,
+				getModelsOfType: (_type: string, provider: string) =>
+					(registry[provider] ?? []).map((id) => ({ id, provider })),
+			},
+		};
+		await wireLiveApply(pi as any)(ctx as any, true);
+		// m2 leads the tab, so it wins over both the dropped pin and catalog order.
+		expect(setModels.at(-1)).toEqual({ id: "m2", provider: "piso" });
+		expect(warnings.join("\n")).toContain("no longer approved");
+	});
+
+	test("a provider the tab does not own contributes no chat models", async () => {
+		const dir = await tabDir({ piso: stack.piso });
+		const registrations: Array<{ name: string; config: any }> = [];
+		const unregistered: string[] = [];
+		const pi = {
+			registerProvider(name: string, config: any) {
+				registrations.push({ name, config });
+			},
+			unregisterProvider(id: string) {
+				unregistered.push(id);
+			},
+			setModel() {
+				return Promise.resolve(true);
+			},
+			on() {
+				return () => {};
+			},
+		};
+		const chat = [
+			{ id: "m1", provider: "piso" },
+			{ id: "gpt-4o", provider: "openai" },
+		];
+		const image = [{ id: "gpt-image-1", provider: "openai", type: "image" }];
+		const ctx = {
+			isIdle: () => true,
+			modelRegistry: {
+				find: (provider: string, id: string) =>
+					chat.find((m) => m.provider === provider && m.id === id),
+				getModelsOfType: (type: string, provider?: string) =>
+					(type === "chat" ? chat : type === "image" ? image : []).filter(
+						(m) => !provider || m.provider === provider,
+					),
+			},
+		};
+		const apply = wireLiveApply(pi as any);
+		await apply(ctx as any, true);
+		await apply(ctx as any, false);
+
+		// Registered once, not on every poll, and with only its non-chat models:
+		// the tab never spoke about image models, and codemode still needs them.
+		const openai = registrations.filter((r) => r.name === "openai");
+		expect(openai).toHaveLength(1);
+		expect(openai[0].config.models.map((m: any) => m.id)).toEqual(["gpt-image-1"]);
+
+		// Providers disappear from the tab: pi's own catalog comes back instead of
+		// staying invisible for the rest of the session.
+		await writeFile(join(dir, "models.json"), JSON.stringify({ providers: {} }));
+		await apply(ctx as any, false);
+		expect(unregistered).toContain("openai");
 	});
 });

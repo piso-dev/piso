@@ -6595,7 +6595,8 @@
             return "This provider has no usable model yet; set a default model or approve one in the provider settings before pinning to it.";
           return (
             (def ? `Leave empty to follow the provider's default (${def}). ` : "Leave empty to follow the provider's default. ") +
-            "Only approved models are offered; the gateway refuses anything else at save time."
+            "Only approved models are offered; the gateway refuses anything else at save time. " +
+            "The worker's /model menu then lists this provider only: the pin refuses any other provider's host, so the rest of the stack is hidden there."
           );
         };
         if (select && modelInput) {
@@ -6701,7 +6702,7 @@
         // time far more often than it is retyped; the submitted value is still
         // the same newline-joined string.
         const approvedField = modelChipsField("approvedModels", "Approved models (optional)", {
-          hint: "The only models a worker may use on this provider. Leave empty for just the default model. The default is always usable, and a model the provider no longer lists is reported rather than removed.",
+          hint: "The only models a worker pinned to this provider may use. Leave empty for just the default model. The default is always usable, and a model the provider no longer lists is reported rather than removed. A worker pinned elsewhere does not show these models: the pin refuses any other provider's host, so its /model menu lists only its own provider.",
         });
         formDialog(
           id ? "Edit provider" : "Add provider",

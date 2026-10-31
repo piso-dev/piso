@@ -105,6 +105,53 @@ type workerModelView struct {
 	// into a 403 in the middle of a session. Omitted when empty so an older
 	// worker keeps its current behaviour.
 	AllowedModels []string `json:"allowedModels,omitempty"`
+	// Providers carries the same answer for every provider in the stack, keyed
+	// by provider id, because /model draws its list from the Model providers
+	// tab rather than from one pinned provider. A present but empty list is the
+	// tab saying "configured with nothing usable"; an absent id means this
+	// gateway did not answer for it, and the worker then keeps the catalog it
+	// always had. Omitting the field entirely is how an older gateway stays
+	// readable, so it is omitted only when the stack is empty.
+	Providers map[string][]string `json:"providers,omitempty"`
+}
+
+// usableAllowlists is what this worker may actually run, per provider.
+//
+// Not every provider in the tab is one of them. The pin is a per-worker
+// boundary, not a per-provider preference: modelPin compares the request host
+// against the *one* provider the worker is pinned to and refuses every other
+// host as model-provider-mismatch, because substitution rules are per-host and a
+// request elsewhere would not be authenticated the way the pin assumes. So a
+// model approved on a second remote provider is a model this worker cannot run,
+// and offering it in /model only moves the dashboard's policy to a 403 in the
+// middle of a session.
+//
+// A local (Tinfoil) provider is the exception and not as a kindness: its base URL
+// is loopback, which NO_PROXY keeps off the proxy, so modelPin never sees its
+// requests and the enclave proxy inside the worker picks the model. Its approved
+// list is the only thing standing between the worker and a model, so it stays.
+//
+// The answer is always present-and-empty rather than absent — absent means "this
+// gateway did not answer", which is how an older gateway keeps its behaviour,
+// and that cannot also mean "answered, nothing usable".
+func (s *Server) usableAllowlists(pinned string) map[string][]string {
+	stack := s.Store.PiProviderStack()
+	if len(stack) == 0 {
+		return nil
+	}
+	out := make(map[string][]string, len(stack))
+	for i := range stack {
+		p := &stack[i]
+		if p.ID == "" {
+			continue
+		}
+		if p.ID != pinned && !piProviderIsLocal(p) {
+			out[p.ID] = []string{}
+			continue
+		}
+		out[p.ID] = p.AllowedModelIDs()
+	}
+	return out
 }
 
 // resolveWorkerModel applies the precedence in one place: a worker override
@@ -140,6 +187,7 @@ func (s *Server) resolveWorkerModel(slug string) workerModelView {
 					pinned, piProviderLabel(p), out.Model)
 			}
 		}
+		out.Providers = s.usableAllowlists(out.Provider)
 		return out
 	}
 	if hasOverride {
@@ -151,6 +199,7 @@ func (s *Server) resolveWorkerModel(slug string) workerModelView {
 		out.Source = "account"
 		out.AllowedModels = p.AllowedModelIDs()
 	}
+	out.Providers = s.usableAllowlists(out.Provider)
 	return out
 }
 
