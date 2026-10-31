@@ -246,6 +246,18 @@ func TestPutPiProviderApprovedModels(t *testing.T) {
 	edit := func(tail string) (*httptest.ResponseRecorder, piProviderView) {
 		return put(`{"id":"` + id + `",` + base + `,` + tail + `}`)
 	}
+	// A page load reads the list, not the save response. The GET has to carry
+	// the stored list as well, or the edit dialog reopens empty and the next
+	// save silently narrows the provider to its default model.
+	getRec := httptest.NewRecorder()
+	s.handleGetPiProvider(getRec, httptest.NewRequest(http.MethodGet, "/api/v1/pi-provider", nil))
+	var listed piProviderListView
+	if err := json.Unmarshal(getRec.Body.Bytes(), &listed); err != nil {
+		t.Fatal(err)
+	}
+	if len(listed.Providers) != 1 || strings.Join(listed.Providers[0].ApprovedModels, ",") != "model-a,model-b" {
+		t.Fatalf("listed providers: %+v", listed.Providers)
+	}
 	// The stored list is trimmed and de-duplicated, and the view reports both
 	// the stored list and the set the pin enforces.
 	if got := strings.Join(view.ApprovedModels, ","); got != "model-a,model-b" {
