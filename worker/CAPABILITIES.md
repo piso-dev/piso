@@ -5,7 +5,7 @@ before acting on anything that might be out of bounds. The rule that governs
 everything below is simple:
 
 > **You are a guest inside a hardened worker. For any step the host must do,
-> never fumble through a failing attempt — emit a Host Action Request and
+> never fumble through a failing attempt — call the `host_request` tool and
 > move on.**
 
 ## What works here
@@ -106,32 +106,38 @@ clone or an existing destination automatically.
 
 This fallback does not override sandbox boundaries. Proxy or auth denials,
 hosts whose credentials the substitution layer cannot satisfy, forbidden
-destinations, and pending host requests require the Host Action Request
-protocol rather than an in-worker retry. In those cases, use the parsed-name
-`gh repo clone` command in the host request with a `/workspace/...` result
-path. Never bypass the proxy or retry in a loop.
+destinations, and pending host requests need `host_request` rather than an
+in-worker retry. In those cases, file the parsed-name `gh repo clone` command
+with `host_request` and a `/workspace/...` `resultPath`. Never bypass the proxy
+or retry in a loop.
 
-## Host Action Request protocol
+## Asking the host for something
 
-For any out-of-bounds step, do all of the following:
+The piso MCP tool `host_request` is how you ask the host to do a step you
+cannot: pass `command` set to the exact host command, and `resultPath` set to
+the `/workspace/...` path where the result will land.
 
-1. **In your reply**, emit a request the human can act on, with the exact
-   command and a rendezvous path for the result (always under `/workspace`):
-   ```
-   HOST ACTION REQUEST: clone over ssh
-     COMMAND: cd /abs/path && git clone git@github.com:org/repo.git
-     RESULT:  /workspace/repo   (then I can continue with the vendoring)
-   ```
-2. **Surface it on the board** so it survives this session — call the piso
-   MCP tool `host_request` with `command` set to the host command and
-   `resultPath` set to the `/workspace/...` rendezvous (or `activity_post`
-   with `kind=host` and the same one-line text).
-3. **Rendezvous**: later, check the RESULT path. If it exists, continue from
-   there. If it does not, the host has not done it yet — re-ask (a new
-   `host` event or a `poke` to the project), never block, never retry the
-   attempt yourself.
-4. Keep the request **one line** for the board; the details live in your
-   reply text.
+```
+command="cd /abs/path && git clone git@github.com:org/repo.git"
+resultPath="/workspace/repo"
+```
+
+That call files a durable request a person resolves from the dashboard — it is
+the same ask `human_action_request` files, in a machine-shaped body — and it
+also lands a `host` row on the board timeline. Say so in one short sentence in
+your own words ("waiting on the host to clone X into `/workspace/repo`"); the
+tool call is the request, the sentence is the status note.
+
+**Pass `taskId` (plus `attemptId`, `requestId`, `summary`, `checkpoint`)
+whenever you hold a task.** That turns the request into a blocking ask: the task
+goes to `waiting` and your lease ends. Without `taskId` the ask is tracked on
+the board but does not stop anything, so nothing will wake you when it is
+answered.
+
+Later, check the result path. If it is there, continue from it. If it is not,
+the human has not resolved the ask yet — wait to be resumed; do not file a
+second `host_request` for the same command (pass the same `requestId` if you
+must retry one) and never retry the failing attempt yourself.
 
 ## Live boundaries (fetch once per session)
 

@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 
 	gtwc "piso/gateway/internal/technocore"
 	tc "piso/internal/technocore"
@@ -13,9 +14,32 @@ import (
 // Dashboard-only routes: WorkerHandler and MCP deliberately do not expose them.
 func (s *Server) registerTasks(mux *http.ServeMux) {
 	csrf := http.NewCrossOriginProtection()
-	for _, pattern := range []string{"GET /api/v1/tasks", "POST /api/v1/tasks", "GET /api/v1/tasks/{id}"} {
+	// POST /tasks/{id} is the dashboard's only direct write to a task (edits and
+	// priority). Everything else about a task moves through the lifecycle.
+	for _, pattern := range []string{
+		"GET /api/v1/tasks", "POST /api/v1/tasks",
+		"GET /api/v1/tasks/{id}", "POST /api/v1/tasks/{id}",
+		// Grace period: the detail page's view heartbeat (POST) and its stop
+		// (DELETE), plus the card's "make available now". They are dashboard
+		// actions on a hold, not lifecycle transitions, so the worker handler
+		// never sees them.
+		"POST /api/v1/tasks/{id}/view", "DELETE /api/v1/tasks/{id}/view",
+		"POST /api/v1/tasks/{id}/available",
+	} {
 		mux.Handle(pattern, csrf.Handler(http.HandlerFunc(s.handleTasks)))
 	}
+}
+
+// graceAction names the grace-period segment on a task URL. The dashboard
+// writes /api/v1/tasks/{id}/view and /api/v1/tasks/{id}/available; the
+// coordinator serves both under its control prefix.
+func graceAction(path string) string {
+	for _, action := range []string{"view", "available"} {
+		if strings.HasSuffix(path, "/"+action) {
+			return action
+		}
+	}
+	return ""
 }
 
 func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
@@ -29,6 +53,11 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 	path := "/api/v1/control/tasks"
 	if taskID := r.PathValue("id"); taskID != "" {
 		path += "/" + url.PathEscape(taskID)
+		// The grace actions ride on the task item: /tasks/{id}/view and
+		// /tasks/{id}/available are different control paths, not a body flag.
+		if action := graceAction(r.URL.Path); action != "" {
+			path += "/" + action
+		}
 	}
 	query := url.Values{}
 	for _, key := range []string{"group", "status", "attention", "project", "repo", "q", "cursor", "limit"} {

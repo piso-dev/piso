@@ -143,6 +143,16 @@ if [ -x /usr/local/bin/piso-mcp-add ] && [ -e /root/.pi/agent/bin/piso-mcp-add ]
   rm -f /root/.pi/agent/bin/piso-mcp-add
 fi
 
+# Same trap for workbench, and a worse one: a frozen script copy keeps printing
+# whatever guidance it shipped with, no matter how often the image is rebuilt.
+# Track the image binary with a symlink so the text on PATH matches the bake.
+if [ -x /usr/local/bin/piso-workbench ]; then
+  mkdir -p /root/.pi/agent/bin
+  if [ "$(readlink /root/.pi/agent/bin/workbench 2>/dev/null)" != "/usr/local/bin/piso-workbench" ]; then
+    ln -sfn /usr/local/bin/piso-workbench /root/.pi/agent/bin/workbench
+  fi
+fi
+
 # piso-mcp builds its channel from the gateway's public pin, which the worker
 # reads from /etc/piso/gateway.json (compose binds <data>/workers/<slug> there).
 # The gateway writes it for workers on its own host, but a remote ship is
@@ -378,8 +388,8 @@ fi
 # The hull decides which boundary contract the model sees. A cloud ship is
 # root on its own machine (CAPABILITIES.ship.md: /host, nsenter, the docker
 # socket), so handing it CAPABILITIES.md — which forbids all three and routes
-# privileged work through a Host Action Request — makes it refuse its own
-# privileges and stall. PISO_HULL is set by compose (cloud_ship only).
+# privileged work through the host loop — makes it refuse its own privileges
+# and stall. PISO_HULL is set by compose (cloud_ship only).
 # Fall back to the guest contract when the ship file is missing (older image).
 hull=$(printf '%s' "${PISO_HULL:-}" | tr 'A-Z' 'a-z')
 if [ "$hull" = "cloud_ship" ] && [ -f /opt/piso/CAPABILITIES.ship.md ]; then

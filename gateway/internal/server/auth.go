@@ -100,7 +100,10 @@ func (d dashSession) expired(now time.Time) bool { return now.Unix() >= d.Exp }
 //  1. PISO_DASHBOARD_AUTH — the operator's explicit choice, both directions.
 //  2. the public dashboard hostname — a request addressed to it came from off-host.
 //  3. a peer inside the front-proxy subnet (PISO_TRUSTED_PEER_CIDRS) — the only
-//     way Caddy's traffic can be told apart from the host's own CLI.
+//     way Caddy's traffic can be told apart from the host's own CLI. The host
+//     itself is exempt: a published port masquerades host-originated requests
+//     to the bridge address, which sits inside that same subnet, so the address
+//     alone cannot mean "off-host" (see peerIsThisHost).
 func (s *Server) authRequiredFor(r *http.Request) (bool, string) {
 	if on, set := dashboardAuthOverride(); set {
 		if on {
@@ -111,8 +114,8 @@ func (s *Server) authRequiredFor(r *http.Request) (bool, string) {
 	if host := s.dashboardHost(); host != "" && hostOnly(r.Host) == host {
 		return true, "request addressed to the public dashboard host " + host
 	}
-	if ip := parseRemoteIP(r.RemoteAddr); ip != nil && !ip.IsLoopback() && peerTrusted(ip) {
-		return true, "request arrived through the TLS front proxy"
+	if ip := parseRemoteIP(r.RemoteAddr); ip != nil && !ip.IsLoopback() && peerTrusted(ip) && !peerIsThisHost(ip) {
+		return true, "request arrived from the trusted front-proxy subnet"
 	}
 	return false, ""
 }

@@ -62,8 +62,17 @@ func peerOnWorkerVPC(remoteAddr string) bool {
 	return false
 }
 
-func workerVPCNets() []vpcNet {
-	def := defaultRouteIfaces()
+func workerVPCNets() []vpcNet { return interfaceNets(defaultRouteIfaces()) }
+
+// hostInterfaceNets is every non-loopback IPv4 subnet on this host, the
+// default-route interface included. It answers "is this address me?", which is
+// a different question from "could this address be a worker?" — the latter is
+// what skipping the default route is for.
+func hostInterfaceNets() []vpcNet { return interfaceNets(nil) }
+
+// interfaceNets lists the IPv4 subnets of the host's up, non-loopback
+// interfaces, skipping the names in skip (nil skips none).
+func interfaceNets(skip map[string]bool) []vpcNet {
 	ifaces, err := net.Interfaces()
 	if err != nil {
 		return nil
@@ -73,7 +82,7 @@ func workerVPCNets() []vpcNet {
 		if iface.Flags&net.FlagLoopback != 0 || iface.Flags&net.FlagUp == 0 {
 			continue
 		}
-		if def[iface.Name] {
+		if skip[iface.Name] {
 			continue
 		}
 		addrs, err := iface.Addrs()
@@ -178,6 +187,30 @@ func trustedPeerCIDRs() []*net.IPNet {
 func peerTrusted(ip net.IP) bool {
 	for _, n := range trustedPeerCIDRs() {
 		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// peerIsThisHost reports an address that is the host itself rather than a peer:
+// one of its own interface addresses, or the bridge address a host-originated
+// connection is masqueraded to when it reaches a published container port.
+//
+// This exists for the dashboard gate. PISO_TRUSTED_PEER_CIDRS names the network
+// the front proxy sits on, and the host is on that network too, so opening
+// http://piso.local on the gateway's own machine arrives from inside the
+// trusted range. Without this the gate asks that machine for a password nobody
+// ever set. It is the same exemption peerOnWorkerVPC makes, for the same reason.
+func peerIsThisHost(ip net.IP) bool {
+	if ip == nil {
+		return false
+	}
+	for _, n := range hostInterfaceNets() {
+		if n.self != nil && ip.Equal(n.self) {
+			return true
+		}
+		if n.gw != nil && ip.Equal(n.gw) {
 			return true
 		}
 	}

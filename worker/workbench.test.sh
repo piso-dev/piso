@@ -101,13 +101,18 @@ PISO_WORKBENCH_GO_BASE="file://$root/dl" "$W" install go@9.9.8 >/dev/null 2>&1 \
 "$W" install go >/dev/null 2>&1 && bad "install accepted a missing version" || ok "install requires a version"
 
 # Non-Go tools are not downloaded from GitHub releases (the gateway 504s/407s
-# them); the failure must point at the host-request path.
+# them); the failure must point at the host_request *tool*, never at a request
+# template the worker would print into its reply (that text is not routed to
+# the host and does not reach the board).
 err=$("$W" install rg@14 2>&1)
 rc=$?
 [ "$rc" = 2 ] && ok "install of an unsupported tool exits 2" || bad "unsupported tool exited $rc"
 case "$err" in
-  *HOST\ ACTION\ REQUEST*) ok "unsupported tool tells the worker to emit a host_request" ;;
-  *) bad "unsupported tool message lacks host-request guidance: $err" ;;
+  *HOST\ ACTION\ REQUEST*|*"COMMAND:"*|*"RESULT:"*)
+    bad "unsupported tool prints a request template instead of calling the tool: $err" ;;
+  *host_request*command=*resultPath=*)
+    ok "unsupported tool points at the host_request tool" ;;
+  *) bad "unsupported tool message lacks host-request tool guidance: $err" ;;
 esac
 
 # --- run ---------------------------------------------------------------------

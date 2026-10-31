@@ -2054,6 +2054,11 @@ func dockerComposeEnv() (map[string]string, error) {
 		// makes a request addressed to it count as off-host.
 		"PISO_DASHBOARD_AUTH": envOrEmpty("PISO_DASHBOARD_AUTH"),
 		"PISO_DASHBOARD_HOST": envOrEmpty("PISO_DASHBOARD_HOST"),
+		// Empty unless exported: the compose default is empty too, so a plain
+		// install never treats the piso_public subnet — which the host's own
+		// published-port traffic also crosses — as off-host. A deploy with a
+		// front proxy on the bridge exports it (see server/compose.coexist.yaml).
+		"PISO_TRUSTED_PEER_CIDRS": envOrEmpty("PISO_TRUSTED_PEER_CIDRS"),
 	}, nil
 }
 
