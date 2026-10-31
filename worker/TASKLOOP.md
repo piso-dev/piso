@@ -69,8 +69,10 @@ new task starts in `/workspace` with whatever earlier tasks left there.
   This atomically persists the wait and ends the lease. Do not poll while waiting.
 - For authorization, use `approval_request` with taskId, attemptId, requestId,
   summary, and checkpoint. For an external human action, use
-  `human_action_request` with those fields. They also atomically wait and end
-  execution; do not make a second task_wait call afterward.
+  `human_action_request` with those fields. For a step the host must perform
+  (ssh, docker, a privileged write), use `host_request` with those fields plus
+  `command` and `resultPath`. All three atomically wait and end execution; do
+  not make a second task_wait call afterward.
 - `task_release`: checkpoint and summary; work remains runnable for someone else.
 - `task_complete`: summary and supporting artifacts/evidence.
 - `task_fail`: terminal failure of the goal, with summary and evidence.

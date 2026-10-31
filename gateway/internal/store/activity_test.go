@@ -1,7 +1,9 @@
 package store
 
 import (
+	"database/sql"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -165,5 +167,76 @@ func TestInsertUnknownKindRejected(t *testing.T) {
 	st := testStore(t)
 	if _, err := st.InsertActivity(Activity{Worker: "piso-worker-demo", Slug: "demo", Kind: "bogus", Text: "x"}); err == nil {
 		t.Fatal("unknown kind accepted")
+	}
+}
+
+// A host request is a board line pointing at the ask that actually blocks the
+// worker, so the link has to survive a round-trip.
+func TestActivityAskIDRoundTrips(t *testing.T) {
+	st := testStore(t)
+	if _, err := st.InsertActivity(Activity{
+		Worker: "piso-worker-demo", Slug: "demo", Kind: ActivityKindHost,
+		Text: "add dns · result → /workspace/dns.txt · ask h1", AskID: "h1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := st.QueryActivities(ActivityFilter{Slug: "demo", Limit: 1})
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("%+v %v", rows, err)
+	}
+	if rows[0].AskID != "h1" {
+		t.Fatalf("%+v", rows[0])
+	}
+}
+
+// A database created before ask_id existed must gain the column on open, not
+// fail: CREATE TABLE IF NOT EXISTS silently leaves the old shape in place.
+func TestActivitySchemaMigratesExistingDB(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "activities.db")
+	legacy, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := legacy.Exec(`CREATE TABLE activities (
+		id TEXT PRIMARY KEY, worker TEXT NOT NULL, slug TEXT NOT NULL,
+		kind TEXT NOT NULL, target_slug TEXT, text TEXT NOT NULL, ts INTEGER NOT NULL)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := legacy.Exec(`INSERT INTO activities (id, worker, slug, kind, text, ts)
+		VALUES ('old','w','demo','note','before',1000)`); err != nil {
+		t.Fatal(err)
+	}
+	legacy.Close()
+
+	st, err := New(filepath.Join(dir, "state.json"), filepath.Join(dir, "log.jsonl"), filepath.Join(dir, "patterns.json"), path, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	// The old row survives with an empty link...
+	rows, err := st.QueryActivities(ActivityFilter{Slug: "demo", Limit: 5})
+	if err != nil || len(rows) != 1 || rows[0].AskID != "" {
+		t.Fatalf("%+v %v", rows, err)
+	}
+	// ...and the new column is writable.
+	if _, err := st.InsertActivity(Activity{Worker: "w", Slug: "demo", Kind: ActivityKindHost, Text: "ask", AskID: "h9"}); err != nil {
+		t.Fatal(err)
+	}
+	rows, _ = st.QueryActivities(ActivityFilter{Slug: "demo", Limit: 1})
+	if len(rows) != 1 || rows[0].AskID != "h9" {
+		t.Fatalf("%+v", rows)
+	}
+}
+
+func TestSanitizeCommandKeepsNewlines(t *testing.T) {
+	got := SanitizeCommand("  git clone a\n\tgit push b\x00  ", 200)
+	if got != "git clone a\n\tgit push b" {
+		t.Fatalf("%q", got)
+	}
+	// Capped output stays valid UTF-8 rather than splitting a rune.
+	capped := SanitizeCommand(strings.Repeat("é", 20), 7)
+	if capped != "ééé" {
+		t.Fatalf("%q", capped)
 	}
 }

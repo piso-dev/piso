@@ -18,6 +18,12 @@
         --amber: #efc078;
         --red: #f29b9b;
         --green: #99cbb2;
+        /* Type identity needs more hues than status did, and it must not borrow
+           the two that already mean something: red is blocked/error and green
+           is healthy/success, so an item's type never arrives in either. */
+        --violet: #c3aef0;
+        --teal: #86cdc4;
+        --moss: #bcc98b;
         --rail: 220px;
         font-family: "Segoe UI", system-ui, sans-serif;
         color: var(--text);
@@ -1086,12 +1092,47 @@
       .task-row strong { overflow-wrap: anywhere; min-width: 0; }
       .task-pagination { padding-top: 24px; }
       .task-pagination button:disabled { cursor: default; }
-      .task-detail { max-width: 76ch; }
+      .task-detail { max-width: 76ch; border-left: 3px solid var(--type, var(--line)); padding-left: 20px; }
       .task-detail section, .task-update { margin-top: 24px; }
+      /* Updates is a section like any other, but its heading used to sit flush
+         against whatever came before it — acceptance criteria ended and the
+         word "Updates" started on the next line. The extra room is vertical
+         padding on the section, not a margin on the heading, so the first
+         update's divider keeps its own spacing. */
+      .task-detail > .task-updates {
+        padding-top: 12px;
+      }
       .task-prose { white-space: pre-wrap; overflow-wrap: anywhere; }
       .task-prose code { font-family: var(--mono); }
       .task-prose pre { padding: 16px; background: var(--surface); overflow-x: auto; white-space: pre; }
       .task-back { display: inline-block; padding: 12px 18px; border: 1px solid var(--line); border-radius: 8px; text-decoration: none; }
+      /* The way back, the title with its status, and the verbs are three rows of
+         one header. They were touching, so the buttons read as part of the
+         title instead of as the controls they are. */
+      .task-back-row { padding: 2px 0 20px; }
+      .task-detail > header {
+        /* Column, not row: the status is a line of the header, not something
+           that only sits beside the title when the title happens to be short. */
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 10px;
+        padding: 4px 0 18px;
+      }
+      .task-detail > header .detail-tags {
+        /* The type and the status are one row of labels, not two paragraphs. */
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 10px;
+      }
+      .task-detail > .card-actions {
+        gap: 12px;
+        padding: 0 0 26px;
+      }
+      .task-detail > .card-actions button {
+        padding: 12px 17px;
+      }
       .ask label { display: grid; gap: 8px; margin: 18px 0; }
       .ask textarea { min-height: 96px; width: 100%; }
       .task-update { border-top: 1px solid var(--line); padding-top: 12px; }
@@ -1215,6 +1256,351 @@
       .ask code {
         display: block;
         margin-top: 12px;
+      }
+      /* Board: columns are states; the first column is the work that needs a
+         human. The vertical rhythm is deliberately generous — cards carry two
+         or three action buttons and cramped rows made them easy to misclick. */
+      .board-toolbar {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        flex-wrap: nowrap;
+        padding: 2px 0 20px;
+      }
+      /* Four controls, one row, one height. Board/List, the field and Search are
+         a single bar; letting any of them take their natural height made the
+         field sit four pixels lower than the tabs and ten below the button. */
+      .board-toolbar .subnav {
+        margin-bottom: 0;
+        flex: 0 0 auto;
+        flex-wrap: nowrap;
+        gap: 7px;
+      }
+      .board-toolbar .subnav button,
+      .board-toolbar .search-row button,
+      .board-toolbar .search-row input {
+        height: 40px;
+        padding-top: 0;
+        padding-bottom: 0;
+      }
+      .board-toolbar .subnav button,
+      .board-toolbar .search-row button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        white-space: nowrap;
+      }
+      .board-toolbar .subnav button {
+        padding-left: 14px;
+        padding-right: 14px;
+      }
+      /* The label and its button stay on one line. A form that wraps turns two
+         halves of one control into a stack that reads like two separate jobs,
+         so this row is deliberately nowrap. */
+      .board-toolbar .search-row {
+        display: flex;
+        flex-wrap: nowrap;
+        align-items: center;
+        gap: 10px;
+        flex: 1 1 auto;
+        max-width: 520px;
+        min-width: 0;
+        margin: 0;
+      }
+      .board-toolbar .search-row label {
+        flex: 1 1 auto;
+        max-width: none;
+        min-width: 0;
+        height: 40px;
+      }
+      .board-toolbar .search-row input {
+        width: 100%;
+        min-width: 0;
+      }
+      .board-toolbar .search-row button {
+        flex: 0 0 auto;
+        padding-left: 18px;
+        padding-right: 18px;
+      }
+      .board {
+        display: grid;
+        grid-auto-flow: column;
+        grid-auto-columns: minmax(300px, 1fr);
+        gap: 20px;
+        align-items: start;
+        overflow-x: auto;
+        padding: 2px 2px 28px;
+      }
+      .column {
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+        min-width: 0;
+        /* Columns stay neutral. Colour on this board names what a card is, and
+           a column already names where it is, so tinting both would put two
+           legends on one screen. */
+        background: var(--inset);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 16px 14px 20px;
+      }
+      .column-head {
+        display: flex;
+        /* Centre, not baseline: the tools group can hold a button taller than
+           the heading and its count. */
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        padding: 2px 2px 4px;
+      }
+      .column-head h2 {
+        font-size: 13px;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+      .column-head .column-count {
+        color: var(--muted);
+        font-size: 12px;
+        font-variant-numeric: tabular-nums;
+      }
+      .column-tools {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      /* The one control that starts work from the board itself: a bordered +
+         on the only column a new task can land in. Small, but a real hit area
+         with padding on all four sides. */
+      .column-head .column-add {
+        font-size: 16px;
+        line-height: 1;
+        min-width: 30px;
+        padding: 6px 10px;
+      }
+      .column-note {
+        color: var(--muted);
+        font-size: 12px;
+        padding: 0 2px 6px;
+      }
+      .column-empty {
+        color: var(--muted);
+        font-size: 13px;
+        padding: 16px 2px 10px;
+      }
+      .card {
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+        /* The item's type is a tint of the panel, and the only place a card
+           wears colour. State is already said twice — by the column and by
+           the badge — so the hue is spent on what the thing *is*. A wash over
+           --panel rather than over transparent: the column behind it is grey,
+           and a solid tint keeps the card a card instead of letting the
+           column bleed through. Mixed into the panel, not the background, so
+           the tint is readable and stays low-key at 16%. */
+        background: color-mix(in srgb, var(--type, var(--panel)) 16%, var(--panel));
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        padding: 18px 16px;
+        min-width: 0;
+      }
+      /* One palette for item types, read by the board card and by the detail
+         page. Two types share a hue only when the operator owes them the same
+         verb (decide / respond); the chip still names the exact type, so the
+         hue is a hint and the word is the answer. */
+      [data-type="work"] { --type: var(--blue); }
+      [data-type="proposal"],
+      [data-type="decision"] { --type: var(--violet); }
+      [data-type="review"] { --type: var(--teal); }
+      [data-type="question"],
+      [data-type="action"] { --type: var(--amber); }
+      [data-type="preview"] { --type: var(--moss); }
+      [data-type="access"] { --type: var(--muted); }
+      /* The chip is the type in words, on the same tint, so the two cues cannot
+         disagree and neither one alone carries the meaning. */
+      .type-chip {
+        display: inline-flex;
+        align-items: center;
+        padding: 2px 8px;
+        border-radius: 999px;
+        color: var(--type, var(--muted));
+        background: color-mix(in srgb, currentColor 13%, transparent);
+        box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 32%, transparent);
+        font-size: 11px;
+        letter-spacing: 0.02em;
+        white-space: nowrap;
+      }
+      /* No accent stripe for status: a left border in three colours per state
+         made the board look like a legend you had to learn. One rule, one axis,
+         and the axis is type. */
+      .card-top {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 12px;
+      }
+      .card-title {
+        font-weight: 600;
+        text-decoration: none;
+        overflow-wrap: anywhere;
+        /* A card is a glance, not a page: two lines of title, then an ellipsis.
+           The full text is one click away on the detail page. */
+        display: -webkit-box;
+        -webkit-box-orient: vertical;
+        -webkit-line-clamp: 2;
+        line-clamp: 2;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .card-title:hover {
+        text-decoration: underline;
+      }
+      .card-kicker {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 12px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .card-note {
+        color: var(--muted);
+        font-size: 13px;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        /* Same reason as the title: a worker's question or a pause reason can
+           run for paragraphs, and a column of two-hundred-word cards is not a
+           board anyone can scan. Three lines, then an ellipsis. */
+        display: -webkit-box;
+        -webkit-box-orient: vertical;
+        -webkit-line-clamp: 3;
+        line-clamp: 3;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .column .card-kicker code {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .card-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        padding-top: 4px;
+      }
+      .card-actions:empty {
+        display: none;
+      }
+      /* The grace period is the one green thing on the board: it is a healthy
+         state that expires by itself (a worker may claim this shortly), not a
+         warning and not an error. The tint says "no action needed, but notice
+         this"; the solid green border makes it a panel rather than a badge, so
+         it reads as part of the card rather than a sticker on it. */
+      .grace-panel {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 6px;
+        border: 1px solid var(--green);
+        border-radius: 8px;
+        background: color-mix(in srgb, var(--green) 14%, transparent);
+        color: #fff;
+        padding: 12px 14px;
+        min-width: 0;
+      }
+      /* The clock is the headline: it is the one number that changes, and it is
+         top left because that is where the eye starts. Tabular figures keep the
+         panel from twitching as the seconds tick. */
+      .grace-state {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin: 0;
+        font-family: var(--mono, monospace);
+        font-size: 19px;
+        font-weight: 600;
+        font-variant-numeric: tabular-nums;
+        line-height: 1.2;
+      }
+      .grace-why {
+        margin: 0;
+        color: rgba(255, 255, 255, 0.82);
+        font-size: 12px;
+        overflow-wrap: anywhere;
+      }
+      /* Bottom right: the same corner a card's verbs live in, so the one way to
+         end the hold is where a control is expected. */
+      .grace-action {
+        align-self: flex-end;
+        margin-top: 2px;
+      }
+      .grace-panel .grace-action button {
+        border: 1px solid var(--green);
+        background: transparent;
+        color: #fff;
+        font-weight: 600;
+      }
+      .grace-panel .grace-action button:hover {
+        background: color-mix(in srgb, var(--green) 26%, transparent);
+      }
+      /* Held open is not counting down, so the panel stops being green: nothing
+         is expiring, somebody is reading. Same shape, different colour, so the
+         two states are never mistaken for each other at a glance. */
+      .grace-panel.held {
+        border-color: var(--blue);
+        background: color-mix(in srgb, var(--blue) 14%, transparent);
+      }
+      .grace-panel.held .grace-state {
+        font-family: inherit;
+        font-size: 14px;
+      }
+      .grace-panel.held .grace-action button {
+        border-color: var(--blue);
+      }
+      .grace-panel.held .grace-action button:hover {
+        background: color-mix(in srgb, var(--blue) 26%, transparent);
+      }
+      .card-actions button {
+        padding: 10px 14px;
+      }
+      .card code {
+        font-family: var(--mono, monospace);
+        font-size: 12px;
+        overflow-wrap: anywhere;
+      }
+      /* A host request is a command a person copies and runs, so it gets a
+         selectable block instead of the clamped prose a question gets. It
+         scrolls rather than clamping: truncating the middle of a command is
+         how someone runs half of it. */
+      .card-command {
+        margin: 0;
+        padding: 9px 11px;
+        border-radius: 6px;
+        border: 1px solid var(--line);
+        background: var(--inset);
+        overflow-x: auto;
+        white-space: pre;
+      }
+      .card-command code {
+        white-space: pre;
+      }
+      .card-result {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        gap: 6px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .card-result code {
+        min-width: 0;
+        overflow-wrap: anywhere;
+      }
+      .dialog-content .form-grid textarea {
+        min-height: 96px;
       }
       .section-label {
         font-size: 13px;
@@ -1397,6 +1783,13 @@
       .dialog-content .actions {
         margin-top: 24px;
         justify-content: flex-end;
+      }
+      /* A dialog footer is a decision, so it sits on the right edge under a
+         full-width form rather than floating beneath the last field. */
+      .dialog-content .dialog-actions {
+        width: 100%;
+        justify-content: flex-end;
+        padding-top: 4px;
       }
       .dialog-content .notice {
         margin-top: 20px;
@@ -1882,15 +2275,12 @@
             ><span class="nav-icon" aria-hidden="true">▤</span>Projects</a
           >
           <a href="#/tasks" data-view="tasks"
-            ><span class="nav-icon" aria-hidden="true">☑</span>Tasks</a
-          >
+            ><span class="nav-icon" aria-hidden="true">☑</span>Tasks
+            <span class="nav-count" id="attentionCount"></span
+          ></a>
           <a href="#/directives" data-view="directives"
             ><span class="nav-icon" aria-hidden="true">≡</span>Directives</a
           >
-          <a href="#/attention" data-view="attention"
-            ><span class="nav-icon" aria-hidden="true">◈</span>Needs you
-            <span class="nav-count" id="attentionCount"></span
-          ></a>
           <a href="#/traffic" data-view="traffic"
             ><span class="nav-icon" aria-hidden="true">⇄</span>Traffic
             <span class="nav-count" id="blockedCount"></span
@@ -2026,14 +2416,17 @@
         dialogReturn = null;
       const titles = {
         projects: ["Projects", "Recent worker activity by project."],
-        tasks: ["Tasks", "Create work and follow it from queue to completion."],
+        tasks: [
+          "Tasks",
+          "Every item in one board: what needs you, then what the queue is doing.",
+        ],
         directives: [
           "Directives",
           "Standing instructions workers read before they plan, each with a code they can cite.",
         ],
         attention: [
-          "Needs you",
-          "Decisions, access requests, and jobs the agents cannot finish alone.",
+          "Tasks",
+          "Every item in one board: what needs you, then what the queue is doing.",
         ],
         traffic: [
           "Traffic",
@@ -2661,7 +3054,7 @@
       function formDialog(title, description, fields, submit, onSubmit) {
         mountDialog(
           title,
-          `<p>${esc(description)}</p><form id="actionForm"><div class="form-grid">${fields}</div><div id="formError" class="notice error" role="alert" hidden></div><div class="actions">${button("Cancel", "close")}<button type="submit" class="primary">${esc(submit)}</button></div></form>`,
+          `<p>${esc(description)}</p><form id="actionForm"><div class="form-grid">${fields}</div><div id="formError" class="notice error" role="alert" hidden></div><div class="actions dialog-actions">${button("Cancel", "close")}<button type="submit" class="primary">${esc(submit)}</button></div></form>`,
         );
         $("#actionForm").onsubmit = async (e) => {
           e.preventDefault();
@@ -2708,11 +3101,15 @@
         if (pending.has(key)) return pending.get(key);
         const job = api(endpoints[key])
           .then((value) => {
+            // Asks still arrive inside their envelope. The directive proxy
+            // unwraps the coordinator's {"directives": [...]} itself so the
+            // dashboard stores a bare array like every other collection, and a
+            // reader that looked for .directives here would always show none.
             data[key] =
               key === "asks"
                 ? value?.asks || []
                 : key === "directives"
-                  ? value?.directives || []
+                  ? (Array.isArray(value) ? value : value?.directives) || []
                   : value;
             loaded.add(key);
             failures.delete(key);
@@ -2863,6 +3260,8 @@
           return (
             button("New task", "task-new", "", "", "", !ready) +
             button("Review requests", "go-attention", "", "quiet")
+            // "Needs you" folded into the board: the button lands on its inbox
+            // column rather than a separate page.
           );
         if (view === "traffic")
           return button(paused ? "Resume feed" : "Pause feed", "pause", "", "quiet");
@@ -2872,7 +3271,17 @@
         hideTimelineTip();
         // A new visit: the provider view may fetch its catalogs again.
         catalogRefresh.settled = false;
+        // Leaving the detail view ends the hold it was applying before the new
+        // page renders: a task must not stay out of the queue because a tab was
+        // navigated away from.
+        if (!location.hash.startsWith("#/tasks/")) stopViewBeat();
         const parts = location.hash.replace(/^#\//, "").split("/");
+        // "Needs you" is the board's first column now. Old links, bookmarks and
+        // muscle memory land on the board instead of a page that is gone.
+        if (parts[0] === "attention") {
+          location.replace("#/tasks");
+          return;
+        }
         view = titles[parts[0]] ? parts[0] : "projects";
         sub = sections[view]?.some(([k]) => k === parts[1])
           ? parts[1]
@@ -2908,7 +3317,11 @@
           };
         }
         if (view === "tasks") {
-          taskUI.id = parts[1] || "";
+          const nextId = parts[1] || "";
+          // The board is the default; #/tasks/list keeps the flat list behind a
+          // URL for anyone who wants the compact table this release.
+          if (nextId === "list") taskUI.mode = "list";
+          taskUI.id = nextId === "list" ? "" : nextId;
           taskUI.detail = null;
           taskUI.error = "";
           loadTasks();
@@ -2941,7 +3354,14 @@
           ? document.activeElement
           : null;
         const focusKey = focused?.closest("[data-key]")?.dataset.key;
+        // A poll rebuilds this subtree, and a rebuild loses both places the
+        // reader can be: the window's vertical scroll, and the board's own
+        // horizontal scroller (the columns are wider than the viewport). Saved
+        // here and put back below, so a ten-second refresh never throws the
+        // page back to the top left.
         const scroll = window.scrollY;
+        const board = box.querySelector(".board");
+        const boardLeft = board ? board.scrollLeft : 0;
         box.innerHTML = html;
         box.querySelectorAll("details[data-key]").forEach((d) => {
           if (open.has(d.dataset.key)) d.open = true;
@@ -2952,7 +3372,14 @@
           if (open.has(row.dataset.key)) setGithubRowExpanded(row, true);
           if (focusKey === row.dataset.key) row.querySelector(".github-row-toggle")?.focus({ preventScroll: true });
         });
-        if (focused) window.scrollTo({ top: scroll });
+        // Restore unconditionally, focus or not: this is the same page, so the
+        // reader's place in it is not the browser's to decide. Focus is put back
+        // with preventScroll above, and this line is the last word on scroll.
+        window.scrollTo({ top: scroll });
+        if (board && boardLeft) {
+          const next = box.querySelector(".board");
+          if (next) next.scrollLeft = boardLeft;
+        }
       }
       function count(n, label = "records") {
         if ($("#resultCount")) $("#resultCount").textContent = n + " " + label;
@@ -2962,28 +3389,34 @@
         if (view === "projects") renderProjects();
         else if (view === "tasks") renderTasks();
         else if (view === "directives") renderDirectives();
-        else if (view === "attention") renderAttention();
         else if (view === "traffic") renderTraffic();
         else if (view === "live") renderLive();
         else renderSettings();
       }
       // Task state is separate from global refresh: only the visible page is polled.
-      const taskUI = {group: "active", cursor: "", previous: [], next: null,
-        rows: [], detail: null, id: "", error: "", loading: false, sequence: 0, search: "", searchDraft: ""};
+      const taskUI = {mode: "board", group: "active", cursor: "", previous: [], next: null,
+        rows: [], active: [], finished: [], truncated: false,
+        detail: null, id: "", error: "", loading: false, sequence: 0,
+        search: "", searchDraft: ""};
+      // The board asks for the whole live set at once so a column can never be
+      // silently partial, and for a bounded tail of the finished work.
+      const BOARD_ACTIVE_LIMIT = 200,
+        BOARD_FINISHED_LIMIT = 30;
       // A proposed task is a worker's suggestion: it is a real row, but nothing
-      // can claim it until a human approves it in Needs you.
-      const taskStatus = (t) => ({proposed: "Proposed", open: "Queued", working: "Working", waiting:
+      // can claim it until a human approves it in the board's inbox.
+      const taskStatus = (t) => t.pausedAt ? "Paused" : ({
+        proposed: "Proposed", open: "Queued", working: "Working", waiting:
         t.waitReasons?.includes("review") ? "Needs review" : "Waiting",
         done: "Done", failed: "Failed", cancelled: "Cancelled"}[t.status] || t.status);
       const taskTone = (t) =>
-        t.status === "proposed" ? "info" : t.status === "failed" ? "bad" : t.status === "done" ? "good" : "";
+        t.pausedAt ? "warn" : t.status === "proposed" ? "info" : t.status === "failed" ? "bad" : t.status === "done" ? "good" : "";
       async function loadTasks() {
         // Tasks are coordinator-owned. Do not ask for a list this gateway will
         // refuse: the view shows the pairing banner instead of an error.
         if (!coordinatorState().ready) {
           taskUI.sequence++;
-          Object.assign(taskUI, {loading: false, rows: [], detail: null, cursor: "",
-            previous: [], next: null, error: ""});
+          Object.assign(taskUI, {loading: false, rows: [], active: [], finished: [],
+            detail: null, cursor: "", previous: [], next: null, error: "", truncated: false});
           if (view === "tasks") renderTasks();
           return;
         }
@@ -2991,12 +3424,28 @@
         taskUI.loading = true;
         if (view === "tasks") renderTasks();
         try {
-          const params = new URLSearchParams({group: taskUI.group, limit: "25", q: taskUI.search});
-          if (taskUI.cursor) params.set("cursor", taskUI.cursor);
-          const result = await api(taskUI.id ? "tasks/" + enc(taskUI.id) : "tasks?" + params);
-          if (sequence !== taskUI.sequence) return;
-          if (taskUI.id) taskUI.detail = result;
-          else { taskUI.rows = result.tasks; taskUI.next = result.nextCursor; }
+          if (taskUI.id) {
+            const result = await api("tasks/" + enc(taskUI.id));
+            if (sequence !== taskUI.sequence) return;
+            taskUI.detail = result;
+          } else if (taskUI.mode === "list") {
+            const params = new URLSearchParams({group: taskUI.group, limit: "25", q: taskUI.search});
+            if (taskUI.cursor) params.set("cursor", taskUI.cursor);
+            const result = await api("tasks?" + params);
+            if (sequence !== taskUI.sequence) return;
+            taskUI.rows = result.tasks;
+            taskUI.next = result.nextCursor;
+          } else {
+            const scope = params => "tasks?" + new URLSearchParams(params).toString();
+            const [live, finished] = await Promise.all([
+              api(scope({group: "active", limit: String(BOARD_ACTIVE_LIMIT), q: taskUI.search})),
+              api(scope({group: "finished", limit: String(BOARD_FINISHED_LIMIT), q: taskUI.search})),
+            ]);
+            if (sequence !== taskUI.sequence) return;
+            taskUI.active = live.tasks || [];
+            taskUI.finished = finished.tasks || [];
+            taskUI.truncated = taskUI.active.length >= BOARD_ACTIVE_LIMIT;
+          }
           taskUI.error = "";
         } catch (e) {
           if (sequence === taskUI.sequence)
@@ -3028,46 +3477,411 @@
           }).join("\n");
         }).join("");
       }
+      // ---- Board ----------------------------------------------------------
+      // Columns are states; the buttons are the controls. Nothing is dragged:
+      // only a few transitions belong to a human, and a drag target would let a
+      // card land in a state no endpoint accepts. The first column is derived,
+      // not stored: it holds whatever is waiting on the person reading it, and
+      // renders the same card objects the state columns do.
+      const BOARD = [
+        {key: "inbox", title: "Inbox", note: "Decide these now; nothing here can move without you."},
+        {key: "queued", title: "Queued", note: "Claimable by any worker with access. Higher priority is picked first.",
+         add: "+"},
+        {key: "paused", title: "Paused", note: "Held out of the queue until you resume it."},
+        {key: "working", title: "Working", note: "A worker holds a live lease. Pause stops it at its next heartbeat."},
+        {key: "waiting", title: "Waiting", note: "The worker stopped and asked for something."},
+        {key: "finished", title: "Finished", note: "Most recently finished first."},
+      ];
+      const allBoardTasks = () => [...taskUI.active, ...taskUI.finished];
+      // A card's colour names what kind of thing it is, not how far along it is:
+      // the column and the badge already carry state. A plain task is work; a
+      // proposed task and an approval ask are both something to decide; a wait
+      // is a review or an open question; a human action is a thing only a
+      // person can do. Types share a hue only when the operator owes them the
+      // same verb, and the chip still names the exact type.
+      const TYPE_LABEL = {
+        work: "", proposal: "Proposal", decision: "Decision", review: "Review",
+        question: "Question", action: "Action", preview: "Preview", access: "Access",
+      };
+      // The coordinator's action type for an approval that carries a proposal:
+      // that card is labelled "Proposal" rather than "Decision" because the
+      // human is accepting new work, not approving work already described.
+      const PROPOSAL_ACTION = "task.propose";
+      function taskType(t, ask) {
+        if (t?.status === "proposed" || ask?.action === PROPOSAL_ACTION) return "proposal";
+        if (!ask) return "work";
+        if (ask.kind === "human") return "action";
+        if (ask.kind === "approval") return "decision";
+        return ask.reason === "review" ? "review" : "question";
+      }
+      function typeChip(type) {
+        const label = TYPE_LABEL[type];
+        return label ? `<span class="type-chip">${esc(label)}</span>` : "";
+      }
+      // One ask drives a card's verbs: a task is waiting on a wait, a proposal
+      // decision, or a human action, and each of those has exactly one verb set.
+      function askForTask(taskId) {
+        return list("asks").find((a) => a.taskId && a.taskId === taskId) || null;
+      }
+      // The whole point of the board: every verb here is a transition a human
+      // actually owns. Everything else happens by itself.
+      function taskVerbs(t) {
+        const ask = askForTask(t.id);
+        const cancel = button("Cancel task", "task-cancel", t.id, "danger");
+        if (t.status === "proposed")
+          return ask
+            ? button("Approve", "ask-approved", ask.id, "primary") + button("Reject", "ask-rejected", ask.id)
+            : cancel;
+        if (t.status === "waiting") {
+          if (!ask) return cancel;
+          if (ask.kind === "human")
+            return button("Done", "ask-completed", ask.id, "primary") +
+              button("Later", "ask-deferred", ask.id) +
+              button("Can’t do this", "ask-rejected", ask.id, "danger");
+          if (ask.kind === "approval")
+            return button("Approve", "ask-approved", ask.id, "primary") + button("Reject", "ask-rejected", ask.id);
+          return ask.reason === "review"
+            ? button("Accept", "ask-accept", ask.id, "primary") +
+                button("Request changes", "ask-request_changes", ask.id) + cancel
+            : button("Resolve", "ask-resolve", ask.id, "primary") + cancel;
+        }
+        if (t.status === "working")
+          return button("Pause", "task-pause", t.id) +
+            button("Add note", "task-note", t.id, "quiet", "Send instructions the worker reads at its next update") +
+            cancel;
+        if (t.pausedAt) return button("Resume", "task-resume", t.id, "primary") + button("Add note", "task-note", t.id) + cancel;
+        if (t.status === "open")
+          return button("Run next", "task-prioritise", t.id, "", "Move this to the front of the claim order") + cancel;
+        return "";
+      }
+      // ---- Grace period ----------------------------------------------------
+      // A task a human just created is held for a countdown: visible on the
+      // board, invisible to workers. The board shows the state three ways — a
+      // green clock while it runs, a blue "held" line once somebody opens it,
+      // and nothing once it is released — and the coordinator is the only
+      // authority on which one applies. The page never decides a task is
+      // available; it re-reads the row and lets the server say so, so two
+      // devices that disagree about the clock cannot disagree about the queue.
+      const GRACE_HEARTBEAT_MS = 5000;
+      function graceRemaining(t) {
+        if (!t?.graceHeld || !t.availableAt) return 0;
+        const at = new Date(t.availableAt).getTime();
+        return Number.isFinite(at) ? Math.max(0, at - Date.now()) : 0;
+      }
+      const clockText = (ms) => {
+        const total = Math.ceil(ms / 1000);
+        return Math.floor(total / 60) + ":" + String(total % 60).padStart(2, "0");
+      };
+      // The grace period is one panel, not a chip plus a stray button: the state
+      // (counting down, or held open by whoever is reading it) sits top left, and
+      // the one action that ends it sits bottom right, where the eye already
+      // looks for a control. Green border and tint mean "healthy and temporary";
+      // the label is white so the clock stays legible on the tint.
+      function gracePanel(t) {
+        if (!t?.graceHeld) return "";
+        const held = t.graceHeld === "viewing";
+        const state = held
+          ? `<span class="grace-text">Held open${t.viewedBy ? " by " + esc(t.viewedBy) : ""}</span>`
+          : `<span aria-hidden="true">◷</span><span class="grace-text">${clockText(graceRemaining(t))}</span>`;
+        return `<div class="grace-panel${held ? " held" : ""}" data-grace="${esc(t.id)}">
+            <p class="grace-state">${state}</p>
+            <p class="grace-why">${esc(graceExplanation(t))}</p>
+            <div class="grace-action">${button("▶ Make available now", "task-available", t.id, "", "End the grace period and let a worker claim this immediately.")}</div>
+          </div>`;
+      }
+      const graceExplanation = (t) =>
+        t?.graceHeld === "viewing"
+          ? "Now available to workers. It stays out of the queue while you have it open."
+          : t?.graceHeld
+            ? "No worker can see or claim this yet. The countdown has to end, unless you release it now."
+            : "";
+      // One ticker patches only the text of the clocks already on screen: a full
+      // re-render every second would fight typing, hover and scroll for no gain.
+      // The map remembers which deadline a refresh was already asked for, so a
+      // server that still reports the hold (clock skew) is not asked every
+      // second, while a genuinely new deadline is.
+      const graceReloaded = new Map();
+      function tickGrace() {
+        let due = false;
+        const seen = new Set();
+        document.querySelectorAll("[data-grace]").forEach((node) => {
+          const id = node.dataset.grace;
+          const t = taskUI.detail?.id === id ? taskUI.detail : allBoardTasks().find((row) => row.id === id);
+          seen.add(id);
+          // A "viewing" hold has no number to tick, and a row that already
+          // released has no chip once the next render lands.
+          if (t?.graceHeld !== "timer") return;
+          const remaining = graceRemaining(t);
+          const text = node.querySelector(".grace-text");
+          if (text) text.textContent = clockText(remaining);
+          if (remaining > 0 || graceReloaded.get(id) === t.availableAt) return;
+          // The countdown is over. Only a fresh row can say whether the task is
+          // now available or held open by somebody reading it, so ask once.
+          graceReloaded.set(id, t.availableAt);
+          due = true;
+        });
+        for (const id of [...graceReloaded.keys()]) if (!seen.has(id)) graceReloaded.delete(id);
+        if (due) loadTasks();
+      }
+      // The view heartbeat: the only thing that keeps a task out of the queue
+      // while a human reads it. It runs only for a task still in its grace
+      // period and stops the moment the page leaves the detail view; the DELETE
+      // is best-effort because a stale beat lifts the hold by itself.
+      const viewBeat = {id: "", timer: 0};
+      function stopViewBeat() {
+        if (viewBeat.timer) clearInterval(viewBeat.timer);
+        viewBeat.timer = 0;
+        const leaving = viewBeat.id;
+        viewBeat.id = "";
+        if (leaving) api("tasks/" + enc(leaving) + "/view", "DELETE").catch(() => {});
+      }
+      function syncViewBeat() {
+        const t = taskUI.detail;
+        // Only a task still in its grace period needs holding. A beat on a task
+        // whose countdown already ran out would be a heartbeat with nothing to
+        // keep alive, and on a released one it would be noise.
+        const wanted =
+          view === "tasks" && !document.hidden && taskUI.id && t && t.graceHeld
+            ? taskUI.id
+            : "";
+        if (wanted === viewBeat.id) return;
+        stopViewBeat();
+        if (!wanted) return;
+        viewBeat.id = wanted;
+        const beat = () => api("tasks/" + enc(wanted) + "/view", "POST", {}).catch(() => {});
+        beat();
+        viewBeat.timer = setInterval(beat, GRACE_HEARTBEAT_MS);
+      }
+      // A host request and a human action are the same ask row with different
+      // bodies. The command half is mechanical (copy it, run it, the output
+      // lands here), so it leaves the clamped prose treatment and becomes a
+      // block a person can actually select.
+      function askBody(a) {
+        const text = a.instructions || a.question || a.detail || "";
+        if (!text) return "";
+        const host = a.kind === "human" && a.category === "host";
+        if (!host) return `<p class="card-note">${esc(text)}</p>`;
+        const result = a.verification
+          ? `<p class="card-result"><span>Result</span><code>${esc(a.verification)}</code></p>`
+          : "";
+        return `<pre class="card-command"><code>${esc(text)}</code></pre>${result}`;
+      }
+      function taskCard(t, inbox = false) {
+        const ask = askForTask(t.id);
+        const type = taskType(t, ask);
+        const bits = [typeChip(type), badge(taskStatus(t), taskTone(t))];
+        if (t.assignee) bits.push(`<span>Held by ${esc(t.assignee)}</span>`);
+        if (t.priority) bits.push(`<span>Priority ${esc(t.priority)}</span>`);
+        if (t.status === "working" && t.leaseExpiresAt) bits.push(`<span>Lease ends ${esc(time(t.leaseExpiresAt))}</span>`);
+        if (t.labels?.project) bits.push(`<span>${esc(t.labels.project)}</span>`);
+        if (t.labels?.repo) bits.push(`<span>${esc(t.labels.repo)}</span>`);
+        if (t.updatedAt) bits.push(`<span>${esc(age(t.updatedAt))}</span>`);
+        // A human's own words are the most useful line on a paused or released
+        // card, so they outrank the ask text.
+        const note = t.resumeReason || ask?.question || ask?.detail || "";
+        // A human ask carries its detail in ``instructions``, not in
+        // ``question``, so it needs its own line: a waiting task whose blocker
+        // is a host request should say which command to run.
+        const askLine = ask?.kind === "human" ? askBody(ask) : "";
+        return `<article class="card${inbox ? " inbox" : ""}" data-type="${esc(type)}" data-key="task-${esc(t.id)}">
+          <div class="card-top"><a class="card-title" href="#/tasks/${enc(t.id)}">${esc(t.title)}</a></div>
+          <div class="card-kicker">${bits.join("")}</div>
+          ${gracePanel(t)}
+          ${note ? `<p class="card-note">${esc(note)}</p>` : ""}
+          ${askLine}
+          <div class="card-actions">${taskVerbs(t)}</div>
+        </article>`;
+      }
+      // An ask whose task is not on this board (a wait on a finished task, or a
+      // human action with no task at all) still needs its verbs somewhere.
+      function looseAskCard(a) {
+        const verbs = a.kind === "human"
+          ? button("Done", "ask-completed", a.id, "primary") + button("Later", "ask-deferred", a.id) +
+            button("Can’t do this", "ask-rejected", a.id, "danger")
+          : a.kind === "approval"
+            ? button("Approve", "ask-approved", a.id, "primary") + button("Reject", "ask-rejected", a.id)
+            : a.reason === "review"
+              ? button("Accept", "ask-accept", a.id, "primary") + button("Request changes", "ask-request_changes", a.id)
+              : button("Resolve", "ask-resolve", a.id, "primary");
+        const kicker = [typeChip(taskType(null, a))];
+        if (a.from) kicker.push(`<span>${esc(a.from)}</span>`);
+        if (a.createdAt) kicker.push(`<span>${esc(age(a.createdAt))}</span>`);
+        return `<article class="card inbox" data-type="${esc(taskType(null, a))}" data-key="ask-${esc(a.id)}">
+          <div class="card-top"><a class="card-title" href="#/tasks/${enc(a.taskId || "")}">${esc(a.title || "Request")}</a></div>
+          <div class="card-kicker">${kicker.join("")}</div>
+          ${askBody(a)}
+          <div class="card-actions">${verbs}</div>
+        </article>`;
+      }
+      function inboxCards() {
+        const cards = [];
+        const seen = new Set();
+        for (const a of list("asks")) {
+          const task = a.taskId ? allBoardTasks().find((t) => t.id === a.taskId) : null;
+          if (task && !seen.has(task.id)) {
+            seen.add(task.id);
+            cards.push(taskCard(task, true));
+          } else if (!task) cards.push(looseAskCard(a));
+        }
+        // A proposal always has an approval ask. One without it would vanish
+        // from every column, so show it rather than hide it.
+        for (const t of taskUI.active)
+          if (t.status === "proposed" && !seen.has(t.id)) cards.push(taskCard(t, true));
+        for (const p of list("plans"))
+          cards.push(`<article class="card inbox" data-type="preview" data-key="plan-${esc(p.id)}">
+            <div class="card-top"><span class="card-title">Open preview ${esc(p.name || p.worker || "")}</span></div>
+            <p class="card-note">Publishes the worker’s web interface through the gateway. It says nothing about the plan’s contents.</p>
+            <div class="card-kicker">${typeChip("preview")}<code>${esc(p.url || routeURL(p.name || p.worker || ""))}</code></div>
+            <div class="card-actions">${button("Publish and open", "publish", p.id, "primary")}${button("Dismiss", "dismiss", p.id)}</div>
+          </article>`);
+        for (const m of list("mcpPending"))
+          cards.push(`<article class="card inbox" data-type="access" data-key="mcp-${esc(m.name || m.url || "")}">
+            <div class="card-top"><span class="card-title">Authorize MCP server ${esc(m.name || "")}</span></div>
+            <div class="card-kicker">${typeChip("access")}<code>${esc(m.url || "")}</code></div>
+            <p class="card-note">Approve it on the dashboard’s MCP tab; this clears once the server is connected.</p>
+          </article>`);
+        for (const g of list("githubPending"))
+          cards.push(`<article class="card inbox" data-type="access" data-key="github-${esc(g.id || g.account || "")}">
+            <div class="card-top"><span class="card-title">${esc(g.title || "GitHub access needed")}</span></div>
+            <div class="card-kicker">${typeChip("access")}</div>
+            ${g.detail || g.instructions ? `<p class="card-note">${esc(g.detail || g.instructions)}</p>` : ""}
+            <div class="card-actions">${g.action === "install" ? button("Install app", "github-install", g.id || "", "primary") : button("Connect GitHub", "github-connect", g.id || "", "primary")}</div>
+          </article>`);
+        return cards;
+      }
+      function boardColumns() {
+        const paused = (t) => Boolean(t.pausedAt);
+        const byStatus = (status) => taskUI.active.filter((t) => t.status === status).map((t) => taskCard(t));
+        const queued = taskUI.active
+          .filter((t) => t.status === "open" && !paused(t))
+          // Mirrors worker/task-pick.py: priority first, then oldest first so a
+          // task that has already waited cannot be starved by newer arrivals.
+          .sort((a, b) => (b.priority || 0) - (a.priority || 0) ||
+            String(a.createdAt || "").localeCompare(String(b.createdAt || "")));
+        return [
+          {def: BOARD[0], cards: inboxCards()},
+          {def: BOARD[1], cards: queued.map((t) => taskCard(t))},
+          {def: BOARD[2], cards: taskUI.active.filter(paused).map((t) => taskCard(t))},
+          {def: BOARD[3], cards: byStatus("working")},
+          {def: BOARD[4], cards: byStatus("waiting")},
+          {def: BOARD[5], cards: taskUI.finished.map((t) => taskCard(t))},
+        ];
+      }
+      function boardMarkup() {
+        if (taskUI.loading && !taskUI.active.length && !taskUI.finished.length)
+          return '<p role="status">Loading tasks…</p>';
+        const head = taskUI.truncated
+          ? `<div class="notice info" role="status"><p>Showing the newest ${BOARD_ACTIVE_LIMIT} live tasks. Search to narrow the board, or open List for the rest.</p></div>`
+          : "";
+        return `${head}<div class="board" aria-busy="${taskUI.loading}">${boardColumns().map(({def, cards}) => `<section class="column" aria-label="${esc(def.title)}">
+          <div class="column-head"><h2>${esc(def.title)}</h2><span class="column-tools"><span class="column-count">${cards.length}</span>${def.add ? button(def.add, "task-new", "", "small column-add", `Add a task to ${def.title.toLowerCase()}`) : ""}</span></div>
+          <p class="column-note">${esc(def.note)}</p>
+          ${cards.length ? cards.join("") : '<p class="column-empty">Nothing here.</p>'}
+        </section>`).join("")}</div>`;
+      }
+      function taskListMarkup() {
+        const rows = taskUI.rows.map((t) => `<a class="task-row" href="#/tasks/${enc(t.id)}"><strong>${esc(t.title)}</strong>${badge(taskStatus(t), taskTone(t))}</a>`).join("");
+        const placeholder = taskUI.loading
+          ? '<p role="status">Loading tasks…</p>'
+          : taskUI.error
+            ? ""
+            : empty(taskUI.search ? "No matching tasks" : taskUI.group === "active" ? "No active tasks" : "No finished tasks",
+              taskUI.group === "active" ? "Create a task. Eligible workers pick up queued work automatically." : "Completed, failed, and cancelled tasks appear here.");
+        return `<div class="subnav" aria-label="Task status">${["active", "finished"].map((g) => `<button data-action="task-group" data-id="${g}" aria-pressed="${taskUI.group === g}">${g === "active" ? "Active" : "Finished"}</button>`).join("")}</div>
+          <div class="task-list" aria-busy="${taskUI.loading}">${rows || placeholder}</div>
+          ${taskUI.previous.length || taskUI.next ? `<nav class="actions task-pagination" aria-label="Task pages"><button data-action="task-prev" ${!taskUI.previous.length || taskUI.loading ? "disabled" : ""}>Previous</button><span>Page ${taskUI.previous.length + 1}</span><button data-action="task-next" ${!taskUI.next || taskUI.loading ? "disabled" : ""}>Next</button></nav>` : ""}`;
+      }
+      function taskDetailMarkup() {
+        const t = taskUI.detail;
+        if (!t) return taskUI.loading ? '<p role="status">Loading task…</p>' : "";
+        const prose = (title, text) => text ? `<section><h2>${esc(title)}</h2><div class="task-prose">${taskMarkup(text)}</div></section>` : "";
+        const artifacts = t.artifacts?.length
+          ? "<h2>Artifacts</h2><ul>" + t.artifacts.map((a) => {
+              const url = safeURL(a.url || "");
+              return "<li>" + (a.url && url
+                ? `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(a.title || a.type || a.url)}</a>`
+                : esc(a.title || a.type)) + "</li>";
+            }).join("") + "</ul>"
+          : "";
+        const updates = (t.updates || []).slice().reverse()
+          .map((u) => `<div class="task-update"><small>${esc(u.author || u.kind)} · ${esc(time(u.createdAt))}</small><div class="task-prose">${taskMarkup(u.body || "")}</div></div>`)
+          .join("");
+        // The newest instruction from a human is hoisted: a resuming worker reads
+        // this instead of scanning the whole trail for the last thing said.
+        const note = t.humanInstructions;
+        const type = taskType(t, askForTask(t.id));
+        return `<article class="task-detail" data-type="${esc(type)}"><header><h2>${esc(t.title)}</h2><div class="detail-tags">${typeChip(type)}${badge(taskStatus(t), taskTone(t))}</div></header>
+          <div class="card-actions">${taskVerbs(t)}</div>
+          ${gracePanel(t)}
+          ${t.pausedAt ? `<p class="card-note">Paused ${esc(age(t.pausedAt))}. Nothing claims it until you resume.</p>` : ""}
+          ${t.status === "proposed" ? `<p>${esc(t.proposedBy || "A worker")} proposed this work. Nothing can claim it until you approve it, and it can be revised or withdrawn until you do.</p>` : ""}
+          ${t.assignee ? `<p class="card-note">Held by ${esc(t.assignee)}${t.leaseExpiresAt ? ` · lease ends ${esc(time(t.leaseExpiresAt))}` : ""}.</p>` : ""}
+          ${note ? `<section><h2>Your latest note</h2><div class="task-prose">${taskMarkup(note.body || "")}</div><p class="card-note">${esc(note.author || "a human")} · ${esc(time(note.createdAt))} · ${esc(note.kind)}</p></section>` : ""}
+          ${prose("Instructions", t.body)}${prose("Acceptance criteria", t.acceptanceCriteria)}
+          ${prose("Latest checkpoint", t.checkpoint)}${prose("Result", t.result?.summary)}${prose("Evidence", t.result?.evidence)}
+          ${artifacts}<section class="task-updates"><h2>Updates</h2>${updates || "<p>No updates yet.</p>"}</section></article>`;
+      }
       function renderTasks() {
         const gate = coordinatorNotice("Tasks");
         if (gate) return replaceContent(gate);
         // Before the first pairing snapshot, "no tasks" would be a lie.
         if (!coordinatorState().known)
           return replaceContent('<p role="status">Loading tasks…</p>');
-        const focusedHref = $("#content")?.contains(document.activeElement) ? document.activeElement.getAttribute("href") : null;
-        const restoreLinkFocus = () => {
-          if (focusedHref) [...$("#content").querySelectorAll("a")].find(a => a.getAttribute("href") === focusedHref)?.focus({preventScroll: true});
-        };
-        const notice = taskUI.error ? `<div class="notice error" role="alert"><p>Tasks could not be refreshed. Any displayed data may be out of date.</p><p>${esc(taskUI.error)}</p>${button("Retry", "task-retry")}</div>` : "";
-        if (taskUI.id) {
-          const t = taskUI.detail;
-          const prose = (title, text) => text ? `<section><h2>${esc(title)}</h2><div class="task-prose">${taskMarkup(text)}</div></section>` : "";
-          replaceContent(`<p><a class="task-back" href="#/tasks">← Back to tasks</a></p>${notice}${t ? `<article class="task-detail"><header><h2>${esc(t.title)}</h2>${badge(taskStatus(t), taskTone(t))}</header>
-            ${t.status === "proposed" ? `<p>${esc(t.proposedBy || "A worker")} proposed this work. Nothing can claim it until you approve it, and it can be revised or withdrawn until you do. <a href="#/attention">Decide in Needs you</a>.</p>` : ""}
-            ${t.status === "waiting" ? '<p><a href="#/attention">Review requests in Needs you</a></p>' : ""}
-            ${prose("Instructions", t.body)}${prose("Acceptance criteria", t.acceptanceCriteria)}
-            ${prose("Latest checkpoint", t.checkpoint)}${prose("Result", t.result?.summary)}${prose("Evidence", t.result?.evidence)}
-            ${t.artifacts?.length ? '<h2>Artifacts</h2><ul>' + t.artifacts.map(a => { const url = safeURL(a.url || ""); return '<li>' + (a.url && url ? `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(a.title || a.type || a.url)}</a>` : esc(a.title || a.type)) + '</li>'; }).join("") + '</ul>' : ""}
-            <h2>Updates</h2>${(t.updates || []).slice().reverse().map(u => `<div class="task-update"><small>${esc(u.author || u.kind)} · ${esc(time(u.createdAt))}</small><div class="task-prose">${taskMarkup(u.body || "")}</div></div>`).join("") || '<p>No updates yet.</p>'}</article>` : taskUI.loading ? '<p role="status">Loading task…</p>' : ""}`);
-          restoreLinkFocus();
-          return;
-        }
-        // Keep search focus/selection and action focus through polling renders.
-        const active = document.activeElement;
+        // Keep search focus/selection and action focus through polling renders:
+        // the whole content area is rebuilt every ten seconds.
+        const content = $("#content");
+        const active = content?.contains(document.activeElement) ? document.activeElement : null;
+        const focusAction = active?.dataset?.action || null;
+        const focusID = active?.dataset?.id || "";
+        const focusHref = active?.getAttribute?.("href") || null;
         const searchFocused = active?.id === "taskSearch";
-        const focusAction = active?.dataset.action, focusID = active?.dataset.id;
         const start = searchFocused ? active.selectionStart : null;
         const end = searchFocused ? active.selectionEnd : null;
-        replaceContent(`<div class="subnav" aria-label="Task status">${["active", "finished"].map(g => `<button data-action="task-group" data-id="${g}" aria-pressed="${taskUI.group === g}">${g === "active" ? "Active" : "Finished"}</button>`).join("")}</div>
-          <form id="taskSearchForm" class="toolbar"><label class="search">Search titles<input id="taskSearch" type="search" maxlength="300" value="${esc(taskUI.searchDraft)}"></label><button type="submit">Search</button></form>
-          ${notice}<div class="task-list" aria-busy="${taskUI.loading}">${taskUI.rows.map(t => `<a class="task-row" href="#/tasks/${enc(t.id)}"><strong>${esc(t.title)}</strong>${badge(taskStatus(t), taskTone(t))}</a>`).join("") || (taskUI.loading ? '<p role="status">Loading tasks…</p>' : taskUI.error ? "" : empty(taskUI.search ? "No matching tasks" : taskUI.group === "active" ? "No active tasks" : "No finished tasks", taskUI.group === "active" ? "Create a task. Eligible workers pick up queued work automatically." : "Completed, failed, and cancelled tasks appear here."))}</div>
-          ${taskUI.previous.length || taskUI.next ? `<nav class="actions task-pagination" aria-label="Task pages"><button data-action="task-prev" ${!taskUI.previous.length || taskUI.loading ? "disabled" : ""}>Previous</button><span>Page ${taskUI.previous.length + 1}</span><button data-action="task-next" ${!taskUI.next || taskUI.loading ? "disabled" : ""}>Next</button></nav>` : ""}`);
-        $("#taskSearch").oninput = e => { taskUI.searchDraft = e.target.value; };
-        $("#taskSearchForm").onsubmit = e => { e.preventDefault(); taskUI.search = $("#taskSearch").value.trim(); taskUI.cursor = ""; taskUI.previous = []; taskUI.rows = []; taskUI.next = null; loadTasks(); };
-        restoreLinkFocus();
-        // Preserve an unsubmitted query during background refresh.
-        if (searchFocused) { $("#taskSearch").value = active.value; $("#taskSearch").focus({preventScroll: true}); $("#taskSearch").setSelectionRange(start, end); }
-        else if (focusAction) [...$("#content").querySelectorAll("button")].find(b => b.dataset.action === focusAction && b.dataset.id === focusID)?.focus({preventScroll: true});
+        const restore = () => {
+          const box = $("#content");
+          if (!box) return;
+          if (searchFocused && $("#taskSearch")) {
+            $("#taskSearch").value = active.value;
+            $("#taskSearch").focus({ preventScroll: true });
+            $("#taskSearch").setSelectionRange(start, end);
+            return;
+          }
+          if (focusAction)
+            [...box.querySelectorAll("button")]
+              .find((b) => b.dataset.action === focusAction && (b.dataset.id || "") === focusID)
+              ?.focus({ preventScroll: true });
+          else if (focusHref)
+            [...box.querySelectorAll("a")].find((a) => a.getAttribute("href") === focusHref)?.focus({ preventScroll: true });
+        };
+        const notice = taskUI.error
+          ? `<div class="notice error" role="alert"><p>Tasks could not be refreshed. Any displayed data may be out of date.</p><p>${esc(taskUI.error)}</p>${button("Retry", "task-retry")}</div>`
+          : "";
+        if (taskUI.id) {
+          replaceContent(`<p class="task-back-row"><a class="task-back" href="#/tasks">← Back to the board</a></p>${notice}${taskDetailMarkup()}`);
+          restore();
+          // The open detail page is what holds a task in its grace period, so
+          // the heartbeat follows the render: start it here, and let the board
+          // and the navigation below stop it.
+          syncViewBeat();
+          return;
+        }
+        stopViewBeat();
+        const modes = `<div class="subnav" aria-label="Task view">${[["board", "Board"], ["list", "List"]]
+          .map(([key, label]) => `<button data-action="task-mode" data-id="${key}" aria-pressed="${taskUI.mode === key}">${label}</button>`)
+          .join("")}</div>`;
+        const search = `<form id="taskSearchForm" class="toolbar search-row"><label class="search">Search titles<input id="taskSearch" type="search" maxlength="300" value="${esc(taskUI.searchDraft)}"></label><button type="submit">Search</button></form>`;
+        replaceContent(`<div class="board-toolbar">${modes}${search}</div>${notice}${taskUI.mode === "list" ? taskListMarkup() : boardMarkup()}`);
+        $("#taskSearch").oninput = (e) => { taskUI.searchDraft = e.target.value; };
+        $("#taskSearchForm").onsubmit = (e) => {
+          e.preventDefault();
+          taskUI.search = $("#taskSearch").value.trim();
+          taskUI.cursor = "";
+          taskUI.previous = [];
+          taskUI.rows = [];
+          taskUI.next = null;
+          loadTasks();
+        };
+        restore();
       }
       function taskUUID() {
         // randomUUID is unavailable on HTTP piso.local; getRandomValues is not.
@@ -3076,13 +3890,29 @@
         const hex = [...bytes].map(b => b.toString(16).padStart(2, "0")).join("");
         return [hex.slice(0,8), hex.slice(8,12), hex.slice(12,16), hex.slice(16,20), hex.slice(20)].join("-");
       }
+      // The fields that describe the work itself. The New task dialog and the
+      // approval dialog share them, so approving a proposal shows the form the
+      // proposal was written in, with its text already in place.
+      function taskDraftFields(task) {
+        return (
+          field("title", "Title", task?.title || "", {required: true, full: true}) +
+          field("body", "Instructions", task?.body || "", {type: "textarea", full: true}) +
+          field("acceptanceCriteria", "Acceptance criteria", task?.acceptanceCriteria || "", {type: "textarea", full: true})
+        );
+      }
+      // The coordinator's limits, set on the element rather than passed through
+      // field(): an over-long draft is stopped before the round-trip, and the
+      // instructions get the taller box a plan needs.
+      function taskDraftLimits() {
+        $("#f-title").maxLength = 300;
+        $("#f-body").maxLength = $("#f-acceptanceCriteria").maxLength = 20000;
+        $("#f-body").rows = 6;
+      }
       function newTask() {
         let submission = null;
-        formDialog("New task", "Eligible workers pick up queued tasks automatically. Include repository and access requirements in your instructions; you don’t need to choose a worker.",
-          field("title", "Title", "", {required: true, full: true}) +
-          field("body", "Instructions", "", {type: "textarea", full: true}) +
-          field("acceptanceCriteria", "Acceptance criteria", "", {type: "textarea", full: true}) +
-          '<div id="taskDiscard" class="notice field full" hidden><p>Discard this draft? A previous submission may still have reached the server; check Tasks before creating it again.</p><div class="actions">' + button("Keep editing", "task-keep") + button("Discard draft", "task-discard", "", "danger") + '</div>',
+        formDialog("New task", "Eligible workers pick up queued tasks automatically. Include repository and access requirements in your instructions; you don’t need to choose a worker. A new task is held for 10 minutes before any worker can claim it, so you can fix it or press Make available now on the card.",
+          taskDraftFields() +
+          '<div id="taskDiscard" class="notice field full" hidden><p>Discard this draft? A previous submission may still have reached the server; check Tasks before creating it again.</p><div class="actions">' + button("Keep editing", "task-keep") + button("Discard draft", "task-discard", "", "danger") + '</div></div>',
           "Create task", async values => {
             if (!values.title.trim()) throw new Error("Enter a title.");
             if (!submission) submission = {id: taskUUID(), ...values, title: values.title.trim()};
@@ -3097,13 +3927,20 @@
               else { form.querySelector('[type="submit"]').textContent = "Retry creation"; e.message += " Retry sends the same task, without duplicates."; }
               throw e;
             }
-            taskUI.cursor = ""; taskUI.previous = []; taskUI.search = ""; taskUI.searchDraft = ""; taskUI.group = "active";
-            location.hash = "#/tasks/" + task.id;
-            return "Task created.";
+            // Land on the board, not the detail page: a new task is queued, and
+            // the point of the confirmation is seeing exactly that.
+            Object.assign(taskUI, {mode: "board", cursor: "", previous: [], next: null,
+              search: "", searchDraft: "", group: "active"});
+            if (location.hash === "#/tasks") loadTasks();
+            else location.hash = "#/tasks";
+            // Say why the card is sitting there with a clock on it: a fresh
+            // task is held for a moment, and the countdown in the toast is the
+            // coordinator's deadline, not a guess.
+            return task?.graceHeld === "timer"
+              ? `Task created and queued. No worker can claim it for ${clockText(graceRemaining(task))}.`
+              : "Task created and queued.";
           });
-        $("#f-title").maxLength = 300;
-        $("#f-body").maxLength = $("#f-acceptanceCriteria").maxLength = 20000;
-        $("#f-body").rows = 6;
+        taskDraftLimits();
         $("#dialog").taskGuard = () => {
           if ([...$("#actionForm").querySelectorAll("input, textarea")].some(el => el.value.trim())) { $("#taskDiscard").hidden = false; return false; }
           return true;
@@ -3752,127 +4589,267 @@
       setInterval(() => {
         if (!document.hidden) updateTimeline();
       }, 1000);
-      function askCard(kind, source, title, description, actions, extra = "", revision = "") {
-        // The revision the card was rendered from rides along so a decision can
-        // name exactly the text the human read, not whatever arrived since.
-        return `<article class="ask"${revision ? ` data-revision="${esc(revision)}"` : ""}><div class="ask-top"><span>${esc(kind)}</span><span>${esc(source)}</span></div><h3>${esc(title)}</h3><p>${esc(description)}</p>${extra}<div class="actions">${actions}</div></article>`;
+      setInterval(tickGrace, 1000);
+      // ---- Deciding --------------------------------------------------------
+      // Every decision funnels through one dialog, so the mandatory note, the
+      // optional amendment and the refreshed-on-conflict behaviour are identical
+      // whichever column the card was clicked in.
+      const DECISION_SPECS = {
+        accept: {
+          title: "Accept this work",
+          label: "Acceptance note",
+          prefill: "Accepted from the board.",
+          hint: "The task closes as done. Anything left unsaid belongs in a new task.",
+          submit: "Accept and close",
+        },
+        request_changes: {
+          title: "Request changes",
+          label: "What needs to change",
+          hint: "The task becomes claimable again, and the worker reads this before it plans.",
+          submit: "Send back for changes",
+          required: true,
+        },
+        resolve: {
+          title: "Resolve this request",
+          label: "Answer or guidance",
+          hint: "The worker resumes as soon as this is saved.",
+          submit: "Send to the worker",
+          required: true,
+        },
+        cancel: {
+          title: "Cancel this task",
+          label: "Why (the worker reads this)",
+          prefill: "Cancelled from the board.",
+          hint: "Nothing further runs on it. This cannot be undone.",
+          submit: "Cancel task",
+          danger: true,
+          required: true,
+        },
+        approved: {
+          title: "Approve this work",
+          label: "Instructions for the worker (optional)",
+          hint: "Approving moves it to the queue, where any eligible worker can claim it.",
+          submit: "Approve and queue",
+        },
+        rejected: {
+          title: "Reject this",
+          label: "Why (optional)",
+          hint: "A rejection drops the work. Nothing is re-queued.",
+          submit: "Reject",
+          danger: true,
+        },
+        completed: {
+          title: "Mark this done",
+          label: "What you did (optional)",
+          hint: "The worker resumes with your answer.",
+          submit: "Mark done",
+        },
+        deferred: {
+          title: "Come back to this later",
+          label: "Note for later (optional)",
+          hint: "The task stays blocked; nothing else changes.",
+          submit: "Defer",
+        },
+        failed: {
+          title: "Report that this cannot be done",
+          label: "Why (optional)",
+          hint: "The worker is told it cannot proceed and adapts its plan.",
+          submit: "Report blocked",
+          danger: true,
+        },
+      };
+      // Only the fields the human actually rewrote travel with the decision; a
+      // field left as the proposal wrote it is not an amendment. The editor
+      // appears only where the text is still the text a worker will read: before
+      // anyone has claimed it. Once there is a live attempt, rewriting the
+      // instructions turns its checkpoint into a lie, so the server refuses it.
+      function amendmentDiff(values, task) {
+        const amend = {};
+        for (const [key, current] of [
+          ["title", task.title],
+          ["body", task.body || ""],
+          ["acceptanceCriteria", task.acceptanceCriteria || ""],
+        ]) {
+          if (values[key] === undefined) continue;
+          const next = String(values[key]).trim();
+          if (next !== String(current ?? "").trim()) amend[key] = next;
+        }
+        return amend;
       }
-      const attentionDrafts = new Map();
-      function renderAttention() {
-        const active = document.activeElement;
-        const focusedFeedback = active?.dataset.feedback;
-        const selection = focusedFeedback ? [active.selectionStart, active.selectionEnd] : null;
-        const cards = [];
-        const waitLabels = {
-          review: "Ready for review",
-          needs_input: "Needs input",
-          external_dependency: "Blocked",
-          stuck: "Stuck",
-        };
-        list("asks").forEach((a) => {
-          if (a.kind === "task_wait") {
-            const reason = a.reason || "stuck";
-            const actions =
-              reason === "review"
-                ? button("Accept", "ask-accept", a.id, "primary") +
-                  button("Request changes", "ask-request_changes", a.id) +
-                  button("Cancel task", "ask-cancel", a.id, "danger")
-                : button("Resolve", "ask-resolve", a.id, "primary") +
-                  button("Cancel task", "ask-cancel", a.id, "danger");
-            return cards.push(
-              askCard(
-                waitLabels[reason] || "Waiting",
-                a.from || "",
-                a.title || "Task",
-                a.question || "The worker is waiting for you.",
-                actions,
-                `<p><strong>Requested action:</strong> ${reason === "review" ? "Review the result, then accept or describe the changes needed." : "Provide the missing answer or explain how to proceed."}</p><label>Feedback for the worker<textarea data-feedback="${esc(a.id)}" placeholder="Add guidance, a review note, or requested changes">${esc(attentionDrafts.get(a.id) || "")}</textarea></label>`,
-              ),
-            );
-          }
-          const proposal = a.kind === "approval" && a.action === "task.propose";
-          cards.push(
-            askCard(
+      async function decideAsk(decision, id) {
+        const a = list("asks").find((x) => x.id === id);
+        if (!a) {
+          notify("That request is no longer open; the board was just refreshed.");
+          return changed(["asks"]);
+        }
+        const spec = DECISION_SPECS[decision];
+        if (!spec) throw new Error("Unknown decision; the board was refreshed.");
+        const proposal = a.kind === "approval" && a.action === "task.propose";
+        // A host request is the one human ask whose answer is evidence rather
+        // than instruction: the worker resumes reading a verdict, and the full
+        // output is already waiting at the rendezvous path.
+        const hostAsk = a.kind === "human" && a.category === "host";
+        // The ask carries only an excerpt of a proposal, so the full text is
+        // fetched before the dialog opens rather than after it is submitted.
+        const task =
+          proposal && decision === "approved" && a.taskId
+            ? await api("tasks/" + enc(a.taskId)).catch(() => null)
+            : null;
+        // Approving a proposal is the New task modal with the proposal already
+        // in it, plus one field at the bottom for what the worker should hear
+        // on top of the work itself. Other approvals have no task text to edit,
+        // so they keep the single decision note.
+        const note = (label, required) =>
+          field("summary", label, spec.prefill || "", {
+            type: "textarea",
+            required,
+            full: true,
+            hint: spec.hint,
+          });
+        const fields = task
+          ? taskDraftFields(task) + note("Further instructions for the worker (optional)", false)
+          : note(hostAsk ? "What did the command print?" : spec.label, true);
+        formDialog(
+          spec.title,
+          proposal
+            ? `${a.from || "A worker"} proposed this. ${a.detail || ""} Approving queues it like any other task; rejecting cancels it.`.trim()
+            : a.kind === "human"
+              ? hostAsk
+                ? `${a.instructions || ""}${a.verification ? `\n\nThe output goes to ${a.verification}.` : ""}`
+                : a.instructions || a.title || "The worker needs a person to do this."
+              : a.question || "The worker stopped and is waiting for you.",
+          fields,
+          spec.submit,
+          async (values) => {
+            const summary = String(values.summary || "").trim();
+            if (spec.required && !summary) throw new Error("A short note is required.");
+            if (a.kind === "task_wait") {
+              await api("tasks/" + enc(a.taskId) + "/respond", "POST", {
+                action: decision,
+                summary,
+                waitId: a.id,
+                requestId: rid(),
+              });
+              await changed(["asks"]);
+              loadTasks();
+              return "Sent to the worker.";
+            }
+            const body =
               a.kind === "human"
-                ? "Human task"
-                : proposal
-                  ? "Proposed work"
-                  : "Decision",
-              a.from || "",
-              a.title || a.action || "Request",
-              a.instructions ||
-                (proposal
-                  ? `${a.detail || ""} Approving queues it like any other task; rejecting cancels it.`.trim()
-                  : a.action) ||
-                "The worker is waiting for your decision.",
-              a.kind === "human"
-                ? button("Done", "ask-completed", a.id, "primary") +
-                    button("Later", "ask-deferred", a.id) +
-                    button("Can’t do this", "ask-rejected", a.id, "danger")
-                : button("Approve", "ask-approved", a.id, "primary") +
-                    button("Reject", "ask-rejected", a.id, "danger"),
-              "",
-              proposal ? a.revision || "" : "",
-            ),
+                ? { status: decision, evidence: { summary } }
+                : { decision, summary, ...(a.revision ? { seenRevision: a.revision } : {}) };
+            const amend = task ? amendmentDiff(values, task) : {};
+            if (Object.keys(amend).length) body.amend = amend;
+            try {
+              await api(
+                "asks/" +
+                  (a.kind === "human" ? "human-actions/" : "approvals/") +
+                  enc(id) +
+                  (a.kind === "human" ? "/resolve" : "/decide"),
+                "POST",
+                body,
+              );
+            } catch (error) {
+              // A stale card is not the human's mistake: refresh it, say so in
+              // plain words, and let them read the current text before deciding.
+              if (error.status === 409 || error.status === 400) {
+                await changed(["asks"]);
+                loadTasks();
+                throw new Error(
+                  "That request changed while you were deciding, so it was reloaded. Read it again and decide.",
+                );
+              }
+              throw error;
+            }
+            await changed(["asks"]);
+            loadTasks();
+            return "Decided.";
+          },
+        );
+        if (task) {
+          taskDraftLimits();
+          $("#f-title").focus();
+        }
+      }
+      async function taskAction(action, id) {
+        const t =
+          allBoardTasks().find((x) => x.id === id) ||
+          (taskUI.detail?.id === id ? taskUI.detail : null);
+        if (!t) {
+          notify("That task is no longer on the board; it was just refreshed.");
+          return loadTasks();
+        }
+        if (action === "resume") {
+          await api("tasks/" + enc(id) + "/respond", "POST", {
+            action: "resume",
+            summary: "Resumed from the board.",
+            requestId: rid(),
+          });
+          await changed(["asks"]);
+          loadTasks();
+          return notify("Resumed. Any eligible worker can claim it again.");
+        }
+        if (action === "prioritise") {
+          // worker/task-pick.py already ranks by priority, so this is the one
+          // control that actually changes the order work is picked up in.
+          const priority = Math.max(0, ...allBoardTasks().map((x) => x.priority || 0)) + 1;
+          await api("tasks/" + enc(id), "POST", { priority, requestId: rid() });
+          loadTasks();
+          return notify("Moved to the front of the queue.");
+        }
+        if (action === "note") {
+          // Append-only on purpose: it is the one thing a human may say at any
+          // point in a task's life, including while a worker is running it.
+          // task_detail.humanInstructions surfaces it to the worker.
+          return formDialog(
+            "Add a note",
+            t.title,
+            field("summary", "Note for the worker", "", {
+              type: "textarea",
+              required: true,
+              full: true,
+              hint: "It reads this at its next update, alongside the task text.",
+            }),
+            "Send note",
+            async (values) => {
+              const summary = String(values.summary || "").trim();
+              if (!summary) throw new Error("Write the note first.");
+              await api("tasks/" + enc(id) + "/respond", "POST", {
+                action: "comment",
+                summary,
+                requestId: rid(),
+              });
+              loadTasks();
+              return "Note added.";
+            },
           );
-        });
-        list("plans").forEach((p) =>
-          cards.push(
-            askCard(
-              "Publish a preview",
-              p.slug || p.worker,
-              "Open " + (p.name || "planning preview"),
-              "This publishes the worker’s web interface through the gateway. It does not approve the plan’s contents.",
-              button("Publish and open", "publish", p.id, "primary") +
-                button("Dismiss", "dismiss", p.id),
-              `<code>${esc(p.url || routeURL(p.name))}</code>`,
-            ),
-          ),
-        );
-        list("mcpPending").forEach((m) =>
-          cards.push(
-            askCard(
-              "Authorize connection",
-              m.slug || m.worker,
-              m.name || "MCP server",
-              "Sign in in a new browser tab. The gateway stores the token; the worker receives a placeholder.",
-              button("Authorize", "mcp-auth", m.id, "primary"),
-              `<code>${esc(m.url)}</code>`,
-            ),
-          ),
-        );
-        list("githubPending").forEach((g) =>
-          cards.push(
-            askCard(
-              "GitHub setup",
-              "Gateway",
-              g.name || "GitHub App",
-              g.status === "needs-register"
-                ? "Create an app on your GitHub account."
-                : "Choose the organizations and repositories this app may access.",
-              button(
-                g.status === "needs-register" ? "Create GitHub App" : "Install on an account",
-                g.status === "needs-register"
-                  ? "github-connect"
-                  : "github-install",
-                g.id,
-                "primary",
-              ),
-            ),
-          ),
-        );
-        const ready = ["asks", "plans", "mcpPending", "githubPending"].every(
-          (k) => loaded.has(k),
-        );
-        replaceContent(
-          `<div class="section-intro"><p class="muted">${cards.length} pending ${cards.length === 1 ? "request" : "requests"}. Nothing is approved automatically.</p>${button("Refresh", "refresh-attention", "", "quiet small")}</div>${cards.length ? `<div class="queue">${cards.join("")}</div>` : ready ? empty("No pending requests", "Blocked network requests are listed in Traffic.") : '<p class="loading">Loading requests. If a connection failed, use Retry above.</p>'}`,
-        );
-        $("#content").querySelectorAll("textarea[data-feedback]").forEach(input => {
-          input.oninput = () => attentionDrafts.set(input.dataset.feedback, input.value);
-          if (input.dataset.feedback === focusedFeedback) {
-            input.focus({preventScroll: true});
-            input.setSelectionRange(...selection);
-          }
+        }
+        const pause = action === "pause";
+        const spec = pause
+          ? {
+              title: "Pause this task",
+              label: "Why (the worker reads this)",
+              prefill: "Paused from the board.",
+              hint: "The worker stops at its next heartbeat. Nothing can claim it until you resume.",
+              submit: "Pause",
+            }
+          : DECISION_SPECS.cancel;
+        formDialog(spec.title, t.title, field("summary", spec.label, spec.prefill || "", {
+          type: "textarea",
+          required: true,
+          full: true,
+          hint: spec.hint,
+        }), spec.submit, async (values) => {
+          const summary = String(values.summary || "").trim();
+          if (!summary) throw new Error("A short note is required.");
+          await api("tasks/" + enc(id) + "/respond", "POST", {
+            action: pause ? "pause" : "cancel",
+            summary,
+            requestId: rid(),
+          });
+          await changed(["asks"]);
+          loadTasks();
+          return pause ? "Paused. It is out of the queue until you resume." : "Cancelled.";
         });
       }
       function renderTraffic() {
@@ -4115,6 +5092,12 @@
               ? await api("directives/" + enc(id), "PUT", payload)
               : await api("directives", "POST", { id: directiveUUID, ...payload });
             await changed(["directives"]);
+            // Land on the Directives page, where the new code is the visible
+            // confirmation and the row the instruction now lives in. A save
+            // from another view (a link, a future shortcut) should never leave
+            // the operator where they cannot see what they just wrote.
+            if (location.hash !== "#/directives")
+              location.hash = "#/directives";
             return (id ? "Saved " : "Created ") + row.code + ".";
           },
         );
@@ -6531,6 +7514,26 @@
         if (name === "directive-new") return directiveForm("");
         if (name === "directive-edit") return directiveForm(id);
         if (name === "task-retry") return loadTasks();
+        if (name === "task-available") {
+          // End the grace period now. The row is re-read rather than patched, so
+          // what the board shows afterwards is the coordinator's answer.
+          try {
+            await api("tasks/" + enc(id) + "/available", "POST", {});
+          } catch (e) {
+            return notify(e.message);
+          }
+          await loadTasks();
+          return notify("Task is available to workers now.");
+        }
+        if (name === "task-mode") {
+          taskUI.mode = id === "list" ? "list" : "board";
+          taskUI.cursor = "";
+          taskUI.previous = [];
+          taskUI.next = null;
+          return loadTasks();
+        }
+        if (name === "task-resume" || name === "task-pause" || name === "task-cancel" || name === "task-prioritise" || name === "task-note")
+          return taskAction(name.slice(5), id);
         if (name === "task-next") { taskUI.previous.push(taskUI.cursor); taskUI.cursor = taskUI.next; return loadTasks(); }
         if (name === "task-prev") { taskUI.cursor = taskUI.previous.pop() || ""; return loadTasks(); }
         if (name === "task-group") { taskUI.group = id; taskUI.cursor = ""; taskUI.previous = []; taskUI.rows = []; taskUI.next = null; return loadTasks(); }
@@ -6550,7 +7553,7 @@
           return;
         }
         if (name === "go-attention") {
-          location.hash = "#/attention";
+          location.hash = "#/tasks";
           return;
         }
         if (name === "go-live") {
@@ -6577,8 +7580,6 @@
           await health();
           return refresh();
         }
-        if (name === "refresh-attention")
-          return refresh(["asks", "plans", "mcpPending", "githubPending"]);
         if (name === "pause") {
           paused = !paused;
           if (paused) frozenRequests = list("requests").slice();
@@ -6681,58 +7682,7 @@
           await api("ingress/requests/" + enc(id) + "/dismiss", "POST");
           return changed(["plans"]);
         }
-        if (name.startsWith("ask-")) {
-          const a = list("asks").find((a) => a.id === id);
-          if (!a) return;
-          const decision = name.slice(4);
-          if (a.kind === "task_wait") {
-            const prompts = {
-              accept: "Acceptance note for the completed work",
-              request_changes: "What needs to change? Work becomes runnable again.",
-              resolve: "Resolution or guidance for the worker",
-              cancel: "Why is this task cancelled?",
-            };
-            const feedback = source?.closest?.(".ask")?.querySelector?.("textarea[data-feedback]");
-            const summary = feedback ? feedback.value : window.prompt(prompts[decision] || "Note", "");
-            if (summary === null) return;
-            await api("tasks/" + enc(a.taskId) + "/respond", "POST", {
-              action: decision,
-              summary: summary || "",
-              waitId: a.id,
-              requestId: rid(),
-            });
-            if (typeof attentionDrafts !== "undefined") attentionDrafts.delete(a.id);
-            return changed(["asks"]);
-          }
-          // The revision rendered into this card, not the newest one fetched:
-          // a poll between painting and clicking must not launder an edit.
-          const seen =
-            source?.closest?.(".ask")?.dataset.revision || a.revision;
-          try {
-            await api(
-              "asks/" +
-                (a.kind === "human" ? "human-actions/" : "approvals/") +
-                enc(id) +
-                (a.kind === "human" ? "/resolve" : "/decide"),
-              "POST",
-              a.kind === "human"
-                ? { status: decision }
-                : { decision, ...(seen ? { seenRevision: seen } : {}) },
-            );
-          } catch (error) {
-            // A stale card is not an error the human caused: refresh it, say so
-            // in plain words, and let them read the current text.
-            if (error.status === 409 || error.status === 400) {
-              await changed(["asks"]);
-              notify(
-                "That request changed while you were deciding. The card is refreshed — check it and decide again.",
-              );
-              return;
-            }
-            throw error;
-          }
-          return changed(["asks"]);
-        }
+        if (name.startsWith("ask-")) return decideAsk(name.slice(4), id);
         if (name === "mcp-auth") return authorizeMCP(id);
         if (name === "mcp-revoke")
           return confirmAction(
@@ -6875,8 +7825,13 @@
       });
       window.addEventListener("hashchange", navigate);
       document.addEventListener("visibilitychange", () => {
-        if (document.hidden) stopLiveClock();
-        else if (view === "live") renderLive();
+        if (document.hidden) {
+          stopLiveClock();
+          // A hidden tab is not a person reading the task. Staying silent also
+          // means the browser cannot throttle a beat into a false hold.
+          stopViewBeat();
+        } else if (view === "live") renderLive();
+        else if (view === "tasks") syncViewBeat();
       });
       let streamTimer;
       function stream() {

@@ -45,13 +45,56 @@ Tasks sits directly below Projects. It uses compact linked rows rather than
 summary cards, Active / Finished filters, server-side title search, and signed
 cursor pagination. Details show authoritative task state, instructions,
 acceptance criteria, checkpoint, result, artifacts, and updates. Waiting tasks
-link to Needs you for decisions. The visible list/detail polls every ten seconds.
+link to Needs you for decisions. The visible list/detail polls every ten seconds,
+and a poll re-renders in place: the window scroll and the board's own sideways
+scroll are read before the rebuild and put back after it, so a refresh never
+throws the reader to the top left or back to the first column.
 
 The native New task dialog uses the existing graphite/chalk/blue palette and
 system typography. No worker selection: creation uses the shared Tasks queue.
 Drafts remain in memory only. An ambiguous submission freezes the original
 UUID and payload for retry; validation errors remain editable. Dismissal of a
 nonempty draft requires confirmation. No new dependencies or build step.
+
+Approving a proposal reuses that same form rather than a second editor: the
+Title, Instructions and Acceptance criteria fields arrive filled with the
+proposal, under the same limits, so the human sees exactly what will be queued
+and edits it in the place it was written. One extra field at the bottom carries
+further instructions for the worker; it is optional, and only fields the human
+actually rewrote travel as an amendment. An approval that carries no task text
+keeps the single decision note.
+
+A newly created task is held for a grace period, and the hold is drawn as one
+panel rather than a badge plus a loose verb: a green-bordered, green-tinted
+block with white text, the countdown at its top left and "Make available now"
+at its bottom right. State and action in one object means they cannot drift into
+different corners of the card. Green is the panel's colour because the hold
+expires by itself, so it is not a warning, and the panel turns blue with
+"Held open by …" when somebody reading the task is what is holding it,
+because then nothing is counting down. The same panel renders on the board card
+and on the detail page; the timer patches only the clock's text node once a
+second so a tick cannot steal focus or scroll position.
+
+The board colours what a card *is*, not how far along it is: state is already
+said twice, by the column and by the status badge, so the hue is spent on type
+instead. Each card is washed in its type's colour — a solid, low-key tint
+(16% of the hue mixed into the graphite panel, so the card stays a card on the
+neutral column rather than going translucent) — and carries, above the status,
+a tinted pill naming that type in words. There is no left colour block: a 3px
+rule down one edge read as a legend you had to learn, while a tint names the
+whole object. Blue is plain work; violet is
+a proposal or a decision (approve or reject); teal is a review (accept or send
+back); amber is a question or a human action, both of which wait on the same
+thing, someone answering; moss is a preview to publish; and grey is an access
+grant, the one request that is a credential rather than a piece of work. Plain
+work carries no chip: it is the default, and its blue tint is the only label it
+needs. The hue is never the only cue, and two types share a hue only when the
+operator owes them the same verb, so the chip still names the exact type.
+Columns stay neutral, so the board has one colour legend rather than two.
+Red and green stay out of that legend: they already mean failure and health.
+The detail page repeats the same hue as a left rule plus the same chip in its
+header, so a card and its detail cannot disagree about what the thing is. The grace panel keeps its
+stronger solid green border, so a hold still reads as an object inside a card.
 
 ## Live connection
 
@@ -89,8 +132,14 @@ a read-only summary of the paired gateway. The terminal equivalent stays one
 - JavaScript syntax parsed successfully after formatting.
 - The piso mark ships as an embedded `ui/favicon.svg`, served same-origin at `/favicon.svg` and `/favicon.ico` with the dashboard. No remote asset is fetched; the single embedded page still has no build step.
 - `go test ./gateway/internal/server` passes with the replacement embedded UI.
+- Board type test: `node --test gateway/internal/server/ui/board-types.test.cjs`
+  checks that colour follows the item type rather than the status (five states
+  of plain work share one rule and no chip), and that every request type gets
+  its chip from the ask it carries.
 - `git diff --check` passes.
-- Browser verification was attempted but Chromium cannot launch in this worker because system libraries are missing. No system packages were installed. Responsive layouts, focus behavior, popups, and end-to-end mutations still need real-browser verification.
+- Browser verification runs in a real Chromium from `.tools/pw` (see
+  `.tools/board-visual.sh` and `.tools/grace-visual.py`): geometry, computed
+  colours and spacing are measured in the browser, not inferred from the CSS.
 - The project timeline uses timestamps, not event-order strips. The existing activities endpoint supports `window=3h` to avoid truncation at the old 2,000-event cap. Project attention status reflects the latest reported semantic event in that window, not an authoritative task state. The topology diagram remains replaced by the inspectable traffic feed.
 - Timeline tests: `node --test gateway/internal/server/ui/timeline.test.cjs` covers merging, window boundaries, callout layout/expiry, and return-to-now. A local jsdom smoke check also verifies page execution, merged hover details, escaped content, expiry, navigation, and follow behavior; it is not visual layout verification.
 - Request presentation is bounded to 300 rows after live updates. There is no historical pagination. Pausing the feed freezes presentation, not collection.

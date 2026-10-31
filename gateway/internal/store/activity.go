@@ -41,6 +41,29 @@ func SanitizeLabel(s string, max int) string {
 	return s
 }
 
+// SanitizeCommand is SanitizeLabel for text a human will copy and run. It
+// keeps newlines and tabs (a multi-line command is still a command) and drops
+// the rest of the control set, so nothing escapes into a terminal renderer.
+// Length is capped on a rune boundary to keep the text valid UTF-8.
+func SanitizeCommand(s string, max int) string {
+	s = strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\t' {
+			return r
+		}
+		if r < 0x20 || r == 0x7f {
+			return ' '
+		}
+		return r
+	}, s)
+	// Trim after mapping, not before: a stripped control character at either
+	// end leaves a space behind.
+	s = strings.TrimSpace(s)
+	if max > 0 && len(s) > max {
+		s = strings.ToValidUTF8(s[:max], "")
+	}
+	return s
+}
+
 // ValidActivityKind reports whether k is an accepted activity kind.
 func ValidActivityKind(k string) bool {
 	switch k {
@@ -66,6 +89,12 @@ type Activity struct {
 	TargetSlug string `json:"targetSlug,omitempty"` // for pokes/reminders: which project's track
 	Text       string `json:"text"`
 	Ts         int64  `json:"ts"` // unix ms
+	// AskID links a sandbox-boundary row to the durable ask that is actually
+	// blocking the worker. The activity row is the timeline trace; the ask is
+	// the thing with a status, an evidence trail, and a resolution. Without
+	// this the board could show "host action required" with no way to open the
+	// request a human is supposed to answer.
+	AskID string `json:"askId,omitempty"`
 	// ActiveFromMs / ActiveBeats are READ-side decorations: the worker feed's
 	// active=span projection fills them when it fuses a run of beats into one
 	// synthesized row. Never persisted.
@@ -92,11 +121,58 @@ CREATE TABLE IF NOT EXISTS activities (
 	kind        TEXT NOT NULL,
 	target_slug TEXT,
 	text        TEXT NOT NULL,
-	ts          INTEGER NOT NULL
+	ts          INTEGER NOT NULL,
+	ask_id      TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_activities_slug_ts     ON activities(slug, ts);
 CREATE INDEX IF NOT EXISTS idx_activities_target_ts   ON activities(target_slug, ts);
 `
+
+// activityMigrations are additive column adds that an existing database needs.
+// CREATE TABLE IF NOT EXISTS is a no-op on a database that predates the column,
+// so a plain schema edit would land only on fresh installs. Each entry is
+// applied only when PRAGMA table_info says the column is missing, which keeps
+// the upgrade idempotent and needs no version bookkeeping.
+var activityMigrations = []struct{ column, ddl string }{
+	{"ask_id", `ALTER TABLE activities ADD COLUMN ask_id TEXT`},
+}
+
+// applyActivityMigrations upgrades an existing activities table in place.
+func (s *Store) applyActivityMigrations() error {
+	rows, err := s.activitiesDB.Query(`PRAGMA table_info(activities)`)
+	if err != nil {
+		return err
+	}
+	present := map[string]bool{}
+	for rows.Next() {
+		var (
+			cid     int
+			name    string
+			typ     string
+			notnull int
+			dflt    any
+			pk      int
+		)
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
+			rows.Close()
+			return err
+		}
+		present[name] = true
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, m := range activityMigrations {
+		if present[m.column] {
+			continue
+		}
+		if _, err := s.activitiesDB.Exec(m.ddl); err != nil {
+			return fmt.Errorf("activity column %s: %w", m.column, err)
+		}
+	}
+	return nil
+}
 
 // openActivityDB opens (and initializes) the SQLite activity database at path.
 func (s *Store) openActivityDB(path string) error {
@@ -116,6 +192,11 @@ func (s *Store) openActivityDB(path string) error {
 		return fmt.Errorf("activity schema: %w", err)
 	}
 	s.activitiesDB = db
+	if err := s.applyActivityMigrations(); err != nil {
+		db.Close()
+		s.activitiesDB = nil
+		return err
+	}
 	return nil
 }
 
@@ -144,8 +225,8 @@ func (s *Store) InsertActivity(a Activity) (Activity, error) {
 		return Activity{}, fmt.Errorf("unknown activity kind %q", a.Kind)
 	}
 	_, err := s.activitiesDB.Exec(
-		`INSERT INTO activities (id, worker, slug, kind, target_slug, text, ts) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		a.ID, a.Worker, a.Slug, a.Kind, a.TargetSlug, a.Text, a.Ts,
+		`INSERT INTO activities (id, worker, slug, kind, target_slug, text, ts, ask_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		a.ID, a.Worker, a.Slug, a.Kind, a.TargetSlug, a.Text, a.Ts, a.AskID,
 	)
 	if err != nil {
 		return Activity{}, err
@@ -157,7 +238,7 @@ func (s *Store) InsertActivity(a Activity) (Activity, error) {
 // QueryActivities returns activities matching f, newest first, limited by
 // f.Limit (0 = no limit — callers should set one for the board).
 func (s *Store) QueryActivities(f ActivityFilter) ([]Activity, error) {
-	q := `SELECT id, worker, slug, kind, COALESCE(target_slug,''), text, ts FROM activities`
+	q := `SELECT id, worker, slug, kind, COALESCE(target_slug,''), text, ts, COALESCE(ask_id,'') FROM activities`
 	var conds []string
 	var args []any
 	if f.Slug != "" {
@@ -191,7 +272,7 @@ func (s *Store) QueryActivities(f ActivityFilter) ([]Activity, error) {
 	var out []Activity
 	for rows.Next() {
 		var a Activity
-		if err := rows.Scan(&a.ID, &a.Worker, &a.Slug, &a.Kind, &a.TargetSlug, &a.Text, &a.Ts); err != nil {
+		if err := rows.Scan(&a.ID, &a.Worker, &a.Slug, &a.Kind, &a.TargetSlug, &a.Text, &a.Ts, &a.AskID); err != nil {
 			return nil, err
 		}
 		out = append(out, a)

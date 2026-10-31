@@ -66,12 +66,16 @@ services:
       # 80 when a TLS front proxy (Caddy) serves this gateway on 443, so
       # generated URLs stay portless behind https://gateway.example.com.
       PISO_INGRESS_PORT: ${PISO_WEB_PORT:-80}
-      # piso_public subnet, pinned by `ipam` below. A TLS front proxy on that
-      # bridge (the coordinator host's Caddy) sits on a non-default interface,
-      # so the gateway would classify it as a worker and 403 the dashboard.
-      # Defaults to the pinned subnet so a colocated deploy needs no extra
-      # config; override only if you change PISO_PUBLIC_SUBNET.
-      PISO_TRUSTED_PEER_CIDRS: ${PISO_TRUSTED_PEER_CIDRS:-172.30.99.0/24}
+      # Which peers count as off-host. Empty by default: no address is "the
+      # front proxy" until the operator says so. The piso_public subnet also
+      # carries the host's own traffic to its published ports, so a default
+      # here accuses that host of being remote — and the dashboard gate asks
+      # it for a password nobody set. Set this (or PISO_DASHBOARD_HOST) in a
+      # deploy that really has a proxy on the bridge, i.e. the coordinator
+      # host's Caddy: without it the gateway takes Caddy for a worker and
+      # 403s the dashboard. One value per deploy:
+      #   PISO_TRUSTED_PEER_CIDRS=172.30.99.0/24
+      PISO_TRUSTED_PEER_CIDRS: ${PISO_TRUSTED_PEER_CIDRS:-}
       # Dashboard authentication. Both defaults are empty on purpose: the gate
       # turns itself on when a request arrives through the trusted front proxy
       # or addressed to PISO_DASHBOARD_HOST, so a local gateway never asks for a
@@ -171,8 +175,9 @@ networks:
     # Never attach Caddy to piso_vpc — the gateway rejects control-plane peers
     # on the worker bridge.
     #
-    # The subnet is pinned so the gateway can trust the front proxy by IP
-    # (PISO_TRUSTED_PEER_CIDRS, above). Change both together, or not at all.
+    # The subnet is pinned so a deploy can trust the front proxy by IP
+    # (PISO_TRUSTED_PEER_CIDRS, above) with a value that does not drift. If you
+    # change it, the export in that deploy's shell has to change with it.
     name: piso_public
     driver: bridge
     ipam:

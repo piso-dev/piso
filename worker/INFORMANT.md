@@ -27,9 +27,10 @@ Do this **briefly and often** — one short line, not prose:
   `activity_post` with `kind=waiting`, `text="Need you to pick the auth approach"`
 - **A step is OUT OF BOUNDS for this sandboxed worker** (ssh, docker,
   privileged writes): do NOT attempt it — call
-  `host_request` instead. See the CAPABILITIES section for the format.
-  `host_request` with `command="git clone git@github.com:org/repo.git"`,
-  `resultPath="/workspace/repo"`
+  `host_request` instead, with `command="git clone git@github.com:org/repo.git"`
+  and `resultPath="/workspace/repo"`. Add `taskId` (with `attemptId`,
+  `requestId`, `summary`, `checkpoint`) when you hold one: that files a
+  blocking ask and ends your lease, which is what makes someone answer it.
 - **Any notable status the human should know**:
   `activity_post` with `kind=note`, `text="spent the afternoon on the CQRS docs"`
 
@@ -63,10 +64,15 @@ factual line. Concretely:
 - The gateway validates the kind and sanitizes the text. If the tool fails,
   treat it as non-fatal and continue — the board is advisory.
 - `activity_feed` is **your** rows only. Do not try to read another worker.
-- After you file an `approval_request` or `human_action_request`, check
-  `approval_list` / `human_action_list` (or the `*_status` tools) before
-  retrying the blocked step. Do not spin. Pending means wait; approved or
-  completed means continue; rejected or failed means change course.
+- `kind=host` is the "just telling you" line. When you actually need the host
+  to *do* something, use the `host_request` tool: it files a tracked ask a
+  person resolves from the board (and writes its own `host` row), so you do
+  not hand-post the same thing twice.
+- After you file an `approval_request`, `human_action_request`, or
+  `host_request`, check `approval_list` / `human_action_list` (or the
+  `*_status` tools) before retrying the blocked step. Do not spin. Pending
+  means wait; approved or completed means continue; rejected or failed means
+  change course.
 
 ## Why it matters
 
@@ -77,13 +83,15 @@ dashboard a real project manager instead of a motion sensor.
 
 # CAPABILITIES — where the sandbox ends
 
-The full boundary contract (what this worker can/cannot do, the Host Action
-Request protocol, probe cautions) is appended below by the entrypoint from
+The full boundary contract (what this worker can/cannot do, how to reach the
+host when it cannot, probe cautions) is appended below by the entrypoint from
 /opt/piso/CAPABILITIES.md on every boot — read it before attempting anything
 you suspect is out of bounds. Two things to internalize up front:
 
 - Never attempt ssh, docker, or privileged writes: call `host_request` with
   the exact command and a `/workspace/...` result path instead, and check
-  that path later.
+  that path later. Pass `taskId` (with `attemptId`, `requestId`, `summary`,
+  `checkpoint`) whenever you hold one — that is what makes the request
+  block the task instead of only appearing on the board.
 - Fetch your live boundaries once per session with the piso MCP tool
   `capabilities`; if the call fails, treat capabilities as BLOCKED.
