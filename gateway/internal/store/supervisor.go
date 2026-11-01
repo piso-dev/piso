@@ -16,6 +16,8 @@ type SupervisorLink struct {
 	// clears ExpiresAt, so a refused worker is never a live supervisor.
 	Reason    string    `json:"reason,omitempty"`
 	UpdatedAt time.Time `json:"updatedAt,omitempty"`
+	// LastMailboxPoll is runtime-only: a gateway restart must re-confirm readiness.
+	LastMailboxPoll time.Time `json:"-"`
 }
 
 // SupervisorLink returns a copy of the cached supervisor, live or not.
@@ -29,9 +31,27 @@ func (s *Store) SupervisorLink() SupervisorLink {
 func (s *Store) SetSupervisorLink(r SupervisorLink) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	r.UpdatedAt = time.Now().UTC()
+	now := time.Now().UTC()
+	previous := s.state.Supervisor
+	r.LastMailboxPoll = time.Time{}
+	if previous.PrincipalID == r.PrincipalID && previous.Worker == r.Worker && previous.ExpiresAt.After(now) && r.ExpiresAt.After(now) {
+		r.LastMailboxPoll = previous.LastMailboxPoll
+	}
+	r.UpdatedAt = now
 	s.state.Supervisor = r
 	return s.save()
+}
+
+// MarkSupervisorMailboxPoll records a completed poll only for the live holder.
+// It stays in memory; lease renewal must not manufacture mailbox readiness.
+func (s *Store) MarkSupervisorMailboxPoll(worker string, now time.Time) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.state.Supervisor.Worker != worker || s.state.Supervisor.PrincipalID == "" || !s.state.Supervisor.ExpiresAt.After(now) {
+		return false
+	}
+	s.state.Supervisor.LastMailboxPoll = now.UTC()
+	return true
 }
 
 // Supervisor returns the live supervisor, or ok=false when none is cached or

@@ -64,7 +64,9 @@ type supervisorStatus struct {
 	Slug      string     `json:"slug,omitempty"`
 	ExpiresAt *time.Time `json:"expiresAt,omitempty"`
 	// Reason is the last refusal for this worker, when it is not the supervisor.
-	Reason string `json:"reason,omitempty"`
+	Reason          string     `json:"reason,omitempty"`
+	LastMailboxPoll *time.Time `json:"lastMailboxPoll,omitempty"`
+	Ready           bool       `json:"ready"`
 }
 
 // telegramManager returns the front door. A Server built without New has none,
@@ -140,6 +142,13 @@ func (s *Server) handleTelegramStatus(w http.ResponseWriter, r *http.Request) {
 	if link, live := s.Store.Supervisor(time.Now()); live {
 		expires := link.ExpiresAt
 		out.Supervisor = &supervisorStatus{Worker: link.Worker, Slug: link.Slug, ExpiresAt: &expires}
+		if !link.LastMailboxPoll.IsZero() {
+			last := link.LastMailboxPoll
+			out.Supervisor.LastMailboxPoll = &last
+			// Two maximum long-poll windows tolerate normal reconnects, but
+			// a lease renewal alone cannot keep a stalled mailbox looking ready.
+			out.Supervisor.Ready = last.After(time.Now().Add(-2 * messageWaitMax * time.Second))
+		}
 	} else if link := s.Store.SupervisorLink(); link.Reason != "" {
 		out.Supervisor = &supervisorStatus{Worker: link.Worker, Slug: link.Slug, Reason: link.Reason}
 	}

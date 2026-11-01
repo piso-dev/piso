@@ -5332,6 +5332,46 @@
             )
           : "";
 
+        const supervisor = t.supervisor || {};
+        const now = Date.now();
+        const leaseLive = new Date(supervisor.expiresAt).getTime() > now;
+        const mailboxFresh = now - new Date(supervisor.lastMailboxPoll).getTime() < 60000;
+        const telegramFresh = t.running && !t.waiting &&
+          now - new Date(t.lastPoll).getTime() < 60000;
+        let readinessLabel, readinessDetail;
+        if (!telegramFresh) {
+          readinessLabel = "Telegram unavailable";
+          readinessDetail = t.waiting
+            ? "Another gateway is serving Telegram; readiness on this gateway is not confirmed."
+            : "Waiting for successful Telegram polling.";
+        } else if (!users.length) {
+          readinessLabel = "Awaiting account claim";
+          readinessDetail = "Claim an account below before sending messages.";
+        } else if (!leaseLive) {
+          readinessLabel = "Supervisor unavailable";
+          readinessDetail = "No live supervisor is available to receive messages.";
+        } else if (supervisor.ready && mailboxFresh) {
+          readinessLabel = "Ready to respond";
+          readinessDetail = "The supervisor is receiving messages. Chat sessions start on demand.";
+        } else {
+          readinessLabel = supervisor.lastMailboxPoll ? "Supervisor unavailable" : "Starting supervisor";
+          readinessDetail = supervisor.lastMailboxPoll
+            ? "The supervisor's mailbox polling has not been confirmed recently."
+            : "A supervisor holds the lease; waiting for its first successful mailbox poll.";
+        }
+        const readiness = record(
+          "telegram-supervisor",
+          readinessLabel,
+          readinessDetail,
+          badge(readinessLabel === "Ready to respond" ? "Ready" : "Not ready"),
+          facts([
+            ["Supervisor", supervisor.slug || supervisor.worker || "Not assigned"],
+            ["Readiness confirmed", supervisor.lastMailboxPoll ? new Date(supervisor.lastMailboxPoll).toLocaleTimeString() : "Not yet"],
+            ["Lease expires", supervisor.expiresAt ? new Date(supervisor.expiresAt).toLocaleTimeString() : ""],
+            ["Reason", supervisor.reason || ""],
+          ]),
+        );
+
         const people = users.length
           ? users
               .map((u) =>
@@ -5389,6 +5429,7 @@
                 ],
               ]) + openBot,
             ) +
+            readiness +
             claim +
             `<h3>Allowed accounts</h3>` +
             `<p class="muted">Shared across this account's gateways: a claim or a revoke applies to whichever gateway is polling.</p>` +
@@ -7901,6 +7942,7 @@
               "aiBoost",
               "routes",
               "technocore",
+              ...(view === "access" && sub === "telegram" ? ["telegram"] : []),
               ...(!streamOK ? ["requests"] : []),
             ]);
           }
