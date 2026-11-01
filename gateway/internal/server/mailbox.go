@@ -97,7 +97,12 @@ func (s *Server) handleWorkerGetMessages(w http.ResponseWriter, r *http.Request)
 	deadline := time.NewTimer(time.Duration(wait) * time.Second)
 	defer deadline.Stop()
 	for {
+		if !s.liveSupervisor(worker) {
+			writeJSON(w, 409, map[string]string{"error": "not the supervisor"})
+			return
+		}
 		if msgs := s.Store.TakeMail(time.Now(), 20); len(msgs) > 0 {
+			s.Store.MarkSupervisorMailboxPoll(worker, time.Now())
 			writeJSON(w, 200, map[string]any{"messages": msgs})
 			return
 		}
@@ -105,6 +110,10 @@ func (s *Server) handleWorkerGetMessages(w http.ResponseWriter, r *http.Request)
 		case <-r.Context().Done():
 			return
 		case <-deadline.C:
+			if !s.Store.MarkSupervisorMailboxPoll(worker, time.Now()) {
+				writeJSON(w, 409, map[string]string{"error": "not the supervisor"})
+				return
+			}
 			writeJSON(w, 200, map[string]any{"messages": []store.MailMessage{}})
 			return
 		case <-s.Store.SubMailbox():

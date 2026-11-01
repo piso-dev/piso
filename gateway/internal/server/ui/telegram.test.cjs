@@ -119,6 +119,38 @@ test('revoking confirms before deleting the account',async t=>{
  assert.deepEqual(json(h.calls),[{path:'telegram/users/500',method:'DELETE'}]);
  assert.deepEqual(json(h.sandbox.changedKeys),['telegram']);
 });
+test('periodic refresh includes Telegram only on Access > Telegram',()=>{
+ const expression = script.match(/\.\.\.\((view === "access" && sub === "telegram" \? \["telegram"\] : \[\])\)/);
+ assert.ok(expression, 'periodic refresh must include the visible Telegram tab');
+ for (const [view,sub,expected] of [['access','telegram',['telegram']],['access','github',[]],['projects','telegram',[]]]) {
+  assert.deepEqual(json(vm.runInNewContext(expression[1],{view,sub})),expected);
+ }
+});
+const future = (ms) => new Date(Date.now() + ms).toISOString();
+const past = (ms) => new Date(Date.now() - ms).toISOString();
+test('a live supervisor with fresh mailbox polling reads Ready to respond',t=>{
+ const h=harness(t,{connected:true,botUsername:'piso_bot',running:true,lastPoll:future(-30000),users:[{userId:500,chatId:500}],supervisor:{worker:'piso-worker-ship',slug:'ship',expiresAt:future(300000),lastMailboxPoll:future(-30000),ready:true}});h.run('renderSettings()');
+ const text=h.dom.window.document.body.textContent;
+ assert.match(text,/Ready to respond/);
+ assert.match(text,/ship/);
+ assert.match(text,/Readiness confirmed/);
+});
+test('a lease without a mailbox poll is still starting',t=>{
+ const h=harness(t,{connected:true,botUsername:'piso_bot',running:true,lastPoll:future(-30000),users:[{userId:500,chatId:500}],supervisor:{worker:'piso-worker-ship',expiresAt:future(300000)}});h.run('renderSettings()');
+ assert.match(h.dom.window.document.body.textContent,/Starting supervisor/);
+});
+test('a stale mailbox poll reads Supervisor unavailable',t=>{
+ const h=harness(t,{connected:true,botUsername:'piso_bot',running:true,lastPoll:future(-30000),users:[{userId:500,chatId:500}],supervisor:{worker:'piso-worker-ship',expiresAt:future(300000),lastMailboxPoll:past(300000),ready:false}});h.run('renderSettings()');
+ assert.match(h.dom.window.document.body.textContent,/Supervisor unavailable/);
+});
+test('nobody claimed the bot yet means not ready',t=>{
+ const h=harness(t,{connected:true,botUsername:'piso_bot',running:true,lastPoll:future(-30000),users:[],supervisor:{worker:'piso-worker-ship',expiresAt:future(300000),lastMailboxPoll:future(-30000),ready:true}});h.run('renderSettings()');
+ assert.match(h.dom.window.document.body.textContent,/Awaiting account claim/);
+});
+test('a down poller reads Telegram unavailable',t=>{
+ const h=harness(t,{connected:true,botUsername:'piso_bot',running:false,users:[{userId:500,chatId:500}],supervisor:{worker:'piso-worker-ship',expiresAt:future(300000),lastMailboxPoll:future(-30000),ready:true}});h.run('renderSettings()');
+ assert.match(h.dom.window.document.body.textContent,/Telegram unavailable/);
+});
 test('connecting posts the trimmed token and refreshes the tab',async t=>{
  const h=harness(t,{connected:false});
  h.run('telegramConnect()');
