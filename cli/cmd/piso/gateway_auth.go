@@ -69,6 +69,29 @@ func cmdGatewayAuthEnroll(args []string) error {
 	if *ttl <= 0 || *ttl > authlink.MaxLifetime {
 		return fmt.Errorf("--ttl must be between 0 and %s", authlink.MaxLifetime)
 	}
+	if id.PlacementOrLocal() == technocore.PlacementStandalone {
+		u, err := url.Parse(base)
+		if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil || (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
+			return errors.New("standalone dashboard --host must be an HTTPS hostname or origin")
+		}
+		if err := reconcileStandaloneWeb(id); err != nil {
+			return err
+		}
+		web, err := pisoconfig.LoadGatewayWebSettings()
+		if err != nil {
+			return err
+		}
+		web.DashboardHost = strings.ToLower(u.Hostname())
+		if err := pisoconfig.SaveGatewayWebSettings(web); err != nil {
+			return err
+		}
+		if err := startGateway(false); err != nil {
+			return err
+		}
+		if err := waitGatewayHealthy(); err != nil {
+			return err
+		}
+	}
 	nonce, err := authlink.NewNonce()
 	if err != nil {
 		return err
@@ -164,6 +187,13 @@ func dashboardBase(id technocore.Identity, flagHost string) (string, error) {
 	if host == "" {
 		host = strings.TrimSpace(os.Getenv("PISO_DASHBOARD_HOST"))
 	}
+	if host == "" && id.PlacementOrLocal() == technocore.PlacementStandalone {
+		web, err := pisoconfig.LoadGatewayWebSettings()
+		if err != nil {
+			return "", err
+		}
+		host = web.DashboardHost
+	}
 	if host == "" {
 		host = strings.TrimSpace(os.Getenv("GATEWAY_DOMAIN"))
 	}
@@ -173,8 +203,8 @@ func dashboardBase(id technocore.Identity, flagHost string) (string, error) {
 		}
 		return "https://" + strings.TrimRight(host, "/"), nil
 	}
-	if id.PublicURL == "" {
-		return "", errors.New("cannot tell where the dashboard is: pass --host dashboard.example.com")
+	if id.PlacementOrLocal() == technocore.PlacementStandalone || id.PublicURL == "" {
+		return "", errors.New("cannot tell where the dashboard is: pass --host dashboard.example.com (the worker URL is not the dashboard)")
 	}
 	u, err := url.Parse(id.PublicURL)
 	if err != nil || u.Hostname() == "" {

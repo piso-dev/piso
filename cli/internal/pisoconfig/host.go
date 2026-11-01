@@ -13,13 +13,13 @@ import (
 // hostSettings is $PISO_DATA/host.json — per-host choices that must survive a
 // rebuild but are not part of the gateway's own state.json.
 //
-// Only the monitor lives here today: it is a service in the gateway compose
-// project (compose/gateway.yaml), so the only way to keep it off a host is to
-// persist the choice and feed COMPOSE_PROFILES on every compose call.
+// Monitor and gateway web choices feed the gateway compose environment on
+// every invocation, including reinstalls and rebuilds.
 type hostSettings struct {
 	// Monitor is a pointer so "absent" (follow placement) is distinguishable
 	// from an explicit true/false.
-	Monitor *bool `json:"monitor,omitempty"`
+	Monitor    *bool              `json:"monitor,omitempty"`
+	GatewayWeb GatewayWebSettings `json:"gatewayWeb,omitempty"`
 }
 
 // MonitorEnvEnv lets an operator force the choice per invocation without
@@ -57,7 +57,28 @@ func saveHostSettings(s hostSettings) error {
 	if err != nil {
 		return err
 	}
-	b, err := json.MarshalIndent(s, "", "  ")
+	// Merge owned fields into the original object so other CLI versions' fields
+	// survive a settings update.
+	fields := map[string]json.RawMessage{}
+	if raw, readErr := os.ReadFile(path); readErr == nil {
+		if err := json.Unmarshal(raw, &fields); err != nil {
+			return err
+		}
+	} else if !os.IsNotExist(readErr) {
+		return readErr
+	}
+	owned, err := json.Marshal(s)
+	if err != nil {
+		return err
+	}
+	var updates map[string]json.RawMessage
+	if err := json.Unmarshal(owned, &updates); err != nil {
+		return err
+	}
+	for key, value := range updates {
+		fields[key] = value
+	}
+	b, err := json.MarshalIndent(fields, "", "  ")
 	if err != nil {
 		return err
 	}
