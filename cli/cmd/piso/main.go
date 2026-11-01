@@ -2011,6 +2011,10 @@ func dockerComposeEnv() (map[string]string, error) {
 		return nil, err
 	}
 	p := pisoconfig.LoadHostPorts()
+	web, err := pisoconfig.GatewayWebEnv()
+	if err != nil {
+		return nil, fmt.Errorf("load gateway web settings: %w", err)
+	}
 	// The remote-worker TLS mux is published loopback-only unless the gateway
 	// advertises a public URL WITH a port — see publicBindFor.
 	publicBind := "127.0.0.1"
@@ -2053,12 +2057,9 @@ func dockerComposeEnv() (map[string]string, error) {
 		// PISO_DASHBOARD_HOST names the public dashboard origin, which is what
 		// makes a request addressed to it count as off-host.
 		"PISO_DASHBOARD_AUTH": envOrEmpty("PISO_DASHBOARD_AUTH"),
-		"PISO_DASHBOARD_HOST": envOrEmpty("PISO_DASHBOARD_HOST"),
-		// Empty unless exported: the compose default is empty too, so a plain
-		// install never treats the piso_public subnet — which the host's own
-		// published-port traffic also crosses — as off-host. A deploy with a
-		// front proxy on the bridge exports it (see server/compose.coexist.yaml).
-		"PISO_TRUSTED_PEER_CIDRS": envOrEmpty("PISO_TRUSTED_PEER_CIDRS"),
+		"PISO_DASHBOARD_HOST": web.DashboardHost,
+		// Standalone enrollment saves proxy trust; local defaults remain empty.
+		"PISO_TRUSTED_PEER_CIDRS": web.TrustedPeerCIDRs,
 	}, nil
 }
 

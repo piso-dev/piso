@@ -175,6 +175,15 @@ func cmdGatewayLaunch(args []string) error {
 	// file we just wrote.
 	if id.PlacementOrLocal() == technocore.PlacementStandalone {
 		enforceNoMonitorOnStandalone()
+		if err := reconcileStandaloneWeb(id); err != nil {
+			return err
+		}
+		if err := startGateway(false); err != nil {
+			return err
+		}
+		if err := waitGatewayHealthy(); err != nil {
+			return err
+		}
 	}
 	if id.Status == technocore.StatusActive && id.PrincipalID != "" {
 		fmt.Printf("piso: gateway already enrolled as %s (%s)\n", id.Name, id.PrincipalID)
