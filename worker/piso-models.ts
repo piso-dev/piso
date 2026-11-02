@@ -1,6 +1,7 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { getApiProvider } from "@earendil-works/pi-ai/compat";
 import type { Api, Model, ModelsStoreEntry, RefreshModelsContext } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext, ProviderConfig, ProviderModelConfig } from "@earendil-works/pi-coding-agent";
 
@@ -235,7 +236,24 @@ type ModelOverride = {
 	model: string;
 	allowed: string[];
 	providers: Map<string, string[]>;
+	policies: Record<string, ModelPolicy>;
 };
+
+type ModelPolicy = { mode: "restricted" | "worker-discovered" | "unavailable"; models?: string[]; baseUrl: string; discovery?: "worker" };
+let modelPolicies: Record<string, ModelPolicy> = {};
+let pinnedProvider = "";
+
+function parsePolicies(value: unknown): Record<string, ModelPolicy> {
+	const out: Record<string, ModelPolicy> = {};
+	if (!isObject(value)) return out;
+	for (const [id, raw] of Object.entries(value)) {
+		if (!isObject(raw) || typeof raw.baseUrl !== "string") continue;
+		if (raw.mode !== "restricted" && raw.mode !== "worker-discovered" && raw.mode !== "unavailable") continue;
+		out[normalizeProviderId(id)] = { mode: raw.mode, models: stringArray(raw.models) ?? [], baseUrl: raw.baseUrl,
+			discovery: raw.discovery === "worker" ? "worker" : undefined };
+	}
+	return out;
+}
 
 function overrideCachePath(dir: string): string {
 	return join(dir, OVERRIDE_CACHE_FILE);
@@ -253,6 +271,7 @@ function parseOverride(payload: unknown): ModelOverride | undefined {
 		model: typeof payload.model === "string" ? payload.model.trim() : "",
 		allowed: stringArray(payload.allowedModels) ?? [],
 		providers: parseAllowlists(payload.providers),
+		policies: parsePolicies(payload.modelPolicies),
 	};
 }
 
@@ -319,7 +338,8 @@ async function refreshOverrideCache(dir = agentDir()): Promise<void> {
 		current.provider === next.provider &&
 		current.model === next.model &&
 		sameModelIds(current.allowed, next.allowed) &&
-		sameAllowlists(current.providers, next.providers)
+		sameAllowlists(current.providers, next.providers) &&
+		JSON.stringify(current.policies) === JSON.stringify(next.policies)
 	) return;
 	try {
 		await writeFile(
@@ -329,6 +349,7 @@ async function refreshOverrideCache(dir = agentDir()): Promise<void> {
 				model: next.model,
 				allowedModels: next.allowed,
 				providers: allowlistsJson(next.providers),
+				modelPolicies: Object.keys(next.policies).length ? next.policies : undefined,
 			})}\n`,
 		);
 	} catch {
@@ -382,6 +403,12 @@ function allowanceFor(
 	pinned: string,
 	allowlists: Map<string, string[]>,
 ): Allowance {
+	const policy = modelPolicies[providerId];
+	if (policy) {
+		if (policy.baseUrl.replace(/\/+$/, "") !== baseUrl.replace(/\/+$/, "")) return { known: true, ids: [] };
+		if (policy.mode === "worker-discovered") return NO_OPINION;
+		return { known: true, ids: policy.mode === "unavailable" ? [] : policy.models ?? [] };
+	}
 	if (pinned && providerId !== pinned && !isLoopback(baseUrl)) {
 		return { known: true, ids: [] };
 	}
@@ -400,6 +427,7 @@ async function approvedModelsFor(providerId: string, dir = agentDir()): Promise<
 // not say", so an older gateway's answer cannot blank a menu.
 async function readAllowances(dir = agentDir()): Promise<Map<string, string[]>> {
 	const cached = parseOverride(await readJson(overrideCachePath(dir)));
+	modelPolicies = cached?.policies ?? {};
 	if (!cached) return new Map();
 	const out = new Map(cached.providers);
 	if (cached.provider && cached.allowed.length > 0 && !out.has(cached.provider)) {
@@ -498,6 +526,79 @@ async function loadStartupModels(profile: ProviderProfile): Promise<ProviderMode
 	}
 }
 
+function isTinfoil(profile: ProviderProfile): boolean {
+	const policy = modelPolicies[profile.id];
+	return isLoopback(profile.baseUrl) && (profile.baseUrl === "http://127.0.0.1:3301/v1" ||
+		(policy?.baseUrl === profile.baseUrl && (policy.mode === "worker-discovered" || policy.discovery === "worker")));
+}
+
+type DiscoveryState = { next: number; failures: number; models: ProviderModelConfig[] };
+const discoveries = new Map<string, DiscoveryState>();
+const discoveryKey = (p: ProviderProfile) => `${agentDir()}\0${p.id}\0${p.baseUrl}\0${p.apiKey}`;
+function discoveryDue(p: ProviderProfile): boolean {
+	return Date.now() >= (discoveries.get(discoveryKey(p))?.next ?? 0);
+}
+async function reportCatalog(profile: ProviderProfile, models: ProviderModelConfig[], failed: boolean): Promise<void> {
+	const base = gatewayBase(), worker = process.env.PISO_WORKER_NAME;
+	if (!base || !worker) return;
+	try {
+		await fetch(`${base}/api/v1/worker/model/catalog`, {
+			method: "POST", headers: { "content-type": "application/json" },
+			body: JSON.stringify({ worker, provider: profile.id, baseUrl: profile.baseUrl,
+				models: models.map((m) => m.id), failed }),
+			redirect: "error", signal: AbortSignal.timeout(3_000),
+		});
+	} catch { /* Reporting is advisory, never block local inference. */ }
+}
+async function discoverLocal(profile: ProviderProfile): Promise<ProviderModelConfig[]> {
+	const key = discoveryKey(profile);
+	let state = discoveries.get(key);
+	if (state && !discoveryDue(profile)) return state.models;
+	state ??= { next: 0, failures: 0, models: [] };
+	try {
+		const response = await fetch(modelsUrl(profile.baseUrl), {
+			headers: { accept: "application/json", authorization: `Bearer ${profile.apiKey}` },
+			redirect: "error", signal: AbortSignal.timeout(STARTUP_DISCOVERY_TIMEOUT_MS),
+		});
+		if (!response.ok) throw new Error("discovery failed");
+		state.models = mergeCatalog(catalogEntries(await response.json()), []);
+		state.failures = 0;
+		state.next = Date.now() + 60_000;
+		void reportCatalog(profile, state.models, false);
+	} catch {
+		state.failures++;
+		state.next = Date.now() + Math.min(120_000, PROFILE_POLL_MS * 2 ** Math.min(state.failures - 1, 3));
+		void reportCatalog(profile, [], true);
+	}
+	discoveries.set(key, state);
+	return state.models;
+}
+
+// Capture native adapters before registering wrappers. Delegating directly avoids
+// recursion through the provider registry and retains Pi's streaming hooks.
+const nativeStreams = new Map<string, NonNullable<ProviderConfig["streamSimple"]>>();
+function guardedStream(profile: ProviderProfile): ProviderConfig["streamSimple"] {
+	const api = profile.api ?? "openai-completions";
+	if (!nativeStreams.has(api)) {
+		const native = getApiProvider(api)?.streamSimple;
+		if (native) nativeStreams.set(api, native);
+	}
+	const native = nativeStreams.get(api);
+	if (!native) throw new Error(`Unsupported Piso API: ${api}`);
+	return (model, context, options) => {
+		const policy = modelPolicies[profile.id];
+		if (pinnedProvider && model.provider !== pinnedProvider && !isTinfoil(profile)) {
+			throw new Error(`Piso: waiting for ${pinnedProvider} to become ready; the previous provider cannot generate.`);
+		}
+		if (policy && (policy.baseUrl.replace(/\/+$/, "") !== profile.baseUrl ||
+			model.baseUrl.replace(/\/+$/, "") !== profile.baseUrl ||
+			policy.mode === "unavailable" || (policy.mode === "restricted" && !policy.models?.includes(model.id)))) {
+			throw new Error("Piso: this model is unavailable under the current worker policy. Wait for model discovery or update the provider settings.");
+		}
+		return native(model, context, options);
+	};
+}
+
 // buildProviderConfig prepares one provider: cached catalog, then the
 // models.json fallback, then a bounded cold-start discovery. A failed
 // discovery leaves the provider registered with an empty catalog so the
@@ -513,6 +614,16 @@ async function buildProviderConfig(
 
 	let startupModels = await loadStartupModels(profile);
 	if (startupModels.length === 0) startupModels = fallback;
+	if (isTinfoil(profile) && !process.env.PI_OFFLINE && !(allowance.known && allowance.ids.length === 0)) {
+		const discovered = await discoverLocal(profile);
+		if (discovered.length) startupModels = mergeCatalog(discovered as unknown as JsonObject[], fallback);
+		// A manual unfiltered override must resolve even without catalog access.
+		const active = await loadActiveDefault();
+		if (active.provider === profile.id && active.model && !startupModels.some((m) => m.id === active.model)) {
+			const manual = normalizeModel({ id: active.model });
+			if (manual) startupModels.push(manual);
+		}
+	}
 	// Interactive Pi refreshes in the background *after* initial model selection.
 	// Await discovery only on a cold start, using the dashboard's literal scoped
 	// placeholder. Do not interpret arbitrary credential commands here; normal
@@ -521,7 +632,7 @@ async function buildProviderConfig(
 		// The tab allows nothing here, so /model must offer nothing and no request
 		// is worth making: discovery could only return ids the gateway refuses.
 		startupModels = [];
-	} else if (startupModels.length === 0 && !process.env.PI_OFFLINE) {
+	} else if (startupModels.length === 0 && !process.env.PI_OFFLINE && !isTinfoil(profile)) {
 		try {
 			if (!profile.apiKey.startsWith("piso_")) throw new Error("unsupported bootstrap credential");
 			const response = await fetch(modelsUrl(profile.baseUrl), {
@@ -546,6 +657,8 @@ async function buildProviderConfig(
 		models: startupModels,
 		baseUrl: profile.baseUrl,
 		api: profile.api ?? "openai-completions",
+		apiKey: profile.apiKey,
+		streamSimple: guardedStream(profile),
 		async refreshModels(context: RefreshModelsContext): Promise<ProviderModelConfig[]> {
 			// Nothing is approved, so there is nothing to refresh. Returning before
 			// the network check keeps a poll from reintroducing a refused catalog.
@@ -566,6 +679,16 @@ async function buildProviderConfig(
 			});
 			if (context.stored?.etag) headers.set("if-none-match", context.stored.etag);
 
+			if (isTinfoil(profile)) {
+				const discovered = await discoverLocal(profile);
+				const refreshed = shapeCatalog(mergeCatalog(discovered as unknown as JsonObject[], fallback), allowance);
+				if (refreshed.length) {
+					startupModels = refreshed;
+					await context.publish({ persist: { models: persistedModels(profile, refreshed), checkedAt: Date.now() } });
+					return refreshed;
+				}
+				return current;
+			}
 			const response = await fetch(modelsUrl(profile.baseUrl), {
 				headers,
 				redirect: "error",
@@ -601,8 +724,10 @@ async function buildProviderConfig(
 export default async function pisoModels(pi: ExtensionAPI): Promise<void> {
 	const profiles = await loadProfiles();
 	if (profiles.length === 0) return;
+	await refreshOverrideCache();
 	const allowlists = await readAllowances();
 	const { provider: pinned } = await loadActiveDefault();
+	pinnedProvider = pinned;
 	for (const profile of profiles) {
 		const allowance = allowanceFor(profile.id, profile.baseUrl, pinned, allowlists);
 		pi.registerProvider(profile.id, await buildProviderConfig(profile, allowance));
@@ -624,6 +749,7 @@ function snapshotKey(
 		active.provider,
 		active.model,
 		[...allowlists].sort(([a], [b]) => a.localeCompare(b)),
+		modelPolicies,
 	]);
 }
 
@@ -742,20 +868,23 @@ export function wireLiveApply(
 		await refreshOverrideCache();
 		const profiles = await loadProfiles();
 		const active = await loadActiveDefault();
+		pinnedProvider = active.provider;
 		const allowlists = await readAllowances();
 		const signature = snapshotKey(profiles, active, allowlists);
 
 		// Reconcile providers even while busy: registration is safe and does
 		// not disturb the in-flight request.
 		const seen = new Set<string>();
+		let catalogChanged = false;
 		for (const profile of profiles) {
 			seen.add(profile.id);
 			const allowance = allowanceFor(profile.id, profile.baseUrl, active.provider, allowlists);
-			const key = providerConfigKey(profile, allowance);
-			if (state.configs.get(profile.id) === key) continue;
+			const key = providerConfigKey(profile, allowance) + (isTinfoil(profile) && profile.id === active.provider ? active.model : "");
+			if (state.configs.get(profile.id) === key && !(isTinfoil(profile) && discoveryDue(profile))) continue;
 			try {
 				pi.registerProvider(profile.id, await buildProviderConfig(profile, allowance));
 				state.configs.set(profile.id, key);
+				catalogChanged = true;
 			} catch {
 				// A registration failure must not take down the session.
 			}
@@ -771,7 +900,7 @@ export function wireLiveApply(
 		}
 		hideUnconfigured(ctx, pi, profiles, state);
 
-		if (signature === state.signature && !force) return;
+		if (signature === state.signature && !force && !catalogChanged) return;
 
 		if (!ctx.isIdle()) {
 			// Defer: agent_end re-applies. Do not record the signature yet, or
@@ -791,7 +920,8 @@ export function wireLiveApply(
 		// (its catalog fetch failed).
 		// The pinned provider always speaks for itself, so its own list applies
 		// whether or not the provider list even mentions it.
-		const allowance = allowanceOf(allowlists, active.provider);
+		const activeProfile = profiles.find((p) => p.id === active.provider);
+		const allowance = allowanceFor(active.provider, activeProfile?.baseUrl ?? "", active.provider, allowlists);
 		if (allowance.known && allowance.ids.length === 0) {
 			// The tab configured this provider with nothing usable, so there is no
 			// model to switch to. Saying so once beats a /model menu that offers the
@@ -849,8 +979,8 @@ export function wireLiveApply(
 				if (streak >= UNRESOLVED_POLLS) {
 					warnOnce(
 						key,
-						`Piso: provider ${active.provider} has no models registered in this session; keeping the current model. ` +
-							"Re-save it in the dashboard (or clear the worker override) to apply.",
+						`Piso: waiting for ${active.provider} model discovery; generation through the previous provider is blocked. ` +
+							"Check the worker proxy and secret grant, or specify a model id in the override.",
 					);
 				}
 			}
@@ -860,7 +990,7 @@ export function wireLiveApply(
 		}
 		if (active.model) unresolvedStreak.delete(`unresolved:${active.provider}/${active.model}`);
 		const applied = `${active.provider}\u0000${model.id}`;
-		if (applied !== state.applied) {
+		if (applied !== state.applied || ctx.model?.provider !== model.provider) {
 			const ok = await pi.setModel(model);
 			if (!ok) return;
 			state.applied = applied;
@@ -871,13 +1001,17 @@ export function wireLiveApply(
 	const schedule = (ctx: ExtensionContext): void => {
 		if (state.timer) clearInterval(state.timer);
 		state.timer = setInterval(() => {
-			void apply(ctx, false);
+			void apply(ctx, false).catch(() => {});
 		}, PROFILE_POLL_MS);
 	};
 
 	pi.on("session_start", async (_event, ctx) => {
 		await apply(ctx, true);
 		schedule(ctx);
+	});
+	pi.on("before_agent_start", async (_event, ctx) => {
+		// Refresh the guard's policy immediately before a turn, not only on the poll.
+		await apply(ctx, true);
 	});
 	pi.on("agent_end", async (_event, ctx) => {
 		if (state.pending) {

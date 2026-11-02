@@ -26,18 +26,19 @@ const CurrentStateVersion = 11
 
 // State is the persisted configuration.
 type State struct {
-	Version         int                 `json:"version"`
-	Secrets         []SecretRec         `json:"secrets"`
-	Rules           []RuleRec           `json:"rules"`
-	Domains         []DomainRec         `json:"domains"`
-	Exceptions      []ExceptionRec      `json:"exceptions"`
-	Routes          []RouteRec          `json:"routes"`
-	IngressRequests []IngressRequestRec `json:"ingressRequests,omitempty"`
-	Workers         []WorkerRec         `json:"workers,omitempty"`
-	Contexts        []WorkerCtx         `json:"contexts,omitempty"`
-	McpServers      []McpServerRec      `json:"mcpServers,omitempty"`
-	GithubApps      []GithubAppRec      `json:"githubApps,omitempty"`
-	GithubUser      GithubUserRec       `json:"githubUser,omitempty"`
+	Version         int                  `json:"version"`
+	Secrets         []SecretRec          `json:"secrets"`
+	Rules           []RuleRec            `json:"rules"`
+	Domains         []DomainRec          `json:"domains"`
+	Exceptions      []ExceptionRec       `json:"exceptions"`
+	Routes          []RouteRec           `json:"routes"`
+	IngressRequests []IngressRequestRec  `json:"ingressRequests,omitempty"`
+	Workers         []WorkerRec          `json:"workers,omitempty"`
+	Contexts        []WorkerCtx          `json:"contexts,omitempty"`
+	ModelCatalogs   []WorkerModelCatalog `json:"workerModelCatalogs,omitempty"`
+	McpServers      []McpServerRec       `json:"mcpServers,omitempty"`
+	GithubApps      []GithubAppRec       `json:"githubApps,omitempty"`
+	GithubUser      GithubUserRec        `json:"githubUser,omitempty"`
 	// Telegram is the gateway's Telegram front door: which bot the allow-list
 	// belongs to, the update cursor, and the accounts allowed to talk to it.
 	Telegram TelegramLink `json:"telegram,omitempty"`

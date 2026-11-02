@@ -180,7 +180,7 @@ func (s *Server) handlePutPiProvider(w http.ResponseWriter, r *http.Request) {
 	}
 	// Keep the last known catalog; it is advisory and the save path never
 	// refreshes it. A different endpoint invalidates it.
-	if existing != nil && existing.BaseURL == baseURL {
+	if !piProviderIsLocal(pointer) && existing != nil && existing.BaseURL == baseURL {
 		pointer.Models = append([]string(nil), existing.Models...)
 		pointer.CatalogCheckedAt = existing.CatalogCheckedAt
 		pointer.CatalogError = existing.CatalogError
@@ -188,7 +188,7 @@ func (s *Server) handlePutPiProvider(w http.ResponseWriter, r *http.Request) {
 	// A picker load is fresher than anything stored. Persisting it here keeps
 	// the provider card showing the same list the modal just offered, which
 	// matters for a brand new provider that had no catalog before.
-	if loaded := cleanModelIDs(in.Models); len(loaded) > 0 {
+	if loaded := cleanModelIDs(in.Models); !piProviderIsLocal(pointer) && len(loaded) > 0 {
 		pointer.Models = loaded
 		pointer.CatalogCheckedAt = time.Now().UTC()
 		pointer.CatalogError = ""
@@ -358,6 +358,10 @@ func (s *Server) providerViewFor(p *store.PiProviderRec, fs profileFileState) pi
 	// last save, so name where it comes from instead.
 	if piProviderIsLocal(p) {
 		view.Catalog = "local"
+		view.AllowedModels = localApprovedModels(p)
+		local := s.localCatalog(p)
+		view.Models = local.Models
+		view.CheckedAt = local.CheckedAt
 	}
 	if report := store.ModelDriftFor(p, nil); report.Total > 0 {
 		report := report
@@ -616,6 +620,9 @@ func (s *Server) publishPiProvider() string {
 // empty when the catalog has never been fetched.
 func piProfileModels(p *store.PiProviderRec) []string {
 	models := append([]string(nil), p.Models...)
+	if piProviderIsLocal(p) {
+		models = localApprovedModels(p)
+	}
 	// Manual defaults must be resolvable by pi even without a provider catalog.
 	if id := strings.TrimSpace(p.DefaultModel); id != "" && !containsString(models, id) {
 		models = append(models, id)
@@ -627,6 +634,16 @@ func piProfileModels(p *store.PiProviderRec) []string {
 // the record so the dashboard, the worker view, and the proxy pin share one
 // fallback chain (default → first approved → first catalog entry).
 func effectivePiModel(p *store.PiProviderRec) string {
+	if piProviderIsLocal(p) {
+		ids := localApprovedModels(p)
+		if p.DefaultModel != "" {
+			return p.DefaultModel
+		}
+		if len(ids) > 0 {
+			return ids[0]
+		}
+		return ""
+	}
 	return p.DefaultModelID()
 }
 
@@ -705,10 +722,11 @@ func (s *Server) uniquePiProviderID(base string) string {
 // failed fetch is a 200 with the last known list and catalog:"failed", never
 // a hard error: the picker stays usable and the profile still saves.
 type piProviderCatalog struct {
-	Models    []string `json:"models"`
-	Catalog   string   `json:"catalog"`
-	Error     string   `json:"error,omitempty"`
-	CheckedAt string   `json:"checkedAt,omitempty"`
+	Models    []string                   `json:"models"`
+	Catalog   string                     `json:"catalog"`
+	Error     string                     `json:"error,omitempty"`
+	CheckedAt string                     `json:"checkedAt,omitempty"`
+	Reports   []store.WorkerModelCatalog `json:"reports,omitempty"`
 }
 
 func (s *Server) handleGetPiProviderModels(w http.ResponseWriter, r *http.Request) {
@@ -752,12 +770,9 @@ func (s *Server) handleGetPiProviderModels(w http.ResponseWriter, r *http.Reques
 	// untouched. piProviderIsLocal also covers an older row saved before kind
 	// existed, which would otherwise look remote and fail here.
 	if piProviderIsLocal(saved) {
-		out := piProviderCatalog{Catalog: "local"}
-		if saved != nil && saved.BaseURL == baseURL {
-			out.Models = append([]string(nil), saved.Models...)
-			if !saved.CatalogCheckedAt.IsZero() {
-				out.CheckedAt = saved.CatalogCheckedAt.UTC().Format(time.RFC3339)
-			}
+		out := piProviderCatalog{Catalog: "local", Models: []string{}}
+		if saved.BaseURL == baseURL && saved.SecretID == secretID {
+			out = s.localCatalog(saved)
 		}
 		writeJSON(w, 200, out)
 		return
