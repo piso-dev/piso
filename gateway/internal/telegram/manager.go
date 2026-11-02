@@ -90,8 +90,9 @@ type Status struct {
 	// LeaseHeld is true while this gateway holds the poller lease; Waiting is
 	// true while it is asking and another gateway holds it. Both are false when
 	// no lease is in use (a standalone gateway with no coordinator to ask).
-	LeaseHeld bool `json:"leaseHeld,omitempty"`
-	Waiting   bool `json:"waiting,omitempty"`
+	LeaseHeld  bool   `json:"leaseHeld,omitempty"`
+	Waiting    bool   `json:"waiting,omitempty"`
+	WaitReason string `json:"waitReason,omitempty"`
 }
 
 // LeaseGrant is the coordinator's answer to a poller-lease request: Granted is
@@ -99,6 +100,7 @@ type Status struct {
 // last known update cursor, and ExpiresAt bounds how long this gateway may keep
 // polling without another successful renewal.
 type LeaseGrant struct {
+	Reason    string
 	Granted   bool
 	Offset    int64
 	ExpiresAt time.Time
@@ -188,11 +190,12 @@ func (m *Manager) setStatus(mut func(*Status)) {
 
 // setWaiting records that the front door is serving nobody because another
 // gateway holds the poller lease. That is a normal state, not an error.
-func (m *Manager) setWaiting() {
+func (m *Manager) setWaiting(reason string) {
 	m.setStatus(func(s *Status) {
 		s.Running = false
 		s.LeaseHeld = false
 		s.Waiting = true
+		s.WaitReason = reason
 		s.LastError = ""
 	})
 }
@@ -204,6 +207,7 @@ func (m *Manager) setFailed(err error) {
 		s.Running = false
 		s.LeaseHeld = false
 		s.Waiting = false
+		s.WaitReason = ""
 		s.LastError = err.Error()
 	})
 }
@@ -242,7 +246,7 @@ func (m *Manager) Run(ctx context.Context) {
 			continue
 		}
 		if !held {
-			m.setWaiting()
+			m.setWaiting(grant.Reason)
 			if !sleep(ctx, jitter(leaseRetry)) {
 				return
 			}
@@ -266,7 +270,7 @@ func (m *Manager) Run(ctx context.Context) {
 		if errors.Is(err, errLeaseLost) {
 			// Another gateway holds the lease now. Re-ask rather than report an
 			// error the dashboard cannot act on.
-			m.setWaiting()
+			m.setWaiting(m.Snapshot().WaitReason)
 			if !sleep(ctx, jitter(leaseRetry)) {
 				return
 			}
@@ -339,6 +343,7 @@ func (m *Manager) session(ctx context.Context, rec store.SecretRec, grant LeaseG
 		s.Running = true
 		s.LeaseHeld = managed
 		s.Waiting = false
+		s.WaitReason = ""
 		s.BotID = bot.ID
 		s.BotUsername = bot.Username
 		s.LastError = ""
@@ -381,6 +386,7 @@ func (m *Manager) session(ctx context.Context, rec store.SecretRec, grant LeaseG
 			next, err := m.Lease(sctx, rec.TechnocoreID, offset)
 			switch {
 			case err == nil && !next.Granted:
+				m.setWaiting(next.Reason)
 				return errLeaseLost
 			case err == nil:
 				renewAt = m.clock().Add(leaseRenew)
@@ -398,9 +404,22 @@ func (m *Manager) session(ctx context.Context, rec store.SecretRec, grant LeaseG
 				renewAt = m.clock().Add(leaseRenew)
 			}
 		}
-		uctx, ucancel := context.WithTimeout(sctx, longPollWindow)
+		window := longPollWindow
+		if managed {
+			remaining := expiresAt.Sub(m.clock())
+			if remaining <= 0 {
+				return errLeaseLost
+			}
+			if remaining < window {
+				window = remaining
+			}
+		}
+		uctx, ucancel := context.WithTimeout(sctx, window)
 		updates, err := c.GetUpdates(uctx, token, offset, LongPoll)
 		ucancel()
+		if managed && !m.clock().Before(expiresAt) {
+			return errLeaseLost
+		}
 		if err != nil {
 			if sctx.Err() != nil {
 				return nil

@@ -55,7 +55,7 @@ func TestTelegramLeaseSendsResourceAndCursor(t *testing.T) {
 func TestTelegramLeaseRefusalIsNotAnError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"granted":false,"holder":"other","offset":5}`))
+		_, _ = w.Write([]byte(`{"granted":false,"reason":"no_eligible_worker","holder":"other","offset":5}`))
 	}))
 	defer srv.Close()
 
@@ -68,7 +68,7 @@ func TestTelegramLeaseRefusalIsNotAnError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if grant.Granted || grant.Holder != "other" || grant.Offset != 5 {
+	if grant.Granted || grant.Reason != "no_eligible_worker" || grant.Holder != "other" || grant.Offset != 5 {
 		t.Fatalf("grant %+v", grant)
 	}
 }

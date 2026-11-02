@@ -18,6 +18,7 @@ type TelegramAssignment struct {
 	ResourceID  string                        `json:"resourceId"`
 	Name        string                        `json:"name"`
 	Supervisor  *TelegramSupervisorAssignment `json:"supervisor"`
+	Candidates  []TelegramCandidate           `json:"candidates"`
 	State       string                        `json:"state"`
 	BotID       int64                         `json:"botId,omitempty"`
 	BotUsername string                        `json:"botUsername,omitempty"`
@@ -25,6 +26,15 @@ type TelegramAssignment struct {
 	ExpiresAt   *time.Time                    `json:"expiresAt,omitempty"`
 	Users       []store.TelegramUser          `json:"users"`
 	Claim       *telegramClaimWire            `json:"claim,omitempty"`
+}
+
+type TelegramCandidate struct {
+	WorkerID    string    `json:"workerId"`
+	Name        string    `json:"name"`
+	GatewayID   string    `json:"gatewayId"`
+	GatewayName string    `json:"gatewayName"`
+	LastSeen    time.Time `json:"lastSeen"`
+	ValidUntil  time.Time `json:"validUntil"`
 }
 
 type TelegramSupervisorAssignment struct {
