@@ -5394,6 +5394,7 @@
         const panels = bots.map((b) => {
           const users = b.users || [];
           const supervisor = b.supervisor;
+          const candidates = (b.candidates || []).filter(c => new Date(c.validUntil).getTime() > Date.now());
           const state = connectionState(b);
           const supState = connectionState(supervisor);
           const manageable = !!local.connected && local.resourceId === b.resourceId;
@@ -5428,6 +5429,8 @@
             (manageable ? '<div class="telegram-controls">' + button(users.length ? "Link another person" : "Get claim code", "telegram-claim", "", "primary") + button("Replace bot token", "telegram-connect", "", "quiet") + button("Disconnect bot", "telegram-disconnect", "", "quiet danger") + '</div>' : '') + '</section>' +
             '<section class="telegram-panel telegram-supervisor" aria-label="Supervisor connection"><header><h3>Supervisor connection</h3>' + status(supState) + '</header>' +
             '<p class="telegram-identity">' + esc(supervisor?.name || 'No supervisor') + '</p><p>' + supDetail[supState] + '</p>' +
+            (Array.isArray(b.candidates) && !candidates.length ? '<p>Waiting for an eligible cloud ship to connect.</p>' : '') +
+            candidates.map(c => '<p class="muted">Eligible: ' + esc(c.name) + ' through ' + esc(c.gatewayName) + ' · last seen ' + esc(age(c.lastSeen)) + '</p>').join('') +
             (supervisor ? '<dl class="telegram-meta"><dt>Connected through</dt><dd>' + esc(supervisor.gatewayName || 'Unknown gateway') + '</dd><dt>Last confirmed</dt><dd>' + esc(supervisor.lastPoll ? age(supervisor.lastPoll) : 'Not yet') + '</dd></dl>' : '') + '</section></div>';
         }).join('');
         const notice = failed ? '<div class="notice error" role="alert">Shared connection status is unavailable. ' + (shared.length ? 'Showing the last known names; connection states are unknown.' : 'Connection states cannot be confirmed.') + '</div>' : '';

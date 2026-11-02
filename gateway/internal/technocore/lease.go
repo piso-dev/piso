@@ -13,6 +13,7 @@ import (
 type LeaseGrant struct {
 	// Granted is false when another gateway holds a live lease.
 	Granted bool
+	Reason  string
 	// Offset is the coordinator's last known update cursor, which travels with
 	// the lease so a handoff resumes instead of replaying.
 	Offset int64
@@ -52,6 +53,7 @@ func TelegramLease(dataDir, resourceID string, offset int64, ttl time.Duration, 
 	}
 	var out struct {
 		Granted   bool   `json:"granted"`
+		Reason    string `json:"reason"`
 		Offset    int64  `json:"offset"`
 		Holder    string `json:"holder"`
 		ExpiresAt string `json:"expires_at"`
@@ -59,7 +61,7 @@ func TelegramLease(dataDir, resourceID string, offset int64, ttl time.Duration, 
 	if err := json.Unmarshal(raw, &out); err != nil {
 		return LeaseGrant{}, fmt.Errorf("telegram lease: %w", err)
 	}
-	grant := LeaseGrant{Granted: out.Granted, Offset: out.Offset, Holder: out.Holder}
+	grant := LeaseGrant{Granted: out.Granted, Reason: out.Reason, Offset: out.Offset, Holder: out.Holder}
 	// A missing or unparseable expiry is not fatal: the caller falls back to
 	// its own requested window.
 	if t, err := time.Parse(time.RFC3339, out.ExpiresAt); err == nil {

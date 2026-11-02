@@ -96,6 +96,7 @@ func (s *Server) AttachCoordinator() {
 		}
 		return telegram.LeaseGrant{
 			Granted:   g.Granted,
+			Reason:    g.Reason,
 			Offset:    g.Offset,
 			ExpiresAt: g.ExpiresAt,
 			Holder:    g.Holder,
@@ -161,6 +162,8 @@ func (s *Server) handleTelegramStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	if !snap.Running {
 		switch {
+		case snap.Waiting && snap.WaitReason == "no_eligible_worker":
+			out.Warning = "Waiting for an eligible cloud ship to connect."
 		case snap.Waiting:
 			out.Warning = "Another gateway holds the Telegram poller lease; this one is waiting for it."
 		case snap.LastError != "":
