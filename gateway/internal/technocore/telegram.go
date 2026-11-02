@@ -15,17 +15,20 @@ import (
 // TelegramAssignment contains only account-visible metadata. An assigned
 // supervisor is not proof of Telegram or agent readiness.
 type TelegramAssignment struct {
-	ResourceID  string                        `json:"resourceId"`
-	Name        string                        `json:"name"`
-	Supervisor  *TelegramSupervisorAssignment `json:"supervisor"`
-	Candidates  []TelegramCandidate           `json:"candidates"`
-	State       string                        `json:"state"`
-	BotID       int64                         `json:"botId,omitempty"`
-	BotUsername string                        `json:"botUsername,omitempty"`
-	LastPoll    *time.Time                    `json:"lastPoll,omitempty"`
-	ExpiresAt   *time.Time                    `json:"expiresAt,omitempty"`
-	Users       []store.TelegramUser          `json:"users"`
-	Claim       *telegramClaimWire            `json:"claim,omitempty"`
+	ResourceID              string                        `json:"resourceId"`
+	Name                    string                        `json:"name"`
+	Supervisor              *TelegramSupervisorAssignment `json:"supervisor"`
+	Candidates              []TelegramCandidate           `json:"candidates"`
+	State                   string                        `json:"state"`
+	CheckingUntil           *time.Time                    `json:"checkingUntil,omitempty"`
+	SupervisorState         string                        `json:"supervisorState,omitempty"`
+	SupervisorCheckingUntil *time.Time                    `json:"supervisorCheckingUntil,omitempty"`
+	BotID                   int64                         `json:"botId,omitempty"`
+	BotUsername             string                        `json:"botUsername,omitempty"`
+	LastPoll                *time.Time                    `json:"lastPoll,omitempty"`
+	ExpiresAt               *time.Time                    `json:"expiresAt,omitempty"`
+	Users                   []store.TelegramUser          `json:"users"`
+	Claim                   *telegramClaimWire            `json:"claim,omitempty"`
 }
 
 type TelegramCandidate struct {
