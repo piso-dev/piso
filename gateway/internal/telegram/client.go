@@ -155,19 +155,18 @@ func (c *Client) GetUpdates(ctx context.Context, token string, offset int64, wai
 }
 
 // SendMessage posts text to a chat.
-func (c *Client) SendMessage(ctx context.Context, token string, chatID int64, text string) error {
-	_, err := c.SendMessageID(ctx, token, chatID, text)
+func (c *Client) SendMessage(ctx context.Context, token string, chatID int64, text string, parseMode ...string) error {
+	_, err := c.SendMessageID(ctx, token, chatID, text, parseMode...)
 	return err
 }
 
 // SendMessageID posts text to a chat and returns the new message's id. A
 // caller that wants to keep editing the message it just sent (a live activity
 // line) needs the id, because the Bot API addresses an edit by message id.
-func (c *Client) SendMessageID(ctx context.Context, token string, chatID int64, text string) (int64, error) {
-	m, err := call[Message](ctx, c, token, "sendMessage", url.Values{
-		"chat_id": {strconv.FormatInt(chatID, 10)},
-		"text":    {text},
-	})
+func (c *Client) SendMessageID(ctx context.Context, token string, chatID int64, text string, parseMode ...string) (int64, error) {
+	form := url.Values{"chat_id": {strconv.FormatInt(chatID, 10)}, "text": {text}}
+	setParseMode(form, parseMode)
+	m, err := call[Message](ctx, c, token, "sendMessage", form)
 	if err != nil {
 		return 0, err
 	}
@@ -176,13 +175,19 @@ func (c *Client) SendMessageID(ctx context.Context, token string, chatID int64, 
 
 // EditMessageText rewrites a message the bot already sent, which is how one
 // activity line follows a turn instead of one message per tool call.
-func (c *Client) EditMessageText(ctx context.Context, token string, chatID, messageID int64, text string) error {
-	_, err := call[Message](ctx, c, token, "editMessageText", url.Values{
-		"chat_id":    {strconv.FormatInt(chatID, 10)},
-		"message_id": {strconv.FormatInt(messageID, 10)},
-		"text":       {text},
-	})
+func (c *Client) EditMessageText(ctx context.Context, token string, chatID, messageID int64, text string, parseMode ...string) error {
+	form := url.Values{"chat_id": {strconv.FormatInt(chatID, 10)}, "message_id": {strconv.FormatInt(messageID, 10)}, "text": {text}}
+	setParseMode(form, parseMode)
+	_, err := call[Message](ctx, c, token, "editMessageText", form)
 	return err
+}
+
+// Existing callers stay plain-text; only explicit HTML requests opt in.
+func setParseMode(form url.Values, modes []string) {
+	if len(modes) > 0 && modes[0] == "HTML" {
+		form.Set("parse_mode", "HTML")
+		form.Set("link_preview_options", `{"is_disabled":true}`)
+	}
 }
 
 // DeleteWebhook removes a webhook from the bot. A bot with a webhook set

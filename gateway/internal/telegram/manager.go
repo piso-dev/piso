@@ -527,12 +527,12 @@ func (m *Manager) reply(ctx context.Context, c *Client, token string, chatID int
 // Telegram: the worker never holds the token, so it hands the text to the
 // gateway and the gateway sends it. Callers restrict the chat to the
 // allow-list; this only enforces that a token exists.
-func (m *Manager) SendText(ctx context.Context, chatID int64, text string) error {
+func (m *Manager) SendText(ctx context.Context, chatID int64, text string, parseMode ...string) error {
 	rec, ok := m.bot()
 	if !ok {
 		return errors.New("no telegram bot token is stored")
 	}
-	return NewClient(m.HTTP).SendMessage(ctx, rec.Value, chatID, text)
+	return NewClient(m.HTTP).SendMessage(ctx, rec.Value, chatID, text, parseMode...)
 }
 
 // SendStatus writes one chat's live activity line and returns the id to edit on
@@ -541,14 +541,14 @@ func (m *Manager) SendText(ctx context.Context, chatID int64, text string) error
 // turn does not flood the chat with one message per step. messageID 0 sends a
 // fresh message; an edit that Telegram refuses (the message was deleted, or it
 // is too old to edit) falls back to sending, so the line can never wedge.
-func (m *Manager) SendStatus(ctx context.Context, chatID int64, text string, messageID int64) (int64, error) {
+func (m *Manager) SendStatus(ctx context.Context, chatID int64, text string, messageID int64, parseMode ...string) (int64, error) {
 	rec, ok := m.bot()
 	if !ok {
 		return 0, errors.New("no telegram bot token is stored")
 	}
 	c := NewClient(m.HTTP)
 	if messageID > 0 {
-		err := c.EditMessageText(ctx, rec.Value, chatID, messageID, text)
+		err := c.EditMessageText(ctx, rec.Value, chatID, messageID, text, parseMode...)
 		if err == nil {
 			return messageID, nil
 		}
@@ -559,7 +559,7 @@ func (m *Manager) SendStatus(ctx context.Context, chatID int64, text string, mes
 			return messageID, nil
 		}
 	}
-	return c.SendMessageID(ctx, rec.Value, chatID, text)
+	return c.SendMessageID(ctx, rec.Value, chatID, text, parseMode...)
 }
 
 // IssueClaim mints a claim code. One code is outstanding at a time: issuing a
