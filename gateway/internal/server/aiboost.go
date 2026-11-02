@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -10,6 +11,8 @@ import (
 	"time"
 
 	"piso/gateway/internal/aiboost"
+	"piso/gateway/internal/technocore"
+	tc "piso/internal/technocore"
 )
 
 func (s *Server) boostClient() (*aiboost.Client, error) {
@@ -25,8 +28,25 @@ func (s *Server) boostClient() (*aiboost.Client, error) {
 		}
 		s.boost = c
 	}
+	if id, err := tc.Load(tc.Path(s.DataDir)); err == nil && id.Status == tc.StatusActive && id.ServerURL != "" {
+		s.boost.SetSharing(technocore.BoostSharing{DataDir:s.DataDir})
+	}
 	return s.boost, nil
 }
+// RunAIBoostSharing keeps the shared access token fresh independently of workers.
+func (s *Server) RunAIBoostSharing(ctx context.Context) {
+ ticker := time.NewTicker(20*time.Second)
+ defer ticker.Stop()
+ for {
+  if c, err := s.boostClient(); err == nil {
+   callCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+   _ = c.Maintain(callCtx)
+   cancel()
+  }
+  select { case <-ctx.Done(): return; case <-ticker.C: }
+ }
+}
+
 func (s *Server) boostConnection() connectionView {
 	out := connectionView{ID: "ai-boost", Name: "AI Boost", Status: "none", Detail: "Not connected"}
 	if s.DataDir == "" {

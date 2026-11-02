@@ -6088,7 +6088,7 @@
         }).catch((err) => { tab.close(); errorDialog(err); });
       }
       function boostDisconnect() {
-        confirmAction("Disconnect AI Boost?", "This deletes the tokens in Piso only. The AI Boost grant is not revoked and can remain active until it expires.", "Disconnect", async () => {
+        confirmAction("Disconnect shared AI Boost?", "This deletes the tokens in Piso for every enrolled gateway. The AI Boost grant is not revoked upstream and can remain active until it expires.", "Disconnect", async () => {
           await api("ai-boost/disconnect", "POST", {});
           Object.assign(boostReview, {items: [], loaded: false, nextCursor: "", previousCursor: ""});
           await changed(["aiBoost", "connections"]);

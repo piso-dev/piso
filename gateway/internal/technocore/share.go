@@ -60,6 +60,8 @@ type ShareInput struct {
 	// omitted (0) when the writer has never published the secret, so a stale
 	// writer can be told to re-sync instead of overwriting newer state.
 	BaseVersion int
+	Operation string
+	LeaseEpoch uint64
 }
 
 // Share wraps plaintext for account gateways and POSTs ciphertext to the server.
@@ -422,6 +424,10 @@ func baseShareBody(in ShareInput, hash, nonce, ct []byte, wraps []map[string]str
 	}
 	if in.BaseVersion > 0 {
 		body["base_version"] = in.BaseVersion
+	}
+	if in.Operation != "" {
+		body["operation"] = in.Operation
+		body["lease_epoch"] = in.LeaseEpoch
 	}
 	return body
 }

@@ -39,6 +39,8 @@ type Client struct {
 	rec      record
 	http     *http.Client
 	attempts map[string]attempt
+	sharing Sharing
+	sharedVersion int
 }
 type Summary struct {
 	Configured  bool   `json:"configured"`
@@ -70,6 +72,7 @@ func Open(dir string, transport *http.Client) (*Client, error) {
 func (c *Client) Summary() Summary {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	_ = c.syncShared()
 	status := c.rec.Status
 	if status == "ok" && !time.Now().Before(c.rec.RefreshExpires) {
 		status = "needs-auth"
@@ -192,7 +195,8 @@ func (c *Client) Callback(ctx context.Context, state, browser, code, oauthError 
 	if err != nil {
 		return err
 	}
-	return c.apply(tok)
+	if err := c.apply(tok); err != nil { return err }
+	return c.publishShared(false, 0)
 }
 
 type tokens struct {
@@ -282,8 +286,14 @@ func (c *Client) disconnect(status string) error {
 	c.rec = r
 	return c.commit(r)
 }
-func (c *Client) Disconnect() error { c.mu.Lock(); defer c.mu.Unlock(); return c.disconnect("none") }
+func (c *Client) Disconnect() error {
+ c.mu.Lock(); defer c.mu.Unlock()
+ if err := c.syncShared(); err != nil { return err }
+ if err := c.disconnect("none"); err != nil { return err }
+ return c.publishShared(false, 0)
+}
 func (c *Client) refresh(ctx context.Context) error {
+ if c.sharing != nil { return c.sharedRefresh(ctx) }
 	if c.rec.RefreshPending || c.rec.Status != "ok" || !time.Now().Before(c.rec.RefreshExpires) {
 		_ = c.disconnect("needs-auth")
 		return ErrReconnect
@@ -324,6 +334,7 @@ func (c *Client) request(ctx context.Context, method, path string, body []byte, 
 }
 
 func (c *Client) requestLocked(ctx context.Context, method, path string, body []byte, key string) ([]byte, error) {
+ if err := c.syncShared(); err != nil { return nil, err }
 	if c.rec.Status != "ok" {
 		return nil, ErrReconnect
 	}
