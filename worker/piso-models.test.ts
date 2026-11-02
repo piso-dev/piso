@@ -510,12 +510,19 @@ describe("Piso worker model overrides", () => {
 
 	function liveApply(providers: Record<string, { id: string }[]>) {
 		const setModels: any[] = [];
+		const levels: string[] = [];
+		const thinking = { current: "medium" };
 		const pi = {
 			registerProvider() {},
 			unregisterProvider() {},
 			setModel(model: any) {
 				setModels.push(model);
 				return Promise.resolve(true);
+			},
+			getThinkingLevel: () => thinking.current,
+			setThinkingLevel(level: string) {
+				levels.push(level);
+				thinking.current = level;
 			},
 			on() {
 				return () => {};
@@ -531,7 +538,7 @@ describe("Piso worker model overrides", () => {
 				getModelsOfType: (_type: string, provider: string) => providers[provider] ?? [],
 			},
 		};
-		return { apply: wireLiveApply(pi as any), ctx: ctx as any, setModels };
+		return { apply: wireLiveApply(pi as any), ctx: ctx as any, setModels, levels, thinking };
 	}
 
 	const stack = {
@@ -647,6 +654,70 @@ describe("Piso worker model overrides", () => {
 		await apply(ctx, true);
 		expect(setModels.at(-1)).toEqual({ id: "m1", provider: "piso" });
 		expect(JSON.parse(await readFile(join(dir, "piso-model.json"), "utf8")).provider).toBe("");
+	});
+
+	test("the gateway's thinking level is applied once, after the model switch", async () => {
+		const dir = await stackDir(stack, { defaultProvider: "piso", defaultModel: "m1" });
+		process.env.GATEWAY_URL = "http://gateway:8083";
+		process.env.PISO_WORKER_NAME = "piso-worker-demo";
+		let level = "high";
+		globalThis.fetch = (async () =>
+			Response.json({
+				provider: "piso-two",
+				model: "m2",
+				source: "override",
+				thinkingLevel: level,
+			})) as typeof fetch;
+
+		const { apply, ctx, setModels, levels, thinking } = liveApply(catalogs);
+		await apply(ctx, true);
+
+		expect(setModels.at(-1)).toEqual({ id: "m2", provider: "piso-two" });
+		expect(levels).toEqual(["high"]);
+		// The level travels in the same cache as the provider and model, so a
+		// restart (or an unreachable gateway) starts on it too.
+		expect(JSON.parse(await readFile(join(dir, "piso-model.json"), "utf8")).thinkingLevel).toBe("high");
+
+		// A level chosen by hand mid-session sticks: the dashboard's answer did
+		// not change, so the poll must not snap it back.
+		thinking.current = "off";
+		await apply(ctx, false);
+		expect(levels).toEqual(["high"]);
+		expect(thinking.current).toBe("off");
+
+		// A changed answer is applied again.
+		level = "low";
+		await apply(ctx, false);
+		expect(levels).toEqual(["high", "low"]);
+	});
+
+	test("a level pi does not know is ignored, not sent on", async () => {
+		await stackDir(stack, { defaultProvider: "piso", defaultModel: "m1" });
+		process.env.GATEWAY_URL = "http://gateway:8083";
+		process.env.PISO_WORKER_NAME = "piso-worker-demo";
+		globalThis.fetch = (async () =>
+			Response.json({
+				provider: "piso",
+				model: "m1",
+				source: "override",
+				thinkingLevel: "turbo",
+			})) as typeof fetch;
+
+		const { apply, ctx, levels } = liveApply(catalogs);
+		await apply(ctx, true);
+		expect(levels).toEqual([]);
+	});
+
+	test("the account level in the shared settings is applied to a running session", async () => {
+		await stackDir(stack, { defaultProvider: "piso", defaultModel: "m1", defaultThinkingLevel: "low" });
+		process.env.GATEWAY_URL = "http://gateway:8083";
+		process.env.PISO_WORKER_NAME = "piso-worker-demo";
+		globalThis.fetch = (async () =>
+			Response.json({ provider: "piso", model: "m1", source: "account" })) as typeof fetch;
+
+		const { apply, ctx, levels } = liveApply(catalogs);
+		await apply(ctx, true);
+		expect(levels).toEqual(["low"]);
 	});
 
 	test("an unreachable gateway keeps the cached override", async () => {

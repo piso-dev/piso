@@ -27,7 +27,7 @@ func pinFixture(t *testing.T) (*Handler, *store.Store) {
 	if err := st.UpsertPiProvider(store.PiProviderRec{ID: "pinned", BaseURL: "https://api.example.test/v1", DefaultModel: "other"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.SetModelOverride("worker-1", "pinned", ""); err != nil {
+	if _, err := st.SetModelOverride("worker-1", "pinned", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	return h, st
@@ -155,7 +155,7 @@ func TestModelPinProviderMismatch(t *testing.T) {
 	if err := st.UpsertPiProvider(store.PiProviderRec{ID: "pinned", BaseURL: "https://other.example.test/v1", DefaultModel: "other"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.SetModelOverride("worker-1", "pinned", ""); err != nil {
+	if _, err := st.SetModelOverride("worker-1", "pinned", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	body := `{"model":"other"}`

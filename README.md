@@ -173,6 +173,26 @@ explicit empty array clears it. That split is what stops a dashboard older than
 the field from erasing a list configured through the API every time the
 provider is edited.
 
+#### Default thinking level
+
+The active profile also carries a default thinking level, set in the same
+dialog and written as pi's `defaultThinkingLevel` in the shared
+`settings.json`. The empty value is meaningful and is the default: it removes
+the key, so pi applies its own level. A level is refused at save time when pi
+would not recognise it — `off`, `minimal`, `low`, `medium`, `high`, `xhigh`,
+`max` are pi's own values — because that file is read by pi, not by the
+gateway, and an unknown level there fails silently.
+
+A worker override may set its own level. It travels in the worker's model
+answer rather than the shared file, which every worker mounts at once, and the
+extension applies it after switching the model: pi clamps a level to the
+capabilities of the model it is set against, so applying it first would judge
+the new level by the model being replaced. A level set by hand mid-session
+sticks until the dashboard's answer changes. Clearing a level on the dashboard
+reaches new sessions through `settings.json`; a level that is already applied
+in a running session is left alone rather than reset, since there is no
+gateway-side way to distinguish a deliberate local choice from a stale one.
+
 A refused request answers **403** with a body that names the requested model and
 the ids that would have been accepted, plus `X-Piso-Reason` (`model-not-allowed`,
 `model-required`, `model-provider-mismatch`, or `model-pin-unresolved`) and

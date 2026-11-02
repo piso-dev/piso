@@ -21,8 +21,13 @@ type ModelOverrideRec struct {
 	// "that provider's default", so a row keeps resolving if the provider's
 	// default later moves — which is what makes the field optional rather
 	// than a second, silently stale copy of the default.
-	Model     string    `json:"model,omitempty"`
-	UpdatedAt time.Time `json:"updatedAt,omitempty"`
+	Model string `json:"model,omitempty"`
+	// ThinkingLevel overrides the provider's own level for this worker. Empty
+	// keeps the provider's, so a pin does not have to restate it — and unlike
+	// the provider's level it cannot be written to the shared settings.json,
+	// because that file is mounted by every worker.
+	ThinkingLevel string    `json:"thinkingLevel,omitempty"`
+	UpdatedAt     time.Time `json:"updatedAt,omitempty"`
 }
 
 // ModelOverrides returns every override in insertion order. The slice is a
@@ -62,6 +67,16 @@ func (s *Store) ModelOverrideProviderID(slug string) string {
 	return rec.ProviderID
 }
 
+// ModelOverrideThinkingLevel returns the thinking level pinned to slug, or ""
+// when the worker follows its provider's level.
+func (s *Store) ModelOverrideThinkingLevel(slug string) string {
+	rec, ok := s.ModelOverrideBySlug(slug)
+	if !ok {
+		return ""
+	}
+	return rec.ThinkingLevel
+}
+
 // ModelOverrideModel returns the model pinned to slug within its provider, or
 // "" when the worker follows that provider's default.
 func (s *Store) ModelOverrideModel(slug string) string {
@@ -75,11 +90,13 @@ func (s *Store) ModelOverrideModel(slug string) string {
 // SetModelOverride pins slug to providerID, replacing any existing override
 // for that worker. A blank slug or provider is an error: use
 // DeleteModelOverride to return a worker to the account default. A blank model
-// means "the provider's default model".
-func (s *Store) SetModelOverride(slug, providerID, model string) (ModelOverrideRec, error) {
+// means "the provider's default model", and a blank thinking level means "the
+// provider's thinking level".
+func (s *Store) SetModelOverride(slug, providerID, model, thinkingLevel string) (ModelOverrideRec, error) {
 	slug = strings.TrimSpace(slug)
 	providerID = strings.TrimSpace(providerID)
 	model = strings.TrimSpace(model)
+	thinkingLevel = strings.TrimSpace(thinkingLevel)
 	if slug == "" {
 		return ModelOverrideRec{}, ErrWorkerNotFound
 	}
@@ -90,7 +107,7 @@ func (s *Store) SetModelOverride(slug, providerID, model string) (ModelOverrideR
 	defer s.mu.Unlock()
 	old := s.state.ModelOverrides
 	next := make([]ModelOverrideRec, 0, len(old)+1)
-	rec := ModelOverrideRec{Slug: slug, ProviderID: providerID, Model: model, UpdatedAt: time.Now().UTC()}
+	rec := ModelOverrideRec{Slug: slug, ProviderID: providerID, Model: model, ThinkingLevel: thinkingLevel, UpdatedAt: time.Now().UTC()}
 	replaced := false
 	for _, e := range old {
 		if e.Slug == slug {

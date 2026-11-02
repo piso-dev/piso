@@ -31,12 +31,30 @@ export type ProviderProfile = {
 type ActiveDefault = {
 	provider: string;
 	model: string;
+	// thinking is the level the gateway resolved for this worker: the
+	// override's own, else its provider's, else "". An empty one means the
+	// gateway has no opinion and settings.json (which pi already read) governs
+	// the session.
+	thinking: string;
 };
+
+// ThinkingLevelName mirrors pi's defaultThinkingLevel enum. Kept as a local
+// union so the worker rejects a level the gateway should never have sent
+// instead of handing pi a string it does not understand.
+export type ThinkingLevelName = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+
+const THINKING_LEVELS: ThinkingLevelName[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+
+function thinkingLevel(level: unknown): ThinkingLevelName | "" {
+	const value = typeof level === "string" ? level.trim() : "";
+	return (THINKING_LEVELS as string[]).includes(value) ? (value as ThinkingLevelName) : "";
+}
 
 // The gateway's per-worker answer lives in the agent dir rather than in the
 // shared profile: settings.json is a read-only mount, and a worker that starts
 // while the gateway is unreachable must still know which provider it was pinned
-// to. The file holds no secret — a provider id and a model id.
+// to. The file holds no secret — a provider id, a model id and a thinking
+// level.
 const OVERRIDE_CACHE_FILE = "piso-model.json";
 const OVERRIDE_FETCH_TIMEOUT_MS = 3_000;
 
@@ -234,6 +252,9 @@ export async function loadProfiles(dir = agentDir()): Promise<ProviderProfile[]>
 type ModelOverride = {
 	provider: string;
 	model: string;
+	// thinking is the level this worker's session should run on. Empty means
+	// "no opinion": pi's startup level from settings.json stands.
+	thinking: string;
 	allowed: string[];
 	providers: Map<string, string[]>;
 	policies: Record<string, ModelPolicy>;
@@ -269,6 +290,7 @@ function parseOverride(payload: unknown): ModelOverride | undefined {
 	return {
 		provider: raw ? normalizeProviderId(raw) : "",
 		model: typeof payload.model === "string" ? payload.model.trim() : "",
+		thinking: thinkingLevel(payload.thinkingLevel),
 		allowed: stringArray(payload.allowedModels) ?? [],
 		providers: parseAllowlists(payload.providers),
 		policies: parsePolicies(payload.modelPolicies),
@@ -337,6 +359,7 @@ async function refreshOverrideCache(dir = agentDir()): Promise<void> {
 		current &&
 		current.provider === next.provider &&
 		current.model === next.model &&
+		current.thinking === next.thinking &&
 		sameModelIds(current.allowed, next.allowed) &&
 		sameAllowlists(current.providers, next.providers) &&
 		JSON.stringify(current.policies) === JSON.stringify(next.policies)
@@ -347,6 +370,7 @@ async function refreshOverrideCache(dir = agentDir()): Promise<void> {
 			`${JSON.stringify({
 				provider: next.provider,
 				model: next.model,
+				thinkingLevel: next.thinking || undefined,
 				allowedModels: next.allowed,
 				providers: allowlistsJson(next.providers),
 				modelPolicies: Object.keys(next.policies).length ? next.policies : undefined,
@@ -483,18 +507,32 @@ async function loadActiveDefault(dir = agentDir()): Promise<ActiveDefault> {
 	// follow the account default", so a removed override cannot resurrect from
 	// a stale file a restart later.
 	const override = parseOverride(await readJson(overrideCachePath(dir)));
-	if (override && override.provider) {
-		return { provider: override.provider, model: override.model };
-	}
 	const payload = await readJson(join(dir, "settings.json"));
-	if (!isObject(payload)) return { provider: "", model: "" };
-	const provider = typeof payload.defaultProvider === "string" ? payload.defaultProvider.trim() : "";
+	const settings = isObject(payload) ? payload : {};
+	// The account level is read back from the same file pi read at startup, so a
+	// level changed on the dashboard also reaches sessions that are already
+	// running. It belongs to the account provider, so it is inherited only when
+	// the session runs on that provider: a level tuned for one model says
+	// nothing about another.
+	const accountProvider =
+		typeof settings.defaultProvider === "string" ? settings.defaultProvider.trim() : "";
+	const accountThinking = thinkingLevel(settings.defaultThinkingLevel);
+	if (override && override.provider) {
+		return {
+			provider: override.provider,
+			model: override.model,
+			thinking:
+				override.thinking ||
+				(override.provider === normalizeProviderId(accountProvider) ? accountThinking : ""),
+		};
+	}
 	return {
 		// The dashboard may still write the legacy namespace (or an older
 		// write may not have migrated yet). loadProfiles normalizes it, so an
 		// unnormalized id here would find neither the provider nor its catalog.
-		provider: provider ? normalizeProviderId(provider) : "",
-		model: typeof payload.defaultModel === "string" ? payload.defaultModel.trim() : "",
+		provider: accountProvider ? normalizeProviderId(accountProvider) : "",
+		model: typeof settings.defaultModel === "string" ? settings.defaultModel.trim() : "",
+		thinking: accountThinking,
 	};
 }
 
@@ -757,6 +795,7 @@ function snapshotKey(
 		profiles.map((p) => [p.id, p.baseUrl, p.api ?? "", p.models.map((m) => m.id)]),
 		active.provider,
 		active.model,
+		active.thinking,
 		[...allowlists].sort(([a], [b]) => a.localeCompare(b)),
 		modelPolicies,
 	]);
@@ -788,6 +827,10 @@ type LiveState = {
 	// can put the provider back.
 	hidden: Map<string, string>;
 	applied: string;
+	// appliedThinking is the level this session was last switched to. It gates
+	// the switch so a level picked by hand mid-session sticks until the
+	// dashboard's answer actually changes, instead of snapping back every poll.
+	appliedThinking: string;
 	timer?: ReturnType<typeof setInterval>;
 	pending: boolean;
 };
@@ -867,6 +910,7 @@ export function wireLiveApply(
 		configs: new Map(),
 		hidden: new Map(),
 		applied: "",
+		appliedThinking: "",
 		pending: false,
 	};
 	for (const profile of initialProfiles) state.configs.set(profile.id, providerConfigKey(profile));
@@ -1003,6 +1047,25 @@ export function wireLiveApply(
 			const ok = await pi.setModel(model);
 			if (!ok) return;
 			state.applied = applied;
+		}
+		// The thinking level follows the model, because pi clamps a level to the
+		// capabilities of the model it is set against: applying it first would
+		// judge the new level by the model being replaced. A level is applied
+		// once per distinct answer rather than on every poll, so a level chosen
+		// by hand mid-session survives until the dashboard's answer changes.
+		// Clearing it is deliberately not mirrored here: the account level lives
+		// in settings.json and only pi's own startup read can unset it.
+		const level = thinkingLevel(active.thinking);
+		if (level && state.appliedThinking !== level) {
+			try {
+				// A pi that predates thinking levels has neither of these calls;
+				// it must not take the model switch down with it.
+				if (pi.getThinkingLevel?.() !== level)
+					pi.setThinkingLevel(level as Parameters<ExtensionAPI["setThinkingLevel"]>[0]);
+				state.appliedThinking = level;
+			} catch {
+				// Ignore: the level is advisory, the model is not.
+			}
 		}
 		state.signature = signature;
 	};

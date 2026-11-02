@@ -32,12 +32,42 @@ func CanonicalProviderID(id string) string {
 	return id
 }
 
-// dashboardOwnedKeys are the settings keys that pick a startup model. They
-// belong to the shared profile, not to the agent directory of whatever
-// machine happened to run `piso up`: inheriting them makes a worker start on
-// the operator's personal model, and enabledModels outranks defaultModel in
-// pi's startup resolution, so it silently wins over the dashboard choice.
-var dashboardOwnedKeys = []string{"defaultProvider", "defaultModel", "enabledModels"}
+// dashboardOwnedKeys are the settings keys that pick a startup model and its
+// thinking level. They belong to the shared profile, not to the agent
+// directory of whatever machine happened to run `piso up`: inheriting them
+// makes a worker start on the operator's personal model, and enabledModels
+// outranks defaultModel in pi's startup resolution, so it silently wins over
+// the dashboard choice. defaultThinkingLevel travels with them for the same
+// reason: a level tuned for the operator's own model is not a statement about
+// the dashboard's, and the two are set in the same dialog.
+var dashboardOwnedKeys = []string{"defaultProvider", "defaultModel", "enabledModels", "defaultThinkingLevel"}
+
+// ThinkingLevelKey is the settings key pi reads as the thinking level new
+// sessions start on. A worker's per-session level is a different thing and
+// never written here: this key is account-wide, so it belongs with the
+// default provider and model that it accompanies.
+const ThinkingLevelKey = "defaultThinkingLevel"
+
+// ThinkingLevels is the closed set pi accepts for defaultThinkingLevel, in
+// pi's own order (cheapest first). Copied rather than derived: the gateway and
+// the CLI validate a level before writing it, so a typo is refused at save
+// time instead of landing in settings.json where pi silently ignores it.
+var ThinkingLevels = []string{"off", "minimal", "low", "medium", "high", "xhigh", "max"}
+
+// ValidThinkingLevel reports whether level is one pi understands. The empty
+// string is valid and means "unset": pi then applies its own default.
+func ValidThinkingLevel(level string) bool {
+	level = strings.TrimSpace(level)
+	if level == "" {
+		return true
+	}
+	for _, l := range ThinkingLevels {
+		if l == level {
+			return true
+		}
+	}
+	return false
+}
 
 // workerLocalKeys are settings pi writes back on the host that a worker must
 // not inherit through the read-only shared profile. lastChangelogVersion is
@@ -147,6 +177,42 @@ func WithProviderDefault(settings []byte, providerID, modelID string) []byte {
 		return settings
 	}
 	return append(out, '\n')
+}
+
+// WithThinkingLevel returns settings JSON with defaultThinkingLevel set to
+// level, preserving every other key. An empty level removes the key so pi
+// falls back to its own default, which is also how the dashboard expresses
+// "unset" — there is no second, silently stale level left behind.
+func WithThinkingLevel(settings []byte, level string) []byte {
+	var m map[string]any
+	if json.Unmarshal(settings, &m) != nil || m == nil {
+		m = map[string]any{}
+	}
+	level = strings.TrimSpace(level)
+	if level == "" {
+		delete(m, ThinkingLevelKey)
+	} else {
+		m[ThinkingLevelKey] = level
+	}
+	out, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		return settings
+	}
+	return append(out, '\n')
+}
+
+// WriteThinkingLevel applies WithThinkingLevel to settings.json. A missing
+// file is created; every key other than the level is preserved.
+func WriteThinkingLevel(dir, level string) error {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	path := filepath.Join(dir, "settings.json")
+	raw, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return os.WriteFile(path, WithThinkingLevel(raw, level), 0o600)
 }
 
 // WriteDefaultModel applies WithDefaultModel to the profile's settings.json.
