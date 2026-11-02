@@ -333,13 +333,10 @@ func (s *Store) PendingGithubApps() []GithubAppRec {
 }
 
 func (s *Store) broadcastGithub(rec GithubAppRec) {
-	select {
-	case s.onGithub <- rec:
-	default:
-	}
+	s.onGithub.publish(rec)
 }
 
-func (s *Store) SubGithub() <-chan GithubAppRec { return s.onGithub }
+func (s *Store) SubGithub() (<-chan GithubAppRec, func()) { return s.onGithub.subscribe() }
 
 func copyGithubApps(in []GithubAppRec) []GithubAppRec {
 	out := make([]GithubAppRec, len(in))

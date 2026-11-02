@@ -329,24 +329,24 @@ type Store struct {
 	// live request log
 	records  []Record // most recent first
 	maxLog   int
-	onRecord chan Record // broadcast for SSE
+	onRecord topic[Record] // broadcast for SSE
 
 	// pending ingress requests (worker-published plan UIs)
-	onIngress chan IngressRequestRec // broadcast for SSE
+	onIngress topic[IngressRequestRec] // broadcast for SSE
 
 	// activity events (informant reports + monitor pokes)
-	onActivity chan Activity // broadcast for SSE
+	onActivity topic[Activity] // broadcast for SSE
 
 	// route changes (auto-published dev servers + host routes)
-	onRoute chan RouteRec // broadcast for SSE
+	onRoute topic[RouteRec] // broadcast for SSE
 
 	// MCP OAuth rows (dashboard chip + tab)
-	onMcp chan McpServerRec // broadcast for SSE
+	onMcp topic[McpServerRec] // broadcast for SSE
 
 	// GitHub App rows (dashboard chip + tab)
-	onGithub chan GithubAppRec
+	onGithub topic[GithubAppRec]
 
-	onAsks chan struct{}
+	onAsks topic[struct{}]
 
 	// onMailbox wakes a worker's long-poll when a Telegram message is enqueued.
 	onMailbox chan struct{}
@@ -420,13 +420,6 @@ type Capture struct {
 func New(path, logPath, patternsPath, activitiesPath string, maxLog int) (*Store, error) {
 	s := &Store{
 		path: path, logPath: logPath, patternsPath: patternsPath, maxLog: maxLog,
-		onRecord:    make(chan Record, 64),
-		onIngress:   make(chan IngressRequestRec, 64),
-		onRoute:     make(chan RouteRec, 64),
-		onActivity:  make(chan Activity, 64),
-		onMcp:       make(chan McpServerRec, 64),
-		onGithub:    make(chan GithubAppRec, 64),
-		onAsks:      make(chan struct{}, 8),
 		onMailbox:   make(chan struct{}, 8),
 		onTelegram:  make(chan struct{}, 8),
 		unreachable: map[string][]UnreachablePort{},
@@ -1636,10 +1629,7 @@ func (s *Store) AppendLog(rec Record) {
 }
 
 func (s *Store) broadcast(rec Record) {
-	select {
-	case s.onRecord <- rec:
-	default:
-	}
+	s.onRecord.publish(rec)
 }
 
 // Records returns the recent log, newest first.
@@ -1655,44 +1645,35 @@ func (s *Store) Records(limit int) []Record {
 }
 
 // Sub returns a channel of new records (SSE). Callers must drain.
-func (s *Store) Sub() <-chan Record { return s.onRecord }
+func (s *Store) Sub() (<-chan Record, func()) { return s.onRecord.subscribe() }
 
 // broadcastIngress notifies SSE subscribers that a genuinely new ingress
 // request landed (UpsertPendingIngress only calls it when created). Same
 // non-blocking drop-if-full policy as broadcast; subscribers have the 2s
 // dashboard poll as a fallback if a push is ever dropped.
 func (s *Store) broadcastIngress(rec IngressRequestRec) {
-	select {
-	case s.onIngress <- rec:
-	default:
-	}
+	s.onIngress.publish(rec)
 }
 
 // SubIngress returns a channel of new pending-ingress requests (SSE).
-func (s *Store) SubIngress() <-chan IngressRequestRec { return s.onIngress }
+func (s *Store) SubIngress() (<-chan IngressRequestRec, func()) { return s.onIngress.subscribe() }
 
 // broadcastRoute notifies SSE subscribers that a route was created, replaced,
 // deleted, or expired (dashboard live-routes tab + `piso sync --watch`). Same
 // non-blocking drop-if-full policy as broadcast (the dashboard's 2s poll and
 // the CLI's periodic reconcile are the fallback).
 func (s *Store) broadcastRoute(rec RouteRec) {
-	select {
-	case s.onRoute <- rec:
-	default:
-	}
+	s.onRoute.publish(rec)
 }
 
 // SubRoutes returns a channel of route changes (SSE). Callers must drain.
-func (s *Store) SubRoutes() <-chan RouteRec { return s.onRoute }
+func (s *Store) SubRoutes() (<-chan RouteRec, func()) { return s.onRoute.subscribe() }
 
 func (s *Store) BroadcastAsks() {
-	select {
-	case s.onAsks <- struct{}{}:
-	default:
-	}
+	s.onAsks.publish(struct{}{})
 }
 
-func (s *Store) SubAsks() <-chan struct{} { return s.onAsks }
+func (s *Store) SubAsks() (<-chan struct{}, func()) { return s.onAsks.subscribe() }
 
 // BroadcastTelegram wakes the poller because the coordinator's front door
 // changed. Like asks, a pending signal is enough: several changes before the

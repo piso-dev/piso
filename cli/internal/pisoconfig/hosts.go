@@ -62,6 +62,9 @@ func replaceFile(path string, data []byte, perm os.FileMode) error {
 	}
 	if err := os.Rename(tmp, path); err == nil {
 		return nil
+	} else if runtime.GOOS != "windows" {
+		_ = os.Remove(tmp)
+		return err // Never remove a Unix hosts file when replacement failed.
 	}
 	// Windows cannot rename over an existing dest.
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
@@ -167,6 +170,10 @@ func ReconcileIngressHosts(names []string) error {
 }
 
 func reconcileHosts(path string, names []string) error {
+	return withHostsLock(path, func() error { return reconcileHostsUnlocked(path, names) })
+}
+
+func reconcileHostsUnlocked(path string, names []string) error {
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return err
@@ -288,6 +295,10 @@ func hostsHasName(text, ip, fqdn string) bool {
 }
 
 func appendIngressHosts(path string, names []string) error {
+	return withHostsLock(path, func() error { return appendIngressHostsUnlocked(path, names) })
+}
+
+func appendIngressHostsUnlocked(path string, names []string) error {
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return err
@@ -322,6 +333,10 @@ func appendIngressHosts(path string, names []string) error {
 }
 
 func appendPisoLocal(path string) error {
+	return withHostsLock(path, func() error { return appendPisoLocalUnlocked(path) })
+}
+
+func appendPisoLocalUnlocked(path string) error {
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return err
