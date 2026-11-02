@@ -27,8 +27,9 @@ Do this **briefly and often** — one short line, not prose:
   `activity_post` with `kind=waiting`, `text="Need you to pick the auth approach"`
 - **A step is OUT OF BOUNDS for this sandboxed worker** (ssh, docker,
   privileged writes): do NOT attempt it — call
-  `host_request` instead, with `command="git clone git@github.com:org/repo.git"`
-  and `resultPath="/workspace/repo"`. Add `taskId` (with `attemptId`,
+  `host_request` instead, with `explanation` (why, effects, prerequisites and run
+  instructions), `script` (inline contents or an existing host filename; see
+  CAPABILITIES), and `resultPath` for the output. Add `taskId` (with `attemptId`,
   `requestId`, `summary`, `checkpoint`) when you hold one: that files a
   blocking ask and ends your lease, which is what makes someone answer it.
 - **Any notable status the human should know**:

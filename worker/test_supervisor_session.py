@@ -293,12 +293,50 @@ class SupervisorLogicTest(unittest.TestCase):
         self.assertIn("go test", text)
         sup.on_event(sess, {"type": "tool_execution_end", "toolCallId": "t1",
                             "toolName": "bash", "isError": False, "durationMs": 1200})
-        # The second write edits the same message instead of posting another.
+        # Completion is throttled, then edits the same message on the next flush.
+        self.assertEqual(len(gw.statuses), 1)
+        sess.status_at = 0
+        sup.flush(sess)
         self.assertEqual(len(gw.statuses), 2)
         self.assertEqual(gw.statuses[1][2], gw._next_status)
         self.assertIn("✅ bash", gw.statuses[1][1])
         self.assertIn("1.2s", gw.statuses[1][1])
         self.assertEqual(sess.status_id, gw._next_status)
+
+    def test_transient_status_failure_is_retried_without_new_message(self):
+        gw, sup = self.make()
+        sup.feed({"chatId": 7, "text": "run"})
+        sess = sup.sessions[7]
+        sup.tool_started(sess, {"toolCallId": "t1", "toolName": "bash", "args": {"command": "ls"}})
+        original = gw.status
+        def failed(*args):
+            raise OSError("temporary outage")
+        gw.status = failed
+        sess.note("retry me")
+        sup.flush(sess, force=True)
+        self.assertIsNotNone(sess.pending)
+        gw.status = original
+        sup.flush(sess, force=True)
+        self.assertIsNone(sess.pending)
+        self.assertEqual(gw.statuses[-1][2], gw._next_status)
+
+    def test_result_panel_keeps_command_escapes_output_and_redacts(self):
+        gw, sup = self.make()
+        sup.feed({"chatId": 7, "text": "run"})
+        sess = sup.sessions[7]
+        sup.tool_started(sess, {"toolCallId": "t1", "toolName": "bash",
+                                "args": {"command": "TOKEN=hidden curl https://example.test " + "x" * 200}})
+        self.assertNotIn("hidden", gw.statuses[-1][1])
+        self.assertIn("…</code>", gw.statuses[-1][1])
+        sup.tool_finished(sess, {"toolCallId": "t1", "toolName": "bash", "isError": True,
+                                 "result": {"content": [{"type": "text", "text": "<bad>& PASSWORD=hidden"}]}})
+        sess.status_at = 0
+        sup.flush(sess)
+        panel = gw.statuses[-1][1]
+        self.assertIn("Failed", panel)
+        self.assertIn("<code>TOKEN=[redacted]", panel)
+        self.assertIn("<pre>&lt;bad&gt;&amp; PASSWORD=[redacted]</pre>", panel)
+        self.assertNotIn("hidden", panel)
 
     def test_settle_writes_the_summary_then_starts_a_new_line(self):
         gw, sup = self.make()
@@ -407,7 +445,7 @@ class SupervisorLogicTest(unittest.TestCase):
         sup.tool_started(sess, {"toolCallId": "t9", "toolName": "bash",
                                 "args": {"command": "sleep 90"}})
         sup.flush(sess, force=True)
-        self.assertEqual(gw.statuses[-1][1], "🔧 bash sleep 90")
+        self.assertEqual(gw.statuses[-1][1], "🔧 bash <code>sleep 90</code>")
         sess.rpc.alive_flag = False
         gw.messages = lambda wait: {"messages": []}
         sup.drain_once()
@@ -569,7 +607,7 @@ class EndToEndTest(unittest.TestCase):
         self.script = Path(self.temp.name) / "fake_pi.py"
         self.script.write_text(FAKE_PI)
         self.state = {"messages": [{"id": "m1", "chatId": 9, "text": "ping"}],
-                      "replies": [], "statuses": []}
+                      "replies": [], "statuses": [], "modes": []}
         state = self.state
 
         class Handler(BaseHTTPRequestHandler):
@@ -593,6 +631,7 @@ class EndToEndTest(unittest.TestCase):
                     state["replies"].append((body.get("chatId"), body.get("text")))
                     self._json(200, {"ok": True})
                 elif self.path == "/api/v1/worker/status":
+                    state["modes"].append(body.get("parseMode"))
                     state["statuses"].append((body.get("chatId"), body.get("text")))
                     self._json(200, {"ok": True, "messageId": 7})
                 else:
@@ -625,9 +664,11 @@ class EndToEndTest(unittest.TestCase):
         thread.join(timeout=3)
         self.assertEqual(self.state["replies"], [(9, "echo: ping")])
         # The tool call the fake pi reported became one activity line.
-        self.assertEqual(len(self.state["statuses"]), 3)
-        self.assertIn("bash", self.state["statuses"][0][1])
-        self.assertTrue(self.state["statuses"][2][1].startswith("✅ done"))
+        self.assertEqual(len(self.state["statuses"]), 2)
+        self.assertIn("<code>echo hi</code>", self.state["statuses"][0][1])
+        self.assertTrue(self.state["statuses"][1][1].startswith("✅ done"))
+        self.assertIn("<pre>hi</pre>", self.state["statuses"][1][1])
+        self.assertEqual(self.state["modes"], ["HTML", "HTML"])
 
 
 if __name__ == "__main__":

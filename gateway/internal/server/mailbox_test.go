@@ -148,10 +148,11 @@ func TestReplySendsOnlyToAllowedChats(t *testing.T) {
 	if err := s.Store.UpsertTelegramUser(store.TelegramUser{UserID: 9, ChatID: 9, ClaimedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
-	var sentChat string
+	var sentChat, sentMode string
 	s.Telegram.HTTP = &http.Client{Transport: handlerTransport{handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = r.ParseForm()
 		sentChat = r.Form.Get("chat_id")
+		sentMode = r.Form.Get("parse_mode")
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"ok":true,"result":{"message_id":1,"date":0,"chat":{"id":9,"type":"private"},"text":"x"}}`))
 	})}}
@@ -163,6 +164,25 @@ func TestReplySendsOnlyToAllowedChats(t *testing.T) {
 	}
 	if sentChat != "9" {
 		t.Fatalf("sent to chat %q", sentChat)
+	}
+	if sentMode != "" {
+		t.Fatalf("plain caller opted into %q", sentMode)
+	}
+	htmlReply := doJSON(t, s.WorkerHandler(), "POST", "/api/v1/worker/reply",
+		map[string]any{"worker": mailWorker, "chatId": 9, "text": "<b>Answer</b>", "parseMode": "HTML"})
+	if htmlReply.Code != 200 || sentMode != "HTML" {
+		t.Fatalf("HTML reply %d mode %q", htmlReply.Code, sentMode)
+	}
+	for _, path := range []string{"/api/v1/worker/reply", "/api/v1/worker/status"} {
+		for _, body := range []map[string]any{
+			{"worker": mailWorker, "chatId": 9, "text": "<pre>" + strings.Repeat("x", 4096) + "</pre>", "parseMode": "HTML"},
+			{"worker": mailWorker, "chatId": 9, "text": "text", "parseMode": "MarkdownV2"},
+		} {
+			response := doJSON(t, s.WorkerHandler(), "POST", path, body)
+			if response.Code != 400 {
+				t.Fatalf("want 400, got %d: %s", response.Code, response.Body.String())
+			}
+		}
 	}
 	// A chat that never claimed the bot is not a megaphone.
 	blocked := doJSON(t, s.WorkerHandler(), "POST", "/api/v1/worker/reply",
@@ -198,28 +218,31 @@ func TestStatusEditsTheSameMessage(t *testing.T) {
 	if err := s.Store.UpsertTelegramUser(store.TelegramUser{UserID: 9, ChatID: 9, ClaimedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
-	type call struct{ method, text, messageID string }
+	type call struct{ method, text, messageID, parseMode string }
 	var calls []call
 	s.Telegram.HTTP = &http.Client{Transport: handlerTransport{handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = r.ParseForm()
 		method := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
-		calls = append(calls, call{method, r.Form.Get("text"), r.Form.Get("message_id")})
+		calls = append(calls, call{method, r.Form.Get("text"), r.Form.Get("message_id"), r.Form.Get("parse_mode")})
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"ok":true,"result":{"message_id":55,"date":0,"chat":{"id":9,"type":"private"},"text":"x"}}`))
 	})}}
 
 	first := doJSON(t, s.WorkerHandler(), "POST", "/api/v1/worker/status",
-		map[string]any{"worker": mailWorker, "chatId": 9, "text": "🔧 bash go test"})
+		map[string]any{"worker": mailWorker, "chatId": 9, "text": "🔧 bash <code>go test</code>", "parseMode": "HTML"})
 	if first.Code != 200 || !strings.Contains(first.Body.String(), `"messageId":55`) {
 		t.Fatalf("status %d %s", first.Code, first.Body.String())
 	}
 	second := doJSON(t, s.WorkerHandler(), "POST", "/api/v1/worker/status",
-		map[string]any{"worker": mailWorker, "chatId": 9, "text": "✅ done", "messageId": 55})
+		map[string]any{"worker": mailWorker, "chatId": 9, "text": "✅ done", "messageId": 55, "parseMode": "HTML"})
 	if second.Code != 200 {
 		t.Fatalf("status %d %s", second.Code, second.Body.String())
 	}
 	if len(calls) != 2 || calls[0].method != "sendMessage" || calls[1].method != "editMessageText" {
 		t.Fatalf("calls %+v", calls)
+	}
+	if calls[0].parseMode != "HTML" || calls[1].parseMode != "HTML" {
+		t.Fatalf("HTML modes lost: %+v", calls)
 	}
 	if calls[1].messageID != "55" || calls[1].text != "✅ done" {
 		t.Fatalf("edit %+v", calls[1])

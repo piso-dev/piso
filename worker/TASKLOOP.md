@@ -71,7 +71,8 @@ new task starts in `/workspace` with whatever earlier tasks left there.
   summary, and checkpoint. For an external human action, use
   `human_action_request` with those fields. For a step the host must perform
   (ssh, docker, a privileged write), use `host_request` with those fields plus
-  `command` and `resultPath`. All three atomically wait and end execution; do
+  `script`, `explanation` and `resultPath` (see CAPABILITIES for inline/file
+  formats and host run instructions). All three atomically wait and end execution; do
   not make a second task_wait call afterward.
 - `task_release`: checkpoint and summary; work remains runnable for someone else.
 - `task_complete`: summary and supporting artifacts/evidence.

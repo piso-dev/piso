@@ -39,6 +39,10 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+# Installed alongside this script; also supports file-based test loaders.
+sys.path.insert(0, os.path.dirname(__file__))
+import telegram_format as tg
+
 STATE_DIR = os.environ.get("PISO_SUPERVISOR_DIR", "/root/.pi/agent/piso")
 STATE_FILE = os.path.join(STATE_DIR, "supervisor.json")
 STATE_PLAIN = os.path.join(STATE_DIR, "supervisor.state")
@@ -130,7 +134,7 @@ def chunk_text(text, limit=CHUNK_MAX):
     return [c.strip("\n") for c in chunks if c.strip()]
 
 
-ARG_KEYS = ("command", "path", "file_path", "pattern", "query", "url", "description", "prompt")
+ARG_KEYS = ("command", "code", "path", "file_path", "pattern", "query", "url", "description", "prompt")
 
 
 def tool_summary(args):
@@ -139,9 +143,9 @@ def tool_summary(args):
         for key in ARG_KEYS:
             value = args.get(key)
             if isinstance(value, str) and value.strip():
-                return one_line(value, 70)
+                return tg.preview(value)
         if args:
-            return one_line(json.dumps(args, sort_keys=True, default=str), 70)
+            return tg.preview(json.dumps(args, sort_keys=True, default=str))
     return ""
 
 
@@ -296,7 +300,7 @@ class Gateway:
     def reply(self, chat_id, text):
         return self._request(
             "POST", "/api/v1/worker/reply",
-            {"worker": self.worker, "chatId": chat_id, "text": text[:REPLY_MAX]},
+            {"worker": self.worker, "chatId": chat_id, "text": text, "parseMode": "HTML"},
         )
 
     def status(self, chat_id, text, message_id=0):
@@ -307,7 +311,8 @@ class Gateway:
             out = self._request("POST", "/api/v1/worker/status", {
                 "worker": self.worker,
                 "chatId": chat_id,
-                "text": text[:STATUS_MAX],
+                "text": text,
+                "parseMode": "HTML",
                 "messageId": message_id or 0,
             })
         except urllib.error.HTTPError as err:
@@ -445,14 +450,16 @@ class Session:
         """The text of the chat's activity line. Caller holds the lock."""
         lines = [line for _tid, line in self.tools[-STATUS_LINES:]]
         if self.busy and self.thinking:
-            lines = ["💭 " + one_line(self.thinking, 90)] + lines
+            lines = ["💭 Thinking…"] + lines
         if self.busy and not lines:
             lines = ["…"]
+        while len("\n".join(lines).encode()) > 3800 and len(lines) > 1:
+            lines.pop(0)
         return "\n".join(lines)
 
     def note(self, line):
         with self.lock:
-            self.tools = (self.tools + [(None, line)])[-STATUS_LINES:]
+            self.tools = (self.tools + [(None, tg.escape(tg.redact(line)))])[-STATUS_LINES:]
             self.pending = self.render()
 
     def reset_turn(self):
@@ -600,6 +607,9 @@ class Supervisor:
             new_id = self.gateway.status(sess.chat_id, text, message_id)
         except Exception as exc:
             log("status to chat %s failed: %s" % (sess.chat_id, exc))
+            with sess.lock:
+                if sess.pending is None:
+                    sess.pending = text
             return
         if new_id is None:
             self.status_ok = False
@@ -677,7 +687,9 @@ class Supervisor:
         tool_id = record.get("toolCallId") or ""
         name = record.get("toolName") or "tool"
         summary = tool_summary(record.get("args") or {})
-        line = ("🔧 %s %s" % (name, summary)).rstrip()
+        line = "🔧 " + tg.escape(name)
+        if summary:
+            line += " <code>" + tg.escape(summary) + "</code>"
         with sess.lock:
             sess.tool_count += 1
             sess.tools = (sess.tools + [(tool_id, line)])[-STATUS_LINES:]
@@ -689,15 +701,25 @@ class Supervisor:
         name = record.get("toolName") or "tool"
         failed = bool(record.get("isError"))
         took = format_duration((record.get("durationMs") or 0) / 1000.0)
-        line = "%s %s%s" % ("❌" if failed else "✅", name, " " + took if took else "")
-        if failed:
-            detail = one_line(result_text(record.get("result")), 70)
-            if detail:
-                line += ": " + detail
+        summary = "%s %s · %s%s" % ("❌" if failed else "✅", tg.escape(name), "Failed" if failed else "Completed", " · " + took if took else "")
+        detail = tg.redact(result_text(record.get("result"))).strip()
+        # The panel is a preview, not a transcript. Redact before eliding.
+        if len(detail) > 300:
+            detail = detail[:299] + "…"
         with sess.lock:
-            sess.tools = [(tid, line if tid == tool_id else old) for tid, old in sess.tools]
+            updated = []
+            for tid, old in sess.tools:
+                if tid == tool_id:
+                    command = old.split(" <code>", 1)[1] if " <code>" in old else None
+                    line = summary + ("\n<code>" + command if command else "")
+                    if detail:
+                        line += "\n<pre>" + tg.escape(detail) + "</pre>"
+                    updated.append((tid, line))
+                else:
+                    updated.append((tid, old))
+            sess.tools = updated
             sess.pending = sess.render()
-        self.flush(sess, force=True)
+        self.flush(sess)
 
     def settled(self, sess, record):
         aborted = bool(record.get("aborted"))
@@ -714,6 +736,8 @@ class Supervisor:
                 else:
                     sess.pending = "✅ done · %d tool%s · %s" % (
                         tools, "" if tools == 1 else "s", format_duration(elapsed))
+                if sess.tools:
+                    sess.pending += "\n\n" + sess.tools[-1][1]
             sess.text = []
             sess.tool_count = 0
         if had_status:
@@ -767,7 +791,7 @@ class Supervisor:
     # ---- chat commands ----
 
     def tell(self, sess, text):
-        for chunk in chunk_text(text):
+        for chunk in tg.chunks(tg.markdown(text), limit=min(CHUNK_MAX, 3800)):
             try:
                 self.gateway.reply(sess.chat_id, chunk)
             except Exception as exc:

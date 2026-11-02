@@ -38,21 +38,27 @@ func (h *Handler) registerBoard() {
 	})
 	h.Register(Tool{
 		Name:        "host_request",
-		Description: "Ask a person to run a command on the host; the output lands at resultPath. Files a tracked, blocking request AND a board line. With taskId, requires attemptId, requestId, summary, checkpoint; atomically waits and ends execution. Exit after success.",
+		Description: "Ask a person to run a script on the host. Supply explanation (why, effects, prerequisites, working directory and run instructions) and script (inline contents or existing filename); resultPath names the output. Legacy command is still accepted. Files a tracked, blocking request AND a board line. With taskId, requires attemptId, requestId, summary, checkpoint; atomically waits and ends execution. Exit after success.",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"command":    map[string]any{"type": "string"},
-				"resultPath": map[string]any{"type": "string"},
-				"title":      map[string]any{"type": "string"},
-				"category":   map[string]any{"type": "string"},
-				"taskId":     map[string]any{"type": "string"},
-				"attemptId":  map[string]any{"type": "string"},
-				"requestId":  map[string]any{"type": "string"},
-				"summary":    map[string]any{"type": "string"},
-				"checkpoint": map[string]any{"type": "string"},
+				"command":     map[string]any{"type": "string", "description": "Legacy command; prefer script plus explanation."},
+				"explanation": map[string]any{"type": "string"},
+				"script":      hostScriptSchema(),
+				"resultPath":  map[string]any{"type": "string"},
+				"title":       map[string]any{"type": "string"},
+				"category":    map[string]any{"type": "string"},
+				"taskId":      map[string]any{"type": "string"},
+				"attemptId":   map[string]any{"type": "string"},
+				"requestId":   map[string]any{"type": "string"},
+				"summary":     map[string]any{"type": "string"},
+				"checkpoint":  map[string]any{"type": "string"},
 			},
-			"required": []string{"command", "resultPath"},
+			"required": []string{"resultPath"},
+			"oneOf": []any{
+				map[string]any{"required": []string{"script", "explanation"}},
+				map[string]any{"required": []string{"command"}},
+			},
 		},
 		Write: true,
 		Call:  h.toolHostRequest,
@@ -131,15 +137,17 @@ func (h *Handler) toolHostRequest(caller store.WorkerRec, args json.RawMessage) 
 		return nil, err
 	}
 	var in struct {
-		Command    string `json:"command"`
-		ResultPath string `json:"resultPath"`
-		Title      string `json:"title"`
-		Category   string `json:"category"`
-		TaskID     string `json:"taskId"`
-		AttemptID  string `json:"attemptId"`
-		RequestID  string `json:"requestId"`
-		Summary    string `json:"summary"`
-		Checkpoint string `json:"checkpoint"`
+		Command     string      `json:"command"`
+		Explanation string      `json:"explanation"`
+		Script      *HostScript `json:"script"`
+		ResultPath  string      `json:"resultPath"`
+		Title       string      `json:"title"`
+		Category    string      `json:"category"`
+		TaskID      string      `json:"taskId"`
+		AttemptID   string      `json:"attemptId"`
+		RequestID   string      `json:"requestId"`
+		Summary     string      `json:"summary"`
+		Checkpoint  string      `json:"checkpoint"`
 	}
 	if err := json.Unmarshal(args, &in); err != nil {
 		return nil, &rpcError{Code: codeInvalidParams, Message: "command and resultPath required"}
@@ -149,8 +157,19 @@ func (h *Handler) toolHostRequest(caller store.WorkerRec, args json.RawMessage) 
 	// board line gets a sanitized copy like every other activity row.
 	command := strings.TrimSpace(in.Command)
 	resultPath := strings.TrimSpace(in.ResultPath)
-	if command == "" || resultPath == "" {
-		return nil, &rpcError{Code: codeInvalidParams, Message: "command and resultPath required"}
+	if in.Script != nil {
+		if command != "" || !in.Script.valid() || !scriptTextValid(in.Explanation, 20000) {
+			return nil, &rpcError{Code: codeInvalidParams, Message: "valid script and explanation required; do not combine script with command"}
+		}
+		command = in.Script.Filename
+		if in.Script.Kind == "file" {
+			command = in.Script.Path
+		}
+	} else if !scriptTextValid(command, 20000) {
+		return nil, &rpcError{Code: codeInvalidParams, Message: "command required (maximum 20000 UTF-8 bytes)"}
+	}
+	if resultPath == "" {
+		return nil, &rpcError{Code: codeInvalidParams, Message: "resultPath required"}
 	}
 	category := strings.TrimSpace(in.Category)
 	if category == "" {
@@ -160,8 +179,12 @@ func (h *Handler) toolHostRequest(caller store.WorkerRec, args json.RawMessage) 
 
 	body := map[string]any{
 		"category":     category,
-		"instructions": store.SanitizeCommand(command, 20000),
+		"instructions": command,
 		"verification": store.SanitizeLabel(resultPath, 2000),
+	}
+	if in.Script != nil {
+		body["script"] = in.Script
+		body["explanation"] = in.Explanation
 	}
 	if t := strings.TrimSpace(in.Title); t != "" {
 		body["title"] = store.SanitizeLabel(t, 300)

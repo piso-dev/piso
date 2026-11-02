@@ -154,9 +154,10 @@ func (s *Server) handleWorkerAckMessages(w http.ResponseWriter, r *http.Request)
 // buggy worker cannot use the bot as a megaphone.
 func (s *Server) handleWorkerReply(w http.ResponseWriter, r *http.Request) {
 	var in struct {
-		Worker string `json:"worker"`
-		ChatID int64  `json:"chatId"`
-		Text   string `json:"text"`
+		Worker    string `json:"worker"`
+		ChatID    int64  `json:"chatId"`
+		Text      string `json:"text"`
+		ParseMode string `json:"parseMode"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		writeJSON(w, 400, map[string]string{"error": "bad json"})
@@ -187,10 +188,18 @@ func (s *Server) handleWorkerReply(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 409, map[string]string{"error": "no telegram bot is connected"})
 		return
 	}
+	if in.ParseMode != "" && in.ParseMode != "HTML" {
+		writeJSON(w, 400, map[string]string{"error": "parseMode must be HTML or empty"})
+		return
+	}
 	if len(in.Text) > telegramMessageMax {
+		if in.ParseMode == "HTML" {
+			writeJSON(w, 400, map[string]string{"error": "formatted message too long; split before sending"})
+			return
+		}
 		in.Text = in.Text[:telegramMessageMax]
 	}
-	if err := s.Telegram.SendText(r.Context(), in.ChatID, in.Text); err != nil {
+	if err := s.Telegram.SendText(r.Context(), in.ChatID, in.Text, in.ParseMode); err != nil {
 		writeJSON(w, 502, map[string]string{"error": "telegram is unreachable right now"})
 		return
 	}
@@ -208,6 +217,7 @@ func (s *Server) handleWorkerStatus(w http.ResponseWriter, r *http.Request) {
 		ChatID    int64  `json:"chatId"`
 		Text      string `json:"text"`
 		MessageID int64  `json:"messageId"`
+		ParseMode string `json:"parseMode"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		writeJSON(w, 400, map[string]string{"error": "bad json"})
@@ -238,10 +248,18 @@ func (s *Server) handleWorkerStatus(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 409, map[string]string{"error": "no telegram bot is connected"})
 		return
 	}
+	if in.ParseMode != "" && in.ParseMode != "HTML" {
+		writeJSON(w, 400, map[string]string{"error": "parseMode must be HTML or empty"})
+		return
+	}
 	if len(in.Text) > telegramMessageMax {
+		if in.ParseMode == "HTML" {
+			writeJSON(w, 400, map[string]string{"error": "formatted message too long; split before sending"})
+			return
+		}
 		in.Text = in.Text[:telegramMessageMax]
 	}
-	id, err := s.Telegram.SendStatus(r.Context(), in.ChatID, in.Text, in.MessageID)
+	id, err := s.Telegram.SendStatus(r.Context(), in.ChatID, in.Text, in.MessageID, in.ParseMode)
 	if err != nil {
 		writeJSON(w, 502, map[string]string{"error": "telegram is unreachable right now"})
 		return

@@ -30,16 +30,16 @@ type LeaseGrant struct {
 // grants the first gateway that asks and the current holder, and refuses
 // everyone else. ttl is the window the holder is asking for; the coordinator
 // clamps it and returns the real expiry.
-func TelegramLease(dataDir, resourceID string, offset int64, ttl time.Duration) (LeaseGrant, error) {
+func TelegramLease(dataDir, resourceID string, offset int64, ttl time.Duration, health ...any) (LeaseGrant, error) {
 	id, err := tc.Load(tc.Path(dataDir))
 	if err != nil {
 		return LeaseGrant{}, err
 	}
-	body, err := json.Marshal(map[string]any{
-		"resource_id": resourceID,
-		"offset":      offset,
-		"ttl":         int(ttl.Seconds()),
-	})
+	payload := map[string]any{"resource_id": resourceID, "offset": offset, "ttl": int(ttl.Seconds())}
+	if len(health) > 0 {
+		payload["health"] = health[0]
+	}
+	body, err := json.Marshal(payload)
 	if err != nil {
 		return LeaseGrant{}, err
 	}

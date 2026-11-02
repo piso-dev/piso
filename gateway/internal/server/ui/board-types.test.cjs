@@ -153,6 +153,57 @@ test('a host request shows the command to run, not a paragraph about it', async 
   assert.match(prose.querySelector('.card-note').textContent, /Add the TXT record\./);
 });
 
+test('scripts copy exact contents or filename without completing the ask', async t => {
+  const contents = '#!/usr/bin/env bash\n' + 'printf "<safe>\\n"\n'.repeat(250) + '# end\n';
+  const h = await harness(t, {asks: [
+    {id: 'inline', kind: 'human', category: 'host', title: 'Inline script', explanation: 'Needs Docker. Save as action.sh and run bash action.sh.', script: {kind: 'inline', filename: 'action.sh', language: 'bash', contents}},
+    {id: 'file', kind: 'human', category: 'host', title: 'Script file', explanation: 'Run bash .piso/host-actions/action.sh from the project.', script: {kind: 'file', path: '.piso/host-actions/action.sh', language: 'bash'}},
+  ]});
+  let copied;
+  Object.defineProperty(h.w.navigator, 'clipboard', {value: {writeText: async value => {copied = value;}}});
+  const inline = cardByTitle(h.doc, 'Inline script');
+  assert.equal(inline.querySelector('.card-command code').textContent, contents);
+  // The cap lives in the parsed stylesheet, not in a text measurement: the
+  // command rule itself must cap at 300px, scroll internally, and carry no
+  // line-clamp that would truncate it.
+  const commandRule = [...h.doc.styleSheets].flatMap((sheet) => [...sheet.cssRules])
+    .find((rule) => rule.selectorText === '.card-command');
+  assert.ok(commandRule, '.card-command rule must exist in the stylesheet');
+  assert.equal(commandRule.style.getPropertyValue('max-height'), '300px');
+  assert.equal(commandRule.style.getPropertyValue('overflow'), 'auto');
+  assert.equal(commandRule.style.getPropertyValue('-webkit-line-clamp'), '');
+  assert.equal(commandRule.style.getPropertyValue('line-clamp'), '');
+  assert.equal(h.w.getComputedStyle(inline.querySelector('.host-panel')).maxHeight, '300px');
+  assert.equal(h.w.getComputedStyle(inline.querySelector('.card-command')).overflow, 'auto');
+  assert.equal(h.w.getComputedStyle(inline.querySelector('.host-request-body')).maxHeight, '420px');
+  inline.querySelector('[data-action="host-copy"]').click();
+  await tick();
+  assert.equal(copied, contents);
+  assert.equal(inline.querySelector('[role="status"]').textContent, 'Copied.');
+  assert.ok(inline.querySelector('[data-action="ask-completed"]'));
+  const file = cardByTitle(h.doc, 'Script file');
+  file.querySelector('[data-action="host-copy"]').click();
+  await tick();
+  assert.equal(copied, '.piso/host-actions/action.sh');
+  assert.match(file.querySelector('.host-explanation').textContent, /Run bash/);
+});
+
+test('HTTP clipboard fallback restores focus and failures stay inline', async t => {
+  const h = await harness(t, {asks: [{id: 'fallback', kind: 'human', category: 'host', title: 'Fallback', instructions: 'echo hello\necho world'}]});
+  const card = cardByTitle(h.doc, 'Fallback');
+  const button = card.querySelector('[data-action="host-copy"]');
+  let copied;
+  h.doc.execCommand = command => {assert.equal(command, 'copy'); copied = h.doc.querySelector('textarea').value; return true;};
+  button.focus(); button.click(); await tick();
+  assert.equal(copied, 'echo hello\necho world');
+  assert.equal(h.doc.activeElement, button);
+  assert.equal(h.doc.querySelector('textarea'), null);
+  h.doc.execCommand = () => false;
+  button.click(); await tick();
+  assert.match(card.querySelector('[role="status"]').textContent, /Could not copy/);
+  assert.equal(h.doc.querySelector('textarea'), null);
+});
+
 test('a host command is escaped and keeps its newlines', async t => {
   const h = await harness(t, {
     tasks: [],

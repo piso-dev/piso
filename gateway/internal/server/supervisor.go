@@ -73,7 +73,11 @@ func (s *Server) handleWorkerSupervisor(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, 409, map[string]string{"error": "no published Telegram bot to supervise"})
 		return
 	}
-	grant, err := technocore.SupervisorLease(s.dataDir(), bot.TechnocoreID, rec.PrincipalID, supervisorTTL)
+	health := map[string]any{}
+	if link, live := s.Store.Supervisor(time.Now()); live && link.PrincipalID == rec.PrincipalID && !link.LastMailboxPoll.IsZero() {
+		health["lastPoll"] = link.LastMailboxPoll
+	}
+	grant, err := technocore.SupervisorLease(s.dataDir(), bot.TechnocoreID, rec.PrincipalID, supervisorTTL, health)
 	if err != nil {
 		writeJSON(w, 502, map[string]string{"error": "coordinator unreachable"})
 		return

@@ -137,6 +137,62 @@
       .muted {
         color: var(--muted);
       }
+      .telegram-connections {
+        display: grid;
+        grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
+        gap: 20px;
+        margin-bottom: 24px;
+        align-items: start;
+      }
+      .telegram-panel {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 24px;
+        min-width: 0;
+      }
+      .telegram-panel > header {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 12px;
+        flex-wrap: wrap;
+        margin-bottom: 24px;
+      }
+      .telegram-panel .telegram-identity {
+        font-size: 26px;
+        line-height: 1.25;
+        font-weight: 600;
+        overflow-wrap: anywhere;
+        margin-bottom: 12px;
+      }
+      .telegram-confirmation { color: var(--muted); margin: 8px 0 14px; }
+      .telegram-state { display: inline-flex; align-items: center; gap: 8px; font-weight: 600; color: var(--amber); }
+      .telegram-state > span { width: 8px; height: 8px; border-radius: 50%; background: currentColor; flex-shrink: 0; }
+      .telegram-state.connected, .telegram-state.linked { color: var(--green); }
+      .telegram-state.disconnected { color: var(--red); }
+      .telegram-state.unknown { color: var(--muted); }
+      .telegram-linked { border-top: 1px solid var(--line); padding-top: 20px; margin-top: 22px; }
+      .telegram-linked h3 { margin-bottom: 6px; }
+      .telegram-people { list-style: none; padding: 0; margin: 16px 0 0; }
+      .telegram-people > li { display: flex; justify-content: space-between; gap: 16px; padding: 14px 0; border-top: 1px solid var(--line); }
+      .telegram-people strong { font-size: 17px; overflow-wrap: anywhere; }
+      .telegram-person-actions { display: flex; flex-direction: column; gap: 10px; align-items: flex-end; }
+      .telegram-empty { margin-top: 16px; }
+      .telegram-controls { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 24px; }
+      .telegram-meta { display: grid; grid-template-columns: auto 1fr; gap: 12px 20px; padding-top: 22px; margin: 22px 0 0; border-top: 1px solid var(--line); }
+      .telegram-meta dt { color: var(--muted); }
+      .telegram-meta dd { margin: 0; overflow-wrap: anywhere; }
+      .telegram-claim { background: var(--inset); border-left: 3px solid var(--blue); margin-top: 20px; padding: 16px; }
+      .telegram-claim p { margin-top: 8px; }
+      @media (max-width: 1050px) {
+        .telegram-connections { grid-template-columns: 1fr; }
+      }
+      @media (max-width: 540px) {
+        .telegram-panel { padding: 18px; }
+        .telegram-meta { grid-template-columns: 1fr; gap: 4px; }
+        .telegram-meta dd { margin-bottom: 12px; }
+      }
       .skip {
         position: fixed;
         left: 12px;
@@ -1575,13 +1631,40 @@
          selectable block instead of the clamped prose a question gets. It
          scrolls rather than clamping: truncating the middle of a command is
          how someone runs half of it. */
+      .host-panel {
+        min-width: 0;
+        max-height: 300px;
+        display: flex;
+        flex-direction: column;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: var(--inset);
+        overflow: hidden;
+      }
+      .host-panel-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        padding: 6px 10px;
+        border-bottom: 1px solid var(--line);
+        flex: 0 0 auto;
+      }
+      .host-panel-header span { overflow-wrap: anywhere; font-size: 12px; }
+      .host-panel-header button { flex-shrink: 0; padding: 5px 9px; }
+      .host-panel .card-command { min-height: 0; border: 0; border-radius: 0; }
+      .host-explanation { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; }
+      .host-request-body { max-height: 420px; overflow: auto; display: grid; gap: 10px; }
+      .host-copy-status { margin: 0; font-size: 12px; color: var(--muted); }
+      .host-copy-status:empty { display: none; }
       .card-command {
         margin: 0;
         padding: 9px 11px;
         border-radius: 6px;
         border: 1px solid var(--line);
         background: var(--inset);
-        overflow-x: auto;
+        max-height: 300px;
+        overflow: auto;
         white-space: pre;
       }
       .card-command code {
@@ -2368,6 +2451,7 @@
         connections: "connections",
         aiBoost: "ai-boost",
         telegram: "telegram",
+        telegramAssignments: "telegram/assignments",
         secrets: "secrets",
         provider: "pi-provider",
         modelOverrides: "model-overrides",
@@ -3133,7 +3217,7 @@
         return job;
       }
       async function refresh(keys = Object.keys(endpoints)) {
-        const wanted = [...new Set(keys)];
+        const wanted = [...new Set([...keys, ...(keys.includes("telegram") ? ["telegramAssignments"] : [])])];
         const wasReady = coordinatorState().ready;
         // Learn the pairing state first, so an unpaired gateway never sends a
         // request for a coordinator-owned view that can only be refused.
@@ -3658,13 +3742,21 @@
       // block a person can actually select.
       function askBody(a) {
         const text = a.instructions || a.question || a.detail || "";
-        if (!text) return "";
-        const host = a.kind === "human" && a.category === "host";
-        if (!host) return `<p class="card-note">${esc(text)}</p>`;
+        const host = a.kind === "human" && (a.category === "host" || a.script?.kind);
+        if (!host) return text ? `<p class="card-note">${esc(text)}</p>` : "";
+        const s = a.script;
+        const file = s?.kind === "file";
+        const value = s ? (file ? s.path : s.contents) : text;
+        if (!value) return "";
+        const label = s ? (file ? "Script file" : `${s.filename} (${s.language})`) : "Host command";
+        const explanation = a.explanation || "Run this on the host, not inside the worker. After it succeeds, choose Done.";
         const result = a.verification
-          ? `<p class="card-result"><span>Result</span><code>${esc(a.verification)}</code></p>`
+          ? `<p class="card-result"><span>Expected result</span><code>${esc(a.verification)}</code></p>`
           : "";
-        return `<pre class="card-command"><code>${esc(text)}</code></pre>${result}`;
+        return `<div class="host-request-body"><p class="host-explanation">${esc(explanation)}</p>
+          <div class="host-panel"><div class="host-panel-header"><span>${esc(label)}</span>${button("Copy", "host-copy", a.id, "", file ? "Copy script filename" : "Copy complete script contents")}</div>
+          <pre class="card-command" tabindex="0" aria-label="${esc(label)}"><code>${esc(value)}</code></pre></div>
+          <p class="host-copy-status" role="status" aria-live="polite"></p>${result}</div>`;
       }
       function taskCard(t, inbox = false) {
         const ask = askForTask(t.id);
@@ -3817,6 +3909,7 @@
           ${t.status === "proposed" ? `<p>${esc(t.proposedBy || "A worker")} proposed this work. Nothing can claim it until you approve it, and it can be revised or withdrawn until you do.</p>` : ""}
           ${t.assignee ? `<p class="card-note">Held by ${esc(t.assignee)}${t.leaseExpiresAt ? ` · lease ends ${esc(time(t.leaseExpiresAt))}` : ""}.</p>` : ""}
           ${note ? `<section><h2>Your latest note</h2><div class="task-prose">${taskMarkup(note.body || "")}</div><p class="card-note">${esc(note.author || "a human")} · ${esc(time(note.createdAt))} · ${esc(note.kind)}</p></section>` : ""}
+          ${askForTask(t.id)?.kind === "human" ? `<section><h2>Host action</h2>${askBody(askForTask(t.id))}</section>` : ""}
           ${prose("Instructions", t.body)}${prose("Acceptance criteria", t.acceptanceCriteria)}
           ${prose("Latest checkpoint", t.checkpoint)}${prose("Result", t.result?.summary)}${prose("Evidence", t.result?.evidence)}
           ${artifacts}<section class="task-updates"><h2>Updates</h2>${updates || "<p>No updates yet.</p>"}</section></article>`;
@@ -5128,7 +5221,7 @@
         aiBoost: ["AI Boost", "Review drafts for your connected library. Workers can submit drafts; only you can approve or reject."],
         telegram: [
           "Telegram",
-          "Connect a Telegram bot as this gateway's front door. The gateway holds the bot token and talks to Telegram directly; workers never see it.",
+          "Your Telegram accounts and supervisor connection. The same status is shown on every gateway.",
         ],
         provider: [
           "Model providers",
@@ -5277,164 +5370,68 @@
         replaceContent(intro + setup + gate + orgNotice + signedIn + (visible.map((g) => githubMapping(g, canManage)).join("") || emptyState));
         bindGithubRows();
       }
-      // renderTelegram is the Access > Telegram tab. The gateway holds the bot
-      // token and runs the poller; this console never sees the token, and
-      // workers never see it at all.
+      // Account-wide connection reports are independent of this gateway's poller.
       function renderTelegram(intro) {
-        const t = data.telegram || {};
-        const users = Array.isArray(t.users) ? t.users : [];
-        count(users.length);
-        if (!t.connected)
-          return replaceContent(
-            intro +
-              `<div class="intro-actions">${button("Connect to Telegram", "telegram-connect", "", "primary")}</div>` +
-              empty(
-                "No Telegram bot connected",
-                "Connect a bot to give this gateway a Telegram front door. The gateway holds the token and talks to Telegram directly; workers never see it.",
-              ),
-          );
-        const botURL = t.botUsername
-          ? safeURL("https://t.me/" + encodeURIComponent(t.botUsername))
-          : "";
-        const bot = t.botUsername ? "@" + t.botUsername : "this bot";
-        const openBot = botURL
-          ? `<div class="actions"><a href="${esc(botURL)}" target="_blank" rel="noopener noreferrer">Open in Telegram</a></div>`
-          : "";
-
-        const controls = `<div class="intro-actions">${button(
-          users.length ? "Add person" : "Get claim code",
-          "telegram-claim",
-          "",
-          "primary",
-        )}${button("Reconnect", "telegram-connect")}${button("Disconnect", "telegram-disconnect", "", "danger")}</div>`;
-
-        // The code is issued on demand and lives only in the running poller, so
-        // this panel exists only while one is outstanding.
-        const claim = t.claimCode
-          ? record(
-              "telegram-claim",
-              "Waiting for a claim",
-              "Send this from the Telegram account you want to connect.",
-              badge("Pending"),
-              `<p class="field full">In a private chat with ${esc(bot)}, send <code>/claim ${esc(
-                telegramCode(t.claimCode),
-              )}</code></p>` +
-                facts([
-                  ["Code", telegramCode(t.claimCode)],
-                  [
-                    "Expires",
-                    t.claimExpiresAt
-                      ? new Date(t.claimExpiresAt).toLocaleTimeString()
-                      : "",
-                  ],
-                ]) +
-                openBot,
-            )
-          : "";
-
-        const supervisor = t.supervisor || {};
-        const now = Date.now();
-        const leaseLive = new Date(supervisor.expiresAt).getTime() > now;
-        const mailboxFresh = now - new Date(supervisor.lastMailboxPoll).getTime() < 60000;
-        const telegramFresh = t.running && !t.waiting &&
-          now - new Date(t.lastPoll).getTime() < 60000;
-        let readinessLabel, readinessDetail;
-        if (!telegramFresh) {
-          readinessLabel = "Telegram unavailable";
-          readinessDetail = t.waiting
-            ? "Another gateway is serving Telegram; readiness on this gateway is not confirmed."
-            : "Waiting for successful Telegram polling.";
-        } else if (!users.length) {
-          readinessLabel = "Awaiting account claim";
-          readinessDetail = "Claim an account below before sending messages.";
-        } else if (!leaseLive) {
-          readinessLabel = "Supervisor unavailable";
-          readinessDetail = "No live supervisor is available to receive messages.";
-        } else if (supervisor.ready && mailboxFresh) {
-          readinessLabel = "Ready to respond";
-          readinessDetail = "The supervisor is receiving messages. Chat sessions start on demand.";
-        } else {
-          readinessLabel = supervisor.lastMailboxPoll ? "Supervisor unavailable" : "Starting supervisor";
-          readinessDetail = supervisor.lastMailboxPoll
-            ? "The supervisor's mailbox polling has not been confirmed recently."
-            : "A supervisor holds the lease; waiting for its first successful mailbox poll.";
-        }
-        const readiness = record(
-          "telegram-supervisor",
-          readinessLabel,
-          readinessDetail,
-          badge(readinessLabel === "Ready to respond" ? "Ready" : "Not ready"),
-          facts([
-            ["Supervisor", supervisor.slug || supervisor.worker || "Not assigned"],
-            ["Readiness confirmed", supervisor.lastMailboxPoll ? new Date(supervisor.lastMailboxPoll).toLocaleTimeString() : "Not yet"],
-            ["Lease expires", supervisor.expiresAt ? new Date(supervisor.expiresAt).toLocaleTimeString() : ""],
-            ["Reason", supervisor.reason || ""],
-          ]),
-        );
-
-        const people = users.length
-          ? users
-              .map((u) =>
-                record(
-                  "telegram-user-" + u.userId,
-                  u.firstName || u.username || String(u.userId),
-                  u.username ? "@" + u.username : "",
-                  badge("Allowed"),
-                  facts([
-                    ["Telegram ID", u.userId],
-                    ["Username", u.username ? "@" + u.username : ""],
-                    [
-                      "Connected",
-                      u.claimedAt ? new Date(u.claimedAt).toLocaleString() : "",
-                    ],
-                  ]) +
-                    `<div class="actions">${button("Revoke", "telegram-revoke", u.userId, "danger")}</div>`,
-                ),
-              )
-              .join("")
-          : empty(
-              "Nobody can talk to this bot yet",
-              "Get a claim code and send it from Telegram. Until then the bot answers nobody: an empty list means deny, not allow.",
-            );
-
-        return replaceContent(
-          intro +
-            controls +
-            (t.warning
-              ? `<div class="notice error" role="alert">${esc(t.warning)}</div>`
-              : "") +
-            record(
-              "telegram-bot",
-              bot,
-              "The gateway holds this bot's token and talks to Telegram directly.",
-              badge(t.running ? "Connected" : "Not polling"),
-              facts([
-                ["Bot ID", t.botId],
-                ["Bot", t.botUsername ? "@" + t.botUsername : ""],
-                [
-                  "Poller",
-                  t.leaseHeld
-                    ? "Held by this gateway"
-                    : t.waiting
-                      ? "Held by another gateway"
-                      : "",
-                ],
-                [
-                  "Last poll",
-                  t.lastPoll ? new Date(t.lastPoll).toLocaleTimeString() : "",
-                ],
-                [
-                  "Added",
-                  t.createdAt ? new Date(t.createdAt).toLocaleString() : "",
-                ],
-              ]) + openBot,
-            ) +
-            readiness +
-            claim +
-            `<h3>Allowed accounts</h3>` +
-            `<p class="muted">Shared across this account's gateways: a claim or a revoke applies to whichever gateway is polling.</p>` +
-            people,
-        );
+        const local = data.telegram || {};
+        const failed = failures.has("telegramAssignments");
+        const shared = data.telegramAssignments?.bots || [];
+        const bots = shared.length ? shared : local.connected ? [{
+          resourceId: local.resourceId, name: local.name, botUsername: local.botUsername,
+          botId: local.botId, users: local.users || [], state: "unknown",
+        }] : [];
+        count(bots.reduce((n, b) => n + (b.users || []).length, 0));
+        const status = (state) => {
+          const labels = { connected: "Connected", starting: "Starting", disconnected: "Disconnected", unknown: "Status unknown" };
+          return '<span class="telegram-state ' + esc(state) + '"><span aria-hidden="true"></span>' + (labels[state] || labels.unknown) + '</span>';
+        };
+        const connectionState = (report) => {
+          if (failed || !report) return failed ? "unknown" : "disconnected";
+          if (!report.expiresAt) return report.state || "unknown";
+          if (new Date(report.expiresAt).getTime() <= Date.now()) return "disconnected";
+          if (report.state === "connected" && Date.now() - new Date(report.lastPoll).getTime() >= 120000) return "disconnected";
+          return report.state || "unknown";
+        };
+        const panels = bots.map((b) => {
+          const users = b.users || [];
+          const supervisor = b.supervisor;
+          const state = connectionState(b);
+          const supState = connectionState(supervisor);
+          const manageable = !!local.connected && local.resourceId === b.resourceId;
+          const botName = b.botUsername ? "@" + b.botUsername : b.name || "Telegram bot";
+          const botLink = b.botUsername ? '<a href="https://t.me/' + enc(b.botUsername) + '" target="_blank" rel="noopener noreferrer">Open bot</a>' : "";
+          const people = users.length ? '<ul class="telegram-people">' + users.map(u =>
+            '<li><div><strong>' + esc(u.firstName || u.username || u.userId) + '</strong>' +
+            (u.username ? '<p class="muted">@' + esc(u.username) + '</p>' : '') +
+            '<p class="muted">Linked ' + esc(u.claimedAt ? new Date(u.claimedAt).toLocaleDateString() : 'date unknown') + '</p></div>' +
+            '<div class="telegram-person-actions"><span class="telegram-state linked">Linked</span>' +
+            (manageable ? button("Unlink", "telegram-revoke", u.userId, "small quiet") : '') + '</div></li>'
+          ).join('') + '</ul>' : '<p class="telegram-empty">No people linked. Get a claim code to link your Telegram account.</p>';
+          const claim = b.claim || (manageable && local.claimCode ? {code: local.claimCode, expires_at: local.claimExpiresAt} : null);
+          const claimPanel = claim ? '<div class="telegram-claim"><h3>Link your Telegram account</h3><p>Send <code>/claim ' + esc(telegramCode(claim.code)) + '</code> in a private chat with the bot.</p><p class="muted">Expires ' + esc(time(claim.expires_at)) + '</p>' + botLink + '</div>' : '';
+          const detail = {
+            connected: "Telegram is receiving messages.",
+            starting: "The connection is starting; waiting for confirmation.",
+            disconnected: "No recent Telegram connection confirmed.",
+            unknown: "The serving connection has not reported its status yet.",
+          };
+          const supDetail = {
+            connected: "The supervisor is checking for messages.",
+            starting: "Assigned; waiting for its first message check.",
+            disconnected: supervisor ? "The supervisor has stopped checking for messages." : "No supervisor is connected.",
+            unknown: "Supervisor connection has not been confirmed.",
+          };
+          return '<div class="telegram-connections">' +
+            '<section class="telegram-panel" aria-label="Telegram connection"><header><h3>Telegram connection</h3>' + status(state) + '</header>' +
+            '<p class="telegram-identity">' + esc(botName) + '</p><p>' + detail[state] + '</p>' +
+            '<p class="telegram-confirmation">Last confirmed ' + esc(b.lastPoll ? age(b.lastPoll) : 'not yet') + '</p>' + botLink +
+            '<div class="telegram-linked"><h3>Linked people</h3><p class="muted">Linked accounts can message the bot. Telegram does not report whether a person is online.</p>' + people + '</div>' + claimPanel +
+            (manageable ? '<div class="telegram-controls">' + button(users.length ? "Link another person" : "Get claim code", "telegram-claim", "", "primary") + button("Replace bot token", "telegram-connect", "", "quiet") + button("Disconnect bot", "telegram-disconnect", "", "quiet danger") + '</div>' : '') + '</section>' +
+            '<section class="telegram-panel telegram-supervisor" aria-label="Supervisor connection"><header><h3>Supervisor connection</h3>' + status(supState) + '</header>' +
+            '<p class="telegram-identity">' + esc(supervisor?.name || 'No supervisor') + '</p><p>' + supDetail[supState] + '</p>' +
+            (supervisor ? '<dl class="telegram-meta"><dt>Connected through</dt><dd>' + esc(supervisor.gatewayName || 'Unknown gateway') + '</dd><dt>Last confirmed</dt><dd>' + esc(supervisor.lastPoll ? age(supervisor.lastPoll) : 'Not yet') + '</dd></dl>' : '') + '</section></div>';
+        }).join('');
+        const notice = failed ? '<div class="notice error" role="alert">Shared connection status is unavailable. ' + (shared.length ? 'Showing the last known names; connection states are unknown.' : 'Connection states cannot be confirmed.') + '</div>' : '';
+        return replaceContent(intro + notice + (panels || (failed ? '' : '<section class="telegram-panel"><h3>No Telegram bot connected</h3><p>Connect a bot to link your Telegram account with the supervisor.</p><div class="telegram-controls">' + button("Connect bot", "telegram-connect", "", "primary") + '</div></section>')));
       }
       // telegramCode groups a claim code for reading aloud. The code itself has
       // no separator; the gateway accepts it with or without.
@@ -5459,7 +5456,7 @@
       function telegramRevoke(id) {
         confirmAction(
           "Revoke access?",
-          "That Telegram account stops reaching this gateway immediately. The bot itself is untouched.",
+          "This account will no longer be allowed to message the bot. This applies across all gateways.",
           "Revoke",
           async () => {
             await api("telegram/users/" + encodeURIComponent(id), "DELETE");
@@ -5473,7 +5470,7 @@
         const connected = !!data.telegram?.connected;
         formDialog(
           connected ? "Reconnect Telegram" : "Connect to Telegram",
-          "The gateway stores the bot token and calls Telegram with it. It is never exported to a worker.",
+          "Enter the bot token from BotFather. This replaces the connected bot for your account.",
           `<p class="field full">Create a bot with <a href="https://t.me/BotFather" target="_blank" rel="noopener noreferrer">@BotFather</a>: send <code>/newbot</code>, follow the prompts, then copy the token it returns.</p>` +
             field("token", "Bot token", "", {
               type: "password",
@@ -7545,7 +7542,36 @@
           throw e;
         }
       }
+      async function copyHostPanel(source) {
+        const panel = source.closest(".host-request-body");
+        const value = panel.querySelector(".card-command code").textContent;
+        const status = panel.querySelector(".host-copy-status");
+        try {
+          if (window.navigator.clipboard?.writeText) {
+            await window.navigator.clipboard.writeText(value);
+          } else {
+            // HTTP piso.local lacks the secure-context Clipboard API.
+            const active = document.activeElement;
+            const input = document.createElement("textarea");
+            input.value = value;
+            input.setAttribute("readonly", "");
+            input.style.cssText = "position:fixed;opacity:0;pointer-events:none";
+            document.body.append(input);
+            try {
+              input.select();
+              if (!document.execCommand("copy")) throw new Error("Copy unavailable");
+            } finally {
+              input.remove();
+              active?.focus({preventScroll: true});
+            }
+          }
+          status.textContent = "Copied.";
+        } catch {
+          status.textContent = "Could not copy. Select the text above and copy it manually.";
+        }
+      }
       async function action(name, id, source) {
+        if (name === "host-copy") return copyHostPanel(source);
         if (name === "task-new" || name === "directive-new" || name === "directive-edit") {
           // The controls are disabled, so this is only reachable from a stale
           // render. Say why instead of opening a form that cannot save.
