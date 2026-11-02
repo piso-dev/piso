@@ -1631,13 +1631,40 @@
          selectable block instead of the clamped prose a question gets. It
          scrolls rather than clamping: truncating the middle of a command is
          how someone runs half of it. */
+      .host-panel {
+        min-width: 0;
+        max-height: 300px;
+        display: flex;
+        flex-direction: column;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: var(--inset);
+        overflow: hidden;
+      }
+      .host-panel-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        padding: 6px 10px;
+        border-bottom: 1px solid var(--line);
+        flex: 0 0 auto;
+      }
+      .host-panel-header span { overflow-wrap: anywhere; font-size: 12px; }
+      .host-panel-header button { flex-shrink: 0; padding: 5px 9px; }
+      .host-panel .card-command { min-height: 0; border: 0; border-radius: 0; }
+      .host-explanation { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; }
+      .host-request-body { max-height: 420px; overflow: auto; display: grid; gap: 10px; }
+      .host-copy-status { margin: 0; font-size: 12px; color: var(--muted); }
+      .host-copy-status:empty { display: none; }
       .card-command {
         margin: 0;
         padding: 9px 11px;
         border-radius: 6px;
         border: 1px solid var(--line);
         background: var(--inset);
-        overflow-x: auto;
+        max-height: 300px;
+        overflow: auto;
         white-space: pre;
       }
       .card-command code {
@@ -3715,13 +3742,21 @@
       // block a person can actually select.
       function askBody(a) {
         const text = a.instructions || a.question || a.detail || "";
-        if (!text) return "";
-        const host = a.kind === "human" && a.category === "host";
-        if (!host) return `<p class="card-note">${esc(text)}</p>`;
+        const host = a.kind === "human" && (a.category === "host" || a.script?.kind);
+        if (!host) return text ? `<p class="card-note">${esc(text)}</p>` : "";
+        const s = a.script;
+        const file = s?.kind === "file";
+        const value = s ? (file ? s.path : s.contents) : text;
+        if (!value) return "";
+        const label = s ? (file ? "Script file" : `${s.filename} (${s.language})`) : "Host command";
+        const explanation = a.explanation || "Run this on the host, not inside the worker. After it succeeds, choose Done.";
         const result = a.verification
-          ? `<p class="card-result"><span>Result</span><code>${esc(a.verification)}</code></p>`
+          ? `<p class="card-result"><span>Expected result</span><code>${esc(a.verification)}</code></p>`
           : "";
-        return `<pre class="card-command"><code>${esc(text)}</code></pre>${result}`;
+        return `<div class="host-request-body"><p class="host-explanation">${esc(explanation)}</p>
+          <div class="host-panel"><div class="host-panel-header"><span>${esc(label)}</span>${button("Copy", "host-copy", a.id, "", file ? "Copy script filename" : "Copy complete script contents")}</div>
+          <pre class="card-command" tabindex="0" aria-label="${esc(label)}"><code>${esc(value)}</code></pre></div>
+          <p class="host-copy-status" role="status" aria-live="polite"></p>${result}</div>`;
       }
       function taskCard(t, inbox = false) {
         const ask = askForTask(t.id);
@@ -3874,6 +3909,7 @@
           ${t.status === "proposed" ? `<p>${esc(t.proposedBy || "A worker")} proposed this work. Nothing can claim it until you approve it, and it can be revised or withdrawn until you do.</p>` : ""}
           ${t.assignee ? `<p class="card-note">Held by ${esc(t.assignee)}${t.leaseExpiresAt ? ` · lease ends ${esc(time(t.leaseExpiresAt))}` : ""}.</p>` : ""}
           ${note ? `<section><h2>Your latest note</h2><div class="task-prose">${taskMarkup(note.body || "")}</div><p class="card-note">${esc(note.author || "a human")} · ${esc(time(note.createdAt))} · ${esc(note.kind)}</p></section>` : ""}
+          ${askForTask(t.id)?.kind === "human" ? `<section><h2>Host action</h2>${askBody(askForTask(t.id))}</section>` : ""}
           ${prose("Instructions", t.body)}${prose("Acceptance criteria", t.acceptanceCriteria)}
           ${prose("Latest checkpoint", t.checkpoint)}${prose("Result", t.result?.summary)}${prose("Evidence", t.result?.evidence)}
           ${artifacts}<section class="task-updates"><h2>Updates</h2>${updates || "<p>No updates yet.</p>"}</section></article>`;
@@ -7506,7 +7542,36 @@
           throw e;
         }
       }
+      async function copyHostPanel(source) {
+        const panel = source.closest(".host-request-body");
+        const value = panel.querySelector(".card-command code").textContent;
+        const status = panel.querySelector(".host-copy-status");
+        try {
+          if (window.navigator.clipboard?.writeText) {
+            await window.navigator.clipboard.writeText(value);
+          } else {
+            // HTTP piso.local lacks the secure-context Clipboard API.
+            const active = document.activeElement;
+            const input = document.createElement("textarea");
+            input.value = value;
+            input.setAttribute("readonly", "");
+            input.style.cssText = "position:fixed;opacity:0;pointer-events:none";
+            document.body.append(input);
+            try {
+              input.select();
+              if (!document.execCommand("copy")) throw new Error("Copy unavailable");
+            } finally {
+              input.remove();
+              active?.focus({preventScroll: true});
+            }
+          }
+          status.textContent = "Copied.";
+        } catch {
+          status.textContent = "Could not copy. Select the text above and copy it manually.";
+        }
+      }
       async function action(name, id, source) {
+        if (name === "host-copy") return copyHostPanel(source);
         if (name === "task-new" || name === "directive-new" || name === "directive-edit") {
           // The controls are disabled, so this is only reachable from a stale
           // render. Say why instead of opening a form that cannot save.

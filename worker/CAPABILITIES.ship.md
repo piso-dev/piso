@@ -89,10 +89,14 @@ person resolves from the dashboard, so pass `taskId` (plus `attemptId`,
 `requestId`, `summary`, `checkpoint`) whenever you hold one: that is what
 blocks the task and ends your lease instead of only announcing the need.
 
-```
-command="..."
-resultPath="..."
-```
+Provide `explanation` (why, effects, prerequisites, working directory and exact
+run instructions) and `script`: either `{kind:"inline", filename:"action.sh",
+language:"bash", contents:"..."}` with complete contents (at most 20000 UTF-8
+bytes), or `{kind:"file", path:"...", language:"bash"}` referencing an existing
+host file. Use a verified path on the gateway host, not a path local to this
+ship. Keep `resultPath` separate as the output rendezvous. The dashboard offers
+a top-right Copy button and internally scrolling script panel; copying does
+not execute or complete anything. Legacy `command` is still accepted.
 
 ## Interactive sessions suppress the task loop
 

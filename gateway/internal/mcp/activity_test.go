@@ -157,6 +157,34 @@ func TestHostRequestFilesTrackedAsk(t *testing.T) {
 	}
 }
 
+func TestHostScriptForwardedWithoutTruncation(t *testing.T) {
+	h, _, got := hostRequestHandler(t, 201, `{"id":"h1","status":"requested"}`, nil)
+	caller := store.WorkerRec{PrincipalID: "prin-1", Name: "piso-worker-demo", Slug: "demo"}
+	contents := "#!/usr/bin/env bash\n" + strings.Repeat("echo hello\n", 300) + "# end\n"
+	args, _ := json.Marshal(map[string]any{
+		"script":      HostScript{Kind: "inline", Filename: "action.sh", Language: "bash", Contents: contents},
+		"explanation": "Save as action.sh; run bash action.sh on the host.", "resultPath": "/workspace/result.log",
+	})
+	_, rpcErr := h.toolHostRequest(caller, args)
+	if rpcErr != nil {
+		t.Fatal(rpcErr.Message)
+	}
+	if got.body["script"].(map[string]any)["contents"] != contents || got.body["explanation"] == nil {
+		t.Fatalf("script or explanation altered: %v", got.body)
+	}
+	for _, script := range []HostScript{
+		{Kind: "inline", Filename: "x.sh", Language: "bash", Contents: strings.Repeat("x", 20001)},
+		{Kind: "file", Language: "bash"},
+		{Kind: "file", Language: "bash", Path: "x.sh", Contents: "unexpected"},
+	} {
+		args, _ = json.Marshal(map[string]any{"script": script, "explanation": "Run on host", "resultPath": "/workspace/out"})
+		_, rpcErr = h.toolHostRequest(caller, args)
+		if rpcErr == nil {
+			t.Fatalf("accepted invalid script: %+v", script)
+		}
+	}
+}
+
 func TestHostRequestTaskLinkedCarriesTheWait(t *testing.T) {
 	// mutate_worker's response: ``id`` is the task, ``humanActionId`` the ask.
 	h, st, got := hostRequestHandler(t, 200, `{"id":"t1","attemptId":"a1","status":"waiting","humanActionId":"h1","waitId":"w1"}`, nil)

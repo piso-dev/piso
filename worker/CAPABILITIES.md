@@ -114,13 +114,23 @@ or retry in a loop.
 ## Asking the host for something
 
 The piso MCP tool `host_request` is how you ask the host to do a step you
-cannot: pass `command` set to the exact host command, and `resultPath` set to
-the `/workspace/...` path where the result will land.
+cannot. Supply a script and separate explanatory text, not bare shell commands:
 
-```
-command="cd /abs/path && git clone git@github.com:org/repo.git"
-resultPath="/workspace/repo"
-```
+- `explanation`: why host access is needed, effects/risks, prerequisites, working
+  directory, exact invocation and what successful completion looks like.
+- `script`: `{kind:"inline", filename:"action.sh", language:"bash", contents:"..."}`
+  for complete file contents, or `{kind:"file", path:".piso/host-actions/action.sh",
+  language:"bash"}` for a file already written into the shared project directory.
+  Prefer inline for portability. Use a project-relative or verified host path;
+  the worker mount `/workspace` is not necessarily the host path.
+- `resultPath`: the `/workspace/...` output path visible to the worker, distinct
+  from the script file. The script must actually arrange for that output.
+
+The dashboard displays explanation separately and a capped, scrollable script
+block with a top-right Copy button. Copy never runs the script or completes the
+ask. Contents must be complete (maximum 20000 UTF-8 bytes); never truncate a
+script. Split oversized work into a referenced file instead. Do not include
+credentials. Legacy `command` remains supported, but use scripts for new asks.
 
 That call files a durable request a person resolves from the dashboard — it is
 the same ask `human_action_request` files, in a machine-shaped body — and it
