@@ -34,15 +34,16 @@ type SupervisorGrant struct {
 //
 // One call both takes a free lease and renews a held one. A refusal is returned
 // as a grant with Granted=false, never as an error.
-func SupervisorLease(dataDir, resourceID, workerID string, ttl time.Duration) (SupervisorGrant, error) {
+func SupervisorLease(dataDir, resourceID, workerID string, ttl time.Duration, health ...any) (SupervisorGrant, error) {
 	id, err := tc.Load(tc.Path(dataDir))
 	if err != nil {
 		return SupervisorGrant{}, err
 	}
-	body, err := json.Marshal(map[string]any{
-		"worker_id": workerID,
-		"ttl":       int(ttl.Seconds()),
-	})
+	payload := map[string]any{"worker_id": workerID, "ttl": int(ttl.Seconds())}
+	if len(health) > 0 {
+		payload["health"] = health[0]
+	}
+	body, err := json.Marshal(payload)
 	if err != nil {
 		return SupervisorGrant{}, err
 	}

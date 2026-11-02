@@ -28,9 +28,10 @@ const getMeTimeout = 10 * time.Second
 // token, and it never triggers an outbound call: the poller already holds the
 // bot identity and the liveness signal, so reading the tab costs nothing.
 type telegramStatus struct {
-	Connected bool      `json:"connected"`
-	Name      string    `json:"name,omitempty"`
-	CreatedAt time.Time `json:"createdAt,omitempty"`
+	ResourceID string    `json:"resourceId,omitempty"`
+	Connected  bool      `json:"connected"`
+	Name       string    `json:"name,omitempty"`
+	CreatedAt  time.Time `json:"createdAt,omitempty"`
 	// Running is false while the poller has no bot, is backing off, or has not
 	// completed its first getMe since the gateway started.
 	Running     bool       `json:"running"`
@@ -89,7 +90,7 @@ func (s *Server) AttachCoordinator() {
 	}
 	dir := s.dataDir()
 	s.Telegram.Lease = func(ctx context.Context, resourceID string, offset int64) (telegram.LeaseGrant, error) {
-		g, err := technocore.TelegramLease(dir, resourceID, offset, telegram.LeaseTTL)
+		g, err := technocore.TelegramLease(dir, resourceID, offset, telegram.LeaseTTL, s.Telegram.Snapshot())
 		if err != nil {
 			return telegram.LeaseGrant{}, err
 		}
@@ -135,7 +136,7 @@ func (s *Server) handleTelegramStatus(w http.ResponseWriter, r *http.Request) {
 		front = m.LocalFrontDoorState()
 	}
 	out := telegramStatus{
-		Connected: true, Name: rec.Name, CreatedAt: rec.CreatedAt,
+		ResourceID: rec.TechnocoreID, Connected: true, Name: rec.Name, CreatedAt: rec.CreatedAt,
 		Running: snap.Running, BotID: snap.BotID, BotUsername: snap.BotUsername,
 		LastPoll: snap.LastPoll, Users: front.Users,
 		LeaseHeld: snap.LeaseHeld, Waiting: snap.Waiting,

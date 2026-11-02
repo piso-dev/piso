@@ -15,18 +15,27 @@ import (
 // TelegramAssignment contains only account-visible metadata. An assigned
 // supervisor is not proof of Telegram or agent readiness.
 type TelegramAssignment struct {
-	ResourceID string                        `json:"resourceId"`
-	Name       string                        `json:"name"`
-	Supervisor *TelegramSupervisorAssignment `json:"supervisor"`
+	ResourceID  string                        `json:"resourceId"`
+	Name        string                        `json:"name"`
+	Supervisor  *TelegramSupervisorAssignment `json:"supervisor"`
+	State       string                        `json:"state"`
+	BotID       int64                         `json:"botId,omitempty"`
+	BotUsername string                        `json:"botUsername,omitempty"`
+	LastPoll    *time.Time                    `json:"lastPoll,omitempty"`
+	ExpiresAt   *time.Time                    `json:"expiresAt,omitempty"`
+	Users       []store.TelegramUser          `json:"users"`
+	Claim       *telegramClaimWire            `json:"claim,omitempty"`
 }
 
 type TelegramSupervisorAssignment struct {
-	WorkerID    string    `json:"workerId"`
-	PrincipalID string    `json:"principalId"`
-	Name        string    `json:"name"`
-	GatewayID   string    `json:"gatewayId"`
-	GatewayName string    `json:"gatewayName"`
-	ExpiresAt   time.Time `json:"expiresAt"`
+	WorkerID    string     `json:"workerId"`
+	PrincipalID string     `json:"principalId"`
+	Name        string     `json:"name"`
+	GatewayID   string     `json:"gatewayId"`
+	GatewayName string     `json:"gatewayName"`
+	ExpiresAt   time.Time  `json:"expiresAt"`
+	State       string     `json:"state"`
+	LastPoll    *time.Time `json:"lastPoll,omitempty"`
 }
 
 // TelegramAssignments reads shared status even when this gateway has no bot
