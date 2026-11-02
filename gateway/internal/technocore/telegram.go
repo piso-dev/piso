@@ -12,6 +12,38 @@ import (
 	tc "piso/internal/technocore"
 )
 
+// TelegramAssignment contains only account-visible metadata. An assigned
+// supervisor is not proof of Telegram or agent readiness.
+type TelegramAssignment struct {
+	ResourceID string                        `json:"resourceId"`
+	Name       string                        `json:"name"`
+	Supervisor *TelegramSupervisorAssignment `json:"supervisor"`
+}
+
+type TelegramSupervisorAssignment struct {
+	WorkerID    string    `json:"workerId"`
+	PrincipalID string    `json:"principalId"`
+	Name        string    `json:"name"`
+	GatewayID   string    `json:"gatewayId"`
+	GatewayName string    `json:"gatewayName"`
+	ExpiresAt   time.Time `json:"expiresAt"`
+}
+
+// TelegramAssignments reads shared status even when this gateway has no bot
+// credential or connected worker. The coordinator authenticates the account.
+func TelegramAssignments(dataDir string) ([]TelegramAssignment, error) {
+	var out struct {
+		Bots []TelegramAssignment `json:"bots"`
+	}
+	if err := telegramCallOK(dataDir, http.MethodGet, "/api/v1/telegram/assignments", nil, &out); err != nil {
+		return nil, err
+	}
+	if out.Bots == nil {
+		out.Bots = []TelegramAssignment{}
+	}
+	return out.Bots, nil
+}
+
 // TelegramDoorClaim is the coordinator's pending claim code for a bot.
 type TelegramDoorClaim struct {
 	Code      string

@@ -108,6 +108,7 @@ func (s *Server) registerTelegram(mux *http.ServeMux) {
 	// handler is host-only, and CrossOriginProtection rejects browser CSRF.
 	csrf := http.NewCrossOriginProtection()
 	mount := func(pattern string, h http.HandlerFunc) { mux.Handle(pattern, csrf.Handler(h)) }
+	mount("GET /api/v1/telegram/assignments", s.handleTelegramAssignments)
 	mount("GET /api/v1/telegram", s.handleTelegramStatus)
 	mount("POST /api/v1/telegram", s.handleTelegramConnect)
 	mount("DELETE /api/v1/telegram", s.handleTelegramDisconnect)
