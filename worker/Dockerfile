@@ -226,6 +226,7 @@ COPY task-watch.sh /usr/local/bin/piso-task-watch
 COPY pi-profile-sync.py /usr/local/bin/piso-profile-sync
 COPY supervisor-session.py /usr/local/bin/piso-supervisor-session
 COPY telegram_format.py /usr/local/bin/telegram_format.py
+COPY telegram-prompt.md /usr/local/bin/telegram-prompt.md
 COPY monitor-loop.sh /usr/local/bin/piso-monitor-loop
 RUN chmod +x /usr/local/bin/piso-monitor-loop
 # make the monitor loop invocable as a plain name (and pi can call it too)
