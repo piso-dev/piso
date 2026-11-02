@@ -839,10 +839,11 @@ describe("Piso /model mirrors the Model providers tab", () => {
 		expect(menus).toEqual({ piso: [], "piso-two": ["m2"] });
 	});
 
-	test("a local provider stays in the menu while the pin is elsewhere", async () => {
+	test("a local provider is denied while the pin is elsewhere", async () => {
 		// A tinfoil provider is served by a proxy inside this worker, which NO_PROXY
-		// keeps off the gateway, so the pin never judges it and its own list is the
-		// whole boundary.
+		// keeps off the gateway, so the pin never judges it. The extension is the
+		// only thing that can, and a worker the dashboard says is running on one
+		// provider must not generate on another just because it is local.
 		await tabDir(
 			{
 				piso: { apiKey: "piso_one", baseUrl: "https://one/v1", models: [{ id: "m1" }] },
@@ -858,7 +859,30 @@ describe("Piso /model mirrors the Model providers tab", () => {
 		const menus = Object.fromEntries(
 			(await register()).map((r) => [r.name, r.config.models.map((m: any) => m.id)]),
 		);
-		expect(menus).toEqual({ piso: ["m1"], "piso-tinfoil": ["local-1"] });
+		expect(menus).toEqual({ piso: ["m1"], "piso-tinfoil": [] });
+	});
+
+	test("a local provider cannot generate while the pin is elsewhere", async () => {
+		// The gateway never sees a loopback request, so the stream guard is the
+		// only thing left: a tinfoil model must fail the same way any other
+		// unpinned provider does, instead of reaching the enclave.
+		await tabDir(
+			{
+				piso: { apiKey: "piso_one", baseUrl: "https://one/v1", models: [{ id: "m1" }] },
+				"piso-tinfoil": { apiKey: "piso_tinfoil", baseUrl: "http://127.0.0.1:3301/v1", models: [{ id: "local-1" }] },
+			},
+			{
+				provider: "piso",
+				model: "m1",
+				allowedModels: ["m1"],
+				providers: { piso: ["m1"], "piso-tinfoil": ["local-1"] },
+			},
+		);
+		const configs = new Map((await register()).map((r) => [r.name, r.config]));
+		const model = { provider: "piso-tinfoil", id: "local-1", baseUrl: "http://127.0.0.1:3301/v1" };
+		expect(() => configs.get("piso-tinfoil").streamSimple(model, { messages: [] })).toThrow(
+			/previous provider cannot generate/,
+		);
 	});
 
 	test("an unknown pin narrows nothing", async () => {

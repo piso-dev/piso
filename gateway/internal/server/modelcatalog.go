@@ -29,6 +29,13 @@ func localApprovedModels(p *store.PiProviderRec) []string {
 	return ids
 }
 
+// workerModelPolicies is the per-provider answer the worker extension enforces
+// itself, and for a local provider it is the only enforcement there is: modelPin
+// never sees a loopback request, so the gateway cannot refuse one. That is why
+// the pin applies here to every provider, local included — a worker pinned to a
+// remote provider that kept its local list could generate through Tinfoil while
+// the dashboard said it was running somewhere else. Only the provider this
+// worker starts on may come back usable; the rest are a known denial.
 func (s *Server) workerModelPolicies(pinned, slug string) map[string]workerModelPolicy {
 	out := map[string]workerModelPolicy{}
 	for _, p := range s.Store.PiProviderStack() {
@@ -38,6 +45,11 @@ func (s *Server) workerModelPolicies(pinned, slug string) map[string]workerModel
 			policy.Discovery = "worker"
 			if len(policy.Models) == 0 {
 				policy.Mode = "worker-discovered"
+			}
+			if p.ID != pinned {
+				policy.Mode = "unavailable"
+				policy.Models = nil
+				policy.Discovery = ""
 			}
 		} else if p.ID != pinned || len(policy.Models) == 0 {
 			policy.Mode = "unavailable"

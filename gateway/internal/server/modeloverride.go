@@ -128,13 +128,17 @@ type workerModelView struct {
 // and offering it in /model only moves the dashboard's policy to a 403 in the
 // middle of a session.
 //
-// A local (Tinfoil) provider is the exception and not as a kindness: its base URL
-// is loopback, which NO_PROXY keeps off the proxy, so modelPin never sees its
-// requests and the enclave proxy inside the worker picks the model. Its approved
-// list is the only thing standing between the worker and a model, so it stays.
+// A local (Tinfoil) provider is not exempt. Its base URL is loopback, which
+// NO_PROXY keeps off the proxy, so modelPin never sees its requests and the
+// gateway cannot refuse one — which is why the worker extension, not the
+// gateway, has to enforce the pin there. Leaving its list on an unpinned worker
+// let that worker generate through Tinfoil while the dashboard said it was
+// running on another provider, spending on a provider the operator had not
+// selected. So it gets the same closed denial as any other off-pin provider.
 //
-// Empty means a known denial. Local providers without explicit approvals are
-// omitted: their catalog is worker-discovered, not a gateway-visible empty set.
+// Empty means a known denial. A pinned local provider with no explicit
+// approvals is omitted: its catalog is worker-discovered, not a
+// gateway-visible empty set.
 func (s *Server) usableAllowlists(pinned string) map[string][]string {
 	stack := s.Store.PiProviderStack()
 	if len(stack) == 0 {
@@ -146,7 +150,7 @@ func (s *Server) usableAllowlists(pinned string) map[string][]string {
 		if p.ID == "" {
 			continue
 		}
-		if p.ID != pinned && !piProviderIsLocal(p) {
+		if p.ID != pinned {
 			out[p.ID] = []string{}
 			continue
 		}

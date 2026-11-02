@@ -388,11 +388,17 @@ function isLoopback(baseUrl: string): boolean {
 }
 
 // allowanceFor is the per-provider answer with the pin's boundary applied: a
-// provider that is neither the pin nor loopback-local cannot serve a request at
-// all, because the gateway refuses every host but the pinned one. Offering its
-// models is how a dashboard policy became a mid-session 403 (a second provider
-// keeps its own default model, so it looked approved and still failed on
+// provider this worker is not pinned to cannot serve a request at all, because
+// the gateway refuses every host but the pinned one. Offering its models is how a
+// dashboard policy became a mid-session 403 (a second provider keeps its own
+// default model, so it looked approved and still failed on
 // model-provider-mismatch), so no list from the gateway can re-enable it here.
+//
+// A local (Tinfoil) provider is not exempt either. Its requests go to loopback,
+// which the gateway's pin never sees, so this function and the stream guard are
+// the only things that can keep an unpinned worker off it — otherwise a worker
+// the dashboard says is running on one provider can generate on Tinfoil, on a
+// secret the operator granted to it for some other purpose.
 //
 // An unknown pin narrows nothing: before the first successful poll a worker has
 // no answer yet, and blanking the menu on a cold start is worse than showing the
@@ -409,7 +415,7 @@ function allowanceFor(
 		if (policy.mode === "worker-discovered") return NO_OPINION;
 		return { known: true, ids: policy.mode === "unavailable" ? [] : policy.models ?? [] };
 	}
-	if (pinned && providerId !== pinned && !isLoopback(baseUrl)) {
+	if (pinned && providerId !== pinned) {
 		return { known: true, ids: [] };
 	}
 	return allowanceOf(allowlists, providerId);
@@ -587,7 +593,10 @@ function guardedStream(profile: ProviderProfile): ProviderConfig["streamSimple"]
 	if (!native) throw new Error(`Unsupported Piso API: ${api}`);
 	return (model, context, options) => {
 		const policy = modelPolicies[profile.id];
-		if (pinnedProvider && model.provider !== pinnedProvider && !isTinfoil(profile)) {
+		// The pin covers the local provider too: the gateway never sees a
+		// loopback request, so this check is the only thing that stops an
+		// unpinned worker from generating on Tinfoil.
+		if (pinnedProvider && model.provider !== pinnedProvider) {
 			throw new Error(`Piso: waiting for ${pinnedProvider} to become ready; the previous provider cannot generate.`);
 		}
 		if (policy && (policy.baseUrl.replace(/\/+$/, "") !== profile.baseUrl ||

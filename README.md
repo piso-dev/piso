@@ -217,10 +217,13 @@ is refused as `model-provider-mismatch`, so a model approved on a second remote
 provider is a model this worker cannot use: the tab keeps that provider's list
 for whichever worker is pinned to it, and this one is told nothing is usable
 there. Pinning the worker to that provider in **Model overrides** moves the menu
-with it on the next poll. A local (Tinfoil) provider is the exception — its base
-URL is loopback, which `NO_PROXY` keeps off the proxy, so the pin never sees it
-and its approved list is the only boundary — and it stays in the menu while
-unpinned. The shaping is applied wherever the catalog is assembled — the cached
+with it on the next poll. A local (Tinfoil) provider is not exempt. Its base
+URL is loopback, which `NO_PROXY` keeps off the proxy, so the pin never sees its
+requests and the worker extension is the only place that boundary can be
+enforced: an unpinned local provider is told nothing is usable there, exactly
+like a remote one, and its stream adapter refuses to generate. A worker pinned
+elsewhere therefore cannot spend on Tinfoil behind the dashboard's back. The
+shaping is applied wherever the catalog is assembled — the cached
 `models-store.json`, the `models.json` fallback, and both branches of a refresh —
 and the result is what gets persisted, so a stale cache cannot put removed models
 back one session later.
