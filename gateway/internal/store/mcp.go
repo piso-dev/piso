@@ -185,13 +185,10 @@ func (s *Store) PlaceholderTaken(placeholder string) bool {
 }
 
 func (s *Store) broadcastMcp(rec McpServerRec) {
-	select {
-	case s.onMcp <- rec:
-	default:
-	}
+	s.onMcp.publish(rec)
 }
 
-func (s *Store) SubMcp() <-chan McpServerRec { return s.onMcp }
+func (s *Store) SubMcp() (<-chan McpServerRec, func()) { return s.onMcp.subscribe() }
 
 func copyMcpRecs(in []McpServerRec) []McpServerRec {
 	out := make([]McpServerRec, len(in))

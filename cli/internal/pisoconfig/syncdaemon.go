@@ -11,9 +11,8 @@
 //	piso sync daemon-stop       privileged: stop it
 //	piso sync daemon-uninstall  privileged: stop + remove managed config
 //
-// The service body is `piso sync daemon` — the same SSE watch loop as
-// `piso sync --watch`, which reconciles /etc/hosts whenever a route event
-// arrives (new auto route, route deleted, stale route swept).
+// The service body is `piso sync daemon`: reconcile on startup, every two
+// seconds, and on SSE hints. Stream failures cannot prevent convergence.
 //
 // Manager selection: launchd on macOS (system domain, RunAtLoad + KeepAlive,
 // so it survives reboots and crashes); a nohup + pidfile fallback elsewhere
@@ -27,12 +26,14 @@
 package pisoconfig
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 )
 
 // ErrSyncDaemonUnsupported is returned on Windows: launchd/nohup are not
@@ -50,8 +51,11 @@ const syncLogFile = "sync.log"
 
 // SyncDaemonState is the daemon status answer.
 type SyncDaemonState struct {
-	Running bool
-	Pid     string
+	Running     bool
+	Pid         string
+	Ready       bool
+	LastSuccess time.Time
+	LastError   string
 }
 
 // DaemonStatus checks the pidfile + liveness WITHOUT root: the pidfile lives
@@ -67,7 +71,8 @@ func SyncDaemonStatus() (SyncDaemonState, error) {
 		return SyncDaemonState{}, nil
 	}
 	if daemonAlive(pid) {
-		return SyncDaemonState{Running: true, Pid: pid}, nil
+		result := readSyncResult(dir)
+		return SyncDaemonState{Running: true, Pid: pid, Ready: syncResultReady(result, pid, time.Now()), LastSuccess: result.LastSuccess, LastError: result.LastError}, nil
 	}
 	// stale pidfile: not running
 	return SyncDaemonState{}, nil
@@ -85,7 +90,9 @@ func readPidFile(path string) string {
 // image is not the target host). ps -p <pid> -o pid= prints the pid iff the
 // process exists.
 func daemonAlive(pid string) bool {
-	out, err := exec.Command("ps", "-p", pid, "-o", "pid=").Output()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "ps", "-p", pid, "-o", "pid=").Output()
 	if err != nil {
 		return false
 	}
@@ -99,10 +106,7 @@ func SyncDaemonInstallRestart() error {
 	if !SyncDaemonSupported() {
 		return ErrSyncDaemonUnsupported
 	}
-	if err := ensureRoot("daemon-restart"); err != nil {
-		return err
-	}
-	return daemonInstallRestartRoot()
+	return runSyncDaemonOperation("daemon-restart", daemonInstallRestartRoot)
 }
 
 // SyncDaemonStop stops the managed service. Idempotent.
@@ -110,10 +114,7 @@ func SyncDaemonStop() error {
 	if !SyncDaemonSupported() {
 		return ErrSyncDaemonUnsupported
 	}
-	if err := ensureRoot("daemon-stop"); err != nil {
-		return err
-	}
-	return daemonStopRoot()
+	return runSyncDaemonOperation("daemon-stop", daemonStopRoot)
 }
 
 // SyncDaemonUninstall stops the service and removes the managed config
@@ -122,10 +123,16 @@ func SyncDaemonUninstall() error {
 	if !SyncDaemonSupported() {
 		return ErrSyncDaemonUnsupported
 	}
-	if err := ensureRoot("daemon-uninstall"); err != nil {
-		return err
+	return runSyncDaemonOperation("daemon-uninstall", daemonUninstallRoot)
+}
+
+// The sudo child performs the entire operation. Its parent must not perform
+// it a second time after the child returns successfully.
+func runSyncDaemonOperation(op string, rootOperation func() error) error {
+	if !amRoot() {
+		return ensureRoot(op)
 	}
-	return daemonUninstallRoot()
+	return rootOperation()
 }
 
 // ensureRoot re-runs this same command through `sudo /usr/bin/env
@@ -145,6 +152,7 @@ func ensureRoot(op string) error {
 		return err
 	}
 	c := exec.Command("sudo", "/usr/bin/env", "PISO_DATA="+dir, exe, "sync", op)
+	c.Stdin, c.Stdout, c.Stderr = os.Stdin, os.Stdout, os.Stderr
 	if rerr := c.Run(); rerr != nil {
 		return fmt.Errorf("need root to %s. Run manually:\n  sudo /usr/bin/env PISO_DATA=%s %s sync %s",
 			op, dir, exe, op)
@@ -167,7 +175,16 @@ func amRoot() bool {
 // config, then starts it — so an upgrade cleanly replaces the old instance.
 func daemonInstallRestartRoot() error {
 	if launchctlAvailable() {
-		bootoutSystem(syncDaemonLabel)
+		if err := bootoutSystem(syncDaemonLabel); err != nil {
+			return err
+		}
+	}
+	dir, err := DataDir()
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(filepath.Join(dir, syncStatusFile)); err != nil && !os.IsNotExist(err) {
+		return err
 	}
 	if err := writeDaemonConfig(); err != nil {
 		return err
@@ -178,8 +195,7 @@ func daemonInstallRestartRoot() error {
 func daemonStopRoot() error {
 	if launchctlAvailable() {
 		// bootout is idempotent; a missing label errors, which we swallow.
-		bootoutSystem(syncDaemonLabel)
-		return nil
+		return bootoutSystem(syncDaemonLabel)
 	}
 	// nohup fallback: kill a running daemon via its pidfile.
 	return stopNohupDaemon()
@@ -187,7 +203,9 @@ func daemonStopRoot() error {
 
 func daemonUninstallRoot() error {
 	if launchctlAvailable() {
-		bootoutSystem(syncDaemonLabel)
+		if err := bootoutSystem(syncDaemonLabel); err != nil {
+			return err
+		}
 		return removeManagedFiles()
 	}
 	if err := stopNohupDaemon(); err != nil {
@@ -203,6 +221,7 @@ func removeManagedFiles() error {
 	}
 	rmSyncFile(daemonConfigPath())
 	rmSyncFile(filepath.Join(dir, syncPidFile))
+	rmSyncFile(filepath.Join(dir, syncStatusFile))
 	return nil
 }
 
@@ -221,32 +240,40 @@ func systemServiceTarget(label string) string {
 	return "system/" + label
 }
 
-// bootoutSystem stops the system-domain service by label. Errors (e.g. "no
-// such service") are swallowed — it is called defensively before install and
-// by stop/uninstall where an absent daemon is fine.
-func bootoutSystem(label string) {
-	_ = exec.Command("launchctl", "bootout", systemServiceTarget(label)).Run()
+// bootoutSystem stops a loaded service. An explicitly absent service is fine;
+// other failures (including timeouts) are surfaced rather than swallowed.
+func bootoutSystem(label string) error {
+	out, err := runLaunchctl("print", systemServiceTarget(label))
+	if err != nil {
+		if strings.Contains(out, "Could not find service") || strings.Contains(out, "could not find service") {
+			return nil
+		}
+		return err
+	}
+	_, err = runLaunchctl("bootout", systemServiceTarget(label))
+	return err
 }
 
-// daemonStartRoot starts (or restarts) the managed service, then VERIFIES the
-// daemon actually comes up. launchctl bootstrap/kickstart return once launchd
-// *queues* the start — the process may still be relaunching — so a bare exit
-// code is a flaky signal (the original `sudo make install` warning was this
-// race). We poll piso's own daemon-status until it reports running.
+func runLaunchctl(args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "launchctl", args...).CombinedOutput()
+	if ctx.Err() != nil {
+		return string(out), fmt.Errorf("launchctl %v: %w", args, ctx.Err())
+	}
+	if err != nil {
+		return string(out), fmt.Errorf("launchctl %v: %w: %s", args, err, strings.TrimSpace(string(out)))
+	}
+	return string(out), nil
+}
+
+// daemonStartRoot starts the service once, then waits for a successful hosts
+// reconciliation from the new instance. A live PID alone is not readiness.
 func daemonStartRoot() error {
 	if launchctlAvailable() {
-		// bootstrap loads the plist into the system domain (RunAtLoad starts
-		// it). Errors are swallowed: on an upgrade a just-issued bootout can
-		// still be draining, making bootstrap exit "already loaded".
-		_ = exec.Command("launchctl", "bootstrap", "system", daemonConfigPath()).Run()
-		// kickstart -k kills + restarts the service so it picks up the new
-		// binary. MUST be domain-qualified (system/<label>) or it resolves in
-		// the user domain and exits 64.
-		c := exec.Command("launchctl", "kickstart", "-k", systemServiceTarget(syncDaemonLabel))
-		if err := c.Run(); err != nil {
-			// launchd queued but did not accept; try waiting anyway — the
-			// process may still come up from bootstrap alone.
-			_ = err
+		// RunAtLoad starts it once; do not immediately kill it with kickstart.
+		if _, err := runLaunchctl("bootstrap", "system", daemonConfigPath()); err != nil {
+			return err
 		}
 	} else if err := startNohupDaemon(); err != nil {
 		return err
@@ -259,23 +286,25 @@ func daemonStartRoot() error {
 	return nil
 }
 
-// waitForDaemon polls piso's daemon-status until the daemon reports running or
-// ~seconds elapse (0.3s probes).
+// waitForDaemon polls readiness until the deadline (0.3s probes).
 func waitForDaemon(seconds int) error {
-	for i := 0; i < seconds*3; i++ {
+	deadline := time.Now().Add(time.Duration(seconds) * time.Second)
+	for time.Now().Before(deadline) {
 		st, err := SyncDaemonStatus()
-		if err == nil && st.Running {
+		if err == nil && st.Running && st.Ready {
 			return nil
 		}
-		exec.Command("/bin/sleep", "0.3").Run()
+		time.Sleep(300 * time.Millisecond)
 	}
-	return fmt.Errorf("not running after %ds", seconds)
+	return fmt.Errorf("no successful reconciliation after %ds; see sync daemon-status and sync.log", seconds)
 }
 
 // startNohupDaemon executes the nohup bootstrap script (it backgrounds the
 // daemon, writes the pidfile, and returns immediately).
 func startNohupDaemon() error {
-	return exec.Command("/bin/sh", daemonConfigPath()).Run()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return exec.CommandContext(ctx, "/bin/sh", daemonConfigPath()).Run()
 }
 
 // writeDaemonConfig writes the launchd plist (/Library/LaunchDaemons) or, on

@@ -16,6 +16,36 @@ func daemonTestDir(t *testing.T) string {
 	return dir
 }
 
+func TestSyncDaemonSudoParentDoesNotRepeatOperation(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix daemon")
+	}
+	daemonTestDir(t)
+	bin := t.TempDir()
+	marker := filepath.Join(bin, "sudo-called")
+	t.Setenv("SUDO_MARKER", marker)
+	for name, body := range map[string]string{
+		"id":   "#!/bin/sh\necho 1000\n",
+		"sudo": "#!/bin/sh\necho called >> \"$SUDO_MARKER\"\n",
+	} {
+		if err := os.WriteFile(filepath.Join(bin, name), []byte(body), 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", bin)
+	called := false
+	if err := runSyncDaemonOperation("daemon-restart", func() error { called = true; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if called {
+		t.Fatal("sudo parent repeated the root operation")
+	}
+	b, err := os.ReadFile(marker)
+	if err != nil || string(b) != "called\n" {
+		t.Fatalf("sudo invocations %q: %v", b, err)
+	}
+}
+
 func TestSyncDaemonSupported(t *testing.T) {
 	if SyncDaemonSupported() == (runtime.GOOS == "windows") {
 		t.Fatalf("SyncDaemonSupported()=%v on %s", SyncDaemonSupported(), runtime.GOOS)

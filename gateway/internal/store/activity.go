@@ -324,11 +324,8 @@ func (s *Store) DeleteOwnActivity(id, worker string) (bool, error) {
 // drop-if-full policy as the other broadcasts; the dashboard polls as a
 // fallback.
 func (s *Store) broadcastActivity(a Activity) {
-	select {
-	case s.onActivity <- a:
-	default:
-	}
+	s.onActivity.publish(a)
 }
 
 // SubActivities returns a channel of new activities (SSE). Callers must drain.
-func (s *Store) SubActivities() <-chan Activity { return s.onActivity }
+func (s *Store) SubActivities() (<-chan Activity, func()) { return s.onActivity.subscribe() }

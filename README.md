@@ -391,3 +391,20 @@ On macOS it is a launchd service (`com.piso.sync`, survives reboots); elsewhere
 a nohup+pidfile fallback is used. The daemon only needs `/etc/hosts` write
 access and the gateway's control-plane port — workers do not need to run for it
 to stay alive.
+
+The daemon reconciles the complete route table on startup, on SSE hints, and
+every two seconds. Missed events or stalled streams do not prevent updates;
+failed fetches preserve the last good hosts entries. All piso hosts writers
+share a kernel lock next to the hosts file. Unchanged entries are not rewritten.
+
+`piso sync daemon-status` reports both process liveness and readiness, the last
+successful reconciliation, and the last error. Restart waits for a successful
+reconciliation by the new instance, not just a PID. Errors are also logged in
+`~/.piso/sync.log`; detailed status is in `~/.piso/sync-status.json`.
+
+Under healthy local conditions a newly published route should reach the hosts
+file within roughly three seconds. This is not a browser DNS-cache guarantee:
+if the line is present but the browser still cannot resolve it, compare OS
+resolution and HTTP access with `curl --resolve <name>.piso.local:80:127.0.0.1
+http://<name>.piso.local/` (substitute the configured web port). No global DNS
+cache flush is performed automatically.
