@@ -645,8 +645,8 @@ func TestPiProviderModelsLocalSidecar(t *testing.T) {
 	if catalog.Error != "" {
 		t.Fatalf("local sidecar reported as an error: %+v", catalog)
 	}
-	if len(catalog.Models) != 2 {
-		t.Fatalf("cached models dropped: %+v", catalog)
+	if len(catalog.Models) != 0 {
+		t.Fatalf("legacy policy catalog exposed as worker discovery: %+v", catalog)
 	}
 	if got := s.Store.PiProvider(); got == nil || got.CatalogError != "" {
 		t.Fatalf("local sidecar must not record a catalog failure: %+v", got)

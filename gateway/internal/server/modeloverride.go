@@ -62,6 +62,7 @@ type modelOverrideProviderView struct {
 	// dropdown offers exactly what the gateway will accept instead of the
 	// provider's whole catalog.
 	AllowedModels []string `json:"allowedModels,omitempty"`
+	Models        []string `json:"models,omitempty"`
 	// Kind and BaseURL let the override form recognise a local (Tinfoil)
 	// provider without loading the whole provider list: its model field is
 	// optional because the enclave proxy inside the worker picks the model and
@@ -112,7 +113,8 @@ type workerModelView struct {
 	// gateway did not answer for it, and the worker then keeps the catalog it
 	// always had. Omitting the field entirely is how an older gateway stays
 	// readable, so it is omitted only when the stack is empty.
-	Providers map[string][]string `json:"providers,omitempty"`
+	Providers     map[string][]string          `json:"providers,omitempty"`
+	ModelPolicies map[string]workerModelPolicy `json:"modelPolicies,omitempty"`
 }
 
 // usableAllowlists is what this worker may actually run, per provider.
@@ -131,9 +133,8 @@ type workerModelView struct {
 // requests and the enclave proxy inside the worker picks the model. Its approved
 // list is the only thing standing between the worker and a model, so it stays.
 //
-// The answer is always present-and-empty rather than absent — absent means "this
-// gateway did not answer", which is how an older gateway keeps its behaviour,
-// and that cannot also mean "answered, nothing usable".
+// Empty means a known denial. Local providers without explicit approvals are
+// omitted: their catalog is worker-discovered, not a gateway-visible empty set.
 func (s *Server) usableAllowlists(pinned string) map[string][]string {
 	stack := s.Store.PiProviderStack()
 	if len(stack) == 0 {
@@ -149,7 +150,15 @@ func (s *Server) usableAllowlists(pinned string) map[string][]string {
 			out[p.ID] = []string{}
 			continue
 		}
-		out[p.ID] = p.AllowedModelIDs()
+		if piProviderIsLocal(p) {
+			ids := localApprovedModels(p)
+			if len(ids) == 0 {
+				continue
+			} // discovery, not a denial
+			out[p.ID] = ids
+		} else {
+			out[p.ID] = p.AllowedModelIDs()
+		}
 	}
 	return out
 }
@@ -173,6 +182,9 @@ func (s *Server) resolveWorkerModel(slug string) workerModelView {
 		out.Model = effectivePiModel(p)
 		out.Source = "override"
 		out.AllowedModels = p.AllowedModelIDs()
+		if piProviderIsLocal(p) {
+			out.AllowedModels = localApprovedModels(p)
+		}
 		if pinned := strings.TrimSpace(rec.Model); pinned != "" {
 			switch s.pinnedModelDrift(p, pinned) {
 			case "":
@@ -188,6 +200,7 @@ func (s *Server) resolveWorkerModel(slug string) workerModelView {
 			}
 		}
 		out.Providers = s.usableAllowlists(out.Provider)
+		out.ModelPolicies = s.workerModelPolicies(out.Provider, slug)
 		return out
 	}
 	if hasOverride {
@@ -198,8 +211,12 @@ func (s *Server) resolveWorkerModel(slug string) workerModelView {
 		out.Model = effectivePiModel(p)
 		out.Source = "account"
 		out.AllowedModels = p.AllowedModelIDs()
+		if piProviderIsLocal(p) {
+			out.AllowedModels = localApprovedModels(p)
+		}
 	}
 	out.Providers = s.usableAllowlists(out.Provider)
+	out.ModelPolicies = s.workerModelPolicies(out.Provider, slug)
 	return out
 }
 
@@ -218,6 +235,13 @@ func (s *Server) resolveWorkerModel(slug string) workerModelView {
 func (s *Server) pinnedModelDrift(p *store.PiProviderRec, model string) string {
 	if p == nil || model == "" {
 		return ""
+	}
+	if piProviderIsLocal(p) {
+		ids := localApprovedModels(p)
+		if len(ids) == 0 || slices.Contains(ids, model) {
+			return ""
+		}
+		return "model-not-approved"
 	}
 	approved := slices.Contains(p.AllowedModelIDs(), model)
 	report := store.ModelDriftFor(p, map[string]string{"pinned": model})
@@ -291,6 +315,7 @@ func (s *Server) modelOverrideListView() modelOverrideListView {
 			DefaultModel:  effectivePiModel(&rec),
 			Workers:       s.providerWorkers(&rec),
 			AllowedModels: rec.AllowedModelIDs(),
+			Models:        s.localCatalogModels(&rec),
 			Kind:          rec.Kind,
 			BaseURL:       rec.BaseURL,
 			Pinnable:      piProviderPinnable(&rec),
@@ -404,7 +429,10 @@ func (s *Server) handlePutModelOverride(w http.ResponseWriter, r *http.Request) 
 	model := strings.TrimSpace(in.Model)
 	if model != "" {
 		allowed := p.AllowedModelIDs()
-		if !slices.Contains(allowed, model) {
+		if piProviderIsLocal(p) {
+			allowed = localApprovedModels(p)
+		}
+		if !(piProviderIsLocal(p) && len(allowed) == 0) && !slices.Contains(allowed, model) {
 			writeJSON(w, 400, map[string]string{"error": fmt.Sprintf(
 				"%s is not an approved model for %s; pick one of: %s",
 				model, piProviderLabel(p), strings.Join(allowed, ", "))})

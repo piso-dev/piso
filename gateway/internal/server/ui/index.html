@@ -6625,7 +6625,7 @@
           const p = providerOf(id);
           if (isLocal(p)) {
             modelInput.placeholder = "Model id (optional)";
-            return "Optional: the enclave proxy inside the worker picks the model, so the gateway cannot check it. Leave empty unless the profile needs a specific id.";
+            return "Leave empty to discover models inside the worker, or type a model id. An explicit approved list/default limits selection in the worker; the gateway cannot inspect sealed Tinfoil requests. Catalog suggestions are worker-reported, not approvals.";
           }
           const def = p.defaultModel || "";
           // The placeholder carries the same promise the hint does, so an empty
@@ -6643,7 +6643,7 @@
         if (select && modelInput) {
           setFieldHint("model", describe(select.value));
           attachSuggest(modelInput, $("#f-model-list"), {
-            getItems: () => allowedOf(select.value),
+            getItems: () => isLocal(providerOf(select.value)) ? providerOf(select.value).models || [] : allowedOf(select.value),
           });
           select.addEventListener("change", () => {
             const allowed = allowedOf(select.value);
@@ -6927,7 +6927,7 @@
           const hint = $("#modelHint");
           if (hint && !catalog.models.length)
             hint.textContent = tinfoil
-              ? "Choose an API key secret to load its model list. The enclave proxy must be running in the worker first."
+              ? "Save the provider and grant its secret to a worker. That worker discovers and reports the enclave's models."
               : "Choose an API key secret to load its model list.";
           // The binding depends on the tab, so it is refreshed after it moves.
           syncHosts();
@@ -6963,7 +6963,7 @@
           // saying so is better than "Choose a key" for a key being typed.
           () =>
             keyMode === "new"
-              ? "Saved with its secret, so its model list loads when you edit the provider. Type a model id, or leave it empty for the first one pi discovers."
+              ? "Save this provider, then grant its secret to a worker to discover models. Type a model id, or leave empty for worker discovery."
               : "",
         );
         reloadModels = () =>
@@ -7011,7 +7011,9 @@
           setModels(result?.models);
           if (result?.catalog === "local") {
             hint.textContent =
-              "Model list is served by the worker's enclave proxy, so the dashboard cannot read it. Type a model id, or leave empty for the first one pi discovers at startup.";
+              (models.length ? `${models.length} worker-reported models (suggestions only). ` : "No worker has reported models yet. ") +
+              (result?.reports || []).map((r) => `${r.worker}: ${r.error ? "discovery failed; " : ""}${age(r.checkedAt)}${Date.now() - Date.parse(r.checkedAt) > 180000 ? " (stale)" : ""}`).join("; ") +
+              " Type a model id, or leave empty for worker discovery. Approval limits are enforced in the worker, not by the gateway on sealed requests.";
           } else if (result?.catalog === "failed") {
             hint.textContent = models.length
               ? "Model list unavailable; showing the last known models. Type a model id, or leave empty."
@@ -7054,7 +7056,7 @@
           // A local provider is served by a proxy that runs inside the worker,
           // which the gateway has no route to. Asking it would only earn a
           // connection error, so render the stored list and say why.
-          if (readKind() === "tinfoil") {
+          if (readKind() === "tinfoil" && !id) {
             loadingKey = "";
             loadedKey = key;
             applyCatalog({

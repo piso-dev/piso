@@ -35,6 +35,7 @@ func (s *Server) WorkerHandler() http.Handler {
 	mux.HandleFunc("GET /api/v1/worker/capabilities", s.handleWorkerCapabilities)
 	mux.HandleFunc("GET /api/v1/worker/pi-profile", s.handleWorkerGetPiProfile)
 	mux.HandleFunc("GET /api/v1/worker/model", s.handleWorkerGetModel)
+	mux.HandleFunc("POST /api/v1/worker/model/catalog", s.handleWorkerPostModelCatalog)
 	mux.HandleFunc("POST /api/v1/worker/ports", s.handleWorkerPostPorts)
 	mux.HandleFunc("POST /api/v1/worker/activity", s.handleWorkerPostActivity)
 	mux.HandleFunc("GET /api/v1/worker/activities", s.handleWorkerGetActivities)

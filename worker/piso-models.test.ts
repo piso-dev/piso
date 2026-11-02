@@ -967,3 +967,50 @@ describe("Piso /model mirrors the Model providers tab", () => {
 		expect(unregistered).toContain("openai");
 	});
 });
+
+
+describe("worker-discovered local policy", () => {
+ test("reports discovery, retries without a config change, and blocks the previous stream", async () => {
+  const dir = await profile([{id:"old"}]);
+  const base = "http://127.0.0.1:3301/v1";
+  await writeFile(join(dir,"models.json"),JSON.stringify({providers:{
+   piso:{apiKey:"piso_old",baseUrl:"https://remote/v1",models:[{id:"old"}]},
+   "piso-tinfoil":{apiKey:"piso_fake",baseUrl:base,models:[]},
+  }}));
+  process.env.GATEWAY_URL="http://gateway:8083";
+  process.env.PISO_WORKER_NAME="piso-worker-demo";
+  let ready=false; let discoveries=0; const reports:any[]=[];
+  const now=Date.now; let clock=now(); Date.now=()=>clock;
+  try {
+   globalThis.fetch=(async(input:any,init:any)=>{
+    const url=String(input);
+    if(url.endsWith("/model/catalog")) { reports.push(JSON.parse(init.body)); return Response.json({ok:true}); }
+    if(url.includes("/worker/model?")) return Response.json({provider:"piso-tinfoil",model:"",providers:{piso:[]},modelPolicies:{
+     piso:{mode:"unavailable",baseUrl:"https://remote/v1"},
+     "piso-tinfoil":{mode:"worker-discovered",discovery:"worker",baseUrl:base},
+    }});
+    expect(url).toBe(base+"/models"); discoveries++;
+    return ready?Response.json({data:[{id:"enclave"}]}):new Response("",{status:503});
+   }) as typeof fetch;
+   const configs=new Map<string,any>(); const selected:any[]=[];
+   const pi={registerProvider:(id:string,c:any)=>configs.set(id,c),unregisterProvider(){},on(){},setModel:async(m:any)=>{selected.push(m);return true;}};
+   const ctx:any={isIdle:()=>true,modelRegistry:{
+    getModelsOfType:(_t:string,id:string)=>configs.get(id)?.models.map((m:any)=>({...m,provider:id}))??[],
+    find:(id:string,model:string)=>configs.get(id)?.models.find((m:any)=>m.id===model),
+   }};
+   const apply=wireLiveApply(pi as any);
+   await apply(ctx,true);
+   expect(discoveries).toBe(1);
+   expect(selected).toHaveLength(0);
+   expect(()=>configs.get("piso").streamSimple({provider:"piso",id:"old",baseUrl:"https://remote/v1"},{messages:[]})).toThrow(/previous provider cannot generate/);
+   await apply(ctx,false); expect(discoveries).toBe(1);
+   ready=true; clock+=15001;
+   await apply(ctx,false);
+   expect(discoveries).toBe(2);
+   expect(selected.at(-1)?.id).toBe("enclave");
+   expect(configs.get("piso-tinfoil").models.map((m:any)=>m.id)).toEqual(["enclave"]);
+   expect(reports.some(r=>r.failed)).toBe(true);
+   expect(reports.some(r=>!r.failed && r.models[0]==="enclave")).toBe(true);
+  } finally { Date.now=now; }
+ });
+});

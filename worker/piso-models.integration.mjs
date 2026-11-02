@@ -172,3 +172,77 @@ test(`real Pi CLI ${mode} first launch: ${menu ? `${provider} offers only the Mo
 	assert.equal(settings.defaultModel, defaultModel);
 });
 }
+
+// A real CLI regression for the loopback Tinfoil contract. No enclave/real key needed.
+for (const scenario of ["discovered", "manual", "unresolved"]) {
+ test(`Tinfoil ${scenario}: local discovery and no previous-provider traffic`, {
+  skip: !cli, timeout: 30_000,
+ }, async (t) => {
+  const dir = await mkdtemp(resolve(".piso-tinfoil-cli-test-"));
+  const agentDir = join(dir, "agent"); await mkdir(agentDir);
+  let child; let localCalls = 0; let oldCalls = 0; let catalogCalls = 0;
+  const old = createServer((_req,res) => { oldCalls++; res.writeHead(500); res.end(); });
+  const local = createServer(async (req,res) => {
+   assert.equal(req.headers.authorization, "Bearer piso_fake_tinfoil");
+   if (req.url === "/v1/models") {
+    catalogCalls++;
+    res.writeHead(scenario === "discovered" ? 200 : 503, {"content-type":"application/json"});
+    res.end(JSON.stringify({data:[{id:"enclave-model"}]})); return;
+   }
+   assert.equal(req.url,"/v1/chat/completions");
+   let body=""; for await (const chunk of req) body+=chunk;
+   assert.equal(JSON.parse(body).model, scenario === "manual" ? "manual-model" : "enclave-model");
+   localCalls++;
+   res.writeHead(200,{"content-type":"text/event-stream"});
+   res.end('data: {"id":"test","choices":[{"index":0,"delta":{"role":"assistant","content":"ok"},"finish_reason":null}]}\n\ndata: {"id":"test","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n');
+  });
+  t.after(async () => {
+   if (child && child.exitCode === null && child.signalCode === null) {
+    await new Promise(done => { child.once("exit",done); child.kill("SIGKILL"); });
+   }
+   for (const server of [local,old]) if (server.listening) {
+    server.closeAllConnections(); await new Promise(done => server.close(done));
+   }
+   await rm(dir,{recursive:true,force:true});
+  });
+  await new Promise(done=>old.listen(0,"127.0.0.1",done));
+  // Explicit worker-discovery policy permits an ephemeral loopback fake.
+  await new Promise((done,reject)=>{local.once("error",reject);local.listen(0,"127.0.0.1",done);});
+  const base=`http://127.0.0.1:${local.address().port}/v1`;
+  await writeFile(join(agentDir,"models.json"),JSON.stringify({providers:{
+   piso:{api:"openai-completions",apiKey:"piso_old",baseUrl:`http://127.0.0.1:${old.address().port}/v1`,models:[{id:"old-model"}]},
+   "piso-tinfoil":{api:"openai-completions",apiKey:"piso_fake_tinfoil",baseUrl:base,models:[]},
+  }}));
+  await writeFile(join(agentDir,"settings.json"),JSON.stringify({defaultProvider:"piso",defaultModel:"old-model"}));
+  await writeFile(join(agentDir,"piso-model.json"),JSON.stringify({
+   provider:"piso-tinfoil",model:scenario === "manual" ? "manual-model" : "",
+   providers:{piso:[]},modelPolicies:{
+    piso:{mode:"unavailable",baseUrl:`http://127.0.0.1:${old.address().port}/v1`},
+    "piso-tinfoil":{mode:"worker-discovered",baseUrl:base},
+   },
+  }));
+  child=spawn(process.execPath,[resolve(cli),"--mode","rpc","--no-session","--no-extensions","--no-skills","--no-prompt-templates","--no-themes","-e",resolve(extension)],{
+   cwd:dir,env:{PATH:process.env.PATH,HOME:dir,PI_AGENT_DIR:agentDir,PI_CODING_AGENT_DIR:agentDir},stdio:["pipe","pipe","pipe"],
+  });
+  let stderr=""; child.stderr.on("data",chunk=>stderr+=chunk);
+  const lines=createInterface({input:child.stdout});
+  let resolveMenu; const menu=new Promise(done=>resolveMenu=done);
+  let resolveEnd; const end=new Promise(done=>resolveEnd=done);
+  const messages=[];
+  lines.on("line",line=>{
+   let m;try {m=JSON.parse(line);} catch{return;}
+   messages.push(m);
+   if(m.type==="response" && m.command==="get_available_models") resolveMenu(m.data?.models??[]);
+   if(m.type==="agent_end" || (m.type==="response" && m.command==="prompt" && !m.success)) resolveEnd();
+  });
+  child.stdin.write(JSON.stringify({type:"get_available_models",id:"menu"})+"\n");
+  const offered=await menu;
+  assert.equal(offered.some(m=>m.provider==="piso"),false,stderr);
+  if(scenario!=="unresolved") assert.ok(offered.some(m=>m.provider==="piso-tinfoil" && m.id===(scenario==="manual"?"manual-model":"enclave-model")),stderr);
+  child.stdin.write(JSON.stringify({type:"prompt",message:"Say ok",id:"prompt"})+"\n");
+  await end;
+  assert.ok(catalogCalls>0,stderr);
+  assert.equal(oldCalls,0,JSON.stringify({messages,stderr}));
+  assert.equal(localCalls,scenario==="unresolved"?0:1,JSON.stringify({messages,stderr}));
+ });
+}
