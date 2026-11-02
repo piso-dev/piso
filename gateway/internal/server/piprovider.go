@@ -44,6 +44,10 @@ type piProviderView struct {
 	Placeholder    string `json:"placeholder,omitempty"`
 	DefaultModel   string `json:"defaultModel"`
 	EffectiveModel string `json:"effectiveModel,omitempty"`
+	// DefaultThinkingLevel is the pi thinking level new sessions on this
+	// provider start on. Empty means pi's own default: the settings key is
+	// left out rather than written with a level nobody picked.
+	DefaultThinkingLevel string `json:"defaultThinkingLevel,omitempty"`
 	// ApprovedModels is the stored list as the edit dialog shows it; an empty
 	// list means "only the default". AllowedModels is the resolved set the pin
 	// actually enforces, so the dashboard never has to re-derive the fallback.
@@ -93,6 +97,11 @@ func (s *Server) handlePutPiProvider(w http.ResponseWriter, r *http.Request) {
 		BaseURL      string `json:"baseUrl"`
 		Kind         string `json:"kind"`
 		DefaultModel string `json:"defaultModel"`
+		// DefaultThinkingLevel is one of piprofile.ThinkingLevels, or empty for
+		// pi's default. Refused rather than stored when pi would not know it:
+		// settings.json is read by pi, not by us, so an unknown level is not an
+		// error anyone here would ever see.
+		DefaultThinkingLevel string `json:"defaultThinkingLevel"`
 		// ApprovedModels narrows what this provider may serve. An absent or
 		// empty list keeps the pre-allowlist behaviour: only the default model.
 		// A dashboard that predates the field therefore narrows rather than
@@ -160,6 +169,13 @@ func (s *Server) handlePutPiProvider(w http.ResponseWriter, r *http.Request) {
 		approved = cleanModelIDs(existing.ApprovedModels)
 	}
 	defaultModel := strings.TrimSpace(in.DefaultModel)
+	thinkingLevel := strings.TrimSpace(in.DefaultThinkingLevel)
+	if !piprofile.ValidThinkingLevel(thinkingLevel) {
+		writeJSON(w, 400, map[string]string{"error": fmt.Sprintf(
+			"%q is not a thinking level pi knows; pick one of: %s (or leave it empty for pi's default)",
+			thinkingLevel, strings.Join(piprofile.ThinkingLevels, ", "))})
+		return
+	}
 	// A mismatch between the approved list and the default is not an error: the
 	// default is always usable, so the list cannot lock a provider out of its own
 	// start state. Say so plainly, because the resolved set the dashboard shows
@@ -174,6 +190,7 @@ func (s *Server) handlePutPiProvider(w http.ResponseWriter, r *http.Request) {
 		BaseURL:        baseURL,
 		Kind:           kind,
 		DefaultModel:   defaultModel,
+		ThinkingLevel:  thinkingLevel,
 		ApprovedModels: approved,
 		APIType:        strings.TrimSpace(in.API),
 		UpdatedAt:      time.Now().UTC(),
@@ -330,12 +347,15 @@ func (s *Server) providerViewFor(p *store.PiProviderRec, fs profileFileState) pi
 		Kind:           p.Kind,
 		DefaultModel:   p.DefaultModel,
 		EffectiveModel: effectivePiModel(p),
-		ApprovedModels: append([]string(nil), p.ApprovedModels...),
-		AllowedModels:  p.AllowedModelIDs(),
-		API:            p.APIType,
-		Active:         p.ID == activeID,
-		CatalogError:   p.CatalogError,
-		Models:         append([]string(nil), p.Models...),
+		// No fallback chain here: a level is not inherited from anywhere, so an
+		// empty one is simply "not set" and pi picks its default.
+		DefaultThinkingLevel: p.ThinkingLevel,
+		ApprovedModels:       append([]string(nil), p.ApprovedModels...),
+		AllowedModels:        p.AllowedModelIDs(),
+		API:                  p.APIType,
+		Active:               p.ID == activeID,
+		CatalogError:         p.CatalogError,
+		Models:               append([]string(nil), p.Models...),
 	}
 	if !p.UpdatedAt.IsZero() {
 		view.UpdatedAt = p.UpdatedAt.UTC().Format(time.RFC3339)
@@ -524,6 +544,26 @@ func (s *Server) applyPiProviders() piProviderListView {
 		}
 	}
 	if err := piprofile.WriteProviderDefault(s.piProfileDir(), providerID, modelID); err != nil {
+		view := s.piProviderListView()
+		view.Applied = false
+		view.Warning = err.Error()
+		return view
+	}
+	// The thinking level is account-wide, like the default model: it lands in
+	// the same shared settings.json, so it can only express the active
+	// provider's level. A worker with an override carries its own level in the
+	// worker-model answer instead, because this file is mounted by every
+	// worker at once.
+	level := ""
+	if active != nil {
+		for _, written := range providers {
+			if written.ID == active.ID {
+				level = active.ThinkingLevel
+				break
+			}
+		}
+	}
+	if err := piprofile.WriteThinkingLevel(s.piProfileDir(), level); err != nil {
 		view := s.piProviderListView()
 		view.Applied = false
 		view.Warning = err.Error()

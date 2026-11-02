@@ -36,6 +36,12 @@ type modelOverrideView struct {
 	// PinnedModel is the model the row asked for. It differs from Model when
 	// the pin was dropped — see Drifted.
 	PinnedModel string `json:"pinnedModel,omitempty"`
+	// ThinkingLevel is the level this worker runs on. It is the row's own
+	// level when it set one, else its provider's, else "" (pi's default).
+	// PinnedThinkingLevel is what the row asked for, so the form can show an
+	// explicit level differently from an inherited one.
+	ThinkingLevel       string `json:"thinkingLevel,omitempty"`
+	PinnedThinkingLevel string `json:"pinnedThinkingLevel,omitempty"`
 	// LiveModel is what the worker last reported running (advisory; it is a
 	// different thing from the configured selection).
 	LiveModel string `json:"liveModel,omitempty"`
@@ -54,10 +60,13 @@ type modelOverrideView struct {
 // provider secret's scope (empty = every worker), so the dashboard can say up
 // front that a pick will not authenticate from a worker outside that list.
 type modelOverrideProviderView struct {
-	ID           string   `json:"id"`
-	Name         string   `json:"name,omitempty"`
-	DefaultModel string   `json:"defaultModel,omitempty"`
-	Workers      []string `json:"workers,omitempty"`
+	ID           string `json:"id"`
+	Name         string `json:"name,omitempty"`
+	DefaultModel string `json:"defaultModel,omitempty"`
+	// ThinkingLevel is the level this provider's sessions start on; empty
+	// means pi's default. The override form shows it as the inherited value.
+	ThinkingLevel string   `json:"thinkingLevel,omitempty"`
+	Workers       []string `json:"workers,omitempty"`
 	// AllowedModels is the set a pin may name, so the dashboard's model
 	// dropdown offers exactly what the gateway will accept instead of the
 	// provider's whole catalog.
@@ -84,9 +93,10 @@ type modelOverrideListView struct {
 }
 
 type modelOverrideAccountView struct {
-	ProviderID   string `json:"providerId,omitempty"`
-	ProviderName string `json:"providerName,omitempty"`
-	Model        string `json:"model,omitempty"`
+	ProviderID    string `json:"providerId,omitempty"`
+	ProviderName  string `json:"providerName,omitempty"`
+	Model         string `json:"model,omitempty"`
+	ThinkingLevel string `json:"thinkingLevel,omitempty"`
 }
 
 // workerModelView is the worker-facing answer: "start on this provider/model".
@@ -100,6 +110,11 @@ type workerModelView struct {
 	// is already applied here.
 	Source  string `json:"source"`
 	Warning string `json:"warning,omitempty"`
+	// ThinkingLevel is the level this session should run on. "" means the
+	// gateway has no opinion and the worker keeps whatever pi resolved from
+	// settings.json, so an older gateway (which omits the field) and a
+	// dashboard that never set a level behave identically.
+	ThinkingLevel string `json:"thinkingLevel,omitempty"`
 	// AllowedModels is the closed set this worker's requests may name. The
 	// worker filters its /model picker to it: models.json lists a provider's
 	// whole catalog, and offering ids the gateway will refuse turns a policy
@@ -128,13 +143,17 @@ type workerModelView struct {
 // and offering it in /model only moves the dashboard's policy to a 403 in the
 // middle of a session.
 //
-// A local (Tinfoil) provider is the exception and not as a kindness: its base URL
-// is loopback, which NO_PROXY keeps off the proxy, so modelPin never sees its
-// requests and the enclave proxy inside the worker picks the model. Its approved
-// list is the only thing standing between the worker and a model, so it stays.
+// A local (Tinfoil) provider is not exempt. Its base URL is loopback, which
+// NO_PROXY keeps off the proxy, so modelPin never sees its requests and the
+// gateway cannot refuse one — which is why the worker extension, not the
+// gateway, has to enforce the pin there. Leaving its list on an unpinned worker
+// let that worker generate through Tinfoil while the dashboard said it was
+// running on another provider, spending on a provider the operator had not
+// selected. So it gets the same closed denial as any other off-pin provider.
 //
-// Empty means a known denial. Local providers without explicit approvals are
-// omitted: their catalog is worker-discovered, not a gateway-visible empty set.
+// Empty means a known denial. A pinned local provider with no explicit
+// approvals is omitted: its catalog is worker-discovered, not a
+// gateway-visible empty set.
 func (s *Server) usableAllowlists(pinned string) map[string][]string {
 	stack := s.Store.PiProviderStack()
 	if len(stack) == 0 {
@@ -146,7 +165,7 @@ func (s *Server) usableAllowlists(pinned string) map[string][]string {
 		if p.ID == "" {
 			continue
 		}
-		if p.ID != pinned && !piProviderIsLocal(p) {
+		if p.ID != pinned {
 			out[p.ID] = []string{}
 			continue
 		}
@@ -185,6 +204,10 @@ func (s *Server) resolveWorkerModel(slug string) workerModelView {
 		if piProviderIsLocal(p) {
 			out.AllowedModels = localApprovedModels(p)
 		}
+		out.ThinkingLevel = rec.ThinkingLevel
+		if out.ThinkingLevel == "" {
+			out.ThinkingLevel = p.ThinkingLevel
+		}
 		if pinned := strings.TrimSpace(rec.Model); pinned != "" {
 			switch s.pinnedModelDrift(p, pinned) {
 			case "":
@@ -214,6 +237,7 @@ func (s *Server) resolveWorkerModel(slug string) workerModelView {
 		if piProviderIsLocal(p) {
 			out.AllowedModels = localApprovedModels(p)
 		}
+		out.ThinkingLevel = p.ThinkingLevel
 	}
 	out.Providers = s.usableAllowlists(out.Provider)
 	out.ModelPolicies = s.workerModelPolicies(out.Provider, slug)
@@ -302,9 +326,10 @@ func (s *Server) modelOverrideListView() modelOverrideListView {
 	view := modelOverrideListView{Overrides: []modelOverrideView{}, Providers: []modelOverrideProviderView{}}
 	if p := s.Store.PiProvider(); p != nil {
 		view.Account = modelOverrideAccountView{
-			ProviderID:   p.ID,
-			ProviderName: piProviderLabel(p),
-			Model:        effectivePiModel(p),
+			ProviderID:    p.ID,
+			ProviderName:  piProviderLabel(p),
+			Model:         effectivePiModel(p),
+			ThinkingLevel: p.ThinkingLevel,
 		}
 	}
 	for _, p := range s.Store.PiProviderStack() {
@@ -313,6 +338,7 @@ func (s *Server) modelOverrideListView() modelOverrideListView {
 			ID:            rec.ID,
 			Name:          piProviderLabel(&rec),
 			DefaultModel:  effectivePiModel(&rec),
+			ThinkingLevel: rec.ThinkingLevel,
 			Workers:       s.providerWorkers(&rec),
 			AllowedModels: rec.AllowedModelIDs(),
 			Models:        s.localCatalogModels(&rec),
@@ -322,7 +348,7 @@ func (s *Server) modelOverrideListView() modelOverrideListView {
 		})
 	}
 	for _, rec := range s.Store.ModelOverrides() {
-		row := modelOverrideView{Slug: rec.Slug, ProviderID: rec.ProviderID, PinnedModel: rec.Model, Source: "override"}
+		row := modelOverrideView{Slug: rec.Slug, ProviderID: rec.ProviderID, PinnedModel: rec.Model, PinnedThinkingLevel: rec.ThinkingLevel, Source: "override"}
 		if w, ok := s.Store.WorkerBySlug(rec.Slug); ok {
 			row.Worker = w.Name
 		}
@@ -353,6 +379,7 @@ func (s *Server) modelOverrideListView() modelOverrideListView {
 			// worker will not actually run.
 			resolved := s.resolveWorkerModel(rec.Slug)
 			row.Model = resolved.Model
+			row.ThinkingLevel = resolved.ThinkingLevel
 			row.DriftState = store.ModelDriftState(store.ModelDriftFor(p, nil), rec.Model).State
 			if rec.Model != "" && resolved.Model != rec.Model {
 				row.Drifted = true
@@ -363,6 +390,7 @@ func (s *Server) modelOverrideListView() modelOverrideListView {
 		} else {
 			resolved := s.resolveWorkerModel(rec.Slug)
 			row.Source = resolved.Source
+			row.ThinkingLevel = resolved.ThinkingLevel
 			row.Warning = resolved.Warning
 			if row.Warning == "" {
 				row.Warning = "the pinned provider no longer exists; this worker uses the account default"
@@ -381,6 +409,10 @@ func (s *Server) handlePutModelOverride(w http.ResponseWriter, r *http.Request) 
 		Slug       string `json:"slug"`
 		ProviderID string `json:"providerId"`
 		Model      string `json:"model"`
+		// ThinkingLevel is optional: an empty value leaves the provider's
+		// level in place, which is also what a dashboard that predates the
+		// field sends.
+		ThinkingLevel string `json:"thinkingLevel"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		writeJSON(w, 400, map[string]string{"error": "bad json"})
@@ -439,7 +471,14 @@ func (s *Server) handlePutModelOverride(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 	}
-	if _, err := s.Store.SetModelOverride(slug, id, model); err != nil {
+	level := strings.TrimSpace(in.ThinkingLevel)
+	if !piprofile.ValidThinkingLevel(level) {
+		writeJSON(w, 400, map[string]string{"error": fmt.Sprintf(
+			"%q is not a thinking level pi knows; pick one of: %s (or leave it empty to follow the provider)",
+			level, strings.Join(piprofile.ThinkingLevels, ", "))})
+		return
+	}
+	if _, err := s.Store.SetModelOverride(slug, id, model, level); err != nil {
 		writeJSON(w, 500, map[string]string{"error": err.Error()})
 		return
 	}

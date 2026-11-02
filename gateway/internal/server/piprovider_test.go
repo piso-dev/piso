@@ -1093,3 +1093,55 @@ func TestWorkerPiProfileBootstrapsMissingProfile(t *testing.T) {
 		t.Fatalf("profile not written: %v", err)
 	}
 }
+
+// The thinking level is account-wide and lands in the shared settings.json
+// beside the default model. A level pi does not know is refused here, because
+// nothing downstream would ever report it: pi reads that file, not this gateway.
+func TestPutPiProviderThinkingLevel(t *testing.T) {
+	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"data":[{"id":"model-a"}]}`)
+	}))
+	defer fake.Close()
+	s, profile := providerTestServer(t, fake)
+
+	put := func(id, level string) *httptest.ResponseRecorder {
+		body := fmt.Sprintf(`{"id":%q,"secretId":"11111111-1111-1111-1111-111111111111","baseUrl":%q,"defaultModel":"model-a","defaultThinkingLevel":%q}`, id, fake.URL+"/v1", level)
+		rec := httptest.NewRecorder()
+		s.handlePutPiProvider(rec, httptest.NewRequest(http.MethodPut, "/api/v1/pi-provider", strings.NewReader(body)))
+		return rec
+	}
+	bad := put("", "turbo")
+	if bad.Code != 400 || !strings.Contains(bad.Body.String(), "thinking level") {
+		t.Fatalf("unknown level: status %d body %s", bad.Code, bad.Body.String())
+	}
+	first := put("", "high")
+	if first.Code != 200 {
+		t.Fatalf("status %d body %s", first.Code, first.Body.String())
+	}
+	var view piProviderView
+	if err := json.Unmarshal(first.Body.Bytes(), &view); err != nil {
+		t.Fatal(err)
+	}
+	if view.DefaultThinkingLevel != "high" {
+		t.Fatalf("view level = %q", view.DefaultThinkingLevel)
+	}
+	raw, err := os.ReadFile(filepath.Join(profile, "settings.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"defaultThinkingLevel": "high"`) {
+		t.Fatalf("settings: %s", raw)
+	}
+	// Clearing removes the key rather than writing a level nobody chose: pi's
+	// own default is the absence of the key.
+	if rec := put(view.ID, ""); rec.Code != 200 {
+		t.Fatalf("clear: status %d body %s", rec.Code, rec.Body.String())
+	}
+	raw, _ = os.ReadFile(filepath.Join(profile, "settings.json"))
+	if strings.Contains(string(raw), "defaultThinkingLevel") {
+		t.Fatalf("settings after clear: %s", raw)
+	}
+	if !strings.Contains(string(raw), `"defaultModel": "model-a"`) {
+		t.Fatalf("clearing the level dropped the model: %s", raw)
+	}
+}

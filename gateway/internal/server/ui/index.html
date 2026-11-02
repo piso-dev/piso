@@ -2274,9 +2274,15 @@
         bottom: 0;
         display: flex;
         flex-direction: column;
-        justify-content: center;
+        /* Top-aligned, not centred: the strip is absolutely positioned, so a
+           centred stack tracks the card's height. When a drift or "catalog is
+           served inside the worker" line appears the card grows and the
+           buttons would slide down with it; pinned to the top they stay level
+           with the provider name. */
+        justify-content: flex-start;
         gap: 8px;
-        padding: 12px;
+        /* 16px top matches the title's inset in .provider-select. */
+        padding: 16px 12px 12px;
         border-left: 1px solid var(--line);
       }
       @media (max-width: 720px) {
@@ -2344,9 +2350,12 @@
       /* Drift on a provider card. The alert is for a default model that is gone
          (new sessions start broken); the dim line is a shrinking approved list
          or the reason no check was possible. Neither is styled as an error when
-         the catalog was never read: "not checked" is not "broken". */
-      .provider-warning { margin: 0; padding: 0 4px 8px; color: var(--red); font-size: 13px; }
-      .provider-drift { margin: 0; padding: 0 4px 8px; color: var(--muted); font-size: 12px; }
+         the catalog was never read: "not checked" is not "broken".
+         They sit outside .provider-select, so they carry its inset themselves:
+         16px on the left to line up with the name and status text, and the same
+         116px on the right the select reserves for the actions strip. */
+      .provider-warning { margin: 0; padding: 0 116px 8px 16px; color: var(--red); font-size: 13px; }
+      .provider-drift { margin: 0; padding: 0 116px 8px 16px; color: var(--muted); font-size: 12px; }
     </style>
   </head>
   <body>
@@ -6257,6 +6266,19 @@
       // It sits beside the other Tinfoil constants so the provider form and the
       // tests that slice it out both carry their own definitions.
       const TINFOIL_BASE_URL = "http://127.0.0.1:3301/v1";
+      // pi's defaultThinkingLevel values, cheapest first. Offered as a closed
+      // list because settings.json is read by pi, not by the gateway: a typo
+      // there is silently ignored, which looks like the setting not working.
+      const THINKING_LEVELS = [
+        ["", "pi's default (medium)"],
+        ["off", "off — no thinking"],
+        ["minimal", "minimal"],
+        ["low", "low"],
+        ["medium", "medium"],
+        ["high", "high"],
+        ["xhigh", "xhigh"],
+        ["max", "max"],
+      ];
       // The secret a Tinfoil provider is bound to must cover the enclave the
       // proxy sends to, not the loopback address pi dials.
       const TINFOIL_HOST_RULE = "*.tinfoil.sh";
@@ -6494,6 +6516,7 @@
         const accountLine = account.providerId
           ? `Account default: <strong>${esc(account.providerName || account.providerId)}</strong>` +
             (account.model ? ` · ${esc(account.model)}` : "") +
+            (account.thinkingLevel ? ` · ${esc(account.thinkingLevel)} thinking` : "") +
             (inheriting
               ? ` — ${inheriting} ${inheriting === 1 ? "worker follows" : "workers follow"} it.`
               : " — no worker is left on it.")
@@ -6501,6 +6524,10 @@
         const rows = overrides
           .map((o) => {
             const live = o.model ? o.model : "no model resolved";
+            // The level is only named when it is set: a provider's inherited
+            // level is already on the provider card, and repeating "medium" on
+            // every row would read as a policy the operator chose here.
+            const level = o.thinkingLevel ? ` · ${esc(o.thinkingLevel)} thinking` : "";
             // A drifted row shows both models: the pin is still the operator's
             // intent, and the worker is running something else because the
             // provider stopped offering it. Hiding either one would make the
@@ -6514,7 +6541,7 @@
             return `<li class="override-row">
               <span class="override-worker">${esc(o.slug)}</span>
               <span class="override-provider">${esc(o.providerName || o.providerId || "provider removed")}</span>
-              <span class="override-model">${shown}</span>
+              <span class="override-model">${shown}${level}</span>
               <span class="override-actions">${button("Edit", "override-edit", o.slug, "small")}${button("Remove", "override-remove", o.slug, "small danger")}</span>
               ${warning}
             </li>`;
@@ -6617,7 +6644,16 @@
             : "The worker starts on this provider instead of the account default. The shared provider stack is unchanged, and the switch happens at the worker's next idle boundary — no reload is needed. A provider whose secret is not granted to the worker cannot be chosen: the worker would receive a placeholder it has no value for. The model is optional and limited to the provider's approved models: leaving it empty follows the provider's default, so the row keeps working if that default later moves.",
           workerField +
             providerField +
-            suggestField("model", "Model (optional)", editing ? editing.pinnedModel || "" : ""),
+            suggestField("model", "Model (optional)", editing ? editing.pinnedModel || "" : "") +
+            field(
+              "thinkingLevel",
+              "Thinking level (optional)",
+              editing ? editing.pinnedThinkingLevel || "" : "",
+              {
+                choices: THINKING_LEVELS,
+                hint: "Leave it at the provider's level unless this worker needs its own. The level is applied after the model switch, because pi clamps it to the model it is set against.",
+              },
+            ),
           editing ? "Save override" : "Pin worker",
           async (f) => {
             const model = String(f.model || "").trim();
@@ -6629,6 +6665,7 @@
               slug: editing ? editing.slug : f.slug,
               providerId: f.providerId,
               model,
+              thinkingLevel: String(f.thinkingLevel || "").trim(),
             });
             await changed(["modelOverrides"]);
             return "Override saved. The worker switches at its next idle boundary.";
@@ -6749,6 +6786,19 @@
           required: true,
           full: true,
         });
+        // The thinking level sits beside the default model because they are one
+        // startup selection. It is account-wide (it lands in the same shared
+        // settings.json), so a worker with an override carries its own level in
+        // the worker-model answer instead.
+        const thinkingField = field(
+          "defaultThinkingLevel",
+          "Default thinking level (optional)",
+          p.defaultThinkingLevel || "",
+          {
+            choices: THINKING_LEVELS,
+            hint: "The level new sessions on this provider start on. Leave it at pi's default unless this model needs one; a level a model cannot support is clamped by pi. A per-worker override can set its own level on the Workers tab.",
+          },
+        );
         const modelField = `<label class="field full" for="f-defaultModel"><span>Default model (optional)</span><input name="defaultModel" id="f-defaultModel" type="text" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="modelList" autocomplete="off" placeholder="First model the provider lists" value="${esc(p.defaultModel || "")}"><ul id="modelList" class="suggestions" role="listbox" hidden></ul><small id="modelHint">Choose an API key secret to load its model list.</small></label>`;
         // Approved models are the closed set the gateway will accept from a
         // worker on this provider, and what /model offers inside a session.
@@ -6763,7 +6813,7 @@
         formDialog(
           id ? "Edit provider" : "Add provider",
           "A provider is a secret, an API base URL, and an optional default model. Saving writes it to the shared pi profile; activating it makes it the startup default for new sessions. The model list is optional: a provider saves even when its catalog cannot be reached.",
-          tabs + shared + urlPanel + tinfoilPanel + modelField + approvedField,
+          tabs + shared + urlPanel + tinfoilPanel + modelField + thinkingField + approvedField,
           id ? "Save provider" : "Add provider",
           async (f) => {
             // The Tinfoil tab has no URL input at all; its URL is a constant,

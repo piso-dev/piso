@@ -43,6 +43,7 @@ type piProviderDoc struct {
 			Kind           *string   `json:"kind"`
 			APIType        *string   `json:"api"`
 			ApprovedModels *[]string `json:"approvedModels"`
+			ThinkingLevel  *string   `json:"thinkingLevel"`
 		} `json:"providers"`
 	} `json:"metadata"`
 	UpdatedAt string `json:"updated_at"`
@@ -99,7 +100,7 @@ func syncPiProvider(st *store.Store, dataDir string, id tc.Identity) error {
 				BaseURL:      rp.BaseURL,
 				DefaultModel: rp.DefaultModel,
 				UpdatedAt:    remoteAt,
-			}, rp.Kind, rp.APIType, rp.ApprovedModels)
+			}, rp.Kind, rp.APIType, rp.ApprovedModels, rp.ThinkingLevel)
 			if err := st.UpsertPiProvider(rec); err != nil {
 				return err
 			}
@@ -179,6 +180,7 @@ func publishPiProvider(st *store.Store, id tc.Identity) error {
 		APIType        string   `json:"api"`
 		DefaultModel   string   `json:"defaultModel"`
 		ApprovedModels []string `json:"approvedModels"`
+		ThinkingLevel  string   `json:"thinkingLevel"`
 	}
 	providers := make([]publishedProvider, 0, len(profiles))
 	for _, p := range profiles {
@@ -197,6 +199,7 @@ func publishPiProvider(st *store.Store, id tc.Identity) error {
 			APIType:        p.APIType,
 			DefaultModel:   p.DefaultModel,
 			ApprovedModels: approved,
+			ThinkingLevel:  p.ThinkingLevel,
 		})
 	}
 	if len(providers) == 0 {
@@ -207,6 +210,7 @@ func publishPiProvider(st *store.Store, id tc.Identity) error {
 		meta["secretId"] = active.SecretID
 		meta["baseUrl"] = active.BaseURL
 		meta["defaultModel"] = active.DefaultModel
+		meta["thinkingLevel"] = active.ThinkingLevel
 		meta["activeId"] = active.ID
 	}
 	body, _ := json.Marshal(map[string]any{
@@ -244,11 +248,12 @@ func publishPiProvider(st *store.Store, id tc.Identity) error {
 // catalog is fetched here (never published), and a coordinator that predates a
 // field omits it, which must not read as "clear it" — that is what erased an
 // approved list on every reconcile.
-func mergePiProvider(local *store.PiProviderRec, remote store.PiProviderRec, kind, api *string, approved *[]string) store.PiProviderRec {
+func mergePiProvider(local *store.PiProviderRec, remote store.PiProviderRec, kind, api *string, approved *[]string, thinking *string) store.PiProviderRec {
 	rec := remote
 	if local != nil {
 		rec.Kind = local.Kind
 		rec.APIType = local.APIType
+		rec.ThinkingLevel = local.ThinkingLevel
 		rec.ApprovedModels = append([]string(nil), local.ApprovedModels...)
 		rec.Models = append([]string(nil), local.Models...)
 		rec.CatalogCheckedAt = local.CatalogCheckedAt
@@ -263,6 +268,9 @@ func mergePiProvider(local *store.PiProviderRec, remote store.PiProviderRec, kin
 	}
 	if approved != nil {
 		rec.ApprovedModels = cleanedModelIDs(*approved)
+	}
+	if thinking != nil {
+		rec.ThinkingLevel = strings.TrimSpace(*thinking)
 	}
 	return rec
 }
@@ -327,6 +335,17 @@ func applyProviderPointer(st *store.Store, dataDir string) {
 	}
 	if err := piprofile.WriteProviderDefault(dir, providerID, modelID); err != nil {
 		log.Printf("technocore: pi profile: default model: %v", err)
+		return
+	}
+	// The thinking level rides with the default model: it is the other half of
+	// the same startup snapshot, and an empty one removes the key so a level
+	// cleared on the dashboard does not linger here.
+	level := ""
+	if active := st.PiProvider(); active != nil && active.ID == providerID {
+		level = active.ThinkingLevel
+	}
+	if err := piprofile.WriteThinkingLevel(dir, level); err != nil {
+		log.Printf("technocore: pi profile: thinking level: %v", err)
 		return
 	}
 	log.Printf("technocore: pi profile: wrote %s (%d providers)", filepath.Join(dir, "models.json"), len(providers))

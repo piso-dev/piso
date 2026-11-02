@@ -84,6 +84,14 @@ type PiProviderRec struct {
 	// precondition for saving or activating the provider: a failed catalog
 	// fetch leaves the profile intact and the model unresolved.
 	DefaultModel string `json:"defaultModel,omitempty"`
+	// ThinkingLevel is the pi thinking level new sessions on this provider
+	// start on (off, minimal, low, medium, high, xhigh, max). Empty means
+	// "unset": pi applies its own default, and the key is left out of
+	// settings.json rather than written as a level nobody chose. It is stored
+	// next to DefaultModel because that is how the dashboard presents it — one
+	// startup selection — even though the two travel through different
+	// settings keys.
+	ThinkingLevel string `json:"thinkingLevel,omitempty"`
 	// APIType is the pi models.json api adapter. Empty means
 	// openai-completions.
 	APIType string `json:"api,omitempty"`

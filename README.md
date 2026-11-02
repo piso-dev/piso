@@ -173,6 +173,26 @@ explicit empty array clears it. That split is what stops a dashboard older than
 the field from erasing a list configured through the API every time the
 provider is edited.
 
+#### Default thinking level
+
+The active profile also carries a default thinking level, set in the same
+dialog and written as pi's `defaultThinkingLevel` in the shared
+`settings.json`. The empty value is meaningful and is the default: it removes
+the key, so pi applies its own level. A level is refused at save time when pi
+would not recognise it — `off`, `minimal`, `low`, `medium`, `high`, `xhigh`,
+`max` are pi's own values — because that file is read by pi, not by the
+gateway, and an unknown level there fails silently.
+
+A worker override may set its own level. It travels in the worker's model
+answer rather than the shared file, which every worker mounts at once, and the
+extension applies it after switching the model: pi clamps a level to the
+capabilities of the model it is set against, so applying it first would judge
+the new level by the model being replaced. A level set by hand mid-session
+sticks until the dashboard's answer changes. Clearing a level on the dashboard
+reaches new sessions through `settings.json`; a level that is already applied
+in a running session is left alone rather than reset, since there is no
+gateway-side way to distinguish a deliberate local choice from a stale one.
+
 A refused request answers **403** with a body that names the requested model and
 the ids that would have been accepted, plus `X-Piso-Reason` (`model-not-allowed`,
 `model-required`, `model-provider-mismatch`, or `model-pin-unresolved`) and
@@ -217,10 +237,13 @@ is refused as `model-provider-mismatch`, so a model approved on a second remote
 provider is a model this worker cannot use: the tab keeps that provider's list
 for whichever worker is pinned to it, and this one is told nothing is usable
 there. Pinning the worker to that provider in **Model overrides** moves the menu
-with it on the next poll. A local (Tinfoil) provider is the exception — its base
-URL is loopback, which `NO_PROXY` keeps off the proxy, so the pin never sees it
-and its approved list is the only boundary — and it stays in the menu while
-unpinned. The shaping is applied wherever the catalog is assembled — the cached
+with it on the next poll. A local (Tinfoil) provider is not exempt. Its base
+URL is loopback, which `NO_PROXY` keeps off the proxy, so the pin never sees its
+requests and the worker extension is the only place that boundary can be
+enforced: an unpinned local provider is told nothing is usable there, exactly
+like a remote one, and its stream adapter refuses to generate. A worker pinned
+elsewhere therefore cannot spend on Tinfoil behind the dashboard's back. The
+shaping is applied wherever the catalog is assembled — the cached
 `models-store.json`, the `models.json` fallback, and both branches of a refresh —
 and the result is what gets persisted, so a stale cache cannot put removed models
 back one session later.

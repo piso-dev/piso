@@ -163,3 +163,51 @@ func TestWithProviderDefaultWritesStackProvider(t *testing.T) {
 		t.Fatalf("clear kept model: %v", cleared)
 	}
 }
+
+// The thinking level is written next to the default model, and an empty level
+// removes the key instead of writing a level nobody chose: pi's own default is
+// the absence of the key, so a cleared level must not linger as "medium".
+func TestWithThinkingLevel(t *testing.T) {
+	got := decode(t, WithThinkingLevel([]byte(`{"theme":"dark"}`), "high"))
+	if got["defaultThinkingLevel"] != "high" || got["theme"] != "dark" {
+		t.Fatalf("WithThinkingLevel kept %v", got)
+	}
+	cleared := decode(t, WithThinkingLevel([]byte(`{"theme":"dark","defaultThinkingLevel":"high"}`), ""))
+	if _, ok := cleared["defaultThinkingLevel"]; ok {
+		t.Fatalf("an empty level must remove the key, got %v", cleared)
+	}
+	if cleared["theme"] != "dark" {
+		t.Fatalf("WithThinkingLevel dropped an unrelated key: %v", cleared)
+	}
+}
+
+func TestValidThinkingLevel(t *testing.T) {
+	for _, level := range append([]string{""}, ThinkingLevels...) {
+		if !ValidThinkingLevel(level) {
+			t.Fatalf("ValidThinkingLevel(%q) = false", level)
+		}
+	}
+	for _, level := range []string{"turbo", "none", "HIGH"} {
+		if ValidThinkingLevel(level) {
+			t.Fatalf("ValidThinkingLevel(%q) = true", level)
+		}
+	}
+}
+
+// A level tuned for the operator's own model must not follow the profile into
+// every worker, the same rule the default model already follows.
+func TestAdoptHostSettingsDropsHostThinkingLevel(t *testing.T) {
+	host := []byte(`{"theme":"dark","defaultProvider":"anthropic","defaultModel":"opus","defaultThinkingLevel":"max"}`)
+	dest := []byte(`{"defaultProvider":"piso-ai-ml-api","defaultModel":"m1","defaultThinkingLevel":"low"}`)
+	got := decode(t, AdoptHostSettings(host, dest))
+	if got["defaultThinkingLevel"] != "low" {
+		t.Fatalf("dashboard level did not win: %v", got)
+	}
+	if got["theme"] != "dark" {
+		t.Fatalf("host theme lost: %v", got)
+	}
+	without := decode(t, AdoptHostSettings(host, []byte(`{"defaultProvider":"piso-ai-ml-api","defaultModel":"m1"}`)))
+	if _, ok := without["defaultThinkingLevel"]; ok {
+		t.Fatalf("host level leaked into a dashboard profile with none: %v", without)
+	}
+}

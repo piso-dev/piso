@@ -442,9 +442,12 @@ func TestWorkerModelPublishesOnlyUsableProviders(t *testing.T) {
 }
 
 // A local provider's requests never reach the proxy — its base URL is loopback,
-// which NO_PROXY keeps off it — so modelPin cannot judge it and its approved
-// list is the whole boundary. It stays in the menu while unpinned.
-func TestWorkerModelKeepsLocalProvidersWhenUnpinned(t *testing.T) {
+// which NO_PROXY keeps off it — so modelPin cannot judge it. The worker
+// extension is therefore the only place the pin can be enforced for one, and
+// the answer it reads is this one. An unpinned local provider is denied exactly
+// like a remote one: leaving it in the menu let a worker the dashboard said was
+// running on another provider generate through Tinfoil.
+func TestWorkerModelDeniesLocalProvidersWhenUnpinned(t *testing.T) {
 	s := overrideTestServer(t)
 	if err := s.Store.UpsertPiProvider(store.PiProviderRec{
 		ID: "piso-tinfoil", Name: "Tinfoil", SecretID: "sec_aiml",
@@ -453,17 +456,46 @@ func TestWorkerModelKeepsLocalProvidersWhenUnpinned(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	rec := httptest.NewRecorder()
-	s.handleWorkerGetModel(rec, httptest.NewRequest(http.MethodGet, "/api/v1/worker/model?worker=piso-worker-demo", nil))
-	var out workerModelView
-	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
-		t.Fatal(err)
+	view := func() workerModelView {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		s.handleWorkerGetModel(rec, httptest.NewRequest(http.MethodGet, "/api/v1/worker/model?worker=piso-worker-demo", nil))
+		if rec.Code != 200 {
+			t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+		}
+		var out workerModelView
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+			t.Fatal(err)
+		}
+		return out
 	}
+	out := view()
 	if out.Provider == "piso-tinfoil" {
 		t.Fatalf("the account default is remote, not tinfoil: %+v", out)
 	}
+	if got, present := out.Providers["piso-tinfoil"]; !present || len(got) != 0 {
+		t.Fatalf("an unpinned local provider must be a known denial: %#v (present %v)", got, present)
+	}
+	if policy := out.ModelPolicies["piso-tinfoil"]; policy.Mode != "unavailable" || len(policy.Models) != 0 {
+		t.Fatalf("an unpinned local provider must be unavailable: %+v", policy)
+	}
+	// Pinning it is what makes it usable again, in the same answer.
+	if rec := putOverride(t, s, "demo", "piso-tinfoil"); rec.Code != 200 {
+		t.Fatalf("pin: status %d body %s", rec.Code, rec.Body.String())
+	}
+	out = view()
+	if out.Provider != "piso-tinfoil" || out.Model != "llama-local" {
+		t.Fatalf("a pinned local provider keeps its default: %+v", out)
+	}
 	if got := out.Providers["piso-tinfoil"]; len(got) != 1 || got[0] != "llama-local" {
-		t.Fatalf("an unpinned local provider must keep its allowlist: %#v", got)
+		t.Fatalf("a pinned local provider keeps its allowlist: %#v", got)
+	}
+	if policy := out.ModelPolicies["piso-tinfoil"]; policy.Mode != "restricted" || policy.Discovery != "worker" {
+		t.Fatalf("a pinned local provider is restricted, not denied: %+v", policy)
+	}
+	// The remote provider it replaced is now the denial, whichever kind it is.
+	if got, present := out.Providers["piso-scoped"]; !present || len(got) != 0 {
+		t.Fatalf("the previous pin must go empty: %#v (present %v)", got, present)
 	}
 }
 
