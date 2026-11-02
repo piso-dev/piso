@@ -284,6 +284,9 @@ func syncSecrets(st *store.Store, dataDir string, id tc.Identity) error {
 	applied := 0
 	skipped := 0
 	for _, obj := range out.Objects {
+		// AI Boost is materialized only by its encrypted vault client, never
+		// as a plaintext SecretRec in state.json.
+		if obj.Metadata["kind"] == "ai-boost" { continue }
 		kept, err := applyEnvelope(st, id, obj)
 		if err != nil {
 			log.Printf("technocore: skip %s: %v", obj.ResourceID, err)

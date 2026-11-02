@@ -171,7 +171,11 @@
       .telegram-state > span { width: 8px; height: 8px; border-radius: 50%; background: currentColor; flex-shrink: 0; }
       .telegram-state.connected, .telegram-state.linked { color: var(--green); }
       .telegram-state.disconnected { color: var(--red); }
-      .telegram-state.unknown { color: var(--muted); }
+      .telegram-state.unknown, .telegram-state.checking { color: var(--muted); }
+      .telegram-state.checking > span { width: 12px; height: 12px; background: transparent; border: 2px solid currentColor; border-right-color: transparent; }
+      @media (prefers-reduced-motion: no-preference) {
+        .telegram-state.checking > span { animation: boost-refresh-spin 1s linear infinite; }
+      }
       .telegram-linked { border-top: 1px solid var(--line); padding-top: 20px; margin-top: 22px; }
       .telegram-linked h3 { margin-bottom: 6px; }
       .telegram-people { list-style: none; padding: 0; margin: 16px 0 0; }
@@ -5374,18 +5378,25 @@
       function renderTelegram(intro) {
         const local = data.telegram || {};
         const failed = failures.has("telegramAssignments");
+        const loading = !loaded.has("telegramAssignments") && !failed;
         const shared = data.telegramAssignments?.bots || [];
         const bots = shared.length ? shared : local.connected ? [{
           resourceId: local.resourceId, name: local.name, botUsername: local.botUsername,
-          botId: local.botId, users: local.users || [], state: "unknown",
-        }] : [];
+          botId: local.botId, users: local.users || [], state: loading ? "checking" : "unknown",
+        }] : loading ? [{ state: "checking" }] : [];
         count(bots.reduce((n, b) => n + (b.users || []).length, 0));
         const status = (state) => {
-          const labels = { connected: "Connected", starting: "Starting", disconnected: "Disconnected", unknown: "Status unknown" };
+          const labels = { checking: "Checking…", connected: "Connected", starting: "Starting", disconnected: "Disconnected", unknown: "Status unknown" };
           return '<span class="telegram-state ' + esc(state) + '"><span aria-hidden="true"></span>' + (labels[state] || labels.unknown) + '</span>';
         };
         const connectionState = (report) => {
-          if (failed || !report) return failed ? "unknown" : "disconnected";
+          if (failed) return "unknown";
+          if (loading) return "checking";
+          if (!report) return "unknown";
+          if (report.state === "checking") {
+            const deadline = new Date(report.checkingUntil).getTime();
+            return Number.isFinite(deadline) ? (Date.now() < deadline ? "checking" : "disconnected") : "unknown";
+          }
           if (!report.expiresAt) return report.state || "unknown";
           if (new Date(report.expiresAt).getTime() <= Date.now()) return "disconnected";
           if (report.state === "connected" && Date.now() - new Date(report.lastPoll).getTime() >= 120000) return "disconnected";
@@ -5396,7 +5407,9 @@
           const supervisor = b.supervisor;
           const candidates = (b.candidates || []).filter(c => new Date(c.validUntil).getTime() > Date.now());
           const state = connectionState(b);
-          const supState = connectionState(supervisor);
+          const supState = connectionState(supervisor || {
+            state: b.supervisorState, checkingUntil: b.supervisorCheckingUntil,
+          });
           const manageable = !!local.connected && local.resourceId === b.resourceId;
           const botName = b.botUsername ? "@" + b.botUsername : b.name || "Telegram bot";
           const botLink = b.botUsername ? '<a href="https://t.me/' + enc(b.botUsername) + '" target="_blank" rel="noopener noreferrer">Open bot</a>' : "";
@@ -5410,12 +5423,14 @@
           const claim = b.claim || (manageable && local.claimCode ? {code: local.claimCode, expires_at: local.claimExpiresAt} : null);
           const claimPanel = claim ? '<div class="telegram-claim"><h3>Link your Telegram account</h3><p>Send <code>/claim ' + esc(telegramCode(claim.code)) + '</code> in a private chat with the bot.</p><p class="muted">Expires ' + esc(time(claim.expires_at)) + '</p>' + botLink + '</div>' : '';
           const detail = {
+            checking: "Checking the Telegram connection…",
             connected: "Telegram is receiving messages.",
             starting: "The connection is starting; waiting for confirmation.",
             disconnected: "No recent Telegram connection confirmed.",
             unknown: "The serving connection has not reported its status yet.",
           };
           const supDetail = {
+            checking: "Checking the supervisor connection…",
             connected: "The supervisor is checking for messages.",
             starting: "Assigned; waiting for its first message check.",
             disconnected: supervisor ? "The supervisor has stopped checking for messages." : "No supervisor is connected.",
@@ -5428,7 +5443,7 @@
             '<div class="telegram-linked"><h3>Linked people</h3><p class="muted">Linked accounts can message the bot. Telegram does not report whether a person is online.</p>' + people + '</div>' + claimPanel +
             (manageable ? '<div class="telegram-controls">' + button(users.length ? "Link another person" : "Get claim code", "telegram-claim", "", "primary") + button("Replace bot token", "telegram-connect", "", "quiet") + button("Disconnect bot", "telegram-disconnect", "", "quiet danger") + '</div>' : '') + '</section>' +
             '<section class="telegram-panel telegram-supervisor" aria-label="Supervisor connection"><header><h3>Supervisor connection</h3>' + status(supState) + '</header>' +
-            '<p class="telegram-identity">' + esc(supervisor?.name || 'No supervisor') + '</p><p>' + supDetail[supState] + '</p>' +
+            '<p class="telegram-identity">' + esc(supervisor?.name || (supState === 'checking' ? 'Waiting for confirmation' : supState === 'unknown' ? 'Supervisor not confirmed' : 'No supervisor')) + '</p><p>' + supDetail[supState] + '</p>' +
             (Array.isArray(b.candidates) && !candidates.length ? '<p>Waiting for an eligible cloud ship to connect.</p>' : '') +
             candidates.map(c => '<p class="muted">Eligible: ' + esc(c.name) + ' through ' + esc(c.gatewayName) + ' · last seen ' + esc(age(c.lastSeen)) + '</p>').join('') +
             (supervisor ? '<dl class="telegram-meta"><dt>Connected through</dt><dd>' + esc(supervisor.gatewayName || 'Unknown gateway') + '</dd><dt>Last confirmed</dt><dd>' + esc(supervisor.lastPoll ? age(supervisor.lastPoll) : 'Not yet') + '</dd></dl>' : '') + '</section></div>';
@@ -6088,7 +6103,7 @@
         }).catch((err) => { tab.close(); errorDialog(err); });
       }
       function boostDisconnect() {
-        confirmAction("Disconnect AI Boost?", "This deletes the tokens in Piso only. The AI Boost grant is not revoked and can remain active until it expires.", "Disconnect", async () => {
+        confirmAction("Disconnect shared AI Boost?", "This deletes the tokens in Piso for every enrolled gateway. The AI Boost grant is not revoked upstream and can remain active until it expires.", "Disconnect", async () => {
           await api("ai-boost/disconnect", "POST", {});
           Object.assign(boostReview, {items: [], loaded: false, nextCursor: "", previousCursor: ""});
           await changed(["aiBoost", "connections"]);

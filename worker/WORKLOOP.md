@@ -43,16 +43,55 @@ directive. Discovery is cheaper than reimplementation.
 
 # Scope you were not given
 
-If discovery turns up work the task did not ask for, propose it — do not widen
-your own task. Call `task_propose(requestId, title, body, acceptanceCriteria)`:
-it creates a real task in the `proposed` state that no worker can claim until a
-human approves it. Reuse the same `requestId` on a retry so you cannot create a
-second copy.
+If discovery turns up work the task did not ask for, do not widen your own task.
+Either fix it in place when it is small and your change already covers it, or
+propose it. `task_propose(requestId, title, body, acceptanceCriteria)` creates a
+real task in the `proposed` state that no worker can claim until a human
+approves it. Reuse the same `requestId` on a retry.
 
-Propose when the work is separate, checkable, and someone else could pick it up
-later: a broken test you noticed, a missing guard, a follow-up the reviewer will
-ask for. Fix it in place instead when it is a two-line consequence of your own
-change and the task's acceptance criteria already cover it.
+## What is worth proposing
+
+Propose a structural change: work that changes how the repo is built, organized,
+or extended, and that a human should decide on before anyone does it. Two shapes
+qualify:
+
+- **Bring the repo in line with a standard.** A booster in the library, an
+  upstream convention, or a pattern the repo already uses in half its files and
+  should use everywhere.
+- **A major upgrade or addition you recommend.** A dependency, architecture, or
+  capability the project should adopt now, with the case for doing it.
+
+The proposal must name the standard or the practice it follows, not just the
+local symptom. "The repo should use structured errors like pkg/x does" is a
+proposal. "TestFoo is failing" is not.
+
+## What is not a proposal
+
+Do not propose routine repair or cleanup, even when it is real and separate:
+
+- a failing, flaky, or missing test; a lint, format, or type error; a broken build
+- a missing nil check, error message, log line, or other small guard
+- a typo, a stale comment, a doc drift, or cleanup of the code you touched
+- a dependency bump with no change to how the project uses it
+- anything this task's acceptance criteria already cover
+
+Fix these in place when they are a small consequence of your change and say so
+in the handoff. If they are outside your task and too large to fix safely, name
+them in the handoff as a note — one line, no proposal. Do not bundle a pile of
+these into one proposal to make it look structural.
+
+## Write the case
+
+Fill the body so a human can decide without opening the repo:
+
+1. What changes, and what the repo looks like afterwards.
+2. The standard it follows: booster id, upstream doc, or the existing pattern,
+   with a link.
+3. Why now: what gets worse or more expensive if it waits.
+4. Blast radius and migration: breaking changes, callers, data, rollout.
+5. Acceptance criteria: how we will know it worked.
+
+If you cannot fill those in, do not propose. One proposal per idea.
 
 Your proposal stays yours while it is undecided: `task_propose_edit` fixes a
 title or body you got wrong, and `task_propose_withdraw` takes it back (with a

@@ -118,6 +118,7 @@ func main() {
 	// data directory, so the clients are attached after DataDir is known.
 	srv.AttachCoordinator()
 	go technocore.Run(st, srv.DataDir)
+	go srv.RunAIBoostSharing(context.Background())
 	// The Telegram front door polls only while a bot token is stored and this
 	// gateway holds the poller lease; with neither it idles, so this is
 	// unconditional.

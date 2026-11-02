@@ -8,6 +8,8 @@ import time
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from unittest.mock import patch
+from xml.etree import ElementTree
 
 spec = importlib.util.spec_from_file_location(
     "supervisor_session", Path(__file__).with_name("supervisor-session.py")
@@ -44,11 +46,15 @@ while True:
               "result": {"content": [{"type": "text", "text": "hi"}]}, "isError": False})
         emit({"type": "message_update",
               "assistantMessageEvent": {"type": "text_delta", "delta": "echo: " + cmd.get("message", "")}})
+        emit({"type": "message_end", "message": {"role": "assistant", "stopReason": "stop",
+              "content": [{"type": "text", "text": "echo: " + cmd.get("message", "")}]}})
         emit({"type": "agent_settled"})
     elif kind == "steer":
         emit({"id": cid, "type": "response", "command": "steer", "success": True,
               "data": {"disposition": "queued"}})
         emit({"type": "message_update", "assistantMessageEvent": {"type": "text_delta", "delta": "steered"}})
+        emit({"type": "message_end", "message": {"role": "assistant", "stopReason": "stop",
+              "content": [{"type": "text", "text": "steered"}]}})
         emit({"type": "agent_settled"})
     elif kind == "get_state":
         emit({"id": cid, "type": "response", "command": "get_state", "success": True,
@@ -164,6 +170,7 @@ class SupervisorLogicTest(unittest.TestCase):
                                        "assistantMessageEvent": {"type": "text_delta", "delta": "lo"}})
         # Nothing is posted until the turn settles.
         self.assertEqual(gw.replies, [])
+        sup.on_message_end(sup.sessions[9], {"role": "assistant", "stopReason": "stop", "content": "Hello"})
         sup.on_event(sup.sessions[9], {"type": "agent_settled"})
         self.assertEqual(gw.replies, [(9, "Hello")])
         # The buffer does not leak into the next turn.
@@ -363,6 +370,7 @@ class SupervisorLogicTest(unittest.TestCase):
         sup.feed({"chatId": 7, "text": "hi"})
         sup.on_event(sup.sessions[7], {"type": "message_update",
                                        "assistantMessageEvent": {"type": "text_delta", "delta": "Hello"}})
+        sup.on_message_end(sup.sessions[7], {"role": "assistant", "stopReason": "stop", "content": "Hello"})
         sup.on_event(sup.sessions[7], {"type": "agent_settled"})
         self.assertEqual(gw.statuses, [])
         self.assertEqual(gw.replies, [(7, "Hello")])
@@ -380,19 +388,101 @@ class SupervisorLogicTest(unittest.TestCase):
 
     # ---- replies ----
 
-    def test_long_replies_are_split_not_truncated(self):
+    def test_only_the_latest_authoritative_answer_is_sent(self):
         gw, sup = self.make()
-        sup.feed({"chatId": 3, "text": "write a lot"})
+        sup.feed({"chatId": 3, "text": "fix it"})
         sess = sup.sessions[3]
-        for _ in range(10):
-            sup.on_event(sess, {"type": "message_update", "assistantMessageEvent":
-                                {"type": "text_delta", "delta": "x" * 1000 + "\n"}})
-        sup.on_event(sess, {"type": "agent_settled"})
-        self.assertGreater(len(gw.replies), 1)
-        for _chat, text in gw.replies:
-            self.assertLessEqual(len(text), session.CHUNK_MAX)
-        self.assertTrue("".join(t for _c, t in gw.replies).replace("\n", "").startswith("x" * 100))
-        self.assertIn("x" * 100, gw.replies[-1][1], "the tail survives")
+        sup.on_message_end(sess, {"role": "assistant", "stopReason": "toolUse", "content": [
+            {"type": "text", "text": "Let me check."}, {"type": "toolCall", "id": "t1"}]})
+        sup.on_event(sess, {"type": "message_start", "message": {"role": "assistant"}})
+        sup.on_update(sess, {"type": "text_delta", "delta": "incorrect draft"})
+        sup.on_message_end(sess, {"role": "assistant", "stopReason": "stop", "content": [
+            {"type": "thinking", "thinking": "private"}, {"type": "text", "text": "Fixed. Tests passed."}]})
+        sup.on_message_end(sess, {"role": "toolResult", "content": "irrelevant"})
+        sup.settled(sess, {})
+        self.assertEqual(gw.replies, [(3, "Fixed. Tests passed.")])
+        sup.feed({"chatId": 3, "text": "next"})
+        sup.settled(sess, {})
+        self.assertEqual(len(gw.replies), 1, "no answer leaks across turns")
+
+    def test_abort_fallback_is_current_message_only_and_labelled(self):
+        gw, sup = self.make()
+        sess = sup.session(3)
+        sup.on_message_end(sess, {"role": "assistant", "stopReason": "toolUse", "content": "Narration"})
+        sup.on_event(sess, {"type": "message_start", "message": {"role": "assistant"}})
+        sup.on_update(sess, {"type": "text_delta", "delta": "Partial answer"})
+        sup.settled(sess, {"aborted": True})
+        self.assertEqual(gw.replies, [(3, "Partial reply — interrupted.\n\nPartial answer")])
+
+    def test_tool_only_error_empty_and_retry_do_not_replay_narration(self):
+        for reason in ("toolUse", "error", "stop"):
+            with self.subTest(reason=reason):
+                gw, sup = self.make()
+                sess = sup.session(3)
+                sup.on_update(sess, {"type": "text_delta", "delta": "Stale narration"})
+                sup.on_message_end(sess, {"role": "assistant", "stopReason": reason, "content": []})
+                sup.settled(sess, {"aborted": True})
+                self.assertEqual(len(gw.replies), 1 if reason == "error" else 0)
+                self.assertFalse(any("Stale" in text for _, text in gw.replies))
+        gw, sup = self.make()
+        sess = sup.session(3)
+        sup.on_message_end(sess, {"role": "assistant", "stopReason": "stop", "content": "Old answer"})
+        sup.on_event(sess, {"type": "message_start", "message": {"role": "assistant"}})
+        sup.on_update(sess, {"type": "text_delta", "delta": "Failed attempt"})
+        sup.on_message_end(sess, {"role": "assistant", "stopReason": "error"})
+        sup.on_event(sess, {"type": "message_start", "message": {"role": "assistant"}})
+        sup.on_message_end(sess, {"role": "assistant", "stopReason": "stop", "content": "Recovered"})
+        sup.settled(sess, {})
+        self.assertEqual(gw.replies[-1], (3, "Recovered"))
+
+    def test_stream_only_reply_is_not_a_successful_final_answer(self):
+        gw, sup = self.make()
+        sess = sup.session(3)
+        sup.on_update(sess, {"type": "text_delta", "delta": "Draft"})
+        sup.settled(sess, {})
+        self.assertEqual(gw.replies, [])
+
+    def test_final_reply_cap_preserves_html_unicode_and_marks_truncation(self):
+        gw, sup = self.make()
+        sess = sup.session(3)
+        text = "**" + "🤖&<>" * 3000 + "**\n```\n" + "x" * 5000 + "\n```"
+        for cap in (1, 2, 3):
+            with self.subTest(cap=cap), patch.object(session, "FINAL_MAX_CHUNKS", cap):
+                gw.replies.clear()
+                sup.tell(sess, text, final=True)
+                self.assertEqual(len(gw.replies), cap)
+                self.assertIn("…truncated", gw.replies[-1][1])
+                for _, piece in gw.replies:
+                    self.assertLessEqual(len(piece.encode()), session.CHUNK_MAX)
+                    ElementTree.fromstring("<root>" + piece + "</root>")
+        gw.replies.clear()
+        sup.tell(sess, "Short **answer**.", final=True)
+        self.assertEqual(gw.replies, [(3, "Short <b>answer</b>.")])
+        gw.replies.clear()
+        sup.tell(sess, text)  # Explicit /history and control responses are uncapped.
+        self.assertGreater(len(gw.replies), session.FINAL_MAX_CHUNKS)
+        self.assertNotIn("truncated", gw.replies[-1][1])
+
+    def test_model_output_limit_and_authoritative_abort_are_labelled(self):
+        for reason, notice in (("length", "model output limit"), ("aborted", "interrupted")):
+            gw, sup = self.make()
+            sess = sup.session(3)
+            sup.on_message_end(sess, {"role": "assistant", "stopReason": reason, "content": "Partial"})
+            sup.settled(sess, {"aborted": reason == "aborted"})
+            self.assertIn(notice, gw.replies[-1][1])
+            self.assertTrue(gw.replies[-1][1].endswith("Partial"))
+
+    def test_chat_prompt_is_absolute_shipped_and_does_not_replace_other_options(self):
+        with patch.dict(os.environ, {"PISO_PI_CMD": "", "PISO_PI_ARGS": "--thinking low"}):
+            argv = session.pi_argv(3)
+        path = Path(argv[argv.index("--append-system-prompt") + 1])
+        self.assertTrue(path.is_absolute())
+        self.assertIn("1–4 short sentences", path.read_text())
+        self.assertEqual(argv[-2:], ["--thinking", "low"])
+        self.assertIn("COPY telegram-prompt.md", Path("worker/Dockerfile").read_text())
+        self.assertIn('"telegram-prompt.md"', Path("cli/internal/workerhash/workerhash.go").read_text())
+        with patch.dict(os.environ, {"PISO_PI_CMD": "custom --rpc"}):
+            self.assertEqual(session.pi_argv(3), ["custom", "--rpc"])
 
     def test_history_command_renders_the_transcript(self):
         gw, sup = self.make()
@@ -433,6 +523,7 @@ class SupervisorLogicTest(unittest.TestCase):
         sup.sessions[8].rpc.alive_flag = False
         sup.sessions[8].rpc.on_event({"type": "message_update",
                                       "assistantMessageEvent": {"type": "text_delta", "delta": "done"}})
+        sup.on_message_end(sup.sessions[8], {"role": "assistant", "stopReason": "stop", "content": "done"})
         gw.messages = lambda wait: {"messages": []}
         sup.drain_once()
         self.assertEqual(self.spawned, [8, 8], "the same chat is restarted")

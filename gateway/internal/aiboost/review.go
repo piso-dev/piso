@@ -101,6 +101,7 @@ func ValidDraftStatus(status string) bool {
 func (c *Client) requestOnce(ctx context.Context, method, path string, body []byte, key string) ([]byte, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if err := c.syncShared(); err != nil { return nil, err }
 	if c.rec.Status != "ok" {
 		return nil, ErrReconnect
 	}

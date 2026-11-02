@@ -51,10 +51,10 @@ RETRY_SECS = int(os.environ.get("PISO_SUPERVISOR_RETRY_SECS", "20"))
 POLL_WAIT = int(os.environ.get("PISO_SUPERVISOR_WAIT", "25"))
 REPLY_MAX = 4096
 
-# Telegram caps one message at 4096 characters. Chunking happens here rather
-# than at the gateway because the gateway truncates: a long answer must arrive
-# in pieces, not lose its tail.
-CHUNK_MAX = int(os.environ.get("PISO_SUPERVISOR_CHUNK", "3800"))
+# Budget UTF-8 bytes conservatively, including balanced HTML and notices.
+CHUNK_MAX = max(256, min(3800, int(os.environ.get("PISO_SUPERVISOR_CHUNK", "3800"))))
+FINAL_MAX_CHUNKS = max(1, int(os.environ.get("PISO_SUPERVISOR_FINAL_MAX_CHUNKS", "2")))
+TELEGRAM_PROMPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "telegram-prompt.md")
 # One activity line, edited at most this often. Telegram rate-limits edits and
 # a chat does not need to see every token.
 STATUS_SECS = float(os.environ.get("PISO_SUPERVISOR_STATUS_SECS", "2"))
@@ -224,7 +224,8 @@ def pi_argv(chat_id=None):
     if override:
         return shlex.split(override)
     binary = os.environ.get("PISO_PI_BIN", "pi")
-    argv = [binary, "--mode", "rpc", "--name", "piso-supervisor"]
+    argv = [binary, "--mode", "rpc", "--name", "piso-supervisor",
+            "--append-system-prompt", TELEGRAM_PROMPT]
     if chat_id is not None:
         argv += ["--session-id", session_id(chat_id)]
     extra = os.environ.get("PISO_PI_ARGS", "")
@@ -430,8 +431,11 @@ class Session:
         self.busy = False
         self.started = 0.0
         self.last_used = time.time()
-        # Turn state.
+        # Only the current assistant message, never a turn-wide transcript.
         self.text = []
+        self.answer = None
+        self.answer_notice = ""
+        self.message_has_tools = False
         self.thinking = ""
         self.tools = []  # [(toolCallId, line)], newest last
         self.tool_count = 0
@@ -462,9 +466,29 @@ class Session:
             self.tools = (self.tools + [(None, tg.escape(tg.redact(line)))])[-STATUS_LINES:]
             self.pending = self.render()
 
+    def reset_message(self):
+        """Caller holds the lock. Retries/steering must not replay older text."""
+        self.text = []
+        self.answer = None
+        self.answer_notice = ""
+        self.message_has_tools = False
+
+    def final_text(self, interrupted=False):
+        """Only an authoritative answer, or a clearly labelled interrupted draft."""
+        if self.message_has_tools:
+            return ""
+        text = self.answer
+        notice = self.answer_notice
+        if text is None and interrupted:
+            text = "".join(self.text).strip()
+            notice = "Partial reply — interrupted."
+        if not text:
+            return ""
+        return (notice + "\n\n" if notice else "") + text
+
     def reset_turn(self):
         with self.lock:
-            self.text = []
+            self.reset_message()
             self.thinking = ""
             self.tools = []
             self.tool_count = 0
@@ -568,10 +592,10 @@ class Supervisor:
             if sess.alive():
                 continue
             with sess.lock:
-                text = "".join(sess.text).strip()
+                text = sess.final_text(interrupted=True)
                 had_status = sess.status_id != 0
                 sess.busy = False
-                sess.text = []
+                sess.reset_message()
                 sess.pending = "♻️ pi restarted" if had_status else None
             log("pi session for chat %s exited; restarting it" % chat)
             if had_status:
@@ -580,7 +604,8 @@ class Supervisor:
                 # will never finish.
                 self.flush(sess, force=True)
             if text:
-                self.tell(sess, text)
+                self.tell(sess, text, final=True)
+            sess.reset_turn()
             try:
                 self.start_pi(sess)
             except Exception as exc:
@@ -630,7 +655,10 @@ class Supervisor:
 
     def on_event(self, sess, record):
         kind = record.get("type")
-        if kind == "message_update":
+        if kind == "message_start" and (record.get("message") or {}).get("role") == "assistant":
+            with sess.lock:
+                sess.reset_message()
+        elif kind == "message_update":
             self.on_update(sess, record.get("assistantMessageEvent") or {})
         elif kind == "tool_execution_start":
             self.tool_started(sess, record)
@@ -663,6 +691,10 @@ class Supervisor:
         if kind == "text_delta":
             with sess.lock:
                 sess.text.append(update.get("delta") or "")
+        elif kind == "toolcall_start":
+            with sess.lock:
+                sess.message_has_tools = True
+                sess.text = []
         elif kind == "thinking_start":
             with sess.lock:
                 sess.thinking = ""
@@ -680,7 +712,18 @@ class Supervisor:
             self.flush(sess)
 
     def on_message_end(self, sess, message):
-        if message.get("stopReason") == "error":
+        if message.get("role") != "assistant":
+            return
+        reason = message.get("stopReason")
+        content = message.get("content") or []
+        with sess.lock:
+            sess.text = []
+            sess.message_has_tools = reason == "toolUse" or (
+                isinstance(content, list) and any(b.get("type") == "toolCall" for b in content))
+            sess.answer = message_text(message).strip() if reason in ("stop", "length", "aborted") else ""
+            sess.answer_notice = {"aborted": "Partial reply — interrupted.",
+                                  "length": "Partial reply — model output limit reached."}.get(reason, "")
+        if reason == "error":
             self.tell(sess, "⚠️ " + one_line(message.get("errorMessage") or "the model call failed", 300))
 
     def tool_started(self, sess, record):
@@ -691,6 +734,9 @@ class Supervisor:
         if summary:
             line += " <code>" + tg.escape(summary) + "</code>"
         with sess.lock:
+            sess.message_has_tools = True
+            sess.text = []
+            sess.answer = None
             sess.tool_count += 1
             sess.tools = (sess.tools + [(tool_id, line)])[-STATUS_LINES:]
             sess.pending = sess.render()
@@ -726,7 +772,7 @@ class Supervisor:
         with sess.lock:
             sess.busy = False
             sess.thinking = ""
-            text = "".join(sess.text).strip()
+            text = sess.final_text(interrupted=aborted)
             elapsed = time.time() - sess.started if sess.started else 0.0
             tools = sess.tool_count
             had_status = sess.status_id != 0
@@ -738,7 +784,7 @@ class Supervisor:
                         tools, "" if tools == 1 else "s", format_duration(elapsed))
                 if sess.tools:
                     sess.pending += "\n\n" + sess.tools[-1][1]
-            sess.text = []
+            sess.reset_message()
             sess.tool_count = 0
         if had_status:
             self.flush(sess, force=True)
@@ -748,7 +794,7 @@ class Supervisor:
             sess.pending = None
             sess.tools = []
         if text:
-            self.tell(sess, text)
+            self.tell(sess, text, final=True)
 
     # ---- pi responses ----
 
@@ -790,8 +836,15 @@ class Supervisor:
 
     # ---- chat commands ----
 
-    def tell(self, sess, text):
-        for chunk in tg.chunks(tg.markdown(text), limit=min(CHUNK_MAX, 3800)):
+    def tell(self, sess, text, final=False):
+        rendered = tg.markdown(text)
+        parts = tg.chunks(rendered, limit=CHUNK_MAX)
+        if final and len(parts) > FINAL_MAX_CHUNKS:
+            # Re-split with room for the notice; never slice markup/entities.
+            marker = "\n\n…truncated. Ask for a shorter answer or a specific section."
+            parts = tg.chunks(rendered, limit=CHUNK_MAX - len(marker.encode()))[:FINAL_MAX_CHUNKS]
+            parts[-1] += marker
+        for chunk in parts:
             try:
                 self.gateway.reply(sess.chat_id, chunk)
             except Exception as exc:
@@ -830,7 +883,7 @@ class Supervisor:
             if not busy:
                 sess.busy = True
                 sess.started = time.time()
-                sess.text = []
+                sess.reset_message()
                 sess.thinking = ""
                 sess.tools = []
                 sess.tool_count = 0

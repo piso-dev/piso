@@ -86,7 +86,7 @@ func (h *Handler) registerInbox() {
 	}
 	h.Register(Tool{
 		Name:        "task_propose",
-		Description: "Suggest work you found but were not asked to do. It becomes a real task in the 'proposed' state that nobody can claim until a human approves it in Needs you; rejecting it cancels it. Pass the same requestId on retries so a duplicate proposal is not created.",
+		Description: "Propose a structural change you found but were not asked to do: a repo-wide convention, architecture, or dependency upgrade that brings the project in line with a booster or an upstream standard. Not for failing tests, lint, missing guards, or routine cleanup — fix those in place when small or note them in the handoff. The proposal becomes a real task in the 'proposed' state that nobody can claim until a human approves it in Needs you; rejecting it cancels it. Pass the same requestId on retries so a duplicate proposal is not created.",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
