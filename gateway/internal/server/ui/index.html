@@ -2256,6 +2256,42 @@
          116px on the right the select reserves for the actions strip. */
       .provider-warning { margin: 0; padding: 0 116px 8px 16px; color: var(--red); font-size: 13px; }
       .provider-drift { margin: 0; padding: 0 116px 8px 16px; color: var(--muted); font-size: 12px; }
+      /* Git connections are readable records, not expandable secret rows. */
+      .git-record { padding: 28px 24px; display: grid; gap: 24px; }
+      .git-record-head { display: flex; align-items: center; flex-wrap: wrap; gap: 12px 16px; }
+      .git-record-head h3 { font-size: 21px; line-height: 1.3; overflow-wrap: anywhere; }
+      .git-record-meta { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) minmax(0, 1.5fr); gap: 20px 32px; margin: 0; }
+      .git-record-meta > div { min-width: 0; }
+      .git-record-meta dt { color: var(--muted); font-size: 13px; margin-bottom: 8px; }
+      .git-record-meta dd { margin: 0; overflow-wrap: anywhere; }
+      .git-record-workers { display: flex; flex-wrap: wrap; gap: 6px 12px; }
+      .git-record-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 16px 24px; }
+      .git-record-tools .actions { gap: 12px; margin: 0; }
+      .git-record-tools button { min-height: 44px; padding: 11px 16px; }
+      .git-record-tools > .git-remove { margin-left: auto; }
+      .git-probe-result { display: grid; gap: 16px; padding: 20px; background: var(--inset); border-radius: 5px; overflow-wrap: anywhere; }
+      .git-probe-result p { max-width: 74ch; }
+      .git-probe-error { color: var(--red); }
+      .git-repositories > summary { padding: 8px 0; }
+      .git-repositories ul { list-style: none; margin: 8px 0 0; padding: 0; max-height: 320px; overflow-y: auto; }
+      .git-repositories li { display: grid; gap: 6px; padding: 14px 0; border-top: 1px solid var(--line); }
+      .git-repositories code { color: var(--muted); }
+      .git-capabilities-context { overflow-wrap: anywhere; }
+      .git-capabilities-list { margin: 24px 0 0; }
+      .git-capabilities-list > div { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: baseline; gap: 12px 24px; padding: 14px 0; border-bottom: 1px solid var(--line); }
+      .git-capabilities-list dd { margin: 0; color: var(--muted); }
+      .git-capabilities-list dd[data-hint="allowed"] { color: var(--text); }
+      .git-capabilities-list dd[data-hint="denied"] { color: var(--amber); }
+      @media (max-width: 760px) {
+        .git-record { padding: 24px 8px; }
+        .git-record-meta { grid-template-columns: 1fr; gap: 20px; }
+        .git-record-tools { align-items: stretch; }
+        .git-record-tools .actions { width: 100%; }
+        .git-record-tools .actions button { flex: 1 1 180px; }
+        .git-record-tools > .git-remove { margin-left: 0; }
+        .git-probe-result { padding: 16px; }
+        .git-capabilities-list > div { gap: 12px; }
+      }
       /* Same rail, numbered discs, and restrained gutter as the GitHub wizard. */
       .git-flow { display:grid; grid-template-columns:minmax(190px,264px) minmax(0,1fr); gap:30px; align-items:start; }
       .git-spine ol { list-style:none; padding:0; margin:0; }
@@ -5238,6 +5274,16 @@ function gitRemove(id) {
     await api('git/' + enc(id),'DELETE'); gitProbes.delete(id); await changed(['git','secrets','rules']);
   });
 }
+function gitShowCapabilities(id) {
+  const c = list('git').find(x => x.id === id);
+  if (!c) return;
+  const hints = gitCapabilities.map(([key, label]) => {
+    const value = c.config.hints?.[key];
+    const state = value === 'allowed' || value === 'denied' ? value : 'unknown';
+    return `<div><dt>${esc(label)}</dt><dd data-hint="${state}">${state === 'allowed' ? 'Allowed' : state === 'denied' ? 'Not allowed' : 'Unknown'}</dd></div>`;
+  }).join('');
+  mountDialog('Capability hints', `<p class="git-capabilities-context">${esc(c.name)}<br><code>${esc(c.config.baseURL)}</code></p><p>Operator-provided guidance; not verified or enforced by Piso. The Git server authorizes every operation. Unknown means no guidance was provided.</p><dl class="git-capabilities-list">${hints}</dl><div class="actions dialog-actions">${button('Done', 'close')}</div>`);
+}
 function renderGit(intro) {
   // Refreshes must never replace a panel containing an unsaved token or hint.
   if (gitDraft && $('#git-wizard')) return;
@@ -5245,8 +5291,26 @@ function renderGit(intro) {
   count(rows.length);
   const connections = rows.map(c=>{
     const p = gitProbes.get(c.id);
-    const hints = gitCapabilities.map(([key,label])=>[label,c.config.hints?.[key] || 'unknown']).filter(([,v])=>v !== 'unknown');
-    return `<section class="record"><div class="card-top"><h3>${esc(c.name)}</h3>${badge(c.config.provider === 'gitea' ? 'Gitea' : 'GitHub')}</div><p>${esc(c.config.baseURL)}</p><p>Environment: <code>${esc(c.envKey)}</code>. Workers: ${esc(c.workers?.join(', ') || 'all')}.</p><details><summary>Capability hints (not enforced)</summary>${hints.length ? hints.map(([label,value])=>`<p>${esc(label)}: ${value === 'allowed' ? 'Allowed' : 'Not allowed'}</p>`).join('') : '<p>All capabilities unknown.</p>'}</details><div class="actions">${button('Edit / replace token','git-edit',c.id)}${button(p?.loading ? 'Discovering…' : 'Test / discover repositories','git-probe',c.id,'','',p?.loading)}${button('Remove','git-remove',c.id,'quiet')}</div>${p?.error ? `<p role="alert">${esc(p.error)}</p>` : ''}${p?.repositories ? `<p>${p.repositories.length} repositories listed. ${p.complete ? 'Listing completed; write access is not verified.' : 'Listing incomplete.'}</p>${(p.errors || []).map(e=>`<p role="alert">${esc(e.message)}</p>`).join('')}<details><summary>Repositories</summary><ul>${p.repositories.map(r=>`<li>${esc(r.name)} <code>${esc(r.cloneURL)}</code></li>`).join('')}</ul></details>` : ''}</section>`;
+    return `<section class="record git-record" aria-label="${esc(c.name)}">
+      <header class="git-record-head"><h3>${esc(c.name)}</h3>${badge(c.config.provider === 'gitea' ? 'Gitea' : 'GitHub')}</header>
+      <dl class="git-record-meta">
+        <div><dt>Instance URL</dt><dd><code>${esc(c.config.baseURL)}</code></dd></div>
+        <div><dt>Environment key</dt><dd><code>${esc(c.envKey)}</code></dd></div>
+        <div><dt>Worker scope</dt><dd class="git-record-workers">${c.workers?.length ? c.workers.map(w=>`<span>${esc(w)}</span>`).join('') : 'All workers'}</dd></div>
+      </dl>
+      <div class="git-record-tools"><div class="actions">
+        ${button('Edit / replace token','git-edit',c.id)}
+        ${button(p?.loading ? 'Discovering…' : 'Test / discover repositories','git-probe',c.id,'','',p?.loading)}
+        <button type="button" class="quiet" data-action="git-capabilities" data-id="${esc(c.id)}" aria-haspopup="dialog">View capability hints</button>
+      </div>${button('Remove','git-remove',c.id,'quiet danger git-remove')}</div>
+      ${p ? `<div class="git-probe-result" aria-live="polite" aria-busy="${!!p.loading}">
+        ${p.loading ? '<p role="status">Testing the connection and discovering repositories…</p>' : ''}
+        ${p.error ? `<p class="git-probe-error" role="alert">${esc(p.error)}</p><p class="muted">Check the token and instance URL, then try discovery again.</p>` : ''}
+        ${p.repositories ? `<div><p><strong>${p.repositories.length} ${p.repositories.length === 1 ? 'repository' : 'repositories'} listed</strong></p><p class="muted">${p.complete ? 'Listing completed. Write access is not verified.' : 'Listing incomplete. Write access is not verified.'}</p></div>
+        ${(p.errors || []).map(e=>`<p class="git-probe-error" role="alert">${esc(e.message)}</p>`).join('')}
+        ${p.repositories.length ? `<details class="git-repositories"><summary>View repositories</summary><ul>${p.repositories.map(r=>`<li><strong>${esc(r.name)}</strong><code>${esc(r.cloneURL)}</code></li>`).join('')}</ul></details>` : '<p>No repositories returned. Check the token’s repository access at the provider.</p>'}` : ''}
+      </div>` : ''}
+    </section>`;
   }).join('');
   replaceContent(intro + (gitDraft ? gitWizard() : connections || empty('Add a Git token', 'Supply a GitHub or Gitea token. The server decides what it can do; Piso keeps its value out of the worker.')));
   if (gitDraft) gitBindInputs();
@@ -7370,6 +7434,7 @@ function gitBindInputs() {
         }
       }
       async function action(name, id, source) {
+        if (name === "git-capabilities") return gitShowCapabilities(id);
         if (name === "git-add" || name === "git-edit") { $('#git-wizard')?.remove(); return gitStart(id); }
         if (name === "git-goto") return gitGo(id);
         if (name === "git-cancel") { if (gitDraft?.busy) return; gitDraft = null; $('#git-wizard')?.remove(); return renderContent(); }

@@ -12,10 +12,11 @@ function harness(t) {
  const calls=[];
  dom.window.scrollTo=()=>{};
  const sandbox={window:dom.window,document:dom.window.document,URL, $:s=>dom.window.document.querySelector(s), matches:()=>true,list:()=>[],
+  mountDialog:(title,html)=>{sandbox.dialog={title,html}},
   api:async(path,method,body)=>{calls.push({path,method,body});return {}},changed:async()=>{},notify:()=>{},count:()=>{},
   renderContent:()=>vm.runInContext('renderGit("")',ctx)};
  const ctx=vm.createContext(sandbox);
- vm.runInContext([slice('const esc =','const endpoints'),slice('function button(','function facts('),slice('function empty(','function record('),slice('function replaceContent(','function count('),slice('const gitCapabilities =','      const intros = {')].join('\n'),ctx);
+ vm.runInContext([slice('const esc =','const endpoints'),slice('function badge(','function facts('),slice('function empty(','function record('),slice('function replaceContent(','function count('),slice('const gitCapabilities =','      const intros = {')].join('\n'),ctx);
  const run=s=>vm.runInContext(s,ctx);
  const field=(name,value)=>{
   const el=dom.window.document.querySelector(`[data-git-field="${name}"]`);
@@ -62,6 +63,51 @@ test('dashboard scripts parse and expose token Git without legacy App/sign-in UI
  assert.doesNotMatch(html,/github-app|github-user|githubMappings|githubPending|renderGithub|github-connect|github-import/);
  assert.match(html,/parts\[1\] === "github"[\s\S]*?#\/access\/git/);
  assert.match(html,/Supplied tokens for GitHub and Gitea/);
+});
+const connection = {id:'git-1',name:'Engineering <Git>',envKey:'GH_TOKEN',workers:['alpha','beta'],config:{provider:'github',baseURL:'https://github.com',hints:{read:'allowed',merge:'denied'}}};
+test('Git rows separate metadata and actions and open capability hints in a modal',t=>{
+ const h=harness(t);h.sandbox.list=()=>[connection];h.run('renderGit("")');
+ const doc=h.dom.window.document;
+ assert.equal(doc.querySelector('.git-record-head h3').textContent,connection.name);
+ assert.deepEqual([...doc.querySelectorAll('.git-record-meta dt')].map(el=>el.textContent),['Instance URL','Environment key','Worker scope']);
+ assert.equal(doc.querySelectorAll('.git-record-workers span').length,2);
+ assert.equal(doc.querySelector('.git-record details'),null);
+ assert.equal(doc.querySelector('[data-action="git-capabilities"]').getAttribute('aria-haspopup'),'dialog');
+ assert.match(script,/if \(name === "git-capabilities"\) return gitShowCapabilities\(id\)/);
+ h.run('gitShowCapabilities("git-1")');
+ assert.equal(h.sandbox.dialog.title,'Capability hints');
+ const body=new JSDOM(h.sandbox.dialog.html);t.after(()=>body.window.close());
+ assert.equal(body.window.document.querySelectorAll('.git-capabilities-list > div').length,10);
+ assert.equal(body.window.document.querySelector('[data-hint="allowed"]').textContent,'Allowed');
+ assert.equal(body.window.document.querySelector('[data-hint="denied"]').textContent,'Not allowed');
+ assert.equal(body.window.document.querySelectorAll('[data-hint="unknown"]').length,8);
+ assert.match(body.window.document.body.textContent,/not verified or enforced by Piso/);
+ assert.equal(body.window.document.querySelector('[data-action="close"]').textContent,'Done');
+ assert.equal(doc.querySelector('git'),null);
+});
+test('Git hints default to unknown and empty worker scope means all workers',t=>{
+ const h=harness(t);h.sandbox.list=()=>[{...connection,workers:[],config:{provider:'gitea',baseURL:'https://git.example.test'}}];
+ h.run('renderGit("");gitShowCapabilities("git-1")');
+ assert.match(h.dom.window.document.body.textContent,/Gitea/);
+ assert.equal(h.dom.window.document.querySelector('.git-record-workers').textContent,'All workers');
+ assert.equal((h.sandbox.dialog.html.match(/data-hint="unknown"/g)||[]).length,10);
+ h.sandbox.dialog=null;h.run('gitShowCapabilities("missing")');assert.equal(h.sandbox.dialog,null);
+});
+test('Git discovery shows loading, failures, empty and partial repository results',t=>{
+ const h=harness(t);h.sandbox.list=()=>[connection];const doc=h.dom.window.document;
+ h.run('gitProbes.set("git-1",{loading:true});renderGit("")');
+ assert.equal(doc.querySelector('[data-action="git-probe"]').disabled,true);
+ assert.equal(doc.querySelector('.git-probe-result').getAttribute('aria-busy'),'true');
+ h.run('gitProbes.set("git-1",{error:"Access <denied>"});renderGit("")');
+ assert.equal(doc.querySelector('[role="alert"]').textContent,'Access <denied>');
+ assert.equal(doc.querySelector('denied'),null);
+ h.run('gitProbes.set("git-1",{repositories:[],complete:true});renderGit("")');
+ assert.match(doc.body.textContent,/No repositories returned/);
+ assert.equal(doc.querySelector('.git-repositories'),null);
+ h.run('gitProbes.set("git-1",{repositories:[{name:"org/<repo>",cloneURL:"https://github.com/org/repo.git"}],complete:false,errors:[{message:"Next page failed"}]});renderGit("")');
+ assert.match(doc.body.textContent,/Listing incomplete. Write access is not verified/);
+ assert.equal(doc.querySelector('.git-repositories li strong').textContent,'org/<repo>');
+ assert.equal(doc.querySelector('[role="alert"]').textContent,'Next page failed');
 });
 test('changing Git destination clears confirmation',t=>{
  const h=harness(t);h.run('gitStart()');h.field('name','GitHub');h.field('token','test-token');h.field('envKey','GH_TOKEN');h.run('gitGo(2)');
