@@ -8,6 +8,22 @@ import (
 	tc "piso/internal/technocore"
 )
 
+func TestRetiredGitEnvelopesAreNotImportedOrRepublished(t *testing.T) {
+	st := testStore(t)
+	for _, kind := range []string{"github-app", "github-user", "github-oauth"} {
+		obj := envelope{ResourceID: "old", Metadata: map[string]any{"kind": kind}, Ciphertext: "invalid"}
+		if row, err := applyEnvelope(st, tc.Identity{}, obj); err != nil || row != "" {
+			t.Fatalf("retired envelope: %q %v", row, err)
+		}
+		if _, ok := sharePlaintext(st, store.SecretRec{Kind: kind, Value: "private-material"}); ok {
+			t.Fatal("retired material republished")
+		}
+	}
+	if len(st.Secrets()) != 0 || len(st.Rules()) != 0 {
+		t.Fatal("retired credentials materialized")
+	}
+}
+
 func TestGitSealedEnvelopeRoundTrip(t *testing.T) {
 	origin := testStore(t)
 	config := gitaccess.Config{Provider: "gitea", TokenType: "user", BaseURL: "https://git.example.test", Hints: map[string]string{"merge": "denied", "createBranch": "allowed"}}

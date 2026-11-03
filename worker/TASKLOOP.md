@@ -33,9 +33,8 @@ This machine is not tied to one project. The task names its repository, and a
 new task starts in `/workspace` with whatever earlier tasks left there.
 
 - Resolve the repository from the task body, checkpoint, or a previous handoff.
-  `user_repositories` lists HTTPS URLs from assigned Git tokens; also
-  check `github_repositories` for legacy App credentials; a URL in the
-  task beats guessing from the title.
+  `user_repositories` lists HTTPS URLs from assigned Git tokens; a URL in
+  the task beats guessing from the title.
 - Put checkouts at `/workspace/<owner>/<repo>` — two path segments, so `foo/api`
   and `bar/api` cannot collide — and make that directory your cwd. Do not work
   in `/workspace` itself, and do not reuse another repository's checkout.
@@ -43,7 +42,7 @@ new task starts in `/workspace` with whatever earlier tasks left there.
   then branch from the default branch. New one:
   `gh repo clone <owner>/<repo> /workspace/<owner>/<repo>`. HTTPS only; never
   rewrite a remote to SSH.
-- No repository named, or not in either repository listing? Ask with
+- No repository named, or not in the repository listing? Ask with
   `task_wait(reason="needs_input")` and say what you need. Do not guess.
 - Leave the checkout in place for the next task so a follow-up does not
   re-clone. Delete it only when disk is tight, and never while it holds

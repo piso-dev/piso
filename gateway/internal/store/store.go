@@ -23,7 +23,7 @@ import (
 
 // CurrentStateVersion is written into state.json. Bump when adding a
 // migration in applyMigrations.
-const CurrentStateVersion = 11
+const CurrentStateVersion = 12
 
 // State is the persisted configuration.
 type State struct {
@@ -38,8 +38,6 @@ type State struct {
 	Contexts        []WorkerCtx          `json:"contexts,omitempty"`
 	ModelCatalogs   []WorkerModelCatalog `json:"workerModelCatalogs,omitempty"`
 	McpServers      []McpServerRec       `json:"mcpServers,omitempty"`
-	GithubApps      []GithubAppRec       `json:"githubApps,omitempty"`
-	GithubUser      GithubUserRec        `json:"githubUser,omitempty"`
 	// Telegram is the gateway's Telegram front door: which bot the allow-list
 	// belongs to, the update cursor, and the accounts allowed to talk to it.
 	Telegram TelegramLink `json:"telegram,omitempty"`
@@ -186,7 +184,7 @@ type SecretRec struct {
 	Name         string            `json:"name"`
 	Placeholder  string            `json:"placeholder"`
 	Value        string            `json:"value"`
-	Kind         string            `json:"kind,omitempty"` // "" opaque | "github-app"
+	Kind         string            `json:"kind,omitempty"` // opaque or provider-specific token
 	EnvKey       string            `json:"envKey,omitempty"`
 	AllowedHosts []string          `json:"allowedHosts,omitempty"`
 	Workers      []string          `json:"workers,omitempty"` // empty or "*" = all workers
@@ -346,7 +344,6 @@ type Store struct {
 	onMcp topic[McpServerRec] // broadcast for SSE
 
 	// GitHub App rows (dashboard chip + tab)
-	onGithub topic[GithubAppRec]
 
 	onAsks topic[struct{}]
 
@@ -636,13 +633,6 @@ func (s *Store) DeleteSecret(id string) error {
 	s.state.Secrets = out
 	// drop rules referencing it
 	s.state.Rules = filterRules(s.state.Rules, func(r RuleRec) bool { return r.SecretID != id })
-	apps := s.state.GithubApps[:0]
-	for _, a := range s.state.GithubApps {
-		if a.SecretID != id {
-			apps = append(apps, a)
-		}
-	}
-	s.state.GithubApps = apps
 	if err := s.save(); err != nil {
 		return err
 	}

@@ -23,7 +23,7 @@ function harness(t) {
   slice('function record(','function routeURL('),slice('function button(','function facts('),slice('function facts(','function notify('),
   slice('function replaceContent(','function count('),slice('function count(','function mountDialog('),
   slice('const intros = {','function renderSettings()'),slice('function renderSettings()','async function changed('),
-  slice('const boostReview =','async function githubUserForm()'),slice('function field(','function formDialog(')
+  slice('const boostReview =','function providerDriftLines('),slice('function field(','function formDialog(')
  ].join('\n');
  vm.runInContext(helpers,ctx);
  return {dom,sandbox,ctx,calls,run:s=>vm.runInContext(s,ctx)};

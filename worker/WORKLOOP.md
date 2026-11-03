@@ -10,7 +10,6 @@ apply.
    capabilities as **blocked**, not open. Internet off ⇒ steps 2 and 4 are
    out of scope; say so and continue locally.
 2. `user_repositories` (no arguments) — HTTPS repos from assigned Git token
-   connections; also call legacy `github_repositories` for existing App
    connections. Capability hints are operator guidance, not verified or enforced
    by Piso. The tools list repos this worker can
    reach. Match the task against the list. For each repo the task names or

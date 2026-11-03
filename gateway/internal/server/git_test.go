@@ -89,6 +89,28 @@ type gitTestTransport func(*http.Request) (*http.Response, error)
 
 func (f gitTestTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
+func TestLegacyGitRoutesAreRemoved(t *testing.T) {
+	s := testServer(t)
+	for _, path := range []string{"/api/v1/github-app", "/api/v1/github-app/mappings", "/api/v1/github-app/import", "/api/v1/github-user", "/api/v1/github-user/authorize", "/api/v1/github-user/config"} {
+		for _, method := range []string{"GET", "POST", "PUT"} {
+			w := doJSON(t, s.ControlHandler(), method, path, map[string]any{})
+			if w.Code != http.StatusNotFound {
+				t.Fatalf("legacy route %s %s still available: %d", method, path, w.Code)
+			}
+		}
+	}
+	for _, kind := range []string{"github-app", "github-user", "github-oauth"} {
+		payload := map[string]any{"name": "retired", "token": "old-token", "envKey": "GH_TOKEN", "confirmHost": true, "config": map[string]any{"provider": kind, "baseURL": "https://github.com"}}
+		w := doJSON(t, s.ControlHandler(), "POST", "/api/v1/git", payload)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("retired provider accepted: %s %d", kind, w.Code)
+		}
+	}
+	if len(s.Store.Secrets()) != 0 || len(s.Store.Rules()) != 0 {
+		t.Fatal("rejected legacy requests created credentials")
+	}
+}
+
 func TestGitValidationAndLifecycle(t *testing.T) {
 	s := testServer(t)
 	h := s.ControlHandler()

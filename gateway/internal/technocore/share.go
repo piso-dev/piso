@@ -15,8 +15,6 @@ import (
 	"strings"
 
 	"piso/gateway/internal/gitaccess"
-	"piso/gateway/internal/githubapp"
-	"piso/gateway/internal/model"
 	"piso/gateway/internal/store"
 	tc "piso/internal/technocore"
 )
@@ -46,7 +44,7 @@ func Stale(err error) bool {
 // ShareInput is a secret to wrap for enrolled gateways.
 type ShareInput struct {
 	Name string
-	// Kind is the secret's subtype ("telegram", "github-app", ...). The
+	// Kind is the secret's subtype ("telegram", "git-token", ...). The
 	// coordinator stores every envelope as a secret resource, so the subtype
 	// travels in metadata: without it a peer receives the credential but cannot
 	// tell what it is for.
@@ -186,14 +184,11 @@ func PublishNow(st *store.Store, dataDir string) error {
 	return publishAllSecrets(st, dataDir)
 }
 
-// sharePlaintext is what actually travels in the envelope. A github-app
-// routing group has no vault value: the credential is the app record, so the
-// apps are serialized into a bundle and that JSON is sealed instead.
-//
-// Every enrolled gateway may publish: whoever writes last wins, version-ordered
-// by the coordinator. A gateway publishing what it received re-encodes the same
-// bytes, so the content hash matches its stored one and reconcile skips it.
+// sharePlaintext seals tokens and connection metadata for enrolled gateways.
 func sharePlaintext(st *store.Store, rec store.SecretRec) (string, bool) {
+	if store.RetiredGitCredentialKind(rec.Kind) {
+		return "", false
+	}
 	if rec.Revoked {
 		// A tombstone stays a tombstone: republishing it would resurrect
 		// something a gateway deleted.
@@ -206,54 +201,8 @@ func sharePlaintext(st *store.Store, rec store.SecretRec) (string, bool) {
 		}
 		plain, err := gitaccess.Encode(*rec.Git, rec.Value, rec.Workers)
 		return plain, err == nil
-	case model.SecretKindGithubOAuth:
-		// One half of a sign-in. It reaches other gateways inside the
-		// github-user bundle, materialized there as a local row; publishing it
-		// here would put a second, unlinked copy of the token at the
-		// coordinator for nothing.
-		return "", false
-	case model.SecretKindGithubUser:
-		// The sign-in that lets someone manage apps, shared so a person signs
-		// in once for the account. Any gateway may publish it: signing in
-		// anywhere replaces the session everywhere.
-		u := st.GithubUser()
-		token, ok := secretValue(st, u.TokenSecretID)
-		if !ok {
-			// Signed out, or a half-written session: nothing to share.
-			return "", false
-		}
-		clientSecret, _ := secretValue(st, u.ClientSecretID)
-		bundle, err := githubapp.EncodeUserBundle(githubapp.UserBundle{
-			ClientID:     u.ClientID,
-			ClientSecret: clientSecret,
-			Token:        token,
-			Login:        u.Login,
-			AccountID:    u.AccountID,
-			Scopes:       u.Scopes,
-		})
-		if err != nil {
-			// A token with no identity cannot be shared. Say so once per pass:
-			// silently returning "nothing to share" is how a peer ends up signed
-			// out with no explanation anywhere.
-			log.Printf("technocore: share github sign-in: %v", err)
-			return "", false
-		}
-		return bundle, true
 	}
-	if rec.Kind != model.SecretKindGithubApp {
-		return rec.Value, rec.Value != ""
-	}
-	apps := st.GithubAppsBySecretID(rec.ID)
-	if len(apps) == 0 {
-		return "", false
-	}
-	bundle, err := githubapp.EncodeBundle(apps)
-	if err != nil {
-		// Unregistered apps (no PEM yet) have nothing to share; the next
-		// reconcile pass after registration publishes the bundle.
-		return "", false
-	}
-	return bundle, true
+	return rec.Value, rec.Value != ""
 }
 
 // secretValue reads a gateway-only row's plaintext, reporting false when the
@@ -287,10 +236,6 @@ func publishAllSecrets(st *store.Store, dataDir string) error {
 		return err
 	}
 	recipients := wrapRecipientIDs(gateways, nil)
-	// A sign-in that predates sharing has no envelope to publish. Adopt it here so
-	// the session reaches the other gateways on the next pass instead of waiting
-	// for someone to sign in again.
-	adoptLocalGithubSignIn(st)
 	var first error
 	for _, rec := range st.Secrets() {
 		plain, ok := sharePlaintext(st, rec)

@@ -56,6 +56,13 @@ test('Git wizard repaints errors and busy state, retains token after failed save
  assert.match(h.dom.window.document.body.textContent,/Save failed/);h.run('gitGo(0)');
  assert.equal(h.dom.window.document.querySelector('[data-git-field="token"]').value,'test-token');
 });
+test('dashboard scripts parse and expose token Git without legacy App/sign-in UI',()=>{
+ const scripts=[...html.matchAll(/<script>([\s\S]*?)<\/script>/g)];
+ for(const [,source] of scripts) assert.doesNotThrow(()=>new vm.Script(source));
+ assert.doesNotMatch(html,/github-app|github-user|githubMappings|githubPending|renderGithub|github-connect|github-import/);
+ assert.match(html,/parts\[1\] === "github"[\s\S]*?#\/access\/git/);
+ assert.match(html,/Supplied tokens for GitHub and Gitea/);
+});
 test('changing Git destination clears confirmation',t=>{
  const h=harness(t);h.run('gitStart()');h.field('name','GitHub');h.field('token','test-token');h.field('envKey','GH_TOKEN');h.run('gitGo(2)');
  h.field('confirmHost',true);h.field('baseURL','https://enterprise.example.test');

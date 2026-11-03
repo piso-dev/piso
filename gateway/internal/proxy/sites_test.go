@@ -47,7 +47,7 @@ func applyAndRead(t *testing.T, req *http.Request, body []byte) ([]byte, error) 
 	t.Helper()
 	st := siteStoreWithSecret(t)
 	req.Body = io.NopCloser(bytes.NewReader(body))
-	err := applySubstitution(req, body, model.Decision{Substituted: []string{sitePlaceholder}}, st, scanner.Result{}, nil)
+	err := applySubstitution(req, body, model.Decision{Substituted: []string{sitePlaceholder}}, st, scanner.Result{})
 	if err != nil {
 		return nil, err
 	}
