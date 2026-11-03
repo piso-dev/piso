@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"piso/gateway/internal/gitaccess"
 	"piso/gateway/internal/githubapp"
 	"piso/gateway/internal/model"
 	"piso/gateway/internal/store"
@@ -286,7 +287,9 @@ func syncSecrets(st *store.Store, dataDir string, id tc.Identity) error {
 	for _, obj := range out.Objects {
 		// AI Boost is materialized only by its encrypted vault client, never
 		// as a plaintext SecretRec in state.json.
-		if obj.Metadata["kind"] == "ai-boost" { continue }
+		if obj.Metadata["kind"] == "ai-boost" {
+			continue
+		}
 		kept, err := applyEnvelope(st, id, obj)
 		if err != nil {
 			log.Printf("technocore: skip %s: %v", obj.ResourceID, err)
@@ -621,6 +624,16 @@ func applySecretEnvelope(st *store.Store, id tc.Identity, obj envelope) (applied
 	secretID := "tc_" + obj.ResourceID
 	plain := string(plaintext)
 	hash := plaintextHash(plain)
+	var gitConfig *gitaccess.Config
+	var gitWorkers []string
+	if kind == gitaccess.Kind && obj.Status != statusRevoked {
+		bundle, err := gitaccess.Decode(plain)
+		if err != nil {
+			return appliedEnvelope{}, err
+		}
+		gitConfig, gitWorkers, plain = &bundle.Config, bundle.Workers, bundle.Token
+		_, hosts, _ = bundle.Config.Normalize()
+	}
 	// A github-app envelope carries the app bundle, not a credential: the vault
 	// row stays empty so the PEM is never revealed by the secret UI, and the
 	// content_version alone decides which copy is authoritative.
@@ -652,7 +665,12 @@ func applySecretEnvelope(st *store.Store, id tc.Identity, obj envelope) (applied
 			// Never roll a newer local copy back.
 			return appliedEnvelope{RowID: local.ID, Kind: kind}, nil
 		}
-		if !sharesApps && obj.ContentVersion == local.ContentVersion && (local.Value != plain || local.Revoked) {
+		localGitChanged := false
+		if kind == gitaccess.Kind && obj.ContentVersion == local.ContentVersion {
+			localPlain, ok := sharePlaintext(st, local)
+			localGitChanged = !ok || plaintextHash(localPlain) != hash
+		}
+		if !sharesApps && obj.ContentVersion == local.ContentVersion && (local.Value != plain || local.Revoked || localGitChanged) {
 			// Same version, different bytes: the coordinator has not seen a
 			// write at this version, so the local copy is an edit that has not
 			// been published yet. Keep it; publishAllSecrets resolves the race.
@@ -661,6 +679,10 @@ func applySecretEnvelope(st *store.Store, id tc.Identity, obj envelope) (applied
 		// The coordinator's version is authoritative, so the plaintext and the
 		// worker-facing flags come from the envelope either way.
 		local.Value = plain
+		if kind == gitaccess.Kind {
+			local.Git = gitConfig
+			local.Workers = gitWorkers
+		}
 		if sharesApps {
 			// The bundle lives in the app records below, not in the vault.
 			local.Value = ""
@@ -711,6 +733,8 @@ func applySecretEnvelope(st *store.Store, id tc.Identity, obj envelope) (applied
 
 	rec := store.SecretRec{
 		ID:          secretID,
+		Git:         gitConfig,
+		Workers:     gitWorkers,
 		Name:        obj.Name,
 		Kind:        kind,
 		Placeholder: placeholder,

@@ -69,9 +69,9 @@ test('disconnect clearly states local-only and requires confirmation',async t=>{
  assert.match(h.sandbox.confirmation[1],/grant is not revoked/);assert.equal(h.calls.length,0);
  await h.sandbox.confirmation[3]();assert.equal(h.calls[0].path,'ai-boost/disconnect');assert.equal(h.calls[0].method,'POST');
 });
-test('AI Boost tab follows GitHub and renders fetch, pagination, setup and errors',async t=>{
+test('AI Boost tab follows Git and renders fetch, pagination, setup and errors',async t=>{
  const h=harness(t);
- assert.match(script,/\["github", "GitHub"\],\s*\["aiBoost", "AI Boost"\]/);
+ assert.match(script,/\["git", "Git"\],\s*\["aiBoost", "AI Boost"\]/);
  h.sandbox.sub='aiBoost';h.sandbox.data.aiBoost.status='ok';
  h.run('renderSettings()');assert.doesNotMatch(h.dom.window.document.body.textContent,/Review access is not configured|separate reviewer/);
  h.sandbox.api=async()=>({items:[{id:'one',name:'<img src=x onerror=alert(1)>',status:'submitted',revision:3}],nextCursor:'opaque'});

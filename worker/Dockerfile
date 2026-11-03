@@ -24,7 +24,13 @@ COPY relay-src/internal ./internal
 COPY relay-src/cmd ./cmd
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/piso-mcp ./cmd/piso-mcp
 
+FROM golang:1.25-bookworm AS tea
+RUN GOBIN=/out CGO_ENABLED=0 go install code.gitea.io/tea@v0.10.1
+
 FROM node:24-bookworm-slim
+COPY --from=tea /out/tea /usr/local/bin/tea
+COPY git-access.py /usr/local/bin/piso-git-access
+RUN chmod +x /usr/local/bin/piso-git-access
 
 # fd-find is baked in: pi's runtime download uses tar --same-owner, which
 # fails under cap_drop ALL. PISO_WORKER_HASH is applied after the install
@@ -198,6 +204,7 @@ ENV HTTPS_PROXY=http://127.0.0.1:18080 \
 # Git/gh need a writable global config; keep it on the persistent agent
 # volume. Image ENV also reaches docker exec sessions, unlike shell exports.
 ENV GIT_CONFIG_GLOBAL=/root/.pi/agent/gitconfig
+ENV XDG_CONFIG_HOME=/root/.pi/agent/git-access/tea
 
 WORKDIR /workspace
 

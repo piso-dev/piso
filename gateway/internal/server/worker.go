@@ -68,6 +68,7 @@ func (s *Server) mcpHandler() *mcp.Handler {
 		}
 	}
 	h.GithubRepos = githubClient.ListReposContext
+	h.GitHTTPClient = s.httpClient()
 	h.BoostList = func(ctx context.Context, query, cursor string) (aiboost.Page, error) {
 		client, err := s.boostClient()
 		if err != nil {

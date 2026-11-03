@@ -9,10 +9,13 @@ apply.
    placeholder names this worker may see. If the call fails, treat
    capabilities as **blocked**, not open. Internet off ⇒ steps 2 and 4 are
    out of scope; say so and continue locally.
-2. `github_repositories` (no arguments) — the HTTPS repos this worker can
+2. `user_repositories` (no arguments) — HTTPS repos from assigned Git token
+   connections; also call legacy `github_repositories` for existing App
+   connections. Capability hints are operator guidance, not verified or enforced
+   by Piso. The tools list repos this worker can
    reach. Match the task against the list. For each repo the task names or
    clearly needs, clone it over HTTPS into `/workspace`:
-   `git clone https://github.com/<org>/<repo> /workspace/<name>`
+   `git clone <listed-HTTPS-cloneURL> /workspace/<name>`
    If the repo is already under `/workspace`, `git fetch` / `git pull`
    instead. Do not clone the whole list. If `complete:false`, record the
    `errors` and move on — never retry in a loop.

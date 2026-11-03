@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strings"
 
+	"piso/gateway/internal/gitaccess"
 	"piso/gateway/internal/githubapp"
 	"piso/gateway/internal/model"
 	"piso/gateway/internal/store"
@@ -60,8 +61,8 @@ type ShareInput struct {
 	// omitted (0) when the writer has never published the secret, so a stale
 	// writer can be told to re-sync instead of overwriting newer state.
 	BaseVersion int
-	Operation string
-	LeaseEpoch uint64
+	Operation   string
+	LeaseEpoch  uint64
 }
 
 // Share wraps plaintext for account gateways and POSTs ciphertext to the server.
@@ -199,6 +200,12 @@ func sharePlaintext(st *store.Store, rec store.SecretRec) (string, bool) {
 		return "", false
 	}
 	switch rec.Kind {
+	case gitaccess.Kind:
+		if rec.Git == nil || rec.Value == "" {
+			return "", false
+		}
+		plain, err := gitaccess.Encode(*rec.Git, rec.Value, rec.Workers)
+		return plain, err == nil
 	case model.SecretKindGithubOAuth:
 		// One half of a sign-in. It reaches other gateways inside the
 		// github-user bundle, materialized there as a local row; publishing it

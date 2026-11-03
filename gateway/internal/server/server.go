@@ -223,6 +223,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	s.registerTechnocore(mux)
 	s.registerGithubApp(mux)
 	s.registerGithubUser(mux)
+ s.registerGit(mux)
 	s.registerAIBoost(mux)
 	s.registerTelegram(mux)
 	mux.HandleFunc("GET /api/v1/connections", s.handleConnections)

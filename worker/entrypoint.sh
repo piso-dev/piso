@@ -53,6 +53,12 @@ if ! (mkdir -p "$(dirname "$GIT_CONFIG_GLOBAL")" && gh auth setup-git --hostname
   echo "piso: GitHub credential-helper setup failed; Git authentication may be unavailable" >&2
 fi
 
+# Git connections refresh from the placeholder-only mount. No provider calls.
+export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-/root/.pi/agent/git-access/tea}"
+if [ -x /usr/local/bin/piso-git-access ]; then
+  /usr/local/bin/piso-git-access watch >>"$PISO_LOG_DIR/git-access.log" 2>&1 &
+fi
+
 # Remote workers need the piso MITM CA *and* public CAs (coordinator Let's Encrypt).
 if [ -f /piso-ca.pem ]; then
   bundle="$TMPDIR/piso-ca-bundle.pem"

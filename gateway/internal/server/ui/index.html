@@ -2356,6 +2356,31 @@
          116px on the right the select reserves for the actions strip. */
       .provider-warning { margin: 0; padding: 0 116px 8px 16px; color: var(--red); font-size: 13px; }
       .provider-drift { margin: 0; padding: 0 116px 8px 16px; color: var(--muted); font-size: 12px; }
+      /* Same rail, numbered discs, and restrained gutter as the GitHub wizard. */
+      .git-flow { display:grid; grid-template-columns:minmax(190px,264px) minmax(0,1fr); gap:30px; align-items:start; }
+      .git-spine ol { list-style:none; padding:0; margin:0; }
+      .git-step { position:relative; }
+      .git-step::after { content:""; position:absolute; left:19px; top:0; bottom:0; width:1px; background:var(--line); }
+      .git-step:first-child::after { top:50%; }
+      .git-step:last-child::after { bottom:50%; }
+      .git-step-link { position:relative; width:100%; min-height:49px; padding:6px 6px 6px 42px; text-align:left; border:1px solid transparent; background:none; color:var(--muted); font:inherit; }
+      .git-step-mark { position:absolute; left:8px; top:50%; transform:translateY(-50%); display:grid; place-items:center; width:23px; height:23px; border:1px solid var(--line); border-radius:50%; background:var(--bg); z-index:1; font-size:11px; }
+      .git-step[data-state="passed"] .git-step-mark { border-color:var(--green); color:var(--green); }
+      .git-step[data-state="active"] .git-step-mark { border-color:var(--blue); color:var(--blue); box-shadow:0 0 0 3px color-mix(in srgb,var(--blue) 16%,transparent); }
+      .git-step[aria-current] .git-step-link { color:var(--text); font-weight:650; }
+      .git-card { position:relative; min-width:0; border:1px solid var(--line); border-radius:6px; background:var(--panel); padding:20px 24px 18px 26px; }
+      .git-card::before { content:""; position:absolute; left:0; top:16px; bottom:16px; width:2px; background:var(--blue); }
+      .git-card[data-state="blocked"]::before { background:var(--red); }
+      .git-card h3 { font-size:21px; font-weight:600; letter-spacing:-.35px; margin-bottom:16px; }
+      .git-panel-count { color:var(--muted); font-size:11.5px; margin:0 0 3px; }
+      .git-card fieldset { border:0; padding:0; margin:0; min-width:0; }
+      .git-card .field { display:flex; flex-direction:column; gap:6px; margin:14px 0; }
+      .git-card p { max-width:76ch; }
+      .git-hints label { display:flex; justify-content:space-between; align-items:center; gap:16px; border-bottom:1px solid var(--line); padding:10px 0; }
+      .git-hints select { flex:0 0 130px; }
+      .git-card .actions { margin-top:18px; }
+      .git-card :focus-visible, .git-step-link:focus-visible { outline:2px solid var(--blue); outline-offset:3px; }
+      @media(max-width:760px) { .git-flow { grid-template-columns:1fr; gap:16px; } .git-spine ol { display:flex; flex-wrap:wrap; } .git-step::after { display:none; } .git-step-link { width:auto; padding-right:12px; } .git-card { padding:18px 18px 16px 20px; } }
     </style>
   </head>
   <body>
@@ -2457,6 +2482,7 @@
         plans: "ingress/requests",
         mcp: "mcp",
         mcpPending: "mcp/pending",
+        git: "git",
         github: "github-app",
         githubMappings: "github-app/mappings",
         githubPending: "github-app/pending",
@@ -2550,7 +2576,7 @@
         access: [
           ["secrets", "Secrets"],
           ["mcp", "MCP servers"],
-          ["github", "GitHub"],
+          ["git", "Git"],
           ["aiBoost", "AI Boost"],
           ["telegram", "Telegram"],
           ["provider", "Model provider"],
@@ -3373,6 +3399,8 @@
         // navigated away from.
         if (!location.hash.startsWith("#/tasks/")) stopViewBeat();
         const parts = location.hash.replace(/^#\//, "").split("/");
+        if (parts[0] === "access" && parts[1] === "github") { location.replace("#/access/git"); return; }
+        if (gitDraft && !(parts[0] === "access" && parts[1] === "git")) gitDraft = null;
         // "Needs you" is the board's first column now. Old links, bookmarks and
         // muscle memory land on the board instead of a page that is gone.
         if (parts[0] === "attention") {
@@ -5214,6 +5242,159 @@
         }
         $("#f-title")?.focus();
       }
+// Git token UI. The rail follows the GitHub wizard; only one step is open.
+const gitCapabilities = [
+  ['read', 'Read and clone repositories'], ['createBranch', 'Create branches'],
+  ['updateBranch', 'Update existing branches'], ['deleteRef', 'Delete branches or tags'],
+  ['rewriteHistory', 'Rewrite history'], ['openPR', 'Open pull requests'],
+  ['comment', 'Comment on issues and pull requests'], ['approve', 'Approve pull requests'],
+  ['merge', 'Merge pull requests'], ['settings', 'Manage repository settings'],
+];
+let gitDraft = null;
+const gitProbes = new Map();
+const gitStepTitles = ['Token', 'Provider and type', 'Host', 'Capability hints'];
+function gitStart(id = '') {
+  const connection = list('git').find(x => x.id === id);
+  gitDraft = {
+    id, step: 0, name: connection?.name || '', token: '',
+    envKey: connection?.envKey || '', workers: (connection?.workers || []).join(', '),
+    provider: connection?.config.provider || 'github',
+    tokenType: connection?.config.tokenType || 'user',
+    baseURL: connection?.config.baseURL || 'https://github.com',
+    hints: {...(connection?.config.hints || {})}, confirmHost: false,
+    error: '', busy: false,
+  };
+  gitRedraw();
+  $('#git-step-title')?.focus();
+}
+function gitCapture() {
+  if (!gitDraft) return;
+  document.querySelectorAll('#git-wizard [data-git-field]').forEach(input => {
+    gitDraft[input.dataset.gitField] = input.type === 'checkbox' ? input.checked : input.value;
+  });
+  document.querySelectorAll('#git-wizard [data-git-hint]').forEach(input => {
+    gitDraft.hints[input.dataset.gitHint] = input.value;
+  });
+}
+function gitValidateStep(step) {
+  const d = gitDraft;
+  if (step === 0) {
+    if (!d.name.trim() || (!d.id && !d.token.trim())) return 'Enter a name and token.';
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(d.envKey)) return 'Enter a valid, unique environment key.';
+  }
+  if (step === 2) {
+    try {
+      const url = new URL(d.baseURL);
+      if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash) throw new Error();
+    } catch { return 'Enter an HTTPS instance URL without credentials, query, or fragment.'; }
+    if (!d.confirmHost) return 'Confirm the credential destinations.';
+  }
+  return '';
+}
+function gitGo(step) {
+  gitCapture();
+  if (!gitDraft || gitDraft.busy) return;
+  const target = Math.max(0, Math.min(3, Number(step)));
+  if (target > gitDraft.step) {
+    gitDraft.error = gitValidateStep(gitDraft.step);
+    if (gitDraft.error) { gitRedraw(); return; }
+  }
+  if (gitDraft.step === 0 && !gitDraft.id && gitDraft.token.startsWith('ghs_')) {
+    gitDraft.provider = 'github'; gitDraft.tokenType = 'installation';
+  }
+  gitDraft.step = target; gitDraft.error = '';
+  gitRedraw(); $('#git-step-title')?.focus();
+}
+function gitInput(key, label, type = 'text', hint = '') {
+  return `<label class="field full">${esc(label)}<input data-git-field="${esc(key)}" type="${type}" value="${esc(gitDraft[key])}" ${type === 'password' ? 'autocomplete="new-password"' : ''}>${hint ? `<small>${esc(hint)}</small>` : ''}</label>`;
+}
+function gitDestinations(d) {
+  try {
+    const u = new URL(d.baseURL);
+    return d.provider === 'github' && u.origin === 'https://github.com'
+      ? 'github.com and api.github.com' : u.host;
+  } catch { return 'the instance you enter'; }
+}
+function gitWizard() {
+  const d = gitDraft;
+  const spine = gitStepTitles.map((title, i) => `<li class="git-step" data-state="${i < d.step ? 'passed' : i === d.step ? 'active' : 'todo'}"${i === d.step ? ' aria-current="step"' : ''}><button type="button" class="git-step-link" data-action="git-goto" data-id="${i}" ${d.busy ? 'disabled' : ''}><span class="git-step-mark" aria-hidden="true">${i < d.step ? '✓' : i + 1}</span><span>${esc(title)}</span></button></li>`).join('');
+  let body = '';
+  if (d.step === 0) body = `<p>The real token stays in the gateway. Workers receive a placeholder.</p>${gitInput('name', 'Connection name')}${gitInput('token', d.id ? 'Replacement token (leave blank to keep)' : 'Token', 'password')}${gitInput('envKey', 'Worker environment key', 'text', 'Use GH_TOKEN for your default GitHub credential, or a unique key for explicit selection. Use TEA_TOKEN for your default Gitea credential.')}${gitInput('workers', 'Workers', 'text', 'Comma-separated project slugs. Empty means all workers.')}`;
+  if (d.step === 1) body = `<p>Select the server and credential type. Token formats are hints, not proof of identity or permissions.</p><label class="field full">Provider<select data-git-field="provider">${[['github','GitHub'],['gitea','Gitea']].map(([v,t])=>`<option value="${v}" ${d.provider === v ? 'selected' : ''}>${t}</option>`).join('')}</select></label><label class="field full">Credential type<select data-git-field="tokenType"><option value="user" ${d.tokenType === 'user' ? 'selected' : ''}>User token (PAT or supplied OAuth token)</option>${d.provider === 'github' ? `<option value="installation" ${d.tokenType === 'installation' ? 'selected' : ''}>GitHub installation token</option>` : ''}</select></label><p>No sign-in, bot provisioning, invitations, or forks are performed by Piso.</p>`;
+  if (d.step === 2) body = `${gitInput('baseURL', 'Instance URL', 'url', 'HTTPS is required. Gitea may include a deployment path; GitHub Enterprise uses the instance origin.')}<p>No token has been sent to this host. Saving binds substitution to the confirmed destinations.</p><label class="field full"><span><input type="checkbox" data-git-field="confirmHost" ${d.confirmHost ? 'checked' : ''}> I allow this credential to be sent to <strong id="git-destinations">${esc(gitDestinations(d))}</strong>.</span></label>`;
+  if (d.step === 3) body = `<p class="notice">Operator-provided guidance; not verified or enforced by Piso. The Git server authorizes every operation. Unknown means no guidance was provided.</p><div class="git-hints">${gitCapabilities.map(([key,label])=>`<label>${esc(label)}<select data-git-hint="${key}">${[['unknown','Unknown'],['allowed','Allowed'],['denied','Not allowed']].map(([v,t])=>`<option value="${v}" ${(d.hints[key] || 'unknown') === v ? 'selected' : ''}>${t}</option>`).join('')}</select></label>`).join('')}</div>`;
+  return `<div class="git-flow" id="git-wizard"><nav class="git-spine" aria-label="Git token setup steps"><ol>${spine}</ol></nav><section class="git-card" data-state="${d.error ? 'blocked' : 'active'}" aria-labelledby="git-step-title" aria-busy="${d.busy}"><p class="git-panel-count">Step ${d.step + 1} of 4</p><h3 id="git-step-title" tabindex="-1">${esc(gitStepTitles[d.step])}</h3><fieldset ${d.busy ? 'disabled' : ''}>${body}</fieldset>${d.error ? `<p class="notice error" role="alert">${esc(d.error)}</p>` : ''}<div class="actions">${button('Cancel','git-cancel')}${d.step ? button('Back','git-goto',String(d.step - 1)) : ''}${d.step < 3 ? button('Next','git-goto',String(d.step + 1),'primary') : button(d.busy ? 'Saving…' : 'Save connection','git-save','','primary')}</div></section></div>`;
+}
+async function gitSave() {
+  gitCapture();
+  if (!gitDraft || gitDraft.busy) return;
+  const d = gitDraft;
+  d.error = [0,2].map(gitValidateStep).find(Boolean) || '';
+  if (d.error) { gitRedraw(); return; }
+  d.busy = true; gitRedraw();
+  try {
+    await api('git' + (d.id ? '/' + enc(d.id) : ''), d.id ? 'PUT' : 'POST', {
+      name: d.name.trim(), token: d.token, envKey: d.envKey.trim(),
+      workers: d.workers.split(',').map(x=>x.trim()).filter(Boolean), confirmHost: d.confirmHost,
+      config: {provider:d.provider,tokenType:d.tokenType,baseURL:d.baseURL.trim(),hints:d.hints},
+    });
+    if (d.id) gitProbes.delete(d.id);
+    gitDraft = null;
+    $('#git-wizard')?.remove();
+    await changed(['git','secrets','rules']); notify('Git connection saved. No permissions were verified.');
+  } catch (error) { d.busy = false; d.error = error.message; gitRedraw(); }
+}
+async function gitProbe(id) {
+  gitProbes.set(id, {loading:true}); renderContent();
+  try { gitProbes.set(id, await api('git/' + enc(id) + '/repositories', 'POST', {}, 35000)); }
+  catch (error) { gitProbes.set(id, {error:error.message}); }
+  renderContent();
+}
+function gitRemove(id) {
+  confirmAction('Remove Git connection?', 'This removes the saved credential from Piso. It does not revoke the token at the provider.', 'Remove', async()=>{
+    await api('git/' + enc(id),'DELETE'); gitProbes.delete(id); await changed(['git','secrets','rules']);
+  });
+}
+function renderGit(intro) {
+  // Refreshes must never replace a panel containing an unsaved token or hint.
+  if (gitDraft && $('#git-wizard')) return;
+  const rows = list('git').filter(matches);
+  count(rows.length);
+  const connections = rows.map(c=>{
+    const p = gitProbes.get(c.id);
+    const hints = gitCapabilities.map(([key,label])=>[label,c.config.hints?.[key] || 'unknown']).filter(([,v])=>v !== 'unknown');
+    return `<section class="record"><div class="card-top"><h3>${esc(c.name)}</h3>${badge(c.config.provider === 'gitea' ? 'Gitea' : 'GitHub')}</div><p>${esc(c.config.baseURL)}</p><p>Environment: <code>${esc(c.envKey)}</code>. Workers: ${esc(c.workers?.join(', ') || 'all')}.</p><details><summary>Capability hints (not enforced)</summary>${hints.length ? hints.map(([label,value])=>`<p>${esc(label)}: ${value === 'allowed' ? 'Allowed' : 'Not allowed'}</p>`).join('') : '<p>All capabilities unknown.</p>'}</details><div class="actions">${button('Edit / replace token','git-edit',c.id)}${button(p?.loading ? 'Discovering…' : 'Test / discover repositories','git-probe',c.id,'','',p?.loading)}${button('Remove','git-remove',c.id,'quiet')}</div>${p?.error ? `<p role="alert">${esc(p.error)}</p>` : ''}${p?.repositories ? `<p>${p.repositories.length} repositories listed. ${p.complete ? 'Listing completed; write access is not verified.' : 'Listing incomplete.'}</p>${(p.errors || []).map(e=>`<p role="alert">${esc(e.message)}</p>`).join('')}<details><summary>Repositories</summary><ul>${p.repositories.map(r=>`<li>${esc(r.name)} <code>${esc(r.cloneURL)}</code></li>`).join('')}</ul></details>` : ''}</section>`;
+  }).join('');
+  replaceContent(intro + (gitDraft ? gitWizard() : connections || empty('Add a Git token', 'Supply a GitHub or Gitea token. The server decides what it can do; Piso keeps its value out of the worker.')));
+  if (gitDraft) gitBindInputs();
+}
+function gitRedraw() {
+  $('#git-wizard')?.remove(); renderContent();
+}
+function gitBindInputs() {
+  const wizard = $('#git-wizard');
+  wizard?.addEventListener('input',e=>{
+    gitCapture();
+    if (e.target.dataset.gitField === 'baseURL') {
+      gitDraft.confirmHost = false;
+      wizard.querySelector('[data-git-field="confirmHost"]').checked = false;
+      $('#git-destinations').textContent = gitDestinations(gitDraft);
+    }
+  });
+  wizard?.addEventListener('change',e=>{
+    gitCapture();
+    if (e.target.dataset.gitField === 'provider') {
+      gitDraft.tokenType = 'user'; gitDraft.confirmHost = false;
+      gitDraft.baseURL = gitDraft.provider === 'github' ? 'https://github.com' : '';
+      gitRedraw();
+    }
+  });
+  wizard?.addEventListener('keydown',e=>{
+    if (!e.target.closest('.git-spine') || !['ArrowLeft','ArrowRight'].includes(e.key)) return;
+    e.preventDefault(); gitGo(gitDraft.step + (e.key === 'ArrowRight' ? 1 : -1));
+  });
+}
+
       const intros = {
         secrets: [
           "Secret vault",
@@ -5225,6 +5406,7 @@
           "MCP servers",
           "Authorize tools for individual workers. Servers are added from the worker.",
         ],
+        git: ["Git", "Supplied tokens for GitHub and Gitea. Permissions are enforced by the Git server.", "Add Git token", "git-add"],
         github: [
           "GitHub Apps",
           "Sign-in lets you manage apps. App installations provide worker access. Private keys and installation tokens stay in the gateway.",
@@ -5536,6 +5718,7 @@
           sub === "github" && data.githubUser?.connected ? button("Import existing app", "github-import", "", "quiet") : "",
         ].filter(Boolean);
         const intro = `<div class="section-intro"><div><h2>${title}</h2><p>${description}</p></div>${actions.length ? `<div class="intro-actions">${actions.join("")}</div>` : ""}</div>`;
+        if (sub === "git") return renderGit(intro);
         if (sub === "github") return renderGithub(intro);
         if (sub === "aiBoost") return renderBoostReview(intro);
         if (sub === "telegram") return renderTelegram(intro);
@@ -7641,6 +7824,12 @@
         }
       }
       async function action(name, id, source) {
+        if (name === "git-add" || name === "git-edit") { $('#git-wizard')?.remove(); return gitStart(id); }
+        if (name === "git-goto") return gitGo(id);
+        if (name === "git-cancel") { if (gitDraft?.busy) return; gitDraft = null; $('#git-wizard')?.remove(); return renderContent(); }
+        if (name === "git-save") return gitSave();
+        if (name === "git-probe") return gitProbe(id);
+        if (name === "git-remove") return gitRemove(id);
         if (name === "host-copy") return copyHostPanel(source);
         if (name === "task-new" || name === "directive-new" || name === "directive-edit") {
           // The controls are disabled, so this is only reachable from a stale
@@ -8030,6 +8219,7 @@
               "plans",
               "mcp",
               "mcpPending",
+              "git",
               "github",
               "githubMappings",
               "githubUser",
