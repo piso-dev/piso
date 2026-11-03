@@ -47,6 +47,7 @@ type Server struct {
 	// Telegram is the Telegram front door: the poller, the update cursor and
 	// the allow-list. It owns the only connection to Telegram; nothing else in
 	// the gateway talks to that API.
+	whiteNoise   whiteNoiseRuntime
 	Telegram     *telegram.Manager
 	boost        *aiboost.Client
 	boostTickets map[string]time.Time
@@ -225,6 +226,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	s.registerGithubUser(mux)
 	s.registerAIBoost(mux)
 	s.registerTelegram(mux)
+	s.registerWhiteNoise(mux)
 	mux.HandleFunc("GET /api/v1/connections", s.handleConnections)
 
 	// CA cert for distribution

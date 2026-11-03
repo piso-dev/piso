@@ -188,6 +188,17 @@ class SupervisorLogicTest(unittest.TestCase):
         self.assertEqual(last_sent(sup, 1)["type"], "steer")
         self.assertEqual(last_sent(sup, 1)["message"], "second")
 
+    def test_whitenoise_sessions_are_namespaced_and_plaintext(self):
+        gw, sup = self.make()
+        chat = ("whitenoise", "connection", "opaque-conversation")
+        sup.feed({"id": "wn1", "channel": "whitenoise", "connectionId": chat[1], "conversationId": chat[2], "senderId": "person", "text": "hello"})
+        self.assertEqual(last_sent(sup, chat)["message"], "hello")
+        sup.tell(sup.sessions[chat], "**plain** <not HTML>")
+        self.assertEqual(gw.replies[-1], (chat, "**plain** <not HTML>"))
+        self.assertNotEqual(session.session_id(chat), session.session_id(9))
+        self.assertNotEqual(session.session_id(chat), session.session_id(("whitenoise", "other", chat[2])))
+        self.assertIn("whitenoise-prompt.md", " ".join(session.pi_argv(chat)))
+
     def test_control_words_drive_the_session(self):
         gw, sup = self.make()
         sup.feed({"chatId": 1, "text": "/stop"})
@@ -716,7 +727,12 @@ class EndToEndTest(unittest.TestCase):
             def do_POST(self):
                 length = int(self.headers.get("Content-Length", 0))
                 body = json.loads(self.rfile.read(length) or b"{}")
-                if self.path == "/api/v1/worker/supervisor":
+                if self.path == "/api/v1/worker/whitenoise/supervisor":
+                    self._json(200, {"granted": True})
+                elif self.path == "/api/v1/worker/whitenoise/reply":
+                    state["replies"].append(body)
+                    self._json(200, {"ok": True})
+                elif self.path == "/api/v1/worker/supervisor":
                     self._json(200, {"granted": True})
                 elif self.path == "/api/v1/worker/reply":
                     state["replies"].append((body.get("chatId"), body.get("text")))
@@ -729,6 +745,10 @@ class EndToEndTest(unittest.TestCase):
                     self._json(200, {"ok": True})
 
             def do_GET(self):
+                if self.path.startswith("/api/v1/worker/whitenoise/messages"):
+                    pending, state["messages"] = state["messages"], []
+                    self._json(200, {"messages": pending})
+                    return
                 pending, state["messages"] = state["messages"], []
                 self._json(200, {"messages": pending})
 
@@ -737,6 +757,27 @@ class EndToEndTest(unittest.TestCase):
         self.addCleanup(self.server.server_close)
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         self.base = "http://127.0.0.1:%d" % self.server.server_address[1]
+
+    def test_whitenoise_message_reaches_pi_and_reply_returns(self):
+        self.state["messages"] = [{"id": "wn1", "channel": "whitenoise", "connectionId": "c1", "conversationId": "opaque-group", "senderId": "person", "text": "ping"}]
+        gw = session.WhiteNoiseGateway(self.base, "w", "s")
+        sup = session.Supervisor(gw, lambda chat, event, response: session.PiRpc([sys.executable, str(self.script)], event, response), wait=1)
+        thread = threading.Thread(target=sup.run, daemon=True)
+        thread.start()
+        deadline = time.time() + 5
+        while time.time() < deadline and not self.state["replies"]:
+            time.sleep(0.05)
+        sup.stop()
+        thread.join(timeout=3)
+        self.assertEqual(len(self.state["replies"]), 1)
+        reply = self.state["replies"][0]
+        self.assertEqual(reply["text"], "echo: ping")
+        self.assertEqual(reply["connectionId"], "c1")
+        self.assertEqual(reply["conversationId"], "opaque-group")
+        self.assertTrue(reply["idempotencyKey"])
+        self.assertNotIn("chatId", reply)
+        self.assertNotIn("parseMode", reply)
+        self.assertEqual(self.state["statuses"], [])
 
     def test_message_reaches_pi_and_reply_returns(self):
         gw = session.Gateway(self.base, "w", "s")

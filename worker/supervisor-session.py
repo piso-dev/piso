@@ -28,6 +28,8 @@ Three things make a chat feel like the text box rather than a remote control:
 """
 import json
 import os
+import hashlib
+import uuid
 import shlex
 import signal
 import ssl
@@ -44,6 +46,11 @@ sys.path.insert(0, os.path.dirname(__file__))
 import telegram_format as tg
 
 STATE_DIR = os.environ.get("PISO_SUPERVISOR_DIR", "/root/.pi/agent/piso")
+CHANNEL = os.environ.get("PISO_SUPERVISOR_CHANNEL", "telegram")
+if CHANNEL not in ("telegram", "whitenoise"):
+    raise ValueError("unsupported supervisor channel")
+if CHANNEL == "whitenoise":
+    STATE_DIR = os.path.join(STATE_DIR, "whitenoise")
 STATE_FILE = os.path.join(STATE_DIR, "supervisor.json")
 STATE_PLAIN = os.path.join(STATE_DIR, "supervisor.state")
 RENEW_SECS = int(os.environ.get("PISO_SUPERVISOR_RENEW_SECS", "40"))
@@ -213,6 +220,8 @@ def session_id(chat_id):
     positive for the private chats this front door serves; the ``m`` keeps the
     id a legal pi session id whatever the sign.
     """
+    if isinstance(chat_id, tuple):
+        return "wn-" + hashlib.sha256(json.dumps(chat_id).encode()).hexdigest()
     chat_id = int(chat_id)
     return "tg-m%d" % abs(chat_id) if chat_id < 0 else "tg-%d" % chat_id
 
@@ -225,7 +234,8 @@ def pi_argv(chat_id=None):
         return shlex.split(override)
     binary = os.environ.get("PISO_PI_BIN", "pi")
     argv = [binary, "--mode", "rpc", "--name", "piso-supervisor",
-            "--append-system-prompt", TELEGRAM_PROMPT]
+            "--append-system-prompt", (os.path.join(os.path.dirname(TELEGRAM_PROMPT), "whitenoise-prompt.md")
+                                       if isinstance(chat_id, tuple) else TELEGRAM_PROMPT)]
     if chat_id is not None:
         argv += ["--session-id", session_id(chat_id)]
     extra = os.environ.get("PISO_PI_ARGS", "")
@@ -563,7 +573,7 @@ class Supervisor:
                 self.sessions[chat_id] = sess
                 self.start_pi(sess)
                 self._evict_locked()
-                log("started pi session for chat %s" % chat_id)
+                log("started pi session for chat %s" % (chat_id,))
             sess.last_used = time.time()
             return sess
 
@@ -583,7 +593,7 @@ class Supervisor:
             gone = self.sessions.pop(chat)
             if gone.rpc is not None:
                 gone.rpc.stop()
-            log("evicted idle pi session for chat %s" % chat)
+            log("evicted idle pi session for chat %s" % (chat,))
 
     def revive(self):
         """Restart sessions whose pi process died, keeping their id and any
@@ -597,7 +607,7 @@ class Supervisor:
                 sess.busy = False
                 sess.reset_message()
                 sess.pending = "♻️ pi restarted" if had_status else None
-            log("pi session for chat %s exited; restarting it" % chat)
+            log("pi session for chat %s exited; restarting it" % (chat,))
             if had_status:
                 # Close out the frozen activity line before the new process
                 # takes over, so the chat is not left showing a tool call that
@@ -837,12 +847,14 @@ class Supervisor:
     # ---- chat commands ----
 
     def tell(self, sess, text, final=False):
-        rendered = tg.markdown(text)
-        parts = tg.chunks(rendered, limit=CHUNK_MAX)
+        plain = isinstance(sess.chat_id, tuple)
+        rendered = text if plain else tg.markdown(text)
+        parts = chunk_text(rendered, CHUNK_MAX // 4) if plain else tg.chunks(rendered, limit=CHUNK_MAX)
         if final and len(parts) > FINAL_MAX_CHUNKS:
             # Re-split with room for the notice; never slice markup/entities.
             marker = "\n\n…truncated. Ask for a shorter answer or a specific section."
-            parts = tg.chunks(rendered, limit=CHUNK_MAX - len(marker.encode()))[:FINAL_MAX_CHUNKS]
+            parts = (chunk_text(rendered, (CHUNK_MAX - len(marker.encode())) // 4) if plain else
+                     tg.chunks(rendered, limit=CHUNK_MAX - len(marker.encode())))[:FINAL_MAX_CHUNKS]
             parts[-1] += marker
         for chunk in parts:
             try:
@@ -855,10 +867,15 @@ class Supervisor:
         """Route one Telegram message into the chat's session, or run it as one
         of the control words a real session understands."""
         chat = message.get("chatId")
+        if message.get("channel") == "whitenoise":
+            connection, conversation = message.get("connectionId"), message.get("conversationId")
+            if not connection or not conversation:
+                return
+            chat = ("whitenoise", connection, conversation)
         text = (message.get("text") or "").strip()
         if chat is None or not text:
             return
-        sess = self.session(int(chat))
+        sess = self.session(chat if isinstance(chat, tuple) else int(chat))
         word = text.lower()
         if word in INTERRUPT_WORDS:
             self.interrupt(sess)
@@ -990,6 +1007,24 @@ class Supervisor:
                 sess.rpc.stop()
 
 
+class WhiteNoiseGateway(Gateway):
+    """Separate routes and plaintext replies; no Telegram HTML or live previews."""
+
+    def _request(self, method, path, *args, **kwargs):
+        path = path.replace("/api/v1/worker/", "/api/v1/worker/whitenoise/", 1)
+        return super()._request(method, path, *args, **kwargs)
+
+    def reply(self, chat_id, text):
+        return self._request("POST", "/api/v1/worker/reply", {
+            "worker": self.worker, "connectionId": chat_id[1],
+            "conversationId": chat_id[2], "text": text,
+            "idempotencyKey": uuid.uuid4().hex,
+        })
+
+    def status(self, chat_id, text, message_id=0):
+        return None
+
+
 def default_spawn(chat_id, on_event, on_response):
     """One `pi --mode rpc` process for one chat, resumed by its session id."""
     return PiRpc(pi_argv(chat_id), on_event, on_response)
@@ -1002,7 +1037,7 @@ def main():
     if not base or not worker or not slug:
         log("GATEWAY_URL/PISO_WORKER_NAME/PISO_WORKER_SLUG must be set")
         return 3
-    gateway = Gateway(base, worker, slug)
+    gateway = (WhiteNoiseGateway if CHANNEL == "whitenoise" else Gateway)(base, worker, slug)
     supervisor = Supervisor(gateway)
 
     def shutdown(_signum, _frame):
