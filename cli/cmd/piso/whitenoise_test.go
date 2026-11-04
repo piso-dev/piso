@@ -29,7 +29,7 @@ func TestWhiteNoiseLaunchReusesExistingImageWithoutBuild(t *testing.T) {
 	}
 	want := [][]string{
 		{"volume", "create", whiteNoiseVolume},
-		{"compose", "-f", "gateway.yaml", "-p", "piso", "up", "-d", "--no-deps", "whitenoise"},
+		{"compose", "-f", "gateway.yaml", "-p", "piso", "up", "-d", "--no-build", "--no-deps", "whitenoise"},
 	}
 	if !reflect.DeepEqual(calls, want) {
 		t.Fatalf("%v", calls)

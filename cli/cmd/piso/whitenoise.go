@@ -136,7 +136,7 @@ func launchWhiteNoise(file string, env map[string]string, run func(string, []str
 	if err := run("docker", []string{"volume", "create", whiteNoiseVolume}, env); err != nil {
 		return fmt.Errorf("prepare connector state: %w", err)
 	}
-	if err := run("docker", []string{"compose", "-f", file, "-p", "piso", "up", "-d", "--no-deps", "whitenoise"}, env); err != nil {
+	if err := run("docker", []string{"compose", "-f", file, "-p", "piso", "up", "-d", "--no-build", "--no-deps", "whitenoise"}, env); err != nil {
 		return fmt.Errorf("start connector: %w", err)
 	}
 	return nil

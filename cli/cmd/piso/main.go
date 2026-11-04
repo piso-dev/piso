@@ -289,9 +289,9 @@ func cmdUp(args []string) error {
 	}
 	// 2. worker (per-project). The image is already built (step 0); just render
 	// the project's compose and create the container. After buildSharedWorker
-	// stamps piso.worker.hash, workerNeedsBuild() is false and we must not
-	// pass --build: compose uses a different cache key than a bare docker
-	// build unless networks match, and would redo apt/bun/npm.
+	// stamps piso.worker.hash, startup uses --no-build rather than letting
+	// Compose compile implicitly or use a different cache key and redo
+	// apt/bun/npm.
 	composeEnv, err := dockerComposeEnv()
 	if err != nil {
 		return err
@@ -300,10 +300,7 @@ func cmdUp(args []string) error {
 	if err != nil {
 		return err
 	}
-	upArgs := []string{"compose", "-f", workerFile, "-p", "piso-" + proj.Slug, "up", "-d", "-t", "0"}
-	if workerNeedsBuild() {
-		upArgs = append(upArgs, "--build")
-	}
+	upArgs := []string{"compose", "-f", workerFile, "-p", "piso-" + proj.Slug, "up", "-d", "--no-build", "-t", "0"}
 	if err := runEnv("docker", upArgs, composeEnv); err != nil {
 		return fmt.Errorf("worker up: %w", err)
 	}
@@ -1727,7 +1724,7 @@ func recreateWorker(w pisoconfig.WorkerRec) error {
 	if err != nil {
 		return err
 	}
-	return runEnv("docker", []string{"compose", "-f", file, "-p", "piso-" + w.Slug, "up", "-d", "-t", "0"}, composeEnv)
+	return runEnv("docker", []string{"compose", "-f", file, "-p", "piso-" + w.Slug, "up", "-d", "--no-build", "-t", "0"}, composeEnv)
 }
 
 // recreateMonitor replaces the project-manager container from the gateway
@@ -1764,7 +1761,7 @@ func recreateMonitor() error {
 	}
 	return runEnv("docker", []string{
 		"compose", "-f", gatewayFile, "-p", "piso",
-		"up", "-d", "-t", "0", "--no-deps", "--force-recreate", "monitor",
+		"up", "-d", "--no-build", "-t", "0", "--no-deps", "--force-recreate", "monitor",
 	}, composeEnv)
 }
 
@@ -1856,25 +1853,8 @@ func startGateway(forceRecreate, withWhiteNoise bool) error {
 	if err != nil {
 		return err
 	}
-	args := []string{"compose", "-f", gatewayFile, "-p", "piso", "up", "-d", "--build", "-t", "0"}
-	if forceRecreate {
-		args = append(args, "--force-recreate")
-	}
-	// Compose may validate external volumes even for a selected service —
-	// including the connector's, which `piso up` does not start. Prepare the
-	// non-destructive state volume before starting any part of the project; it
-	// is the same no-op either way, and dropping it only moves the failure.
-	if err := runEnv("docker", []string{"volume", "create", whiteNoiseVolume}, composeEnv); err != nil {
-		return fmt.Errorf("prepare gateway project volumes: %w", err)
-	}
-	// Start the core first. A connector start failure or relay outage must
-	// never prevent the gateway (and Telegram) from coming up.
-	args = append(args, "gateway")
-	if pisoconfig.MonitorEnabled() {
-		args = append(args, "monitor")
-	}
-	if err := runEnv("docker", args, composeEnv); err != nil {
-		return fmt.Errorf("gateway up: %w", err)
+	if err := launchGatewayCore(gatewayFile, composeEnv, forceRecreate, pisoconfig.MonitorEnabled(), runEnv); err != nil {
+		return err
 	}
 	if withWhiteNoise {
 		// A missing image is the normal state of a host that never built the
@@ -1889,6 +1869,33 @@ func startGateway(forceRecreate, withWhiteNoise bool) error {
 		}
 	}
 	return dockernet.AssertInternal()
+}
+
+// launchGatewayCore separates the only core build (gateway) from startup.
+// Startup must not compile any service in the shared Compose project, even if
+// Compose expands its service selection. Callers prepare piso-worker first
+// when the monitor is enabled. Connector builds remain explicitly opt-in.
+func launchGatewayCore(file string, env map[string]string, forceRecreate, monitorEnabled bool, run func(string, []string, map[string]string) error) error {
+	// Compose may validate the external connector volume even when it is not
+	// selected. Creation is idempotent and preserves cryptographic state.
+	if err := run("docker", []string{"volume", "create", whiteNoiseVolume}, env); err != nil {
+		return fmt.Errorf("prepare gateway project volumes: %w", err)
+	}
+	if err := run("docker", []string{"compose", "-f", file, "-p", "piso", "build", "gateway"}, env); err != nil {
+		return fmt.Errorf("gateway build: %w", err)
+	}
+	args := []string{"compose", "-f", file, "-p", "piso", "up", "-d", "--no-build", "-t", "0"}
+	if forceRecreate {
+		args = append(args, "--force-recreate")
+	}
+	args = append(args, "gateway")
+	if monitorEnabled {
+		args = append(args, "monitor")
+	}
+	if err := run("docker", args, env); err != nil {
+		return fmt.Errorf("gateway up: %w", err)
+	}
+	return nil
 }
 
 // waitGatewayHealthy polls the control plane until it answers or 30s elapses.
