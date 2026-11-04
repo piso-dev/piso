@@ -160,7 +160,7 @@ test('a polling refresh keeps the reader’s place, sideways on the board includ
   // place too. A rebuild used to snap it back to the first column.
   board.scrollLeft = 420;
   await w.taskTest.loadTasks(); await tick();
-  assert.notEqual(doc.querySelector('.board'), board, 'the board really was rebuilt');
+  assert.equal(doc.querySelector('.board'), board, 'polling keeps the board mounted');
   assert.equal(scrolls.at(-1), 640);
   assert.equal(doc.querySelector('.board').scrollLeft, 420);
 });
