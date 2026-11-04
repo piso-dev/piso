@@ -45,7 +45,9 @@ services:
       # (default ~/.piso) so an installed binary does not need a writable repo.
       # Quoted so Windows `C:/Users/...` survives YAML.
       - "${PISO_DATA}:/data"
+      - "whitenoise-socket:/run/whitenoise:ro"
     environment:
+      PISO_WHITENOISE_SOCKET: /run/whitenoise/agent.sock
       PISO_STATE_FILE: /data/state.json
       PISO_PATTERNS_FILE: /data/patterns.json
       PISO_LOG_FILE: /data/requests.jsonl
@@ -90,6 +92,37 @@ services:
       # `docker network create piso_public`; only its Caddy and this gateway
       # join it, so the gateway stays unreachable from the worker bridge.
       - public
+
+  # Trusted companion, never a worker. All gateway placements declare it, but
+  # `piso up` does not start it: White Noise is not used on a local machine, and
+  # the image carries a Rust build of upstream Marmot. `piso whitenoise build`
+  # builds it once; after that every start reuses the image and never passes
+  # --build (see cli/cmd/piso/whitenoise.go). No dependency on health: a
+  # relay/connector outage must not stop the gateway.
+  whitenoise:
+    image: piso-whitenoise:04e94720d6ea5dcf93daa3ccccf10763d10bb2c5
+    build:
+      context: ..
+      dockerfile: gateway/whitenoise/Dockerfile
+    container_name: piso-whitenoise
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 30s
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    volumes:
+      - whitenoise-state:/data
+      - whitenoise-socket:/run/whitenoise
+    tmpfs:
+      - /tmp
+    networks: [whitenoise-egress]
+    healthcheck:
+      test: ["CMD", "python3", "/usr/local/bin/connector-health.py"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
 
   # Project manager: a special worker that reads activity and decides pokes/
   # reminders. Host-scoped (watches all projects), so it lives with the
@@ -165,6 +198,10 @@ networks:
     enable_ipv6: false
     driver_opts:
       com.docker.network.bridge.enable_ip_masquerade: "false"
+  whitenoise-egress:
+    # Connector relay access is separate from worker, gateway and public bridges.
+    name: piso_whitenoise_egress
+    driver: bridge
   egress:
     name: piso_egress
     driver: bridge
@@ -185,5 +222,10 @@ networks:
         - subnet: ${PISO_PUBLIC_SUBNET:-172.30.99.0/24}
 
 volumes:
+  whitenoise-state:
+    # CLI provisions this; even compose down --volumes must not erase MLS state.
+    external: true
+    name: piso-whitenoise-state
+  whitenoise-socket:
   piso-agent-monitor:
     name: piso-agent-monitor

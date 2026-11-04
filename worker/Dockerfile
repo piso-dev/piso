@@ -232,6 +232,7 @@ COPY task-pick.py /usr/local/lib/piso-task-pick.py
 COPY task-watch.sh /usr/local/bin/piso-task-watch
 COPY pi-profile-sync.py /usr/local/bin/piso-profile-sync
 COPY supervisor-session.py /usr/local/bin/piso-supervisor-session
+COPY whitenoise-prompt.md /usr/local/bin/whitenoise-prompt.md
 COPY telegram_format.py /usr/local/bin/telegram_format.py
 COPY telegram-prompt.md /usr/local/bin/telegram-prompt.md
 COPY monitor-loop.sh /usr/local/bin/piso-monitor-loop

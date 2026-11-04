@@ -25,7 +25,7 @@ func reconcileStandaloneWeb(id technocore.Identity) error {
 	if strings.TrimSpace(names) == "" {
 		// Let Compose create its own network with the correct ownership labels.
 		// Until trust is saved, proxy requests remain denied by the peer gate.
-		if err := startGateway(false); err != nil {
+		if err := startGateway(false, true); err != nil {
 			return err
 		}
 	}

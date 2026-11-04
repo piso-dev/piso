@@ -2421,6 +2421,7 @@
         git: "git",
         connections: "connections",
         aiBoost: "ai-boost",
+        whitenoise: "whitenoise",
         telegram: "telegram",
         telegramAssignments: "telegram/assignments",
         secrets: "secrets",
@@ -2511,6 +2512,7 @@
           ["git", "Git"],
           ["aiBoost", "AI Boost"],
           ["telegram", "Telegram"],
+          ["whitenoise", "White Noise"],
           ["provider", "Model provider"],
         ],
         network: [
@@ -5355,6 +5357,7 @@ function gitBindInputs() {
         ],
         git: ["Git", "Supplied tokens for GitHub and Gitea. Permissions are enforced by the Git server.", "Add Git token", "git-add"],
         aiBoost: ["AI Boost", "Review drafts for your connected library. Workers can submit drafts; only you can approve or reject."],
+        whitenoise: ["White Noise", "Your White Noise accounts and supervisor connection. Telegram stays connected separately."],
         telegram: [
           "Telegram",
           "Your Telegram accounts and supervisor connection. The same status is shown on every gateway.",
@@ -5545,6 +5548,63 @@ function gitBindInputs() {
           },
         );
       }
+      // Reuse Telegram's panel, people, confirmation and responsive styles.
+      function renderWhiteNoise(intro) {
+        const failed = failures.has("whitenoise");
+        const loading = !loaded.has("whitenoise") && !failed;
+        const rows = data.whitenoise?.connections || [];
+        count(rows.reduce((n, r) => n + (r.users || []).length, 0));
+        const state = r => {
+          if (failed) return "unknown";
+          if (loading) return "checking";
+          if (!r) return "disconnected";
+          if (r.state === "checking") {
+            const deadline = new Date(r.checkingUntil).getTime();
+            return Number.isFinite(deadline) ? (Date.now() < deadline ? "checking" : "disconnected") : "unknown";
+          }
+          if (r.expiresAt && new Date(r.expiresAt).getTime() <= Date.now()) return "disconnected";
+          if (r.state === "connected" && (!r.lastPoll || Date.now() - new Date(r.lastPoll).getTime() >= 120000)) return "disconnected";
+          return r.state || "unknown";
+        };
+        const status = value => '<span class="telegram-state ' + esc(value) + '"><span aria-hidden="true"></span>' + ({checking:"Checking…", connected:"Connected", starting:"Starting", disconnected:"Disconnected", unknown:"Status unknown"}[value] || "Status unknown") + '</span>';
+        const panels = (loading && !rows.length ? [{}] : rows).map(r => {
+          const connection = state(r);
+          const supervisor = state(r.supervisor || (loading ? {} : null));
+          const manage = r.manageable && !failed && !loading;
+          const people = (r.users || []).length ? '<ul class="telegram-people">' + r.users.map(u => '<li><div><strong>' + esc(u.name || u.npub || u.publicKey) + '</strong><p class="muted">' + esc(u.npub || u.publicKey) + '</p><p class="muted">Linked ' + esc(u.linkedAt ? new Date(u.linkedAt).toLocaleDateString() : 'date unknown') + '</p></div><div class="telegram-person-actions"><span class="telegram-state linked">Linked</span>' + (manage ? button("Unlink", "whitenoise-unlink", u.npub || u.publicKey, "small quiet") : '') + '</div></li>').join('') + '</ul>' : '<p class="telegram-empty">No people linked. Link a public npub to authorize messages.</p>';
+          return '<div class="telegram-connections"><section class="telegram-panel" aria-label="White Noise connection"><header><h3>White Noise connection</h3>' + status(connection) + '</header><p class="telegram-identity">' + esc(r.publicKey || r.name || 'Waiting for confirmation') + '</p><p>' + ({checking:'Checking the White Noise connection…', connected:'The gateway connector is connected to a relay.', disconnected:'No recent White Noise connection confirmed.', unknown:'The serving connection has not reported its status yet.', starting:'Waiting for confirmation.'}[connection]) + '</p><p class="telegram-confirmation">Last confirmed ' + esc(r.lastPoll ? age(r.lastPoll) : 'not yet') + '</p><div class="telegram-linked"><h3>Linked people</h3><p class="muted">Linked accounts can send private text messages. Linked means authorized, not online.</p>' + people + '</div>' + (manage ? '<div class="telegram-controls">' + (r.enabled ? button((r.users || []).length ? "Link another person" : "Link person", "whitenoise-link", "", "primary") + button("Disconnect", "whitenoise-disconnect", "", "quiet danger") : button("Reconnect", "whitenoise-connect", "", "primary")) + '</div>' : '') + '</section><section class="telegram-panel telegram-supervisor" aria-label="Supervisor connection"><header><h3>Supervisor connection</h3>' + status(supervisor) + '</header><p class="telegram-identity">' + esc(r.supervisor?.name || (supervisor === 'checking' ? 'Waiting for confirmation' : 'No supervisor')) + '</p><p>' + (supervisor === 'connected' ? 'The supervisor is checking for messages.' : supervisor === 'checking' ? 'Checking the supervisor connection…' : 'No recent supervisor connection confirmed.') + '</p>' + (r.supervisor ? '<dl class="telegram-meta"><dt>Connected through</dt><dd>' + esc(r.supervisor.gatewayName || 'Unknown gateway') + '</dd><dt>Last confirmed</dt><dd>' + esc(r.supervisor.lastPoll ? age(r.supervisor.lastPoll) : 'Not yet') + '</dd></dl>' : '<p>Waiting for an eligible cloud ship to connect.</p>') + '</section></div>';
+        }).join('');
+        const notice = failed ? '<div class="notice error" role="alert">Shared connection status is unavailable. Connection states cannot be confirmed.</div>' : '';
+        replaceContent(intro + notice + (panels || (failed ? '' : '<section class="telegram-panel"><h3>No White Noise identity connected</h3><p>Set up the gateway-only wn-agent connector, then connect its public identity. Never enter a private nsec.</p><div class="telegram-controls">' + button("Connect identity", "whitenoise-connect", "", "primary") + '</div></section>')));
+      }
+      function whiteNoiseConnect() {
+        formDialog("Connect White Noise", "Enter the public npub from the gateway connector. Identity replacement is not supported.", field("publicKey", "Public npub", "", {required:true, full:true, hint:"Public keys only. Never enter an nsec."}), "Connect", async values => {
+          if (!values.publicKey.trim().startsWith("npub1")) throw new Error("Enter a public npub; never a private nsec.");
+          await api("whitenoise", "POST", {operation:"connect", publicKey:values.publicKey.trim()});
+          await changed(["whitenoise"]);
+          return "Identity connected.";
+        });
+      }
+      function whiteNoiseLink() {
+        formDialog("Link person", "Verify the person's public npub before granting access. They can invite the agent into a private conversation.", field("publicKey", "Public npub", "", {required:true, full:true}) + field("name", "Name", "", {full:true}), "Link person", async values => {
+          if (!values.publicKey.trim().startsWith("npub1")) throw new Error("Enter a public npub; never a private nsec.");
+          await api("whitenoise", "POST", {operation:"link", publicKey:values.publicKey.trim(), name:values.name.trim()});
+          await changed(["whitenoise"]);
+          return "Person linked.";
+        });
+      }
+      function whiteNoiseUnlink(npub) {
+        confirmAction("Unlink person?", "This person will no longer be authorized to message the agent. Pending messages and conversation access are removed.", "Unlink", async () => {
+          await api("whitenoise", "POST", {operation:"unlink", publicKey:npub});
+          await changed(["whitenoise"]);
+        });
+      }
+      function whiteNoiseDisconnect() {
+        confirmAction("Disconnect White Noise?", "Stops White Noise delivery and supervisor access. The gateway connector keeps its identity and encrypted state. Telegram is unchanged.", "Disconnect", async () => {
+          await api("whitenoise", "DELETE");
+          await changed(["whitenoise"]);
+        });
+      }
       function renderSettings() {
         const [title, description, add, act] = intros[sub];
         let rows = list(sub);
@@ -5555,6 +5615,7 @@ function gitBindInputs() {
         if (sub === "git") return renderGit(intro);
         if (sub === "aiBoost") return renderBoostReview(intro);
         if (sub === "telegram") return renderTelegram(intro);
+        if (sub === "whitenoise") return renderWhiteNoise(intro);
         if (sub === "provider") {
           const p = data.provider || {};
           const providers = Array.isArray(p.providers) ? p.providers : [];
@@ -7506,6 +7567,10 @@ function gitBindInputs() {
           if (liveUI.needsLogin) openExternal(liveUI.needsLogin);
           return;
         }
+        if (name === "whitenoise-connect") return whiteNoiseConnect();
+        if (name === "whitenoise-link") return whiteNoiseLink();
+        if (name === "whitenoise-unlink") return whiteNoiseUnlink(id);
+        if (name === "whitenoise-disconnect") return whiteNoiseDisconnect();
         if (name === "telegram-connect") return telegramConnect();
         if (name === "telegram-claim") return telegramClaim();
         if (name === "telegram-revoke") return telegramRevoke(id);
@@ -7805,6 +7870,7 @@ function gitBindInputs() {
               "routes",
               "technocore",
               ...(view === "access" && sub === "telegram" ? ["telegram"] : []),
+              ...(view === "access" && sub === "whitenoise" ? ["whitenoise"] : []),
               ...(!streamOK ? ["requests"] : []),
             ]);
           }

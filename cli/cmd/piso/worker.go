@@ -454,7 +454,7 @@ func startRemoteWorker(proj pisoconfig.Project, asg workerAssignment) error {
 			return err
 		}
 	}
-	upArgs := []string{"compose", "-f", file, "-p", "piso-" + proj.Slug, "up", "-d", "-t", "0"}
+	upArgs := []string{"compose", "-f", file, "-p", "piso-" + proj.Slug, "up", "-d", "--no-build", "-t", "0"}
 	if err := runEnv("docker", upArgs, env); err != nil {
 		return fmt.Errorf("worker up: %w", err)
 	}

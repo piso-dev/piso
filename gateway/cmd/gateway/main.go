@@ -123,6 +123,7 @@ func main() {
 	// gateway holds the poller lease; with neither it idles, so this is
 	// unconditional.
 	go srv.Telegram.Run(context.Background())
+	go srv.RunWhiteNoise(context.Background())
 
 	// WebHandler is the single host web entrypoint (dashboard + ingress on the
 	// same port, dispatched by Host). The old ControlHandler is kept for tests;
