@@ -12,7 +12,6 @@ import (
 	"strings"
 	"testing"
 
-	"piso/gateway/internal/model"
 	"piso/gateway/internal/store"
 )
 
@@ -781,10 +780,10 @@ func TestPutPiProviderRejectsNonAPIKeySecrets(t *testing.T) {
 		want   string
 	}{
 		{
-			name: "github-app",
+			name: "structured-token",
 			secret: store.SecretRec{
-				ID: "sec_gh", Name: "GitHub", Placeholder: "piso_githubapp",
-				Kind: model.SecretKindGithubApp,
+				ID: "sec_structured", Name: "Structured token", Placeholder: "piso_structured",
+				Kind: "structured-token",
 			},
 			want: "must be a plain API key",
 		},

@@ -53,7 +53,7 @@ func syncIngressHostsAt(ctx context.Context, gw string) error {
 		if err := json.NewDecoder(resp.Body).Decode(&routes); err != nil {
 			return nil, err
 		}
-		names := []string{"mcp-oauth", "github-app"}
+		names := []string{"mcp-oauth"}
 		for _, r := range routes {
 			if r.Name != "" {
 				names = append(names, r.Name)

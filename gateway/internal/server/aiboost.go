@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"path/filepath"
@@ -29,22 +30,27 @@ func (s *Server) boostClient() (*aiboost.Client, error) {
 		s.boost = c
 	}
 	if id, err := tc.Load(tc.Path(s.DataDir)); err == nil && id.Status == tc.StatusActive && id.ServerURL != "" {
-		s.boost.SetSharing(technocore.BoostSharing{DataDir:s.DataDir})
+		s.boost.SetSharing(technocore.BoostSharing{DataDir: s.DataDir})
 	}
 	return s.boost, nil
 }
+
 // RunAIBoostSharing keeps the shared access token fresh independently of workers.
 func (s *Server) RunAIBoostSharing(ctx context.Context) {
- ticker := time.NewTicker(20*time.Second)
- defer ticker.Stop()
- for {
-  if c, err := s.boostClient(); err == nil {
-   callCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
-   _ = c.Maintain(callCtx)
-   cancel()
-  }
-  select { case <-ctx.Done(): return; case <-ticker.C: }
- }
+	ticker := time.NewTicker(20 * time.Second)
+	defer ticker.Stop()
+	for {
+		if c, err := s.boostClient(); err == nil {
+			callCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+			_ = c.Maintain(callCtx)
+			cancel()
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
 }
 
 func (s *Server) boostConnection() connectionView {
@@ -118,6 +124,16 @@ func (s *Server) handleBoostRegister(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, 200, c.Summary())
 }
+
+// dashboardHomepage uses the published dashboard port, never an untrusted request host.
+func dashboardHomepage() string {
+	port := ingressHostPort()
+	if port == 80 {
+		return "http://piso.local"
+	}
+	return fmt.Sprintf("http://piso.local:%d", port)
+}
+
 func (s *Server) handleBoostAuthorize(w http.ResponseWriter, r *http.Request) {
 	serviceHeaders(w)
 	c, err := s.boostClient()
@@ -129,7 +145,7 @@ func (s *Server) handleBoostAuthorize(w http.ResponseWriter, r *http.Request) {
 	if !summary.Configured {
 		// Use the host's published web port, never request Host/Forwarded headers
 		// or a worker URL. The browser returns to the local gateway listener.
-		if err := c.Configure(r.Context(), "https://api.ai-boost.io", githubAppHomepage()+aiboost.CallbackPath); err != nil {
+		if err := c.Configure(r.Context(), "https://api.ai-boost.io", dashboardHomepage()+aiboost.CallbackPath); err != nil {
 			http.Error(w, err.Error(), http.StatusBadGateway)
 			return
 		}
