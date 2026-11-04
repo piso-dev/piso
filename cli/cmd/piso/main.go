@@ -68,6 +68,8 @@ func main() {
 		err = cmdSetup(args)
 	case "update":
 		err = cmdUpdate(args)
+	case "whitenoise":
+		err = cmdWhiteNoise(args)
 	case "version":
 		fmt.Println("piso", version)
 	case "help", "-h", "--help":
@@ -156,6 +158,12 @@ Usage:
                          that is enabled on this host (including the monitor unless
                          PISO_MONITOR=0; its in-flight pi is killed). Confirm before
                          applying.
+  piso whitenoise build|start|status
+                         build, run, or report the White Noise connector image.
+                         'piso up' never starts White Noise and no gateway start
+                         builds it: the connector image carries a Rust build of
+                         upstream Marmot, so it is built once, explicitly, and
+                         reused from then on.
 
 Host ports default to 8080 (proxy) and 80 (single web port: dashboard at
 http://piso.local AND every route at http://<label>.piso.local, dispatched by
@@ -258,8 +266,10 @@ func cmdUp(args []string) error {
 	}
 
 	// 1. gateway (shared, one per machine). Compose will not flip Internal on
-	// an already-created piso_vpc, so tear down a leaky one first.
-	if err := startGateway(false); err != nil {
+	// an already-created piso_vpc, so tear down a leaky one first. No White
+	// Noise: it is not used locally, and starting it here made a `piso up`
+	// depend on a Rust build of upstream Marmot. `piso whitenoise start` runs it.
+	if err := startGateway(false, false); err != nil {
 		return err
 	}
 	if err := waitGatewayHealthy(); err != nil {
@@ -1271,7 +1281,7 @@ func rebuildGateway() error {
 	if err := pisoconfig.EnsureCAFiles(); err != nil {
 		return err
 	}
-	if err := startGateway(true); err != nil {
+	if err := startGateway(true, true); err != nil {
 		return err
 	}
 	if err := waitGatewayHealthy(); err != nil {
@@ -1829,7 +1839,12 @@ func monitorReason(enabled bool) string {
 // startGateway brings up the shared gateway compose project. forceRecreate
 // rebuilds the image and replaces the container so `make install` picks up
 // new gateway code and runs store migrations against ~/.piso/state.json.
-func startGateway(forceRecreate bool) error {
+//
+// withWhiteNoise starts the connector companion too. `piso up` passes false: a
+// local machine does not use White Noise, and the connector is an independent
+// side service (see cli/cmd/piso/whitenoise.go). Either way the companion is
+// started from an existing image only — this path never builds it.
+func startGateway(forceRecreate, withWhiteNoise bool) error {
 	if err := dockernet.EnsureInternal(); err != nil {
 		return err
 	}
@@ -1845,13 +1860,15 @@ func startGateway(forceRecreate bool) error {
 	if forceRecreate {
 		args = append(args, "--force-recreate")
 	}
-	// Compose may validate external volumes even for a selected service. Prepare
-	// the non-destructive state volume before starting any part of the project.
-	if err := runEnv("docker", []string{"volume", "create", "piso-whitenoise-state"}, composeEnv); err != nil {
+	// Compose may validate external volumes even for a selected service —
+	// including the connector's, which `piso up` does not start. Prepare the
+	// non-destructive state volume before starting any part of the project; it
+	// is the same no-op either way, and dropping it only moves the failure.
+	if err := runEnv("docker", []string{"volume", "create", whiteNoiseVolume}, composeEnv); err != nil {
 		return fmt.Errorf("prepare gateway project volumes: %w", err)
 	}
-	// Start the core first. A connector image build or relay outage must never
-	// prevent the gateway (and Telegram) from coming up.
+	// Start the core first. A connector start failure or relay outage must
+	// never prevent the gateway (and Telegram) from coming up.
 	args = append(args, "gateway")
 	if pisoconfig.MonitorEnabled() {
 		args = append(args, "monitor")
@@ -1859,8 +1876,10 @@ func startGateway(forceRecreate bool) error {
 	if err := runEnv("docker", args, composeEnv); err != nil {
 		return fmt.Errorf("gateway up: %w", err)
 	}
-	if err := startWhiteNoiseCompanion(gatewayFile, composeEnv); err != nil {
-		fmt.Fprintf(os.Stderr, "piso: White Noise unavailable: %v (gateway remains running; rerun piso setup to retry)\n", err)
+	if withWhiteNoise {
+		if err := startWhiteNoiseCompanion(gatewayFile, composeEnv); err != nil && !errors.Is(err, errWhiteNoiseNotBuilt) {
+			fmt.Fprintf(os.Stderr, "piso: White Noise unavailable: %v (gateway remains running; retry with `piso whitenoise start`)\n", err)
+		}
 	}
 	return dockernet.AssertInternal()
 }

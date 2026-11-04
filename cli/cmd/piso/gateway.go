@@ -178,7 +178,7 @@ func cmdGatewayLaunch(args []string) error {
 		if err := reconcileStandaloneWeb(id); err != nil {
 			return err
 		}
-		if err := startGateway(false); err != nil {
+		if err := startGateway(false, true); err != nil {
 			return err
 		}
 		if err := waitGatewayHealthy(); err != nil {

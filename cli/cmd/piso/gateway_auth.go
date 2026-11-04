@@ -85,7 +85,7 @@ func cmdGatewayAuthEnroll(args []string) error {
 		if err := pisoconfig.SaveGatewayWebSettings(web); err != nil {
 			return err
 		}
-		if err := startGateway(false); err != nil {
+		if err := startGateway(false, true); err != nil {
 			return err
 		}
 		if err := waitGatewayHealthy(); err != nil {

@@ -93,8 +93,12 @@ services:
       # join it, so the gateway stays unreachable from the worker bridge.
       - public
 
-  # Trusted companion, never a worker. All gateway placements use this service.
-  # No dependency on health: a relay/connector outage must not stop the gateway.
+  # Trusted companion, never a worker. All gateway placements declare it, but
+  # `piso up` does not start it: White Noise is not used on a local machine, and
+  # the image carries a Rust build of upstream Marmot. `piso whitenoise build`
+  # builds it once; after that every start reuses the image and never passes
+  # --build (see cli/cmd/piso/whitenoise.go). No dependency on health: a
+  # relay/connector outage must not stop the gateway.
   whitenoise:
     image: piso-whitenoise:04e94720d6ea5dcf93daa3ccccf10763d10bb2c5
     build:
