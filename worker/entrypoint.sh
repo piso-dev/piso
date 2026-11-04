@@ -29,7 +29,7 @@ NODE_COMPILE_CACHE="${NODE_COMPILE_CACHE:-/root/.pi/agent/.node-compile-cache}"
 export TMPDIR NODE_COMPILE_CACHE
 mkdir -p "$PISO_LOG_DIR" "$TMPDIR" "$NODE_COMPILE_CACHE" 2>/dev/null || true
 
-# Where downloaded/installed executables and dependency caches live. /workspace
+# Where tools, dependency caches and additional git checkouts live. /workspace
 # is the host's checkout (every toolchain there becomes a .gitignore entry) and
 # /tmp + /dev/shm are tmpfs mounted noexec — a binary unpacked there dies with
 # 126 Permission denied, which looks like a broken tool rather than a bad path.
@@ -37,9 +37,10 @@ mkdir -p "$PISO_LOG_DIR" "$TMPDIR" "$NODE_COMPILE_CACHE" 2>/dev/null || true
 # place a worker can *run* something it fetched. piso-workbench (see
 # CAPABILITIES.md) owns the layout; create it now so `workbench env` is instant
 # and PATH covers a toolchain installed in an earlier session.
-export PISO_WORKBENCH="${PISO_WORKBENCH:-/root/.pi/agent/workbench}"
+export PISO_WORKBENCH="${PISO_WORKBENCH:-$HOME/.pi/agent/workbench}"
 mkdir -p "$PISO_WORKBENCH"/bin "$PISO_WORKBENCH"/tmp "$PISO_WORKBENCH"/downloads \
-  "$PISO_WORKBENCH"/versions "$PISO_WORKBENCH"/gopath "$PISO_WORKBENCH"/gocache 2>/dev/null || true
+  "$PISO_WORKBENCH"/versions "$PISO_WORKBENCH"/gopath "$PISO_WORKBENCH"/gocache \
+  "$PISO_WORKBENCH"/checkouts 2>/dev/null || true
 case ":$PATH:" in
   *":$PISO_WORKBENCH/bin:"*) ;;
   *) export PATH="$PISO_WORKBENCH/bin:$PATH" ;;
@@ -51,6 +52,12 @@ esac
 export GIT_CONFIG_GLOBAL="${GIT_CONFIG_GLOBAL:-/root/.pi/agent/gitconfig}"
 if ! (mkdir -p "$(dirname "$GIT_CONFIG_GLOBAL")" && gh auth setup-git --hostname github.com); then
   echo "piso: GitHub credential-helper setup failed; Git authentication may be unavailable" >&2
+fi
+
+# Git connections refresh from the placeholder-only mount. No provider calls.
+export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-/root/.pi/agent/git-access/tea}"
+if [ -x /usr/local/bin/piso-git-access ]; then
+  /usr/local/bin/piso-git-access watch >>"$PISO_LOG_DIR/git-access.log" 2>&1 &
 fi
 
 # Remote workers need the piso MITM CA *and* public CAs (coordinator Let's Encrypt).

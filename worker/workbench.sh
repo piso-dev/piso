@@ -1,12 +1,13 @@
 #!/bin/bash
-# piso-workbench — the worker's writable, EXECUTABLE toolchain home that is
+# piso-workbench — the worker's writable, EXECUTABLE tools and checkout home that is
 # neither the git repo nor /tmp.
 #
 # Why this exists: /workspace is the host's checkout (anything downloaded there
 # must be gitignored), /tmp and /dev/shm are tmpfs mounted noexec (a binary there
 # returns 126 "Permission denied"), /var/tmp and bare /root are read-only. The
 # agent volume ($HOME/.pi/agent) is real disk, exec-allowed and persistent, so
-# toolchains and dependency caches live under it — no repo pollution.
+# toolchains, dependency caches and additional git checkouts live under it.
+# checkouts/ is durable user work, never a cleanup target (even with --all).
 #
 #   WB=${PISO_WORKBENCH:-$HOME/.pi/agent/workbench}
 #     bin/         installed executables (also on PATH at boot)
@@ -15,6 +16,7 @@
 #     versions/    unpacked Go toolchains
 #     tmp/         scratch builds (exec allowed; /tmp is not)
 #     downloads/   tarballs
+#     checkouts/   git repos at <host>/<owner>/<repo>; never auto-pruned
 #
 # Usage:
 #   eval "$(workbench env)"        export PATH/GOPATH/GOCACHE/... for this shell
@@ -42,7 +44,7 @@ wb_init() {
     /workspace|/workspace/*) die "refusing to use $WB (inside the git repo); set PISO_WORKBENCH" ;;
     /tmp|/tmp/*|/dev/shm|/dev/shm/*) die "refusing to use $WB (tmpfs is noexec); set PISO_WORKBENCH" ;;
   esac
-  mkdir -p "$WB"/bin "$WB"/tmp "$WB"/downloads "$WB"/versions "$GOPATH_DIR" "$GOCACHE_DIR" \
+  mkdir -p "$WB"/bin "$WB"/tmp "$WB"/downloads "$WB"/versions "$WB"/checkouts "$GOPATH_DIR" "$GOCACHE_DIR" \
     || die "cannot create $WB (is the agent volume writable?)"
 }
 
@@ -150,6 +152,7 @@ EOF
   esac
 }
 
+# Keep cleanup allowlisted: never delete checkouts, including with --all.
 cmd_clean() {
   local what= days=""
   while [ $# -gt 0 ]; do
@@ -181,7 +184,7 @@ cmd_clean() {
       ;;
     all)
       rm -rf "$GOCACHE_DIR"/* "$WB"/downloads/* "$WB"/tmp/* "$GOPATH_DIR"/pkg/mod/cache 2>/dev/null
-      echo "workbench: pruned caches + downloads + scratch (bin/ and versions/ kept)"
+      echo "workbench: pruned caches + downloads + scratch (bin/, versions/ and checkouts/ kept)"
       ;;
   esac
   refresh_env_bin
@@ -200,7 +203,7 @@ refresh_env_bin() {
 cmd_status() {
   local d
   echo "workbench: $WB"
-  for d in bin versions gopath gocache tmp downloads pip uv cache; do
+  for d in bin versions gopath gocache tmp downloads pip uv cache checkouts; do
     [ -e "$WB/$d" ] || continue
     printf '  %-10s %s\n' "$d" "$(du -sh "$WB/$d" 2>/dev/null | cut -f1)"
   done
@@ -219,7 +222,7 @@ main() {
       wb_init
       case "${1:-}" in
         "" ) echo "$WB" ;;
-        bin|gopath|gocache|versions|tmp|downloads|cargo|rustup|npm|pip|uv|cache)
+        bin|gopath|gocache|versions|tmp|downloads|cargo|rustup|npm|pip|uv|cache|checkouts)
           mkdir -p "$WB/$1" && echo "$WB/$1" ;;
         *) die "unknown workbench dir: $1" ;;
       esac

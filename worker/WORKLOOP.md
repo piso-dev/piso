@@ -9,12 +9,23 @@ apply.
    placeholder names this worker may see. If the call fails, treat
    capabilities as **blocked**, not open. Internet off ⇒ steps 2 and 4 are
    out of scope; say so and continue locally.
-2. `github_repositories` (no arguments) — the HTTPS repos this worker can
+2. `user_repositories` (no arguments) — HTTPS repos from assigned Git token
+   connections. Capability hints are operator guidance, not verified or enforced
+   by Piso. The tools list repos this worker can
    reach. Match the task against the list. For each repo the task names or
-   clearly needs, clone it over HTTPS into `/workspace`:
-   `git clone https://github.com/<org>/<repo> /workspace/<name>`
-   If the repo is already under `/workspace`, `git fetch` / `git pull`
-   instead. Do not clone the whole list. If `complete:false`, record the
+   clearly needs, use the assigned shared project if the task explicitly calls
+   for it; put additional clones at
+   `${PISO_WORKBENCH:-$HOME/.pi/agent/workbench}/checkouts/<host>/<owner>/<repo>`,
+   never inside `/workspace`. See **Git checkout storage** in CAPABILITIES for
+   path identity, migration and host assistance. Create the parent directories:
+   ```sh
+   checkout_root="${PISO_WORKBENCH:-$HOME/.pi/agent/workbench}/checkouts"
+   mkdir -p "$checkout_root/<host>/<owner>"
+   git clone <listed-HTTPS-cloneURL> "$checkout_root/<host>/<owner>/<repo>"
+   ```
+   Inspect an existing checkout's remotes and state before reusing it; fetch
+   only as authorized, and never reset, pull over local work, or repoint remotes
+   automatically. Do not clone the whole list. If `complete:false`, record the
    `errors` and move on — never retry in a loop.
 3. `directives_list` (no arguments) — the account's active standing
    directives. They are development preferences, not work: they shape how you
@@ -40,6 +51,29 @@ board see the discovery, not just the edit.
 **Why this is first:** the most common failure is building net-new what
 already exists in a reachable repo, a curated booster, or a standing
 directive. Discovery is cheaper than reimplementation.
+
+# Fork-based Git work
+
+When the task authorizes fork-based work, follow `docs/git-access.md`,
+**Fork naming and reuse policy**. Token capability hints are not enforcement.
+
+- Fork into the authenticated bot's namespace. Derive the fork slug from
+  upstream `<organization>_<repository>` (use the owner account for personal
+  repositories). Lowercase ASCII letters, replace runs outside `[a-z0-9]` with
+  underscores, and trim edge underscores. Always include the upstream
+  organization or owner so same-named repositories remain distinguishable.
+- Before creation or reuse, verify bot ownership and the provider-reported
+  immediate parent repository ID/instance. Never trust the name alone.
+- On a name collision with an unrelated repository, append `_` plus the first
+  12 lowercase hex digits of SHA-256 of the canonical upstream HTTPS clone URL
+  (as defined in the docs). Verify again; stop if that name also conflicts.
+- Reuse a matching fork. Renaming a nonconforming existing fork requires explicit
+  authorization; never delete it or create duplicates to avoid that decision.
+- Use HTTPS `origin` for the bot fork and `upstream` for the source. Inspect
+  existing remotes before changing them; push only to the fork. Never silently
+  repoint an existing checkout or initialize upstream to enable a fork.
+- Preserve private visibility and verify parent/ID after creating or renaming.
+  These rules do not authorize unrelated commits, pushes, or repository changes.
 
 # Scope you were not given
 

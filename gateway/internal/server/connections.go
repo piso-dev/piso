@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"strconv"
 
-	"piso/gateway/internal/store"
+	"piso/gateway/internal/gitaccess"
 )
 
 type connectionView struct {
@@ -20,42 +20,23 @@ func (s *Server) handleConnections(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) connectionViews() []connectionView {
 	return []connectionView{
-		s.githubConnection(),
+		s.gitConnection(),
 		s.boostConnection(),
 		{ID: "hammerspace", Name: "Hammerspace", Status: "none", Detail: "Not connected"},
 	}
 }
 
-func (s *Server) githubConnection() connectionView {
-	out := connectionView{ID: "github", Name: "GitHub", Status: "none", Detail: "Not connected"}
-	apps := s.Store.GithubApps()
-	if len(apps) == 0 {
-		return out
-	}
-	status := store.GithubAppStatusNeedsRegister
-	ok := 0
-	installs := 0
-	for _, a := range apps {
-		st := a.Status()
-		if st == store.GithubAppStatusOK {
-			status = store.GithubAppStatusOK
-			ok++
-		} else if status != store.GithubAppStatusOK && st == store.GithubAppStatusNeedsInstall {
-			status = store.GithubAppStatusNeedsInstall
+func (s *Server) gitConnection() connectionView {
+	out := connectionView{ID: "git", Name: "Git", Status: "none", Detail: "Not connected"}
+	n := 0
+	for _, rec := range s.Store.Secrets() {
+		if rec.Kind == gitaccess.Kind && rec.Git != nil && !rec.Revoked {
+			n++
 		}
-		installs += len(a.Installations)
 	}
-	out.Status = status
-	switch status {
-	case store.GithubAppStatusOK:
-		out.Detail = "Connected"
-		if installs > 0 {
-			out.Detail = "Connected · " + strconv.Itoa(installs) + " installation" + plural(installs)
-		}
-	case store.GithubAppStatusNeedsInstall:
-		out.Detail = "App created · install on an org or account"
-	default:
-		out.Detail = "Finish creating the GitHub App"
+	if n > 0 {
+		out.Status = "ok"
+		out.Detail = strconv.Itoa(n) + " token connection" + plural(n)
 	}
 	return out
 }

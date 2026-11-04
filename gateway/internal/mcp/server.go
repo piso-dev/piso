@@ -44,8 +44,7 @@ type Handler struct {
 	Upsert func(worker, slug, name, rawURL string) (store.McpServerRec, bool, error)
 	// CoordinatorDo is the signed coordinator client. Tests inject a fake.
 	CoordinatorDo CoordinatorDo
-	// GithubRepos lists repository full_names using gateway-owned credentials.
-	GithubRepos func(context.Context, store.GithubAppRec, string) ([]string, error)
+	GitHTTPClient *http.Client
 	// AI Boost is authoritative; these use gateway credentials, not coordinator grants.
 	BoostList         func(context.Context, string, string) (aiboost.Page, error)
 	BoostGet          func(context.Context, string) (aiboost.Booster, error)
@@ -104,7 +103,7 @@ func New(st *store.Store, pat *patterns.Compiled, dataDir string) *Handler {
 	h.registerInbox()
 	h.registerBoard()
 	h.registerIdentity()
-	h.registerGithub()
+	h.registerGit()
 	h.registerBoost()
 	h.registerIngress()
 	h.registerAsks()

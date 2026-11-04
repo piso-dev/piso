@@ -68,14 +68,6 @@ func applyMigrations(st *State) bool {
 		st.Version = 5
 		changed = true
 	}
-	// v5→v6: GitHub App rows (PEM + installations).
-	if st.Version < 6 {
-		if st.GithubApps == nil {
-			st.GithubApps = []GithubAppRec{}
-		}
-		st.Version = 6
-		changed = true
-	}
 	// v6→v7: shared pi provider pointer. Older files omit the field (nil).
 	if st.Version < 7 {
 		st.Version = 7
@@ -154,5 +146,34 @@ func applyMigrations(st *State) bool {
 		st.Version = 11
 		changed = true
 	}
+	// v11→v12: retire gateway-minted GitHub credentials. Do not reinterpret
+	// App/session bundles as literal tokens. Provider-side grants are untouched.
+	if st.Version < 12 {
+		retired := map[string]bool{}
+		secrets := st.Secrets[:0]
+		for _, rec := range st.Secrets {
+			if RetiredGitCredentialKind(rec.Kind) {
+				retired[rec.ID] = true
+				continue
+			}
+			secrets = append(secrets, rec)
+		}
+		st.Secrets = secrets
+		rules := st.Rules[:0]
+		for _, rule := range st.Rules {
+			if !retired[rule.SecretID] {
+				rules = append(rules, rule)
+			}
+		}
+		st.Rules = rules
+		st.Version = 12
+		changed = true
+	}
 	return changed
+}
+
+// RetiredGitCredentialKind identifies unsupported historical credential formats.
+// Only a removal/import guard remains; no App or OAuth implementation is retained.
+func RetiredGitCredentialKind(kind string) bool {
+	return kind == "github-app" || kind == "github-user" || kind == "github-oauth"
 }

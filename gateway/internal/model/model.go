@@ -13,17 +13,8 @@ import (
 const PlaceholderPrefix = "piso_"
 
 const (
-	SecretKindOpaque    = ""
-	SecretKindGithubApp = "github-app"
-	SecretKindTelegram  = "telegram"
-	// SecretKindGithubUser carries a dashboard GitHub sign-in between enrolled
-	// gateways: the token, the OAuth client that minted it, and the identity it
-	// resolves to. Never substituted into worker traffic.
-	SecretKindGithubUser = "github-user"
-	// SecretKindGithubOAuth is one part of a GitHub sign-in (the OAuth client
-	// secret or the user token). These rows are materialized locally on each
-	// gateway from the github-user bundle, so they are never published alone.
-	SecretKindGithubOAuth = "github-oauth"
+	SecretKindOpaque   = ""
+	SecretKindTelegram = "telegram"
 )
 
 // Secret is a real credential plus its placeholder. Real values live ONLY in
@@ -35,7 +26,7 @@ type Secret struct {
 	Name         string    `json:"name"`                   // human name, e.g. "anthropic"
 	Placeholder  string    `json:"placeholder"`            // e.g. "piso_anthropic_abc123"
 	Value        string    `json:"value"`                  // real credential. never logged.
-	Kind         string    `json:"kind,omitempty"`         // "" opaque | "github-app"
+	Kind         string    `json:"kind,omitempty"`         // opaque or provider-specific token
 	AllowedHosts []string  `json:"allowedHosts,omitempty"` // hosts where substitution is allowed
 	Workers      []string  `json:"workers,omitempty"`      // empty or "*" = all workers
 	CreatedAt    time.Time `json:"createdAt"`
@@ -226,18 +217,16 @@ const (
 type Reason string
 
 const (
-	ReasonNoSecretRule              Reason = "no-secret-rule"                // placeholder present, no substitution rule
-	ReasonMcpAuthRequired           Reason = "mcp-auth-required"             // MCP placeholder present, vault empty until dashboard login
-	ReasonGithubAppRegisterRequired Reason = "github-app-register-required"  // github-app placeholder, no PEM yet
-	ReasonGithubAppInstallRequired  Reason = "github-app-install-required"   // github-app placeholder, no install for owner
-	ReasonRealSecret                Reason = "real-secret-detected"          // exact known credential found
-	ReasonSecretPattern             Reason = "credential-pattern"            // looks like a credential (regex hit)
-	ReasonDeniedDomain              Reason = "denied-domain"                 // host on deny list
-	ReasonInternalTarget            Reason = "internal-target"               // internal/link-local target blocked
-	ReasonAllowedException          Reason = "allowed-exception"             // user exception; informational, not a block
-	ReasonAllowedDomain             Reason = "allowed-domain"                // informational
-	ReasonUnsupportedSite           Reason = "unsupported-substitution-site" // placeholder in a body the gateway cannot rewrite field-safely
-	ReasonResponseSecretLeak        Reason = "response-secret-leak"          // upstream response contained a real secret; it was redacted
+	ReasonNoSecretRule       Reason = "no-secret-rule"                // placeholder present, no substitution rule
+	ReasonMcpAuthRequired    Reason = "mcp-auth-required"             // MCP placeholder present, vault empty until dashboard login
+	ReasonRealSecret         Reason = "real-secret-detected"          // exact known credential found
+	ReasonSecretPattern      Reason = "credential-pattern"            // looks like a credential (regex hit)
+	ReasonDeniedDomain       Reason = "denied-domain"                 // host on deny list
+	ReasonInternalTarget     Reason = "internal-target"               // internal/link-local target blocked
+	ReasonAllowedException   Reason = "allowed-exception"             // user exception; informational, not a block
+	ReasonAllowedDomain      Reason = "allowed-domain"                // informational
+	ReasonUnsupportedSite    Reason = "unsupported-substitution-site" // placeholder in a body the gateway cannot rewrite field-safely
+	ReasonResponseSecretLeak Reason = "response-secret-leak"          // upstream response contained a real secret; it was redacted
 )
 
 // MCP server status values (gateway-brokered OAuth).
@@ -247,42 +236,6 @@ const (
 	McpStatusExpired   = "expired"
 	McpStatusRevoked   = "revoked"
 )
-
-// GithubApp is the log-safe view of a gateway-owned GitHub App.
-type GithubApp struct {
-	OwnerID     int64  `json:"ownerId,omitempty"`
-	Owner       string `json:"owner,omitempty"`
-	OwnerType   string `json:"ownerType,omitempty"`
-	ID          string `json:"id"`
-	SecretID    string `json:"secretId,omitempty"`
-	Name        string `json:"name"`
-	Placeholder string `json:"placeholder"`
-	AppID       int64  `json:"appId,omitempty"`
-	Slug        string `json:"slug,omitempty"`
-	Status      string `json:"status"`
-	// Source is "local" or "technocore". A technocore app was configured on
-	// another enrolled gateway and is read-only here.
-	Source        string                   `json:"source,omitempty"`
-	Installations []GithubInstallationView `json:"installations,omitempty"`
-	CreatedAt     time.Time                `json:"createdAt"`
-	UpdatedAt     time.Time                `json:"updatedAt"`
-}
-
-// GithubInstallationView is one org/user install without tokens.
-type GithubInstallationView struct {
-	ID          int64             `json:"id"`
-	Account     string            `json:"account"`
-	AccountType string            `json:"accountType,omitempty"`
-	HTMLURL     string            `json:"htmlUrl,omitempty"`
-	Repos       []string          `json:"repos,omitempty"`
-	Permissions map[string]string `json:"permissions,omitempty"`
-}
-
-// GithubAppView is the policy-facing snapshot of an app (no PEM).
-type GithubAppView struct {
-	HasPEM   bool     `json:"hasPem"`
-	Accounts []string `json:"accounts,omitempty"`
-}
 
 // McpServer is the log-safe view of a gateway-brokered MCP server.
 // Real OAuth tokens never appear here.

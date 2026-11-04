@@ -14,8 +14,7 @@ import (
 	"slices"
 	"strings"
 
-	"piso/gateway/internal/githubapp"
-	"piso/gateway/internal/model"
+	"piso/gateway/internal/gitaccess"
 	"piso/gateway/internal/store"
 	tc "piso/internal/technocore"
 )
@@ -45,7 +44,7 @@ func Stale(err error) bool {
 // ShareInput is a secret to wrap for enrolled gateways.
 type ShareInput struct {
 	Name string
-	// Kind is the secret's subtype ("telegram", "github-app", ...). The
+	// Kind is the secret's subtype ("telegram", "git-token", ...). The
 	// coordinator stores every envelope as a secret resource, so the subtype
 	// travels in metadata: without it a peer receives the credential but cannot
 	// tell what it is for.
@@ -60,8 +59,8 @@ type ShareInput struct {
 	// omitted (0) when the writer has never published the secret, so a stale
 	// writer can be told to re-sync instead of overwriting newer state.
 	BaseVersion int
-	Operation string
-	LeaseEpoch uint64
+	Operation   string
+	LeaseEpoch  uint64
 }
 
 // Share wraps plaintext for account gateways and POSTs ciphertext to the server.
@@ -182,71 +181,60 @@ func fetchGateways(id tc.Identity) ([]remoteGateway, error) {
 // coordinator resource id before anything tries to use it: the allow-list and
 // the claim code live on the coordinator, keyed by that id.
 func PublishNow(st *store.Store, dataDir string) error {
+	healGitBundles(st)
 	return publishAllSecrets(st, dataDir)
 }
 
-// sharePlaintext is what actually travels in the envelope. A github-app
-// routing group has no vault value: the credential is the app record, so the
-// apps are serialized into a bundle and that JSON is sealed instead.
-//
-// Every enrolled gateway may publish: whoever writes last wins, version-ordered
-// by the coordinator. A gateway publishing what it received re-encodes the same
-// bytes, so the content hash matches its stored one and reconcile skips it.
+// healGitBundles upgrades legacy rows that carry the Git kind but no decoded
+// config: gateways that predate sealed Git bundles stored the bundle JSON in
+// Value verbatim, so the connection is present but invisible to /api/v1/git.
+// The stored plaintext decodes locally; no coordinator round-trip is needed.
+// Rows whose plaintext is not a bundle are left untouched, and decoding never
+// fails the publish pass.
+func healGitBundles(st *store.Store) {
+	for _, rec := range st.Secrets() {
+		if rec.Kind != gitaccess.Kind || rec.Git != nil || rec.Revoked || rec.Value == "" {
+			continue
+		}
+		bundle, err := gitaccess.Decode(rec.Value)
+		if err != nil {
+			continue
+		}
+		local := rec
+		local.Git = &bundle.Config
+		local.Workers = bundle.Workers
+		local.Value = bundle.Token
+		// Sealed config is authoritative, matching applyEnvelope.
+		if _, hosts, err := bundle.Config.Normalize(); err == nil {
+			local.AllowedHosts = hosts
+		}
+		if err := st.ReplaceSecret(local); err != nil {
+			log.Printf("technocore: heal git bundle %s: %v", rec.ID, err)
+		} else {
+			log.Printf("technocore: healed legacy Git connection %s", rec.ID)
+		}
+	}
+}
+
+// sharePlaintext seals tokens and connection metadata for enrolled gateways.
 func sharePlaintext(st *store.Store, rec store.SecretRec) (string, bool) {
+	if store.RetiredGitCredentialKind(rec.Kind) {
+		return "", false
+	}
 	if rec.Revoked {
 		// A tombstone stays a tombstone: republishing it would resurrect
 		// something a gateway deleted.
 		return "", false
 	}
 	switch rec.Kind {
-	case model.SecretKindGithubOAuth:
-		// One half of a sign-in. It reaches other gateways inside the
-		// github-user bundle, materialized there as a local row; publishing it
-		// here would put a second, unlinked copy of the token at the
-		// coordinator for nothing.
-		return "", false
-	case model.SecretKindGithubUser:
-		// The sign-in that lets someone manage apps, shared so a person signs
-		// in once for the account. Any gateway may publish it: signing in
-		// anywhere replaces the session everywhere.
-		u := st.GithubUser()
-		token, ok := secretValue(st, u.TokenSecretID)
-		if !ok {
-			// Signed out, or a half-written session: nothing to share.
+	case gitaccess.Kind:
+		if rec.Git == nil || rec.Value == "" {
 			return "", false
 		}
-		clientSecret, _ := secretValue(st, u.ClientSecretID)
-		bundle, err := githubapp.EncodeUserBundle(githubapp.UserBundle{
-			ClientID:     u.ClientID,
-			ClientSecret: clientSecret,
-			Token:        token,
-			Login:        u.Login,
-			AccountID:    u.AccountID,
-			Scopes:       u.Scopes,
-		})
-		if err != nil {
-			// A token with no identity cannot be shared. Say so once per pass:
-			// silently returning "nothing to share" is how a peer ends up signed
-			// out with no explanation anywhere.
-			log.Printf("technocore: share github sign-in: %v", err)
-			return "", false
-		}
-		return bundle, true
+		plain, err := gitaccess.Encode(*rec.Git, rec.Value, rec.Workers)
+		return plain, err == nil
 	}
-	if rec.Kind != model.SecretKindGithubApp {
-		return rec.Value, rec.Value != ""
-	}
-	apps := st.GithubAppsBySecretID(rec.ID)
-	if len(apps) == 0 {
-		return "", false
-	}
-	bundle, err := githubapp.EncodeBundle(apps)
-	if err != nil {
-		// Unregistered apps (no PEM yet) have nothing to share; the next
-		// reconcile pass after registration publishes the bundle.
-		return "", false
-	}
-	return bundle, true
+	return rec.Value, rec.Value != ""
 }
 
 // secretValue reads a gateway-only row's plaintext, reporting false when the
@@ -280,10 +268,6 @@ func publishAllSecrets(st *store.Store, dataDir string) error {
 		return err
 	}
 	recipients := wrapRecipientIDs(gateways, nil)
-	// A sign-in that predates sharing has no envelope to publish. Adopt it here so
-	// the session reaches the other gateways on the next pass instead of waiting
-	// for someone to sign in again.
-	adoptLocalGithubSignIn(st)
 	var first error
 	for _, rec := range st.Secrets() {
 		plain, ok := sharePlaintext(st, rec)

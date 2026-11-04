@@ -8,6 +8,28 @@ import (
 	"testing"
 )
 
+func TestMigrationRetiresOnlyHistoricalGitCredentials(t *testing.T) {
+	st := State{Version: 11, Secrets: []SecretRec{
+		{ID: "app", Kind: "github-app", EnvKey: "GH_TOKEN", Placeholder: "piso_old"},
+		{ID: "session", Kind: "github-user", Value: "bundle"},
+		{ID: "oauth", Kind: "github-oauth", Value: "old-token"},
+		{ID: "git", Kind: "git-token", Value: "supplied-token"},
+		{ID: "plain", Value: "plain-token"},
+	}, Rules: []RuleRec{{ID: "old-rule", SecretID: "app"}, {ID: "git-rule", SecretID: "git"}}}
+	if !applyMigrations(&st) || st.Version != CurrentStateVersion {
+		t.Fatal("migration not applied")
+	}
+	if len(st.Secrets) != 2 || st.Secrets[0].ID != "git" || st.Secrets[0].Value != "supplied-token" || st.Secrets[1].ID != "plain" {
+		t.Fatalf("wrong secrets retained: %+v", st.Secrets)
+	}
+	if len(st.Rules) != 1 || st.Rules[0].SecretID != "git" {
+		t.Fatalf("retired rule remains: %+v", st.Rules)
+	}
+	if applyMigrations(&st) {
+		t.Fatal("migration is not idempotent")
+	}
+}
+
 func TestApplyMigrationsV0ToV1(t *testing.T) {
 	st := State{}
 	if !applyMigrations(&st) {
@@ -111,8 +133,8 @@ func TestMigrationMaterializesLegacyWildcardHosts(t *testing.T) {
 			{ID: "s1", Placeholder: "piso_legacy_1", Value: "v1"},                                  // had "*" rule
 			{ID: "s2", Placeholder: "piso_never_2", Value: "v2"},                                   // no rule at all
 			{ID: "s3", Placeholder: "piso_bound_3", Value: "v3", AllowedHosts: []string{"a.test"}}, // already bound
-			{ID: "s4", Placeholder: "piso_gw_4", Value: "v4", GatewayOnly: true},                  // gateway-only
-			{ID: "s5", Placeholder: "piso_revoked_5", Revoked: true},                              // tombstone
+			{ID: "s4", Placeholder: "piso_gw_4", Value: "v4", GatewayOnly: true},                   // gateway-only
+			{ID: "s5", Placeholder: "piso_revoked_5", Revoked: true},                               // tombstone
 		},
 		Rules: []RuleRec{
 			{ID: "r1", SecretID: "s1", Placeholder: "piso_legacy_1", Host: "*"},

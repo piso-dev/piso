@@ -33,11 +33,10 @@ Read the rest for *how*, not for permission.
   no-new-privileges. `apt-get install`, `pip`, `npm -g` all work inside the
   container; they are wiped on recreate, which is why durable state belongs on
   `/host` or on the agent volume.
-- `/workspace` is a scratch workspace on the host (rw, shared with
-  `piso attach`), **not** one project: tasks clone their repository to
-  `/workspace/<owner>/<repo>` and work there. `/root/.pi/agent` is the
-  persistent agent volume (sessions, skills, extensions, logs) — the one
-  exec-allowed writable dir that is *not* the host.
+- `/workspace` is the shared project/files area on the host (rw, shared with
+  `piso attach`), not a home for additional clones. `/root/.pi/agent` is the
+  persistent, exec-allowed agent volume for sessions, tools and worker-owned
+  checkouts; see **Git checkout storage**.
 - **Model/API egress goes through the gateway**, and you hold only `piso_…`
   placeholders. Keep it that way: the gateway is how the operator sees what
   left the machine and how real credentials stay out of your hands. Do not
@@ -45,6 +44,42 @@ Read the rest for *how*, not for permission.
 - Git over HTTPS with the `gh` credential helper works. From the host network
   namespace (`nsenter -t 1 -n`) the host's own git/ssh setup applies, and
   direct `ssh`/`git@…` may work where it cannot from the container network.
+
+## Git checkout storage
+
+Use `${PISO_WORKBENCH:-$HOME/.pi/agent/workbench}/checkouts/<host>/<owner>/<repo>`
+for additional worker-owned clones, outside the shared project in /workspace.
+The default is /root/.pi/agent/workbench/checkouts on the persistent,
+exec-allowed agent volume. Use /workspace directly only when the task explicitly
+targets the assigned shared project; do not nest additional clones there.
+
+- Initialize with `workbench path checkouts` (creates and prints the root).
+  In shell examples set
+  `checkout_root="${PISO_WORKBENCH:-$HOME/.pi/agent/workbench}/checkouts"`;
+  create the host/owner parent with `mkdir -p` before cloning over HTTPS.
+- Derive host from the listed clone URL's lowercase hostname (include a
+  non-default port as `hostname_port`). Use provider-reported owner and repo
+  names, without the trailing `.git` suffix; preserve their case. These are
+  literal directory components, not the normalized fork-name slug. Reject empty,
+  `.`, `..` or slash-containing components. For deployment prefixes, nested
+  groups or any ambiguous mapping, ask for an explicit unique path under
+  checkouts rather than silently colliding. Verify the remote URL before reuse;
+  a matching directory name alone is not repository identity.
+- Leave checkouts for follow-up tasks. All `workbench clean` modes (including
+  `--all` and age-based scratch cleanup) preserve `checkouts/`. Run
+  `workbench status` for usage; never put durable repos under `tmp/`.
+- Do not automatically move or delete existing clones. With explicit migration
+  authorization, verify the destination is absent, record branch, HEAD, remotes,
+  working-tree state and unpushed commits, then move the checkout intact and
+  compare before/after. For cross-filesystem moves, copy and verify before
+  removing the source. Preserve local work and report the new path in handoffs.
+- Host-assisted clones must also end up here, not as another repo in /workspace.
+  The worker's /root/.pi/agent path is not necessarily a host path. Ask the host
+  to identify the correct worker container/agent-volume mapping and clone into
+  that verified mount, or use an explicitly agreed temporary transfer location
+  with a copy/verification/cleanup plan. Never guess a host volume path. Keep
+  `host_request.resultPath` as a separate /workspace/... status file visible
+  through the shared mount; do not use the checkout itself as the result path.
 
 ## Where to install things
 
@@ -57,7 +92,7 @@ Two destinations, pick deliberately:
   Lives on the agent volume; `workbench status` / `workbench clean --caches`
   keep disk pressure down.
 
-Never install into a checkout under `/workspace` (a repository does not want a
+Never install toolchains into any checkout (a repository does not want a
 random toolchain in it) and never leave builds in `/tmp` or `/dev/shm` (tmpfs,
 mounted **noexec** — a binary unpacked there dies with exit 126 and looks
 broken).
@@ -103,8 +138,9 @@ not execute or complete anything. Legacy `command` is still accepted.
 This worker pulls tasks by itself (`piso-task-watch`), and it claims nothing
 while any live pi session exists — including an attached one sitting idle at a
 prompt. So `piso attach` is break-glass, not the operating mode. Whoever
-attaches lands in `/workspace`, the scratch root; the work is one level down,
-under `<owner>/<repo>`. Use `--shell` for poking at the box rather than a full
+attaches lands in `/workspace`, the shared project/files area. Additional clones
+are under the workbench as described in **Git checkout storage**; change cwd to
+the task's checkout. Use `--shell` for poking at the box rather than a full
 session, and exit when done so the queue drains again.
 
 ## GitHub clone fallback
@@ -113,12 +149,16 @@ Still worth knowing, since the proxy can deny a clone: prepare a fallback with
 preserving the requested destination:
 
 ```bash
-gh repo clone lunar9-dev/v1-mono /workspace/v1-mono
+checkout_root="${PISO_WORKBENCH:-$HOME/.pi/agent/workbench}/checkouts"
+mkdir -p "$checkout_root/github.com/example-org"
+gh repo clone example-org/service "$checkout_root/github.com/example-org/service"
 ```
 
 Try the parsed-name form once; do not loop, and never delete a partial clone or
 an existing destination automatically. If the proxy or auth genuinely denies it,
-open an SSH path from the host namespace instead of retrying HTTP.
+use an authorized host-side HTTPS credential setup rather than retrying HTTP
+or rewriting remotes to SSH. Follow **Git checkout storage** for verified
+host/worker path mapping; never assume the two namespaces share agent paths.
 
 ## Live boundaries (fetch once per session)
 
