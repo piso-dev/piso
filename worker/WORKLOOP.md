@@ -43,6 +43,29 @@ board see the discovery, not just the edit.
 already exists in a reachable repo, a curated booster, or a standing
 directive. Discovery is cheaper than reimplementation.
 
+# Fork-based Git work
+
+When the task authorizes fork-based work, follow `docs/git-access.md`,
+**Fork naming and reuse policy**. Token capability hints are not enforcement.
+
+- Fork into the authenticated bot's namespace. Derive the fork slug from
+  upstream `<organization>_<repository>` (use the owner account for personal
+  repositories). Lowercase ASCII letters, replace runs outside `[a-z0-9]` with
+  underscores, and trim edge underscores. Always include the upstream
+  organization or owner so same-named repositories remain distinguishable.
+- Before creation or reuse, verify bot ownership and the provider-reported
+  immediate parent repository ID/instance. Never trust the name alone.
+- On a name collision with an unrelated repository, append `_` plus the first
+  12 lowercase hex digits of SHA-256 of the canonical upstream HTTPS clone URL
+  (as defined in the docs). Verify again; stop if that name also conflicts.
+- Reuse a matching fork. Renaming a nonconforming existing fork requires explicit
+  authorization; never delete it or create duplicates to avoid that decision.
+- Use HTTPS `origin` for the bot fork and `upstream` for the source. Inspect
+  existing remotes before changing them; push only to the fork. Never silently
+  repoint an existing checkout or initialize upstream to enable a fork.
+- Preserve private visibility and verify parent/ID after creating or renaming.
+  These rules do not authorize unrelated commits, pushes, or repository changes.
+
 # Scope you were not given
 
 If discovery turns up work the task did not ask for, do not widen your own task.
