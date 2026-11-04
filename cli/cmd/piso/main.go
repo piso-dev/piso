@@ -1845,8 +1845,22 @@ func startGateway(forceRecreate bool) error {
 	if forceRecreate {
 		args = append(args, "--force-recreate")
 	}
+	// Compose may validate external volumes even for a selected service. Prepare
+	// the non-destructive state volume before starting any part of the project.
+	if err := runEnv("docker", []string{"volume", "create", "piso-whitenoise-state"}, composeEnv); err != nil {
+		return fmt.Errorf("prepare gateway project volumes: %w", err)
+	}
+	// Start the core first. A connector image build or relay outage must never
+	// prevent the gateway (and Telegram) from coming up.
+	args = append(args, "gateway")
+	if pisoconfig.MonitorEnabled() {
+		args = append(args, "monitor")
+	}
 	if err := runEnv("docker", args, composeEnv); err != nil {
 		return fmt.Errorf("gateway up: %w", err)
+	}
+	if err := startWhiteNoiseCompanion(gatewayFile, composeEnv); err != nil {
+		fmt.Fprintf(os.Stderr, "piso: White Noise unavailable: %v (gateway remains running; rerun piso setup to retry)\n", err)
 	}
 	return dockernet.AssertInternal()
 }
