@@ -1877,7 +1877,14 @@ func startGateway(forceRecreate, withWhiteNoise bool) error {
 		return fmt.Errorf("gateway up: %w", err)
 	}
 	if withWhiteNoise {
-		if err := startWhiteNoiseCompanion(gatewayFile, composeEnv); err != nil && !errors.Is(err, errWhiteNoiseNotBuilt) {
+		// A missing image is the normal state of a host that never built the
+		// connector. Say so once, here, instead of compiling it: this is the
+		// only place an operator would look for it.
+		err := startWhiteNoiseCompanion(gatewayFile, composeEnv)
+		switch {
+		case errors.Is(err, errWhiteNoiseNotBuilt):
+			fmt.Fprintln(os.Stderr, "piso: White Noise connector not started: no local image (run `piso whitenoise build` once; the gateway is unaffected)")
+		case err != nil:
 			fmt.Fprintf(os.Stderr, "piso: White Noise unavailable: %v (gateway remains running; retry with `piso whitenoise start`)\n", err)
 		}
 	}
