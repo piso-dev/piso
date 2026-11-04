@@ -13,10 +13,19 @@ apply.
    connections. Capability hints are operator guidance, not verified or enforced
    by Piso. The tools list repos this worker can
    reach. Match the task against the list. For each repo the task names or
-   clearly needs, clone it over HTTPS into `/workspace`:
-   `git clone <listed-HTTPS-cloneURL> /workspace/<name>`
-   If the repo is already under `/workspace`, `git fetch` / `git pull`
-   instead. Do not clone the whole list. If `complete:false`, record the
+   clearly needs, use the assigned shared project if the task explicitly calls
+   for it; put additional clones at
+   `${PISO_WORKBENCH:-$HOME/.pi/agent/workbench}/checkouts/<host>/<owner>/<repo>`,
+   never inside `/workspace`. See **Git checkout storage** in CAPABILITIES for
+   path identity, migration and host assistance. Create the parent directories:
+   ```sh
+   checkout_root="${PISO_WORKBENCH:-$HOME/.pi/agent/workbench}/checkouts"
+   mkdir -p "$checkout_root/<host>/<owner>"
+   git clone <listed-HTTPS-cloneURL> "$checkout_root/<host>/<owner>/<repo>"
+   ```
+   Inspect an existing checkout's remotes and state before reusing it; fetch
+   only as authorized, and never reset, pull over local work, or repoint remotes
+   automatically. Do not clone the whole list. If `complete:false`, record the
    `errors` and move on — never retry in a loop.
 3. `directives_list` (no arguments) — the account's active standing
    directives. They are development preferences, not work: they shape how you

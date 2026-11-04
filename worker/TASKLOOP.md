@@ -29,24 +29,33 @@ chat. When it is unset, these unattended-only rules do not apply.
 
 ## Find the repository
 
-This machine is not tied to one project. The task names its repository, and a
-new task starts in `/workspace` with whatever earlier tasks left there.
+The task names its repository. A session may start in `/workspace`, the shared
+project/files area; additional worker-owned clones live on the agent volume.
 
 - Resolve the repository from the task body, checkpoint, or a previous handoff.
   `user_repositories` lists HTTPS URLs from assigned Git tokens; a URL in
   the task beats guessing from the title.
-- Put checkouts at `/workspace/<owner>/<repo>` — two path segments, so `foo/api`
-  and `bar/api` cannot collide — and make that directory your cwd. Do not work
-  in `/workspace` itself, and do not reuse another repository's checkout.
-- Existing checkout: `git -C /workspace/<owner>/<repo> fetch --all --prune`,
-  then branch from the default branch. New one:
-  `gh repo clone <owner>/<repo> /workspace/<owner>/<repo>`. HTTPS only; never
-  rewrite a remote to SSH.
+- Put additional checkouts at
+  `${PISO_WORKBENCH:-$HOME/.pi/agent/workbench}/checkouts/<host>/<owner>/<repo>`.
+  Follow **Git checkout storage** in CAPABILITIES for path identity, migration
+  and host assistance. Use `/workspace` only when the task explicitly targets
+  the assigned shared project; do not put extra clones inside it.
+- Create parent directories and clone the listed HTTPS URL:
+  ```sh
+  checkout_root="${PISO_WORKBENCH:-$HOME/.pi/agent/workbench}/checkouts"
+  mkdir -p "$checkout_root/<host>/<owner>"
+  git clone <listed-HTTPS-cloneURL> "$checkout_root/<host>/<owner>/<repo>"
+  ```
+  Make that directory your cwd. Inspect remotes, branch, working-tree state and
+  unpushed commits before reusing an existing checkout. Fetch only as authorized;
+  never reset, pull over local work, or repoint remotes automatically. Branch
+  from the task's specified base (default branch if unspecified). HTTPS only;
+  never rewrite a remote to SSH.
 - No repository named, or not in the repository listing? Ask with
   `task_wait(reason="needs_input")` and say what you need. Do not guess.
-- Leave the checkout in place for the next task so a follow-up does not
-  re-clone. Delete it only when disk is tight, and never while it holds
-  committed-but-unpushed work.
+- Leave the checkout for follow-up tasks. `workbench clean` preserves
+  `checkouts/` in every mode. Migration or deletion requires explicit
+  authorization; never discard dirty or unpushed work to reclaim space.
 
 ## Work and handoff
 
