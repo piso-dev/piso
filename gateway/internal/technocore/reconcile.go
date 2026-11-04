@@ -101,6 +101,7 @@ func (r *Reconciler) once() error {
 	}
 	// Enrollment must retry even when unrelated secret/provider sync fails.
 	localErr := syncLocalWorkers(r.st, id)
+	healGitBundles(r.st)
 	if err := syncSecrets(r.st, r.dataDir, id); err != nil {
 		return err
 	}

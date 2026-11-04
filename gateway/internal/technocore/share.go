@@ -181,7 +181,39 @@ func fetchGateways(id tc.Identity) ([]remoteGateway, error) {
 // coordinator resource id before anything tries to use it: the allow-list and
 // the claim code live on the coordinator, keyed by that id.
 func PublishNow(st *store.Store, dataDir string) error {
+	healGitBundles(st)
 	return publishAllSecrets(st, dataDir)
+}
+
+// healGitBundles upgrades legacy rows that carry the Git kind but no decoded
+// config: gateways that predate sealed Git bundles stored the bundle JSON in
+// Value verbatim, so the connection is present but invisible to /api/v1/git.
+// The stored plaintext decodes locally; no coordinator round-trip is needed.
+// Rows whose plaintext is not a bundle are left untouched, and decoding never
+// fails the publish pass.
+func healGitBundles(st *store.Store) {
+	for _, rec := range st.Secrets() {
+		if rec.Kind != gitaccess.Kind || rec.Git != nil || rec.Revoked || rec.Value == "" {
+			continue
+		}
+		bundle, err := gitaccess.Decode(rec.Value)
+		if err != nil {
+			continue
+		}
+		local := rec
+		local.Git = &bundle.Config
+		local.Workers = bundle.Workers
+		local.Value = bundle.Token
+		// Sealed config is authoritative, matching applyEnvelope.
+		if _, hosts, err := bundle.Config.Normalize(); err == nil {
+			local.AllowedHosts = hosts
+		}
+		if err := st.ReplaceSecret(local); err != nil {
+			log.Printf("technocore: heal git bundle %s: %v", rec.ID, err)
+		} else {
+			log.Printf("technocore: healed legacy Git connection %s", rec.ID)
+		}
+	}
 }
 
 // sharePlaintext seals tokens and connection metadata for enrolled gateways.
