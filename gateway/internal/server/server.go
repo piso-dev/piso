@@ -40,10 +40,8 @@ type Server struct {
 	// HTTP is used for MCP OAuth discovery/DCR/token (tests inject).
 	HTTP *http.Client
 	// DenyPeer overrides worker-vpc detection on the control plane (tests).
-	DenyPeer          denyPeerFunc
-	githubOAuthMu     sync.Mutex
-	githubOAuthStates map[string]githubOAuthAttempt
-	boostMu           sync.Mutex
+	DenyPeer denyPeerFunc
+	boostMu  sync.Mutex
 	// Telegram is the Telegram front door: the poller, the update cursor and
 	// the allow-list. It owns the only connection to Telegram; nothing else in
 	// the gateway talks to that API.
@@ -51,11 +49,6 @@ type Server struct {
 	Telegram     *telegram.Manager
 	boost        *aiboost.Client
 	boostTickets map[string]time.Time
-
-	// githubSync overrides the publish/pull half of a shared GitHub write so a
-	// test can lose a version race on purpose. Nil means technocore, which is
-	// what production always uses.
-	githubSync *githubSyncHooks
 
 	// directMu guards workers that have checked in on the public URL.
 	// Not persisted: a gateway restart must see a fresh direct check-in
@@ -144,10 +137,6 @@ func (s *Server) WebHandler() http.Handler {
 			s.handleMcpOAuthHTTP(w, r)
 			return
 		}
-		if githubAppHost(r) || strings.HasPrefix(r.URL.Path, "/github-app/") {
-			s.handleGithubAppHTTP(w, r)
-			return
-		}
 		if strings.HasPrefix(r.URL.Path, "/oauth/ai-boost/") {
 			s.handleBoostOAuth(w, r)
 			return
@@ -172,10 +161,6 @@ func (s *Server) IngressHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if mcpOAuthHost(r) {
 			s.handleMcpOAuthHTTP(w, r)
-			return
-		}
-		if githubAppHost(r) || strings.HasPrefix(r.URL.Path, "/github-app/") {
-			s.handleGithubAppHTTP(w, r)
 			return
 		}
 		s.ingress(w, r)
@@ -222,8 +207,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 		})
 	})
 	s.registerTechnocore(mux)
-	s.registerGithubApp(mux)
-	s.registerGithubUser(mux)
+	s.registerGit(mux)
 	s.registerAIBoost(mux)
 	s.registerTelegram(mux)
 	s.registerWhiteNoise(mux)
@@ -251,12 +235,6 @@ func (s *Server) routes(mux *http.ServeMux) {
 		recs := s.Store.Secrets()
 		out := make([]model.SecretSummary, 0, len(recs))
 		for _, rc := range recs {
-			// The shared GitHub sign-in is a transport row: it carries the
-			// session between enrolled gateways and holds no value of its own,
-			// so it is not a vault entry anyone can edit or delete.
-			if rc.Kind == model.SecretKindGithubUser {
-				continue
-			}
 			out = append(out, storeRecToSummary(rc))
 		}
 		writeJSON(w, 200, out)
@@ -746,8 +724,6 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 	defer cancelActivities()
 	subMcp, cancelMcp := s.Store.SubMcp()
 	defer cancelMcp()
-	subGithub, cancelGithub := s.Store.SubGithub()
-	defer cancelGithub()
 	subAsks, cancelAsks := s.Store.SubAsks()
 	defer cancelAsks()
 	// Headers signal readiness only after subscriptions exist.
@@ -780,11 +756,6 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 		case mcp := <-subMcp:
 			if b, err := json.Marshal(mcp.ToSummary()); err == nil {
 				fmt.Fprintf(w, "event: mcp\ndata: %s\n\n", b)
-				fl.Flush()
-			}
-		case gha := <-subGithub:
-			if b, err := json.Marshal(gha.ToSummary()); err == nil {
-				fmt.Fprintf(w, "event: github\ndata: %s\n\n", b)
 				fl.Flush()
 			}
 		case <-subAsks:

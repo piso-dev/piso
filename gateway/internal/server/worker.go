@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"piso/gateway/internal/aiboost"
-	"piso/gateway/internal/githubapp"
 	"piso/gateway/internal/mcp"
 	"piso/gateway/internal/store"
 	gtwc "piso/gateway/internal/technocore"
@@ -64,14 +63,7 @@ func (s *Server) mountMCP(mux *http.ServeMux) {
 
 func (s *Server) mcpHandler() *mcp.Handler {
 	h := mcp.New(s.Store, s.Patterns, s.DataDir)
-	githubClient := s.githubClient()
-	if s.Proxy != nil {
-		if minter, ok := s.Proxy.Minter.(*githubapp.PlaceholderMinter); ok && minter != nil && minter.Client != nil {
-			// Keep minted tokens in the proxy's real-secret scanner cache.
-			githubClient = minter.Client
-		}
-	}
-	h.GithubRepos = githubClient.ListReposContext
+	h.GitHTTPClient = s.httpClient()
 	h.BoostList = func(ctx context.Context, query, cursor string) (aiboost.Page, error) {
 		client, err := s.boostClient()
 		if err != nil {

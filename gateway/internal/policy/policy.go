@@ -10,7 +10,6 @@ import (
 	"strings"
 	"sync"
 
-	"piso/gateway/internal/githubapp"
 	"piso/gateway/internal/model"
 	"piso/gateway/internal/scanner"
 )
@@ -38,9 +37,6 @@ type Input struct {
 	// enforce Secret.Workers scoping: a secret whose Workers list is non-empty
 	// only substitutes for a listed worker. Empty Workers = all workers.
 	Worker string
-	// GithubAppByPlaceholder is the policy snapshot for github-app secrets
-	// (PEM present? which accounts are installed?). Empty Value is expected.
-	GithubAppByPlaceholder map[string]model.GithubAppView
 }
 
 // Decide runs the pipeline and returns the action plus reasons.
@@ -114,9 +110,7 @@ func Decide(in Input) model.Decision {
 			}
 			return model.Decision{Action: model.ActionSubstitute, Reasons: reasons, Substituted: substituted}
 		}
-		if r, ok := githubAppBlockReason(in); ok {
-			appendReason(r)
-		} else if placeholderNeedsMcpAuth(in) {
+		if placeholderNeedsMcpAuth(in) {
 			appendReason(model.ReasonMcpAuthRequired)
 		} else {
 			appendReason(model.ReasonNoSecretRule)
@@ -165,13 +159,6 @@ func substituteAll(in Input) ([]string, bool) {
 			if !has {
 				return out, false
 			}
-			if sec.Kind == model.SecretKindGithubApp {
-				if !githubAppReady(in, tok) {
-					return out, false
-				}
-				out = append(out, tok)
-				continue
-			}
 			if strings.TrimSpace(sec.Value) == "" {
 				return out, false // vault slot exists but login has not filled it
 			}
@@ -217,7 +204,7 @@ func placeholderNeedsMcpAuth(in Input) bool {
 			continue
 		}
 		sec, ok := in.SecretByPlaceholder[f.Token]
-		if !ok || sec.Kind == model.SecretKindGithubApp || strings.TrimSpace(sec.Value) != "" {
+		if !ok || strings.TrimSpace(sec.Value) != "" {
 			continue
 		}
 		if _, has := lookupRule(in, f.Token); has && in.secretAllowedForWorker(f.Token) {
@@ -225,36 +212,6 @@ func placeholderNeedsMcpAuth(in Input) bool {
 		}
 	}
 	return false
-}
-
-func githubAppBlockReason(in Input) (model.Reason, bool) {
-	for _, f := range in.Scan.Placeholders {
-		if scanner.IsPayloadField(f.Location, f.Field) {
-			continue
-		}
-		sec, ok := in.SecretByPlaceholder[f.Token]
-		if !ok || sec.Kind != model.SecretKindGithubApp {
-			continue
-		}
-		app, has := in.GithubAppByPlaceholder[f.Token]
-		if !has || !app.HasPEM {
-			return model.ReasonGithubAppRegisterRequired, true
-		}
-		if !githubAppReady(in, f.Token) {
-			return model.ReasonGithubAppInstallRequired, true
-		}
-	}
-	return "", false
-}
-
-func githubAppReady(in Input, token string) bool {
-	app, ok := in.GithubAppByPlaceholder[token]
-	if !ok || !app.HasPEM {
-		return false
-	}
-	owner := githubapp.Owner(in.Host, in.Path, in.Body)
-	_, err := githubapp.ResolveAccount(app.Accounts, owner)
-	return err == nil
 }
 
 // lookupRule finds a substitution rule for placeholder on this host.

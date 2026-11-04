@@ -134,9 +134,9 @@ func (s *Server) handlePutPiProvider(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// A provider's apiKey is substituted as a literal credential on the model
-	// host. Kinds that are not literal values (github-app mints per host,
-	// telegram is a bot token) or that workers may not use would only fail at
-	// request time with a confusing rule or mint error, so refuse the binding
+	// host. Provider-specific credentials (such as Telegram bot tokens) or
+	// secrets that workers may not use would only fail at request time with a
+	// confusing rule error, so refuse the binding
 	// here, where the operator can still see why.
 	if rec.Kind != model.SecretKindOpaque {
 		writeJSON(w, 400, map[string]string{"error": "provider secret must be a plain API key, not a " + rec.Kind + " credential"})

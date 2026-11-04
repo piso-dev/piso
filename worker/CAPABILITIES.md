@@ -33,6 +33,42 @@ everything below is simple:
   extensions, logs — and it is also the only writable, **exec-allowed** place
   outside the repo (see *Where to install things*).
 
+## Git checkout storage
+
+Use `${PISO_WORKBENCH:-$HOME/.pi/agent/workbench}/checkouts/<host>/<owner>/<repo>`
+for additional worker-owned clones, outside the shared project in /workspace.
+The default is /root/.pi/agent/workbench/checkouts on the persistent,
+exec-allowed agent volume. Use /workspace directly only when the task explicitly
+targets the assigned shared project; do not nest additional clones there.
+
+- Initialize with `workbench path checkouts` (creates and prints the root).
+  In shell examples set
+  `checkout_root="${PISO_WORKBENCH:-$HOME/.pi/agent/workbench}/checkouts"`;
+  create the host/owner parent with `mkdir -p` before cloning over HTTPS.
+- Derive host from the listed clone URL's lowercase hostname (include a
+  non-default port as `hostname_port`). Use provider-reported owner and repo
+  names, without the trailing `.git` suffix; preserve their case. These are
+  literal directory components, not the normalized fork-name slug. Reject empty,
+  `.`, `..` or slash-containing components. For deployment prefixes, nested
+  groups or any ambiguous mapping, ask for an explicit unique path under
+  checkouts rather than silently colliding. Verify the remote URL before reuse;
+  a matching directory name alone is not repository identity.
+- Leave checkouts for follow-up tasks. All `workbench clean` modes (including
+  `--all` and age-based scratch cleanup) preserve `checkouts/`. Run
+  `workbench status` for usage; never put durable repos under `tmp/`.
+- Do not automatically move or delete existing clones. With explicit migration
+  authorization, verify the destination is absent, record branch, HEAD, remotes,
+  working-tree state and unpushed commits, then move the checkout intact and
+  compare before/after. For cross-filesystem moves, copy and verify before
+  removing the source. Preserve local work and report the new path in handoffs.
+- Host-assisted clones must also end up here, not as another repo in /workspace.
+  The worker's /root/.pi/agent path is not necessarily a host path. Ask the host
+  to identify the correct worker container/agent-volume mapping and clone into
+  that verified mount, or use an explicitly agreed temporary transfer location
+  with a copy/verification/cleanup plan. Never guess a host volume path. Keep
+  `host_request.resultPath` as a separate /workspace/... status file visible
+  through the shared mount; do not use the checkout itself as the result path.
+
 ## Where to install things (never the repo, never /tmp)
 
 `/workspace` is the host's checkout: a toolchain downloaded there is one more
@@ -54,7 +90,7 @@ workbench status             # sizes + free space; run this under disk pressure
 workbench clean --caches     # prune GOCACHE/downloads; keeps module cache + bin/
 ```
 
-Layout: `bin/ gopath/ gocache/ versions/ tmp/ downloads/`. The script refuses a
+Layout: `bin/ gopath/ gocache/ versions/ tmp/ downloads/ checkouts/`. The script refuses a
 root inside `/workspace` or on `/tmp`/`/dev/shm`, so a wrong `PISO_WORKBENCH`
 fails loudly instead of scattering artifacts.
 
@@ -93,10 +129,12 @@ every later task on this host.
 When a GitHub clone fails, always prepare a fallback using `gh repo clone`
 with the parsed `OWNER/REPO`, not the full URL. Strip any trailing slash
 and `.git` suffix. Preserve the requested destination when it is permitted.
-For example, `https://github.com/lunar9-dev/v1-mono.git` becomes:
+For example, `https://github.com/example-org/service.git` becomes:
 
 ```bash
-gh repo clone lunar9-dev/v1-mono /workspace/v1-mono
+checkout_root="${PISO_WORKBENCH:-$HOME/.pi/agent/workbench}/checkouts"
+mkdir -p "$checkout_root/github.com/example-org"
+gh repo clone example-org/service "$checkout_root/github.com/example-org/service"
 ```
 
 Attempt the parsed-name fallback once when sandbox capabilities permit it,
@@ -108,7 +146,8 @@ This fallback does not override sandbox boundaries. Proxy or auth denials,
 hosts whose credentials the substitution layer cannot satisfy, forbidden
 destinations, and pending host requests need `host_request` rather than an
 in-worker retry. In those cases, file the parsed-name `gh repo clone` command
-with `host_request` and a `/workspace/...` `resultPath`. Never bypass the proxy
+with `host_request` and a `/workspace/...` `resultPath`; follow **Git checkout
+storage** for the separate host/worker checkout mapping. Never bypass the proxy
 or retry in a loop.
 
 ## Asking the host for something
@@ -135,7 +174,7 @@ credentials. Legacy `command` remains supported, but use scripts for new asks.
 That call files a durable request a person resolves from the dashboard — it is
 the same ask `human_action_request` files, in a machine-shaped body — and it
 also lands a `host` row on the board timeline. Say so in one short sentence in
-your own words ("waiting on the host to clone X into `/workspace/repo`"); the
+your own words ("waiting on the host to populate the worker checkout"); the
 tool call is the request, the sentence is the status note.
 
 **Pass `taskId` (plus `attemptId`, `requestId`, `summary`, `checkpoint`)

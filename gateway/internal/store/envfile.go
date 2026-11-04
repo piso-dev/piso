@@ -1,9 +1,12 @@
 package store
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"piso/gateway/internal/gitaccess"
 	"sort"
 	"strings"
 	"unicode"
@@ -84,7 +87,22 @@ func RenderPlaceholdersEnvForWorker(secrets []SecretRec, slug string) string {
 			filtered = append(filtered, rec)
 		}
 	}
-	return RenderPlaceholdersEnv(filtered)
+	body := RenderPlaceholdersEnv(filtered)
+	type connection struct {
+		ID          string `json:"id"`
+		Provider    string `json:"provider"`
+		BaseURL     string `json:"baseURL"`
+		EnvKey      string `json:"envKey"`
+		Placeholder string `json:"placeholder"`
+	}
+	rows := []connection{}
+	for _, rec := range filtered {
+		if rec.Kind == gitaccess.Kind && rec.Git != nil {
+			rows = append(rows, connection{rec.ID, rec.Git.Provider, rec.Git.BaseURL, rec.EnvKey, rec.Placeholder})
+		}
+	}
+	encoded, _ := json.Marshal(rows)
+	return body + "PISO_GIT_CONNECTIONS=" + base64.StdEncoding.EncodeToString(encoded) + "\n"
 }
 
 // WorkersDir is $PISO_DATA/workers next to state.json.

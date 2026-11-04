@@ -9,7 +9,8 @@ fail=0
 ok() { echo "ok: $1"; }
 bad() { echo "FAIL: $1" >&2; fail=1; }
 
-root=$(mktemp -d)
+# Executable fixtures must not land on the worker's noexec /tmp mount.
+root=$(mktemp -d "${TMPDIR:-${PISO_WORKBENCH:-$HOME/.pi/agent/workbench}/tmp}/workbench-test.XXXXXX")
 trap 'rm -rf "$root"' EXIT
 export PISO_WORKBENCH="$root/wb"
 export PISO_WORKBENCH_GO_BASE="file://$root/dl"
@@ -52,6 +53,46 @@ if "$W" env | grep -q '^export .*=.*"/workspace'; then
 else
   ok "env never points into /workspace"
 fi
+
+# --- checkout root and fallback ----------------------------------------------
+default=$(env -u PISO_WORKBENCH HOME="$root/home" "$W" path checkouts)
+[ "$default" = "$root/home/.pi/agent/workbench/checkouts" ] && [ -d "$default" ] \
+  && ok "unset PISO_WORKBENCH creates HOME-based checkout root" || bad "unset fallback: $default"
+empty=$(PISO_WORKBENCH= HOME="$root/home" "$W" path checkouts)
+[ "$empty" = "$default" ] && ok "empty override uses same fallback" || bad "empty fallback: $empty"
+[ -d "$PISO_WORKBENCH/checkouts" ] && ok "env initialization creates checkouts" || bad "env did not create checkouts"
+[ "$("$W" path checkouts)" = "$PISO_WORKBENCH/checkouts" ] \
+  && ok "path checkouts honors override" || bad "path checkouts ignores override"
+
+# An actual checkout with dirty and committed-but-unpushed work, not just a sentinel.
+repo="$PISO_WORKBENCH/checkouts/git.example.test/team/service"
+mkdir -p "$(dirname "$repo")"
+git init -q --bare "$root/upstream.git"
+git clone -q "$root/upstream.git" "$repo" 2>/dev/null
+printf 'local commit\n' >"$repo/tracked"
+git -C "$repo" add tracked
+git -C "$repo" -c user.name=Test -c user.email=test@example.test commit -qm 'unpushed fixture'
+printf 'dirty\n' >>"$repo/tracked"
+printf 'untracked\n' >"$repo/untracked"
+checkout_snapshot() {
+  git -C "$repo" rev-parse HEAD
+  git -C "$repo" symbolic-ref HEAD
+  git -C "$repo" remote -v
+  git -C "$repo" status --porcelain
+  git -C "$repo" diff
+  cat "$repo/untracked"
+}
+snapshot=$(checkout_snapshot)
+for mode in default caches scratch aged all; do
+  case "$mode" in
+    default) "$W" clean >/dev/null ;;
+    aged) "$W" clean --scratch --older-than 0 >/dev/null ;;
+    *) "$W" clean "--$mode" >/dev/null ;;
+  esac
+  [ "$(checkout_snapshot)" = "$snapshot" ] \
+    && ok "clean $mode preserves dirty checkout and unpushed commit" \
+    || bad "clean $mode changed checkout"
+done
 
 # --- path / scratch ----------------------------------------------------------
 [ -d "$("$W" path bin)" ] && ok "path bin creates the dir" || bad "path bin did not create the dir"
@@ -135,7 +176,7 @@ printf 'junk' >"$PISO_WORKBENCH/gocache/x/f"
 # --- status ------------------------------------------------------------------
 st=$("$W" status)
 case "$st" in
-  *"workbench: $PISO_WORKBENCH"*"total"*) ok "status reports the root and total size" ;;
+  *"workbench: $PISO_WORKBENCH"*"checkouts"*"total"*) ok "status reports checkout usage and total size" ;;
   *) bad "status output unexpected: $st" ;;
 esac
 
