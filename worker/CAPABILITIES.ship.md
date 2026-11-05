@@ -78,8 +78,9 @@ targets the assigned shared project; do not nest additional clones there.
   to identify the correct worker container/agent-volume mapping and clone into
   that verified mount, or use an explicitly agreed temporary transfer location
   with a copy/verification/cleanup plan. Never guess a host volume path. Keep
-  `host_request.resultPath` as a separate /workspace/... status file visible
-  through the shared mount; do not use the checkout itself as the result path.
+  `host_request.resultPath` as a separate project-relative status file (for
+  example `./.piso/host-actions/clone.txt`) visible through the shared mount;
+  do not use the checkout itself as the result path.
 
 ## Where to install things
 
@@ -124,12 +125,16 @@ person resolves from the dashboard, so pass `taskId` (plus `attemptId`,
 `requestId`, `summary`, `checkpoint`) whenever you hold one: that is what
 blocks the task and ends your lease instead of only announcing the need.
 
-Provide `explanation` (why, effects, prerequisites, working directory and exact
-run instructions) and `script`: either `{kind:"inline", filename:"action.sh",
-language:"bash", contents:"..."}` with complete contents (at most 20000 UTF-8
-bytes), or `{kind:"file", path:"...", language:"bash"}` referencing an existing
-host file. Use a verified path on the gateway host, not a path local to this
-ship. Keep `resultPath` separate as the output rendezvous. The dashboard offers
+Provide `explanation` (why, effects, prerequisites and exact run instructions,
+including that the script is run from the project root) and `script`: either
+`{kind:"inline", filename:"action.sh", language:"bash", contents:"..."}` with
+complete contents (at most 20000 UTF-8 bytes), or `{kind:"file", path:"...",
+language:"bash"}` referencing an existing host file. Use a verified path on the
+gateway host, not a path local to this ship. Keep `resultPath` separate as the
+output rendezvous, written project-relative (for example
+`./.piso/host-actions/result.txt`); never `/workspace`, which names the same
+files here but does not exist on the host. `.` is the project root in both
+places. The dashboard offers
 a top-right Copy button and internally scrolling script panel; copying does
 not execute or complete anything. Legacy `command` is still accepted.
 

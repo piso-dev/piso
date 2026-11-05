@@ -27,6 +27,34 @@ func scriptTextValid(s string, max int) bool {
 	return true
 }
 
+// workerMount is the worker's name for the shared project directory. The host
+// sees the same files under its own path, so any path a person is asked to run
+// must be project-relative: a /workspace path is meaningless outside the
+// container and reads as "does not exist" to whoever has to act on it.
+const workerMount = "/workspace"
+
+// projectRelative rewrites the worker's own name for the project root into the
+// form the host can use, and refuses paths that leave the project. The second
+// return is the human-readable reason when a path cannot be used.
+func projectRelative(p string) (string, string) {
+	p = strings.TrimSpace(p)
+	if p == workerMount {
+		return ".", ""
+	}
+	if strings.HasPrefix(p, workerMount+"/") {
+		p = "." + strings.TrimPrefix(p, workerMount)
+	}
+	if strings.HasPrefix(p, "/") {
+		return "", "path must be project-relative (for example ./.piso/host-actions/result.txt); the host runs from the project root, so an absolute path is not portable"
+	}
+	for _, part := range strings.Split(p, "/") {
+		if part == ".." {
+			return "", "path must stay inside the project; \"..\" is refused"
+		}
+	}
+	return p, ""
+}
+
 func (s *HostScript) valid() bool {
 	if !scriptTextValid(s.Language, 80) {
 		return false

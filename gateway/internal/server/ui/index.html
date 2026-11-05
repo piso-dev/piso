@@ -1619,6 +1619,21 @@
       }
       .host-panel-header span { overflow-wrap: anywhere; font-size: 12px; }
       .host-panel-header button { flex-shrink: 0; padding: 5px 9px; }
+      /* The copy button answers in place: the label and the tick share one grid
+         cell, so the wider of the two sets the width and the button never
+         resizes when the feedback appears. */
+      .host-copy {
+        display: inline-grid;
+        grid-template-areas: "copy";
+        place-items: center;
+      }
+      .host-copy > * { grid-area: copy; }
+      .host-copy .host-copy-tick { opacity: 0; width: 14px; height: 14px; }
+      .host-copy.is-copied .host-copy-label { opacity: 0; }
+      .host-copy.is-copied .host-copy-tick { opacity: 1; }
+      @media (prefers-reduced-motion: no-preference) {
+        .host-copy > * { transition: opacity 120ms ease; }
+      }
       .host-panel .card-command { min-height: 0; border: 0; border-radius: 0; }
       .host-explanation { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; }
       .host-request-body { max-height: 420px; overflow: auto; display: grid; gap: 10px; }
@@ -3411,15 +3426,52 @@
           ? document.activeElement
           : null;
         const focusKey = focused?.closest("[data-key]")?.dataset.key;
-        // A poll rebuilds this subtree, and a rebuild loses both places the
-        // reader can be: the window's vertical scroll, and the board's own
-        // horizontal scroller (the columns are wider than the viewport). Saved
-        // here and put back below, so a ten-second refresh never throws the
-        // page back to the top left.
+        // A poll no longer rebuilds this subtree from scratch: keyed elements
+        // (host/file boxes, board, cards) are patched in place, so their native
+        // scroll, selection and focus survive background refreshes. The window
+        // and board positions are still saved and restored for structural
+        // changes a patch cannot represent, like loading or view switches.
         const scroll = window.scrollY;
         const board = box.querySelector(".board");
         const boardLeft = board ? board.scrollLeft : 0;
-        box.innerHTML = html;
+        const template = document.createElement("template");
+        template.innerHTML = html;
+        const key = (node) => (node.nodeType === 1 ? node.getAttribute("data-key") : null);
+        const compatible = (a, b) =>
+          a && a.nodeType === b.nodeType && a.nodeName === b.nodeName && key(a) === key(b);
+        function patchChildren(parent, source) {
+          const keyed = new Map(
+            [...parent.childNodes].filter(key).map((node) => [key(node), node]),
+          );
+          let cursor = parent.firstChild;
+          for (const next of [...source.childNodes]) {
+            const current = key(next) ? keyed.get(key(next)) : cursor;
+            if (!compatible(current, next)) {
+              parent.insertBefore(next, cursor);
+              continue;
+            }
+            if (current !== cursor) parent.insertBefore(current, cursor);
+            if (current.nodeType === 1) {
+              for (const attr of [...current.attributes]) {
+                if (!next.hasAttribute(attr.name)) current.removeAttribute(attr.name);
+              }
+              for (const attr of [...next.attributes]) {
+                if (current.getAttribute(attr.name) !== attr.value)
+                  current.setAttribute(attr.name, attr.value);
+              }
+              patchChildren(current, next);
+            } else if (current.nodeValue !== next.nodeValue) {
+              current.nodeValue = next.nodeValue;
+            }
+            cursor = current.nextSibling;
+          }
+          while (cursor) {
+            const next = cursor.nextSibling;
+            cursor.remove();
+            cursor = next;
+          }
+        }
+        patchChildren(box, template.content);
         box.querySelectorAll("details[data-key]").forEach((d) => {
           if (open.has(d.dataset.key)) d.open = true;
           if (focusKey === d.dataset.key)
@@ -3722,8 +3774,10 @@
         const result = a.verification
           ? `<p class="card-result"><span>Expected result</span><code>${esc(a.verification)}</code></p>`
           : "";
-        return `<div class="host-request-body"><p class="host-explanation">${esc(explanation)}</p>
-          <div class="host-panel"><div class="host-panel-header"><span>${esc(label)}</span>${button("Copy", "host-copy", a.id, "", file ? "Copy script filename" : "Copy complete script contents")}</div>
+        const copyLabel = file ? "Copy script filename" : "Copy complete script contents";
+        const copy = `<button type="button" class="host-copy" data-action="host-copy" data-id="${esc(a.id)}" aria-label="${esc(copyLabel)}" title="${esc(copyLabel)}"><span class="host-copy-label">Copy</span><svg class="host-copy-tick" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 13l4 4L19 7"/></svg></button>`;
+        return `<div class="host-request-body" data-key="host-${esc(a.id)}"><p class="host-explanation">${esc(explanation)}</p>
+          <div class="host-panel"><div class="host-panel-header"><span>${esc(label)}</span>${copy}</div>
           <pre class="card-command" tabindex="0" aria-label="${esc(label)}"><code>${esc(value)}</code></pre></div>
           <p class="host-copy-status" role="status" aria-live="polite"></p>${result}</div>`;
       }
@@ -3822,12 +3876,12 @@
         ];
       }
       function boardMarkup() {
-        if (taskUI.loading && !taskUI.active.length && !taskUI.finished.length)
+        if (taskUI.loading && !taskUI.active.length && !taskUI.finished.length && !$("#content .board"))
           return '<p role="status">Loading tasks…</p>';
         const head = taskUI.truncated
           ? `<div class="notice info" role="status"><p>Showing the newest ${BOARD_ACTIVE_LIMIT} live tasks. Search to narrow the board, or open List for the rest.</p></div>`
           : "";
-        return `${head}<div class="board" aria-busy="${taskUI.loading}">${boardColumns().map(({def, cards}) => `<section class="column" aria-label="${esc(def.title)}">
+        return `${head}<div class="board" data-key="task-board" aria-busy="${taskUI.loading}">${boardColumns().map(({def, cards}) => `<section class="column" aria-label="${esc(def.title)}">
           <div class="column-head"><h2>${esc(def.title)}</h2><span class="column-tools"><span class="column-count">${cards.length}</span>${def.add ? button(def.add, "task-new", "", "small column-add", `Add a task to ${def.title.toLowerCase()}`) : ""}</span></div>
           <p class="column-note">${esc(def.note)}</p>
           ${cards.length ? cards.join("") : '<p class="column-empty">Nothing here.</p>'}
@@ -4763,7 +4817,8 @@
           });
         const fields = task
           ? taskDraftFields(task) + note("Further instructions for the worker (optional)", false)
-          : note(hostAsk ? "What did the command print?" : spec.label, true);
+          : note(hostAsk && decision === "completed" ? "What did the command print?" : spec.label,
+              !!spec.required || (hostAsk && decision === "completed"));
         formDialog(
           spec.title,
           proposal
@@ -7466,10 +7521,23 @@ function gitBindInputs() {
           throw e;
         }
       }
+      // How long the copy button shows its tick before returning to "Copy".
+      const COPY_TICK_MS = 1800;
       async function copyHostPanel(source) {
         const panel = source.closest(".host-request-body");
         const value = panel.querySelector(".card-command code").textContent;
         const status = panel.querySelector(".host-copy-status");
+        // The tick is the visual answer; the status line stays for assistive
+        // tech, and a failure keeps both pointed at the manual fallback.
+        const answer = (copied) => {
+          clearTimeout(source._copyTick);
+          source.classList.toggle("is-copied", copied);
+          if (copied)
+            source._copyTick = setTimeout(
+              () => source.classList.remove("is-copied"),
+              COPY_TICK_MS,
+            );
+        };
         try {
           if (window.navigator.clipboard?.writeText) {
             await window.navigator.clipboard.writeText(value);
@@ -7490,8 +7558,10 @@ function gitBindInputs() {
             }
           }
           status.textContent = "Copied.";
+          answer(true);
         } catch {
           status.textContent = "Could not copy. Select the text above and copy it manually.";
+          answer(false);
         }
       }
       async function action(name, id, source) {

@@ -38,14 +38,14 @@ func (h *Handler) registerBoard() {
 	})
 	h.Register(Tool{
 		Name:        "host_request",
-		Description: "Ask a person to run a script on the host. Supply explanation (why, effects, prerequisites, working directory and run instructions) and script (inline contents or existing filename); resultPath names the output. Legacy command is still accepted. Files a tracked, blocking request AND a board line. With taskId, requires attemptId, requestId, summary, checkpoint; atomically waits and ends execution. Exit after success.",
+		Description: "Ask a person to run a script on the host. Supply explanation (why, effects, prerequisites and run instructions) and script (inline contents or existing filename); resultPath names the output, project-relative (for example ./.piso/host-actions/result.txt) because the person runs it from the project root, never /workspace. Legacy command is still accepted. Files a tracked, blocking request AND a board line. With taskId, requires attemptId, requestId, summary, checkpoint; atomically waits and ends execution. Exit after success.",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"command":     map[string]any{"type": "string", "description": "Legacy command; prefer script plus explanation."},
 				"explanation": map[string]any{"type": "string"},
 				"script":      hostScriptSchema(),
-				"resultPath":  map[string]any{"type": "string"},
+				"resultPath":  map[string]any{"type": "string", "description": "Where the output will be, relative to the project root (for example ./.piso/host-actions/result.txt). /workspace is this worker's name for the project; a person on the host cannot use it."},
 				"title":       map[string]any{"type": "string"},
 				"category":    map[string]any{"type": "string"},
 				"taskId":      map[string]any{"type": "string"},
@@ -170,6 +170,20 @@ func (h *Handler) toolHostRequest(caller store.WorkerRec, args json.RawMessage) 
 	}
 	if resultPath == "" {
 		return nil, &rpcError{Code: codeInvalidParams, Message: "resultPath required"}
+	}
+	// A person has to find this path from the host, so it is stated the way the
+	// host sees it. The worker's /workspace prefix is rewritten rather than
+	// refused: it is the same directory, and the mistake is ours to correct.
+	resultPath, why := projectRelative(resultPath)
+	if why != "" {
+		return nil, &rpcError{Code: codeInvalidParams, Message: "resultPath: " + why}
+	}
+	if in.Script != nil && in.Script.Kind == "file" {
+		path, why := projectRelative(in.Script.Path)
+		if why != "" {
+			return nil, &rpcError{Code: codeInvalidParams, Message: "script.path: " + why}
+		}
+		in.Script.Path = path
 	}
 	category := strings.TrimSpace(in.Category)
 	if category == "" {
