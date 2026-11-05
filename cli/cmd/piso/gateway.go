@@ -120,6 +120,12 @@ func cmdGatewayLaunch(args []string) error {
 	if err := fs.Parse(args); err != nil || fs.NArg() != 0 {
 		return errors.New("usage: piso gateway launch [--name name] [--server url] [--no-qr] [--yes] [--standalone] [--url https://host:8443]")
 	}
+	// White Noise provisioning is opt-in via this launch flag only. Other
+	// standalone startup paths (including --url alone) keep their behavior.
+	provisionWhiteNoise := *standalone
+	finish := func() error {
+		return finishGatewayLaunch(provisionWhiteNoise, provisionStandaloneWhiteNoise)
+	}
 	*publicURL = strings.TrimRight(strings.TrimSpace(*publicURL), "/")
 	if *publicURL != "" {
 		*publicURL = normalizeServerURL(*publicURL)
@@ -198,7 +204,7 @@ func cmdGatewayLaunch(args []string) error {
 			fmt.Println("piso: placement will be advertised on the next heartbeat")
 			fmt.Println("piso: restart the gateway (`piso up`) so it listens for remote workers")
 		}
-		return nil
+		return finish()
 	}
 	if id.Placement == "" {
 		id.Placement = technocore.PlacementLocal
@@ -253,7 +259,7 @@ func cmdGatewayLaunch(args []string) error {
 				}
 				fmt.Printf("piso: gateway enrolled (%s)\n", principal)
 				fmt.Println("piso: leave the gateway running; it will connect and sync secrets")
-				return nil
+				return finish()
 			}
 			if !confirmPrinted {
 				confirmPrinted = true
@@ -271,7 +277,7 @@ func cmdGatewayLaunch(args []string) error {
 			}
 			fmt.Printf("piso: gateway enrolled (%s)\n", state.PrincipalID)
 			fmt.Println("piso: leave the gateway running; it will connect and sync secrets")
-			return nil
+			return finish()
 		case technocore.PairStatusRejected:
 			return errors.New("pairing rejected")
 		case technocore.PairStatusExpired:
