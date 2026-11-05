@@ -233,6 +233,44 @@ test('polls keep host and script boxes mounted while updating changed content', 
   assert.equal(cardByTitle(h.doc, 'Script file').querySelector('.card-command'), file);
 });
 
+test('the copy button answers with an in-place tick and keeps its size', async t => {
+  const contents = 'printf "hello\\n"';
+  const h = await harness(t, {asks: [{
+    id: 'tick', kind: 'human', category: 'host', title: 'Tick',
+    script: {kind: 'inline', filename: 'action.sh', language: 'bash', contents},
+  }]});
+  const card = cardByTitle(h.doc, 'Tick');
+  const copy = card.querySelector('[data-action="host-copy"]');
+  const label = copy.querySelector('.host-copy-label');
+  const tickIcon = copy.querySelector('.host-copy-tick');
+  assert.equal(label.textContent, 'Copy');
+  assert.ok(tickIcon, 'the button carries its own tick');
+  // Both children share one grid cell, so the wider of the two decides the
+  // width: the feedback can never resize the button.
+  const rules = [...h.doc.styleSheets].flatMap((sheet) => [...sheet.cssRules]);
+  const stack = rules.find((rule) => rule.selectorText === '.host-copy');
+  assert.equal(stack.style.getPropertyValue('display'), 'inline-grid');
+  const cell = rules.find((rule) => rule.selectorText === '.host-copy > *');
+  assert.equal(cell.style.getPropertyValue('grid-area'), 'copy');
+  assert.equal(h.w.getComputedStyle(tickIcon).opacity, '0');
+  assert.notEqual(h.w.getComputedStyle(label).opacity, '0');
+  // Hold the reset timer so the test reads both states without waiting.
+  const timers = [];
+  h.w.setTimeout = (fn) => { timers.push(fn); return timers.length; };
+  h.w.clearTimeout = () => {};
+  Object.defineProperty(h.w.navigator, 'clipboard', {value: {writeText: async () => {}}});
+  copy.click();
+  await tick();
+  assert.equal(copy.classList.contains('is-copied'), true);
+  assert.equal(h.w.getComputedStyle(tickIcon).opacity, '1');
+  assert.equal(h.w.getComputedStyle(label).opacity, '0');
+  assert.equal(card.querySelector('.host-copy-status').textContent, 'Copied.');
+  assert.equal(timers.length, 1, 'the tick schedules its own reset');
+  timers[0]();
+  assert.equal(copy.classList.contains('is-copied'), false);
+  assert.equal(h.w.getComputedStyle(tickIcon).opacity, '0');
+});
+
 test('HTTP clipboard fallback restores focus and failures stay inline', async t => {
   const h = await harness(t, {asks: [{id: 'fallback', kind: 'human', category: 'host', title: 'Fallback', instructions: 'echo hello\necho world'}]});
   const card = cardByTitle(h.doc, 'Fallback');

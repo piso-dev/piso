@@ -92,7 +92,7 @@ func TestHostRequestWritesHostKind(t *testing.T) {
 		t.Fatalf("%v", out)
 	}
 	rows, _ := st.QueryActivities(store.ActivityFilter{Slug: "demo", Kind: "host", Limit: 1})
-	if len(rows) != 1 || !strings.Contains(rows[0].Text, "git clone") || !strings.Contains(rows[0].Text, "/workspace/repo") {
+	if len(rows) != 1 || !strings.Contains(rows[0].Text, "git clone") || !strings.Contains(rows[0].Text, "./repo") {
 		t.Fatalf("%+v", rows)
 	}
 }
@@ -138,7 +138,7 @@ func TestHostRequestFilesTrackedAsk(t *testing.T) {
 		t.Fatalf("path %q", got.path)
 	}
 	if got.body["category"] != "host" || got.body["instructions"] != "npm run migrate" ||
-		got.body["verification"] != "/workspace/migrate.log" {
+		got.body["verification"] != "./migrate.log" {
 		t.Fatalf("%v", got.body)
 	}
 	if _, ok := got.body["taskId"]; ok {
@@ -154,6 +154,67 @@ func TestHostRequestFilesTrackedAsk(t *testing.T) {
 	}
 	if res["activityId"] != rows[0].ID {
 		t.Fatalf("activityId %v != %v", res["activityId"], rows[0].ID)
+	}
+}
+
+func TestHostRequestStatesPathsTheHostCanUse(t *testing.T) {
+	caller := store.WorkerRec{PrincipalID: "prin-1", Name: "piso-worker-demo", Slug: "demo"}
+	route := func(t *testing.T, args map[string]any) (map[string]any, *rpcError) {
+		t.Helper()
+		h, _, got := hostRequestHandler(t, 201, `{"id":"h1","status":"requested"}`, nil)
+		raw, _ := json.Marshal(args)
+		if _, rpcErr := h.toolHostRequest(caller, raw); rpcErr != nil {
+			return nil, rpcErr
+		}
+		return got.body, nil
+	}
+	// The worker's own name for the project root is the same directory to the
+	// host, so it is rewritten instead of shipped: a person cannot run
+	// /workspace/... and reads it as a path that does not exist.
+	body, rpcErr := route(t, map[string]any{"command": "npm run migrate", "resultPath": "/workspace/migrate.log"})
+	if rpcErr != nil {
+		t.Fatal(rpcErr.Message)
+	}
+	if body["verification"] != "./migrate.log" {
+		t.Fatalf("verification %q", body["verification"])
+	}
+	// A project-relative path already in the host's form is left alone, and the
+	// bare root becomes "." rather than an empty string.
+	for in, want := range map[string]string{"./.piso/host-actions/result.txt": "./.piso/host-actions/result.txt", "out.log": "out.log", "/workspace": "."} {
+		body, rpcErr = route(t, map[string]any{"command": "make test", "resultPath": in})
+		if rpcErr != nil {
+			t.Fatalf("%s: %s", in, rpcErr.Message)
+		}
+		if body["verification"] != want {
+			t.Fatalf("%s became %q, want %q", in, body["verification"], want)
+		}
+	}
+	// A host script path obeys the same rule, since it is also something a
+	// person has to open.
+	body, rpcErr = route(t, map[string]any{
+		"explanation": "Run from the project root.", "resultPath": "./out.txt",
+		"script": map[string]any{"kind": "file", "language": "bash", "path": "/workspace/.piso/host-actions/action.sh"},
+	})
+	if rpcErr != nil {
+		t.Fatal(rpcErr.Message)
+	}
+	if script := body["script"].(map[string]any); script["path"] != "./.piso/host-actions/action.sh" {
+		t.Fatalf("script path %q", script["path"])
+	}
+	// Anything the host would have to guess is refused with the rule, not
+	// silently sent and discovered missing later.
+	for _, bad := range []map[string]any{
+		{"command": "make test", "resultPath": "/etc/passwd"},
+		{"command": "make test", "resultPath": "../outside/result.txt"},
+		{"command": "make test", "resultPath": "a/../../b.txt"},
+		{"explanation": "Run.", "resultPath": "./out.txt",
+			"script": map[string]any{"kind": "file", "language": "bash", "path": "/opt/host/action.sh"}},
+	} {
+		if _, rpcErr := route(t, bad); rpcErr == nil {
+			t.Fatalf("accepted an unusable path: %v", bad)
+		} else if !strings.Contains(rpcErr.Message, "project-relative") && !strings.Contains(rpcErr.Message, "inside the project") {
+			t.Fatalf("unhelpful refusal %q for %v", rpcErr.Message, bad)
+		}
 	}
 }
 

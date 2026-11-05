@@ -90,8 +90,10 @@ host when it cannot, probe cautions) is appended below by the entrypoint from
 you suspect is out of bounds. Two things to internalize up front:
 
 - Never attempt ssh, docker, or privileged writes: call `host_request` with
-  the exact command and a `/workspace/...` result path instead, and check
-  that path later. Pass `taskId` (with `attemptId`, `requestId`, `summary`,
+  the exact command and a project-relative result path (for example
+  `./.piso/host-actions/result.txt`) instead, and check that path later. Never
+  pass `/workspace/...`: that is this worker's name for the project directory,
+  so a person on the host cannot use it. Pass `taskId` (with `attemptId`, `requestId`, `summary`,
   `checkpoint`) whenever you hold one — that is what makes the request
   block the task instead of only appearing on the board.
 - Fetch your live boundaries once per session with the piso MCP tool

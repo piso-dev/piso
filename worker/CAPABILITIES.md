@@ -66,8 +66,9 @@ targets the assigned shared project; do not nest additional clones there.
   to identify the correct worker container/agent-volume mapping and clone into
   that verified mount, or use an explicitly agreed temporary transfer location
   with a copy/verification/cleanup plan. Never guess a host volume path. Keep
-  `host_request.resultPath` as a separate /workspace/... status file visible
-  through the shared mount; do not use the checkout itself as the result path.
+  `host_request.resultPath` as a separate project-relative status file (for
+  example `./.piso/host-actions/clone.txt`) visible through the shared mount;
+  do not use the checkout itself as the result path.
 
 ## Where to install things (never the repo, never /tmp)
 
@@ -146,7 +147,8 @@ This fallback does not override sandbox boundaries. Proxy or auth denials,
 hosts whose credentials the substitution layer cannot satisfy, forbidden
 destinations, and pending host requests need `host_request` rather than an
 in-worker retry. In those cases, file the parsed-name `gh repo clone` command
-with `host_request` and a `/workspace/...` `resultPath`; follow **Git checkout
+with `host_request` and a project-relative `resultPath` (for example
+`./.piso/host-actions/clone.txt`); follow **Git checkout
 storage** for the separate host/worker checkout mapping. Never bypass the proxy
 or retry in a loop.
 
@@ -155,15 +157,24 @@ or retry in a loop.
 The piso MCP tool `host_request` is how you ask the host to do a step you
 cannot. Supply a script and separate explanatory text, not bare shell commands:
 
-- `explanation`: why host access is needed, effects/risks, prerequisites, working
-  directory, exact invocation and what successful completion looks like.
+- `explanation`: why host access is needed, effects/risks, prerequisites and
+  exact invocation, including that the script is run from the project root;
+  and what successful completion looks like.
 - `script`: `{kind:"inline", filename:"action.sh", language:"bash", contents:"..."}`
   for complete file contents, or `{kind:"file", path:".piso/host-actions/action.sh",
   language:"bash"}` for a file already written into the shared project directory.
   Prefer inline for portability. Use a project-relative or verified host path;
   the worker mount `/workspace` is not necessarily the host path.
-- `resultPath`: the `/workspace/...` output path visible to the worker, distinct
-  from the script file. The script must actually arrange for that output.
+- `resultPath`: the output path, written project-relative (for example
+  `./.piso/host-actions/result.txt`) because the person runs the script from the
+  project root. Never use `/workspace` here: that is this worker's name for the
+  same directory, and it does not exist on the host. `.` already resolves to the
+  project root in both places. The script must actually arrange for that output.
+
+Write scripts for the host, not for this container: it may be macOS. Prefer
+POSIX `sh` and avoid GNU-only spellings (`date -I`, `grep -P`, `sed -i` without
+a suffix, `readlink -f`, `stat -c`), which fail on BSD userland even though they
+work here.
 
 The dashboard displays explanation separately and a capped, scrollable script
 block with a top-right Copy button. Copy never runs the script or completes the

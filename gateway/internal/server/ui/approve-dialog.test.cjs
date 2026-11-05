@@ -157,8 +157,11 @@ test("resolving a host request asks what the command printed", async (t) => {
 
 for (const category of ["host", "dns"]) {
   test(`rejecting a ${category} human action accepts an empty note`, async (t) => {
+    // The host variant carries a file-section script, the shape a host request
+    // actually arrives in on the board.
+    const script = category === "host" ? { script: { kind: "file", path: ".piso/host-actions/action.sh", language: "bash" } } : {};
     const { w, doc, calls } = await harness(t, [
-      { kind: "human", id: "h-reject", category, title: "Human action", instructions: "Do this." },
+      { kind: "human", id: "h-reject", category, title: "Human action", instructions: "Do this.", ...script },
     ]);
     await w.t.decideAsk("rejected", "h-reject");
     assert.deepEqual(labels(doc), ["Why (optional)"]);
