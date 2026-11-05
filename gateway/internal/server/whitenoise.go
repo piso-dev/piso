@@ -54,13 +54,24 @@ func (s *Server) registerWhiteNoise(mux *http.ServeMux) {
 func (s *Server) handleWhiteNoise(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
 		code, raw, err := s.wnCoordinator(http.MethodGet, nil)
-		if err != nil || code != 200 {
-			writeJSON(w, 502, map[string]string{"error": "shared connection status unavailable"})
-			return
-		}
 		var out map[string]any
-		if json.Unmarshal(raw, &out) != nil {
-			writeJSON(w, 502, map[string]string{"error": "invalid coordinator response"})
+		valid := err == nil && code == http.StatusOK && json.Unmarshal(raw, &out) == nil
+		if _, ok := out["connections"].([]any); !ok {
+			valid = false
+		}
+		if !valid {
+			link := s.Store.WhiteNoiseLink()
+			if link.AccountID == "" && link.ResourceID == "" {
+				// Pairing the gateway does not opt it into White Noise. A failed
+				// optional lookup must not make an unconfigured install look broken.
+				// This is only a local setup state, not proof that the account has
+				// no shared connection. The UI retains any previously loaded one.
+				writeJSON(w, http.StatusOK, map[string]any{
+					"connections": []any{}, "status": "not_configured", "sharedStatus": "unavailable",
+				})
+				return
+			}
+			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "shared connection status unavailable"})
 			return
 		}
 		if rows, ok := out["connections"].([]any); ok {

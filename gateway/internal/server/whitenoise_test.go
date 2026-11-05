@@ -3,12 +3,18 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net"
+	"net/http"
+	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"piso/gateway/internal/store"
 	"piso/gateway/internal/whitenoise"
 	"testing"
 	"time"
+
+	tc "piso/internal/technocore"
 )
 
 func wnFixture(t *testing.T, s *Server) {
@@ -143,5 +149,114 @@ func TestWhiteNoiseMailboxUnauthorized(t *testing.T) {
 	}
 	if len(s.Store.WhiteNoiseLink().Mailbox) != 0 || s.Store.WhiteNoiseDestination("wn-connection", "opaque-group") {
 		t.Fatal("unlink retained access")
+	}
+}
+
+func TestWhiteNoiseStatusWithoutConnectionIsEmptyNotFailed(t *testing.T) {
+	s := testServer(t)
+	// The gateway always has an identity file; an unpaired one is the state
+	// every install starts in, before a coordinator is enrolled.
+	s.DataDir = t.TempDir()
+	if _, err := tc.LoadOrCreate(tc.Path(s.DataDir), "", "test"); err != nil {
+		t.Fatal(err)
+	}
+	w := doJSON(t, s.ControlHandler(), "GET", "/api/v1/whitenoise", nil)
+	if w.Code != 200 {
+		t.Fatalf("%d %s", w.Code, w.Body.String())
+	}
+	var out struct {
+		Connections []any `json:"connections"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil || out.Connections == nil || len(out.Connections) != 0 {
+		t.Fatalf("%d %s", w.Code, w.Body.String())
+	}
+}
+
+func TestWhiteNoiseOptionalStatusHTTP(t *testing.T) {
+	for _, scenario := range []string{"missing_identity", "corrupt_identity", "unpaired", "404", "500", "invalid_json", "invalid_shape", "empty", "shared"} {
+		for _, configured := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/configured=%v", scenario, configured), func(t *testing.T) {
+				coordinator := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if r.URL.Path != "/api/v1/whitenoise" {
+						t.Errorf("unexpected path %s", r.URL.Path)
+					}
+					switch scenario {
+					case "404":
+						http.Error(w, "endpoint not deployed", 404)
+					case "500":
+						http.Error(w, "coordinator failed", 500)
+					case "invalid_json":
+						fmt.Fprint(w, "not json")
+					case "invalid_shape":
+						fmt.Fprint(w, `{"other":[]}`)
+					case "shared":
+						fmt.Fprint(w, `{"connections":[{"resourceId":"remote","accountId":"remote","manageable":false}]}`)
+					default:
+						fmt.Fprint(w, `{"connections":[]}`)
+					}
+				}))
+				defer coordinator.Close()
+				s := testServer(t)
+				s.DataDir = t.TempDir()
+				if scenario != "missing_identity" {
+					id, err := tc.LoadOrCreate(tc.Path(s.DataDir), coordinator.URL, "test")
+					if err != nil {
+						t.Fatal(err)
+					}
+					if scenario != "unpaired" {
+						id.Status = tc.StatusActive
+					}
+					if err := tc.Save(tc.Path(s.DataDir), id); err != nil {
+						t.Fatal(err)
+					}
+					if scenario == "corrupt_identity" {
+						if err := os.WriteFile(tc.Path(s.DataDir), []byte("invalid"), 0600); err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
+				if configured {
+					if err := s.Store.SetWhiteNoiseLink(store.WhiteNoiseLink{ResourceID: "local", AccountID: "local", Enabled: true}); err != nil {
+						t.Fatal(err)
+					}
+				}
+				// Inspect the underlying response as well as the control API response.
+				code, raw, err := s.wnCoordinator(http.MethodGet, nil)
+				t.Logf("coordinator: status=%d body=%q err=%v", code, raw, err)
+				w := doJSON(t, s.ControlHandler(), "GET", "/api/v1/whitenoise", nil)
+				t.Logf("gateway: status=%d body=%s", w.Code, w.Body.String())
+				available := scenario == "empty" || scenario == "shared"
+				if configured && !available {
+					if w.Code != 502 {
+						t.Fatalf("expected 502, got %d", w.Code)
+					}
+					return
+				}
+				if w.Code != 200 {
+					t.Fatalf("expected 200, got %d", w.Code)
+				}
+				var out struct {
+					Connections  []any  `json:"connections"`
+					Status       string `json:"status"`
+					SharedStatus string `json:"sharedStatus"`
+				}
+				if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+					t.Fatal(err)
+				}
+				if out.Connections == nil {
+					t.Fatal("missing connections array")
+				}
+				if scenario == "shared" {
+					if len(out.Connections) != 1 {
+						t.Fatal("lost shared connection")
+					}
+				} else if len(out.Connections) != 0 {
+					t.Fatal("unexpected connection")
+				}
+				if !available && (out.Status != "not_configured" || out.SharedStatus != "unavailable") {
+					t.Fatal("missing optional setup state")
+				}
+			})
+		}
 	}
 }
