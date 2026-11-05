@@ -8,11 +8,10 @@ import (
 	"piso/cli/internal/pisoconfig"
 )
 
-// The connector is a side service, not part of the gateway's job: `piso up`
-// never touches it, and no gateway start builds it. A Rust release build of
-// wn-agent is minutes of work on a gateway host and pointless on a laptop,
-// where White Noise is not used at all. The image is built once, explicitly,
-// by `piso whitenoise build`.
+// The connector is a side service: `piso up` never touches it. Only explicit
+// `gateway launch --standalone` builds a missing image and provisions identity;
+// other gateway startup paths remain build-free. Operators can also build it
+// manually with `piso whitenoise build`.
 const (
 	whiteNoiseImage     = "piso-whitenoise:04e94720d6ea5dcf93daa3ccccf10763d10bb2c5"
 	whiteNoiseContainer = "piso-whitenoise"
@@ -47,8 +46,8 @@ func cmdWhiteNoise(args []string) error {
 	}
 }
 
-// cmdWhiteNoiseBuild is the only path that may compile the connector. It is
-// deliberately not wired into `piso up` or any gateway start.
+// cmdWhiteNoiseBuild explicitly compiles the connector. Standalone launch also
+// builds it if missing; ordinary gateway starts and `piso up` never do.
 func cmdWhiteNoiseBuild() error {
 	if err := dockernet.AssertLinuxEngine(); err != nil {
 		return err
